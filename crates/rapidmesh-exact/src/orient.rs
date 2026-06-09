@@ -1,10 +1,10 @@
 //! Staged-exact orientation predicates over explicit and implicit points.
 
 use crate::expansion::Expansion;
-use crate::geom::det4;
+use crate::geom::{det3, det4};
 use crate::interval::Interval;
 use crate::point::Point3;
-use crate::Sign;
+use crate::{Axis, Sign};
 
 /// Exact 3D orientation of four points, any of which may be implicit.
 ///
@@ -60,6 +60,62 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
     let mut sign = det4(&homs).sign();
     for h in &homs {
         match h[3].sign() {
+            Sign::Zero => return None,
+            s => sign = sign.combine(s),
+        }
+    }
+    Some(sign)
+}
+
+/// Exact 2D orientation of three points in the axis-aligned projection that
+/// drops the given axis. Points may be implicit.
+///
+/// Sign convention: in the projected coordinate pair (see
+/// [`Point3::hom2`] for the cyclic pairing), positive when `a`, `b`, `c` are
+/// counterclockwise — equivalently, the sign of the `drop` component of the
+/// normal of triangle (a, b, c) in 3D.
+///
+/// Returns `None` if any implicit point is invalid (exact w == 0).
+pub fn orient2d(a: &Point3, b: &Point3, c: &Point3, drop: Axis) -> Option<Sign> {
+    // Fast adaptive path: all points explicit.
+    if let (Some(pa), Some(pb), Some(pc)) = (a.as_explicit(), b.as_explicit(), c.as_explicit()) {
+        let proj = |p: [f64; 3]| match drop {
+            Axis::X => [p[1], p[2]],
+            Axis::Y => [p[2], p[0]],
+            Axis::Z => [p[0], p[1]],
+        };
+        return Some(Sign::of_f64(geometry_predicates::orient2d(
+            proj(pa),
+            proj(pb),
+            proj(pc),
+        )));
+    }
+
+    let pts = [a, b, c];
+
+    // det3 of homogeneous rows = (prod of w_i) * det2[[a-c],[b-c]].
+
+    // Interval filter.
+    'filter: {
+        let homs: [[Interval; 3]; 3] = std::array::from_fn(|i| pts[i].hom2::<Interval>(drop));
+        let Some(mut sign) = det3(&homs).sign() else {
+            break 'filter;
+        };
+        for h in &homs {
+            match h[2].sign() {
+                Some(Sign::Positive) => {}
+                Some(Sign::Negative) => sign = sign.flip(),
+                _ => break 'filter,
+            }
+        }
+        return Some(sign);
+    }
+
+    // Exact stage.
+    let homs: [[Expansion; 3]; 3] = std::array::from_fn(|i| pts[i].hom2::<Expansion>(drop));
+    let mut sign = det3(&homs).sign();
+    for h in &homs {
+        match h[2].sign() {
             Sign::Zero => return None,
             s => sign = sign.combine(s),
         }

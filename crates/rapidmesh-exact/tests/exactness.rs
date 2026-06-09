@@ -5,16 +5,15 @@
 //! derivations (solving the line-plane intersection directly) validate the
 //! homogeneous formulas themselves.
 
-use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 use rapidmesh_exact::expansion::Expansion;
-use rapidmesh_exact::geom::{det4, lpi_hom};
+use rapidmesh_exact::geom::{det3, det4};
 use rapidmesh_exact::interval::Interval;
-use rapidmesh_exact::orient::orient3d;
+use rapidmesh_exact::orient::{orient2d, orient3d};
 use rapidmesh_exact::point::Point3;
 use rapidmesh_exact::ring::Ring;
-use rapidmesh_exact::Sign;
+use rapidmesh_exact::{Axis, Sign};
 
 // ---------------------------------------------------------------- oracle ring
 
@@ -411,6 +410,153 @@ fn implicit_orientation_matches_oracle_in_general_position() {
         }
     }
     assert!(checked > 50, "expected many decidable cases, got {checked}");
+}
+
+// ------------------------------------------------------------ orient2d tests
+
+/// Rational-oracle 2D orientation through the same homogeneous machinery.
+fn orient2d_oracle(pts: [&Point3; 3], drop: Axis) -> Option<Sign> {
+    let homs: [[Rat; 3]; 3] = std::array::from_fn(|i| pts[i].hom2::<Rat>(drop));
+    let mut sign = sign_of_rat(&det3(&homs).0);
+    for h in &homs {
+        match sign_of_rat(&h[2].0) {
+            Sign::Zero => return None,
+            s => sign = sign.combine(s),
+        }
+    }
+    Some(sign)
+}
+
+#[test]
+fn orient2d_explicit_matches_oracle_all_axes() {
+    let mut rng = Rng::new(0x2D);
+    let mut zeros = 0;
+    for i in 0..900 {
+        let pts: [Point3; 3] = std::array::from_fn(|_| {
+            Point3::Explicit(if i % 2 == 0 {
+                rng.point_grid()
+            } else {
+                rng.point_coarse()
+            })
+        });
+        for drop in [Axis::X, Axis::Y, Axis::Z] {
+            let got = orient2d(&pts[0], &pts[1], &pts[2], drop);
+            let want = orient2d_oracle([&pts[0], &pts[1], &pts[2]], drop);
+            assert_eq!(got, want);
+            if got == Some(Sign::Zero) {
+                zeros += 1;
+            }
+        }
+    }
+    assert!(zeros > 0, "coarse grid should hit exact 2D collinearity");
+}
+
+#[test]
+fn orient2d_implicit_matches_oracle() {
+    let mut rng = Rng::new(0x2E);
+    let mut checked = 0;
+    for _ in 0..200 {
+        let lpi = Point3::lpi(
+            rng.point_grid(),
+            rng.point_grid(),
+            rng.point_grid(),
+            rng.point_grid(),
+            rng.point_grid(),
+        );
+        let a = Point3::Explicit(rng.point_grid());
+        let b = Point3::Explicit(rng.point_grid());
+        for drop in [Axis::X, Axis::Y, Axis::Z] {
+            let got = orient2d(&a, &b, &lpi, drop);
+            let want = orient2d_oracle([&a, &b, &lpi], drop);
+            assert_eq!(got, want);
+            if got.is_some() {
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "expected many decidable cases, got {checked}");
+}
+
+#[test]
+fn orient2d_lpi_on_line_is_collinear_in_every_projection() {
+    let mut rng = Rng::new(0x2F);
+    let mut valid = 0;
+    for _ in 0..200 {
+        let (p, q) = (rng.point_grid(), rng.point_grid());
+        let (r, s, t) = (rng.point_grid(), rng.point_grid(), rng.point_grid());
+        let lpi = Point3::lpi(p, q, r, s, t);
+        if !lpi.is_valid() {
+            continue;
+        }
+        valid += 1;
+        // 3D collinearity with p, q survives every axis projection.
+        for drop in [Axis::X, Axis::Y, Axis::Z] {
+            assert_eq!(
+                orient2d(&Point3::Explicit(p), &Point3::Explicit(q), &lpi, drop),
+                Some(Sign::Zero)
+            );
+        }
+    }
+    assert!(valid > 50, "expected many valid LPI cases, got {valid}");
+}
+
+// ----------------------------------------------------------- coincidence
+
+#[test]
+fn coincides_lpi_with_known_explicit_point() {
+    // Line through (0,0,-1)->(0,0,3) hits plane z=0 at the origin.
+    let lpi = Point3::lpi(
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 3.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    );
+    assert!(lpi.coincides(&Point3::explicit(0.0, 0.0, 0.0)));
+    assert!(!lpi.coincides(&Point3::explicit(0.0, 0.0, 1e-300)));
+    assert!(!lpi.coincides(&Point3::explicit(0.0, 1.0, 0.0)));
+}
+
+#[test]
+fn coincides_same_point_from_different_constructions() {
+    let mut rng = Rng::new(0xC0);
+    let mut valid = 0;
+    for _ in 0..200 {
+        let (p, q) = (rng.point_grid(), rng.point_grid());
+        let (r, s, t) = (rng.point_grid(), rng.point_grid(), rng.point_grid());
+        let lpi_a = Point3::lpi(p, q, r, s, t);
+        // Same line, same plane: defining points permuted (and the line
+        // reversed). Must be recognized as the same point.
+        let lpi_b = Point3::lpi(q, p, s, t, r);
+        if !lpi_a.is_valid() {
+            continue;
+        }
+        valid += 1;
+        assert!(lpi_a.coincides(&lpi_b));
+        assert!(lpi_b.coincides(&lpi_a));
+    }
+    assert!(valid > 50, "expected many valid cases, got {valid}");
+}
+
+#[test]
+fn coincides_rejects_distinct_implicit_points() {
+    let mut rng = Rng::new(0xC1);
+    let mut checked = 0;
+    for _ in 0..200 {
+        let (p, q) = (rng.point_grid(), rng.point_grid());
+        let (r, s, t) = (rng.point_grid(), rng.point_grid(), rng.point_grid());
+        // Two parallel planes one unit apart along z: the same line meets
+        // them in distinct points (unless it is parallel to them).
+        let shift = |v: [f64; 3]| [v[0], v[1], v[2] + 1.0];
+        let lpi_a = Point3::lpi(p, q, r, s, t);
+        let lpi_b = Point3::lpi(p, q, shift(r), shift(s), shift(t));
+        if !lpi_a.is_valid() || !lpi_b.is_valid() {
+            continue;
+        }
+        checked += 1;
+        assert!(!lpi_a.coincides(&lpi_b));
+    }
+    assert!(checked > 50, "expected many valid cases, got {checked}");
 }
 
 // ----------------------------------------------------------- approx sanity

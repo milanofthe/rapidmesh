@@ -4,7 +4,7 @@ use crate::expansion::Expansion;
 use crate::geom::{lpi_hom, tpi_hom};
 use crate::interval::Interval;
 use crate::ring::Ring;
-use crate::Sign;
+use crate::{Axis, Sign};
 
 /// A 3D point, either explicit or defined implicitly by the primitives whose
 /// intersection it is.
@@ -79,6 +79,52 @@ impl Point3 {
             Point3::Lpi { p, q, r, s, t } => lpi_hom(*p, *q, *r, *s, *t),
             Point3::Tpi { planes } => tpi_hom(planes),
         }
+    }
+
+    /// Homogeneous 2D coordinates in the projection that drops the given
+    /// axis. The pairing is cyclic — drop X gives (y, z), drop Y gives (z, x),
+    /// drop Z gives (x, y) — so the projected orientation of a triangle equals
+    /// the sign of the dropped component of its normal.
+    pub fn hom2<T: Ring>(&self, drop: Axis) -> [T; 3] {
+        let [x, y, z, w] = self.hom::<T>();
+        match drop {
+            Axis::X => [y, z, w],
+            Axis::Y => [z, x, w],
+            Axis::Z => [x, y, w],
+        }
+    }
+
+    /// Exact coincidence test: true if both points are the same point of R^3.
+    ///
+    /// Both points must be valid (w != 0); cross-ratio equality
+    /// x_a * w_b == x_b * w_a (etc.) is then equivalent to equality of the
+    /// affine points.
+    pub fn coincides(&self, other: &Point3) -> bool {
+        if let (Some(a), Some(b)) = (self.as_explicit(), other.as_explicit()) {
+            return a == b;
+        }
+        // Interval filter: any strictly nonzero cross-difference rules out
+        // coincidence; all exactly-zero proves it.
+        let ha = self.hom::<Interval>();
+        let hb = other.hom::<Interval>();
+        let mut undecided = false;
+        for i in 0..3 {
+            let d = Ring::sub(&Ring::mul(&ha[i], &hb[3]), &Ring::mul(&hb[i], &ha[3]));
+            match d.sign() {
+                Some(Sign::Zero) => {}
+                Some(_) => return false,
+                None => undecided = true,
+            }
+        }
+        if !undecided {
+            return true;
+        }
+        // Exact stage.
+        let ea = self.hom::<Expansion>();
+        let eb = other.hom::<Expansion>();
+        (0..3).all(|i| {
+            Ring::sub(&ea[i].mul(&eb[3]), &eb[i].mul(&ea[3])).is_zero()
+        })
     }
 
     /// Exact sign of the homogeneous w coordinate. [`Sign::Zero`] means the

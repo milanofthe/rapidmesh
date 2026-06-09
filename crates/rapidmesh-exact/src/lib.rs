@@ -47,9 +47,31 @@ pub mod ring;
 
 pub use expansion::Expansion;
 pub use interval::Interval;
-pub use orient::orient3d;
+pub use orient::{orient2d, orient3d};
 pub use point::Point3;
 pub use ring::Ring;
+
+/// A coordinate axis, used to select axis-aligned 2D projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// The x axis.
+    X,
+    /// The y axis.
+    Y,
+    /// The z axis.
+    Z,
+}
+
+impl Axis {
+    /// Coordinate index of the axis.
+    pub fn index(self) -> usize {
+        match self {
+            Axis::X => 0,
+            Axis::Y => 1,
+            Axis::Z => 2,
+        }
+    }
+}
 
 /// Sign of an exactly evaluated quantity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

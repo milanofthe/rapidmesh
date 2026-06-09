@@ -7,3 +7,8 @@ publish.workspace = true
 [dependencies]
 rapidmesh-exact.workspace = true
 rapidmesh-geom.workspace = true
+
+[dev-dependencies]
+num-rational = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"

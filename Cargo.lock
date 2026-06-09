@@ -97,6 +97,9 @@ dependencies = [
 name = "rapidmesh-csg"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
+ "num-rational",
+ "num-traits",
  "rapidmesh-exact",
  "rapidmesh-geom",
 ]

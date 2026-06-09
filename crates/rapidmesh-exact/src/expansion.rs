@@ -193,6 +193,10 @@ fn scale_expansion_zeroelim(e: &[f64], b: f64, h: &mut Vec<f64>) {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expansion(Vec<f64>);
 
+// add/sub/mul/neg intentionally mirror the Ring trait instead of std::ops:
+// the generic geometric code calls Ring methods, and by-value std operators
+// on a Vec-backed type would invite accidental clones.
+#[allow(clippy::should_implement_trait)]
 impl Expansion {
     /// The exact value `v`.
     pub fn from_f64(v: f64) -> Expansion {

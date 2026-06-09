@@ -18,6 +18,9 @@ pub struct Interval {
     hi: f64,
 }
 
+// add/sub/mul/neg intentionally mirror the Ring trait instead of std::ops,
+// matching Expansion (the generic geometric code calls Ring methods).
+#[allow(clippy::should_implement_trait)]
 impl Interval {
     /// The exact point interval [v, v].
     pub fn point(v: f64) -> Interval {

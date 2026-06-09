@@ -1,0 +1,10 @@
+[package]
+name = "rapidmesh-tet"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rapidmesh-geom.workspace = true
+geometry-predicates.workspace = true
+rayon.workspace = true

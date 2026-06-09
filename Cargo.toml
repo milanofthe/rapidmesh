@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rapidmesh-geom",
+    "crates/rapidmesh-csg",
+    "crates/rapidmesh-tet",
+    "crates/rapidmesh",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+rapidmesh-geom = { path = "crates/rapidmesh-geom" }
+rapidmesh-csg = { path = "crates/rapidmesh-csg" }
+rapidmesh-tet = { path = "crates/rapidmesh-tet" }
+geometry-predicates = "0.3"
+rayon = "1"

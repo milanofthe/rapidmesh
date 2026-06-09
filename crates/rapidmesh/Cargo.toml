@@ -1,0 +1,10 @@
+[package]
+name = "rapidmesh"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rapidmesh-geom.workspace = true
+rapidmesh-csg.workspace = true
+rapidmesh-tet.workspace = true

@@ -58,6 +58,53 @@ impl Point3 {
         }
     }
 
+    /// The intersection of two coplanar lines: line through `p`, `q` and line
+    /// through `a`, `b`. Returns `None` if the four points are not exactly
+    /// coplanar, or if the lines are parallel or identical.
+    ///
+    /// Construction: the point is the LPI of line (p, q) with a plane that
+    /// contains line (a, b) but not the common plane — its third defining
+    /// point `x` is synthesized off-plane. Any `x` works as long as the
+    /// resulting LPI is valid: if `x` accidentally lands in the common plane
+    /// or collinear with (a, b), the LPI's w is exactly zero and the next
+    /// candidate is tried; exactness never depends on the accuracy of `x`.
+    pub fn lli_coplanar(p: [f64; 3], q: [f64; 3], a: [f64; 3], b: [f64; 3]) -> Option<Point3> {
+        // Require exact coplanarity, otherwise the construction below would
+        // produce a point that is not on line (a, b).
+        if crate::orient::orient3d(
+            &Point3::Explicit(p),
+            &Point3::Explicit(q),
+            &Point3::Explicit(a),
+            &Point3::Explicit(b),
+        ) != Some(Sign::Zero)
+        {
+            return None;
+        }
+        // Preferred synthesis: offset along the (approximate) common-plane
+        // normal; unit-axis offsets as fallbacks.
+        let d1 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+        let d2 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let n = [
+            d2[1] * d1[2] - d2[2] * d1[1],
+            d2[2] * d1[0] - d2[0] * d1[2],
+            d2[0] * d1[1] - d2[1] * d1[0],
+        ];
+        let candidates = [
+            [a[0] + n[0], a[1] + n[1], a[2] + n[2]],
+            [a[0] + 1.0, a[1], a[2]],
+            [a[0], a[1] + 1.0, a[2]],
+            [a[0], a[1], a[2] + 1.0],
+        ];
+        for x in candidates {
+            let cand = Point3::Lpi { p, q, r: a, s: b, t: x };
+            if cand.is_valid() {
+                return Some(cand);
+            }
+        }
+        // All candidates invalid: the lines are parallel or identical.
+        None
+    }
+
     /// The coordinates if this point is explicit.
     pub fn as_explicit(&self) -> Option<[f64; 3]> {
         match self {

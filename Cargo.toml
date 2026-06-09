@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rapidmesh-exact",
     "crates/rapidmesh-geom",
     "crates/rapidmesh-csg",
     "crates/rapidmesh-tet",
@@ -13,6 +14,7 @@ edition = "2021"
 publish = false
 
 [workspace.dependencies]
+rapidmesh-exact = { path = "crates/rapidmesh-exact" }
 rapidmesh-geom = { path = "crates/rapidmesh-geom" }
 rapidmesh-csg = { path = "crates/rapidmesh-csg" }
 rapidmesh-tet = { path = "crates/rapidmesh-tet" }

@@ -5,6 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+rapidmesh-exact.workspace = true
 rapidmesh-geom.workspace = true
-geometry-predicates.workspace = true
 rayon.workspace = true

@@ -13,6 +13,7 @@ See [DESIGN.md](DESIGN.md) for architecture, research basis, and roadmap.
 
 | Crate | Purpose |
 | --- | --- |
+| `rapidmesh-exact` | Exact arithmetic: expansions, interval filter, implicit points, staged predicates |
 | `rapidmesh-geom` | Primitives, tagged PLC representation, surface back-references |
 | `rapidmesh-csg` | Exact mesh arrangements, multi-operand boolean expressions |
 | `rapidmesh-tet` | CDT, Delaunay refinement, sizing fields, quality pass |

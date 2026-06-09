@@ -113,6 +113,11 @@ box internally.
 ```
 rapidmesh/                workspace
   crates/
+    rapidmesh-exact       exact arithmetic foundation: Shewchuk expansions,
+                          conservative interval filter (ulp-widening), generic
+                          Ring trait (same geometric code runs as filter, exact,
+                          or rational test oracle), implicit points (LPI/TPI as
+                          lazy homogeneous coordinates), staged-exact predicates
     rapidmesh-geom        primitives (box/cylinder/sphere/extrude/...), tagged PLC
                           type, surface back-references, transforms
     rapidmesh-csg         exact mesh arrangements + multi-operand booleans

@@ -86,7 +86,7 @@
 			<button
 				class="tb tb-label has-tip"
 				class:active={settings[t.key]}
-				onclick={() => (settings[t.key] = !settings[t.key])}
+				onclick={() => (settings = { ...settings, [t.key]: !settings[t.key] })}
 			>
 				<span class="tip">{t.tip}</span>
 				{t.label}
@@ -96,7 +96,7 @@
 		<button
 			class="tb tb-label has-tip"
 			class:active={settings.clip_enable}
-			onclick={() => (settings.clip_enable = !settings.clip_enable)}
+			onclick={() => (settings = { ...settings, clip_enable: !settings.clip_enable })}
 		>
 			<span class="tip">Clip plane (inspect interior)</span>
 			clip
@@ -106,7 +106,7 @@
 				class="tb tb-label"
 				class:active={settings.clip_axis === axis}
 				disabled={!settings.clip_enable}
-				onclick={() => (settings.clip_axis = axis as 0 | 1 | 2)}
+				onclick={() => (settings = { ...settings, clip_axis: axis as 0 | 1 | 2 })}
 			>
 				{['x', 'y', 'z'][axis]}
 			</button>
@@ -118,7 +118,8 @@
 			max="1"
 			step="0.005"
 			disabled={!settings.clip_enable}
-			bind:value={settings.clip_t}
+			value={settings.clip_t}
+			oninput={(e) => (settings = { ...settings, clip_t: parseFloat(e.currentTarget.value) })}
 		/>
 		<span class="hint">drag orbit · right-drag pan · wheel zoom · double-click fit</span>
 	</header>
@@ -216,9 +217,55 @@
 		border-color: var(--border);
 		background: var(--bg-surface);
 	}
+	/* Range input restyled square-on-square to match the rapidfem input
+	   look (no native rounded track/thumb). */
 	.clip-slider {
+		-webkit-appearance: none;
+		appearance: none;
 		width: 140px;
-		accent-color: var(--accent);
+		height: 28px;
+		background: transparent;
+		padding: 0;
+		margin: 0;
+	}
+	.clip-slider::-webkit-slider-runnable-track {
+		height: 4px;
+		background: var(--input-bg);
+		border: 1px solid var(--input-border);
+	}
+	.clip-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		width: 10px;
+		height: 16px;
+		margin-top: -7px;
+		background: var(--accent);
+		border: none;
+		border-radius: 0;
+		cursor: ew-resize;
+		transition: background var(--transition);
+	}
+	.clip-slider:hover::-webkit-slider-thumb {
+		background: var(--accent-hover);
+	}
+	.clip-slider:disabled::-webkit-slider-thumb {
+		background: var(--border);
+		cursor: default;
+	}
+	.clip-slider::-moz-range-track {
+		height: 4px;
+		background: var(--input-bg);
+		border: 1px solid var(--input-border);
+	}
+	.clip-slider::-moz-range-thumb {
+		width: 10px;
+		height: 16px;
+		background: var(--accent);
+		border: none;
+		border-radius: 0;
+		cursor: ew-resize;
+	}
+	.clip-slider:disabled::-moz-range-thumb {
+		background: var(--border);
 	}
 	.hint {
 		margin-left: auto;

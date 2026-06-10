@@ -13,7 +13,14 @@
 		type GLState
 	} from '$lib/render/canvas3d';
 	import { canvas as canvasTheme, palette, plotColors } from '$lib/theme';
-	import { camera, register_renderer, render_all } from '$lib/viewbus';
+	import {
+		animate_camera,
+		camera,
+		cancel_camera_animation,
+		effective_camera,
+		register_renderer,
+		render_all
+	} from '$lib/viewbus';
 	import type { MeshJson, ViewSettings } from '$lib/mesh_types';
 
 	let {
@@ -195,6 +202,7 @@
 		render_all();
 	}
 	function on_pointer_down(e: PointerEvent) {
+		cancel_camera_animation();
 		is_dragging = true;
 		is_right_drag = e.button === 2;
 		last_mouse = { x: e.clientX, y: e.clientY };
@@ -231,22 +239,30 @@
 		fit_view();
 	}
 
-	// ── Toolbar actions ─────────────────────────────────────────────────
+	// ── Toolbar actions (animated, same durations as MeshViewer) ────────
 	function zoom_in() {
-		camera.distance /= 1.3;
-		render_all();
+		const base = effective_camera();
+		animate_camera(
+			{ ...base, target: [...base.target] as [number, number, number], distance: base.distance / 1.3 },
+			200
+		);
 	}
 	function zoom_out() {
-		camera.distance *= 1.3;
-		render_all();
+		const base = effective_camera();
+		animate_camera(
+			{ ...base, target: [...base.target] as [number, number, number], distance: base.distance * 1.3 },
+			200
+		);
 	}
 	function fit_view() {
-		Object.assign(camera, fitCamera(bbox.min, bbox.max));
-		render_all();
+		animate_camera(fitCamera(bbox.min, bbox.max), 350);
 	}
 	function rotate_90() {
-		camera.theta += Math.PI / 2;
-		render_all();
+		const base = effective_camera();
+		animate_camera(
+			{ ...base, target: [...base.target] as [number, number, number], theta: base.theta + Math.PI / 2 },
+			400
+		);
 	}
 	function save_png() {
 		if (!canvas) return;
@@ -297,12 +313,6 @@
 		ondblclick={on_dbl_click}
 	></canvas>
 
-	<div class="overlay-stack">
-		<div class="overlay-panel">
-			<div class="op-title">{data.mesher}</div>
-		</div>
-	</div>
-
 	<div class="viewer-toolbar">
 		<button class="tb" onclick={zoom_in}><span class="tip">Zoom in<kbd>+</kbd></span>+</button>
 		<button class="tb" onclick={zoom_out}><span class="tip">Zoom out<kbd>-</kbd></span>-</button>
@@ -330,6 +340,7 @@
 	</div>
 
 	<div class="hud">
+		<span class="mesher">{data.mesher}</span>
 		<span class="stats">
 			{s.n_tets} tets · {s.n_points} pts · min∠ {s.min_dihedral_deg.toFixed(1)}° ·
 			r/e {s.max_radius_edge.toFixed(2)} · {s.millis} ms
@@ -354,34 +365,6 @@
 	}
 	canvas:active {
 		cursor: grabbing;
-	}
-
-	.overlay-stack {
-		position: absolute;
-		top: 10px;
-		left: 10px;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		max-height: calc(100% - 20px);
-	}
-	.overlay-panel {
-		background: var(--bg-surface);
-		border: 1px solid var(--border-subtle);
-		padding: 8px 10px;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		min-width: 96px;
-	}
-	.op-title {
-		font-size: var(--fs-xs);
-		text-transform: uppercase;
-		letter-spacing: 1.5px;
-		color: var(--accent);
-		font-weight: 600;
 	}
 
 	.viewer-toolbar {
@@ -454,6 +437,12 @@
 		font-family: var(--font-mono);
 		color: var(--text-dim);
 		pointer-events: none;
+	}
+	.hud .mesher {
+		color: var(--accent);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 1.5px;
 	}
 	.hud .stats {
 		color: var(--text-muted);

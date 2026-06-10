@@ -1,19 +1,20 @@
 //! Incremental 3D Delaunay tetrahedralization (Bowyer-Watson) with exact
-//! predicates.
+//! predicates and neighbor-pointer connectivity.
 //!
-//! [`DelaunayBuilder`] holds a super-tetrahedron enclosing a caller-supplied
-//! bounding box and accepts incremental point insertion: the cavity of
-//! circumsphere-violating tets is carved out (exact insphere), repaired to
-//! star-shapedness (exact orient3d, which handles the heavily cospherical /
-//! on-face configurations of grid geometry), and re-filled by coning the new
-//! point to the cavity boundary.
+//! Performance shape: tets live in a flat slab with per-face neighbor
+//! pointers and a free list; point location is a visibility walk from the
+//! last touched tet (with a linear-scan fallback for degenerate walks); the
+//! cavity is grown through neighbor pointers; all per-insert working memory
+//! comes from reusable scratch buffers. No hash maps or allocations on the
+//! hot path beyond amortized scratch growth.
 //!
-//! Correctness first: location is a linear scan and adjacency is rebuilt per
-//! insertion. The HXT-style fast kernel can replace the internals later
-//! without changing the contract.
+//! Robustness shape (unchanged from the first kernel): exact orient3d /
+//! insphere predicates, strict-insphere cavity, and a star-shape repair loop
+//! that absorbs neighbors whose shared face does not strictly see the new
+//! point — which is what makes heavily cospherical / on-face grid geometry
+//! safe.
 
 use rapidmesh_exact::Sign;
-use std::collections::HashMap;
 
 /// A Delaunay tetrahedralization of a point set.
 #[derive(Debug)]
@@ -24,38 +25,60 @@ pub struct DelaunayTets {
     pub tets: Vec<[usize; 4]>,
 }
 
-fn orient(pts: &[[f64; 3]], a: usize, b: usize, c: usize, d: usize) -> Sign {
-    Sign::of_f64(geometry_predicates::orient3d(pts[a], pts[b], pts[c], pts[d]))
-}
+const NONE: u32 = u32::MAX;
 
-fn insphere(pts: &[[f64; 3]], t: [usize; 4], p: usize) -> Sign {
-    Sign::of_f64(geometry_predicates::insphere(
-        pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]], pts[p],
+fn orient(pts: &[[f64; 3]], a: u32, b: u32, c: u32, d: u32) -> Sign {
+    Sign::of_f64(geometry_predicates::orient3d(
+        pts[a as usize],
+        pts[b as usize],
+        pts[c as usize],
+        pts[d as usize],
     ))
 }
 
-/// The four faces of a positively oriented tet, each wound so the opposite
-/// vertex lies on its positive side.
-fn faces(t: [usize; 4]) -> [[usize; 3]; 4] {
-    [
-        [t[1], t[3], t[2]],
-        [t[0], t[2], t[3]],
-        [t[0], t[3], t[1]],
-        [t[0], t[1], t[2]],
-    ]
+fn insphere(pts: &[[f64; 3]], t: [u32; 4], p: u32) -> Sign {
+    Sign::of_f64(geometry_predicates::insphere(
+        pts[t[0] as usize],
+        pts[t[1] as usize],
+        pts[t[2] as usize],
+        pts[t[3] as usize],
+        pts[p as usize],
+    ))
 }
 
-fn sorted3(f: [usize; 3]) -> [usize; 3] {
-    let mut s = f;
-    s.sort_unstable();
-    s
+/// Face of a positively oriented tet opposite vertex `i`, wound so the
+/// opposite vertex lies on its positive side.
+fn face(t: [u32; 4], i: usize) -> [u32; 3] {
+    match i {
+        0 => [t[1], t[3], t[2]],
+        1 => [t[0], t[2], t[3]],
+        2 => [t[0], t[3], t[1]],
+        _ => [t[0], t[1], t[2]],
+    }
 }
 
 /// Incremental Delaunay tetrahedralization. Internal indices 0..4 are the
 /// super-tet corners; public indices count inserted points from 0.
 pub struct DelaunayBuilder {
     pts: Vec<[f64; 3]>,
-    tets: Vec<[usize; 4]>,
+    tets: Vec<[u32; 4]>,
+    /// neighbors[t][i] = tet across the face opposite vertex i (NONE at the
+    /// super-tet hull).
+    neighbors: Vec<[u32; 4]>,
+    alive: Vec<bool>,
+    free: Vec<u32>,
+    /// Walk start hint.
+    last: u32,
+    /// Epoch marks (cavity membership) per tet slot.
+    mark: Vec<u32>,
+    epoch: u32,
+    // Scratch buffers (reused across inserts).
+    cavity: Vec<u32>,
+    /// Boundary faces as (cavity tet, face index).
+    boundary: Vec<(u32, u8)>,
+    /// Edge -> (new tet, face slot) for wiring new tets to each other.
+    edge_map: std::collections::HashMap<(u32, u32), (u32, u8)>,
+    new_tets: Vec<u32>,
 }
 
 impl DelaunayBuilder {
@@ -71,7 +94,7 @@ impl DelaunayBuilder {
             [c[0] - big, c[1] + 3.0 * big, c[2] - big],
             [c[0] - big, c[1] - big, c[2] + 3.0 * big],
         ];
-        let mut seed = [0, 1, 2, 3];
+        let mut seed = [0u32, 1, 2, 3];
         if orient(&pts, seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
             seed.swap(2, 3);
         }
@@ -79,6 +102,16 @@ impl DelaunayBuilder {
         DelaunayBuilder {
             pts,
             tets: vec![seed],
+            neighbors: vec![[NONE; 4]],
+            alive: vec![true],
+            free: Vec::new(),
+            last: 0,
+            mark: vec![0],
+            epoch: 0,
+            cavity: Vec::new(),
+            boundary: Vec::new(),
+            edge_map: std::collections::HashMap::new(),
+            new_tets: Vec::new(),
         }
     }
 
@@ -92,65 +125,128 @@ impl DelaunayBuilder {
         self.len() == 0
     }
 
+    fn locate_scan(&self, p: u32) -> u32 {
+        for (ti, &t) in self.tets.iter().enumerate() {
+            if !self.alive[ti] {
+                continue;
+            }
+            if (0..4).all(|i| {
+                let f = face(t, i);
+                orient(&self.pts, f[0], f[1], f[2], p) != Sign::Negative
+            }) {
+                return ti as u32;
+            }
+        }
+        panic!("point must lie inside the super-tet");
+    }
+
+    /// Visibility walk from the last touched tet, with scan fallback for
+    /// degenerate walks.
+    fn locate(&self, p: u32) -> u32 {
+        let mut cur = self.last;
+        if !self.alive[cur as usize] {
+            return self.locate_scan(p);
+        }
+        let mut prev = NONE;
+        let mut steps = 0usize;
+        'walk: loop {
+            steps += 1;
+            if steps > self.tets.len() + 64 {
+                return self.locate_scan(p);
+            }
+            let t = self.tets[cur as usize];
+            let mut fallback: Option<u32> = None;
+            for i in 0..4 {
+                let nb = self.neighbors[cur as usize][i];
+                let f = face(t, i);
+                if orient(&self.pts, f[0], f[1], f[2], p) == Sign::Negative {
+                    if nb == NONE {
+                        return self.locate_scan(p);
+                    }
+                    if nb != prev {
+                        prev = cur;
+                        cur = nb;
+                        continue 'walk;
+                    }
+                    fallback = Some(nb);
+                }
+            }
+            if let Some(nb) = fallback {
+                // Only the way we came is negative: degenerate ping-pong.
+                let _ = nb;
+                return self.locate_scan(p);
+            }
+            return cur;
+        }
+    }
+
+    fn alloc(&mut self, t: [u32; 4]) -> u32 {
+        if let Some(slot) = self.free.pop() {
+            self.tets[slot as usize] = t;
+            self.neighbors[slot as usize] = [NONE; 4];
+            self.alive[slot as usize] = true;
+            self.mark[slot as usize] = 0;
+            slot
+        } else {
+            self.tets.push(t);
+            self.neighbors.push([NONE; 4]);
+            self.alive.push(true);
+            self.mark.push(0);
+            (self.tets.len() - 1) as u32
+        }
+    }
+
     /// Inserts a point and returns its public index.
     pub fn insert(&mut self, point: [f64; 3]) -> usize {
-        let p = self.pts.len();
+        let p = self.pts.len() as u32;
         self.pts.push(point);
-        let pts = &self.pts;
-        let tets = &mut self.tets;
 
-        // Locate a tet containing p (closed).
-        let containing = tets
-            .iter()
-            .position(|&t| {
-                faces(t)
-                    .iter()
-                    .all(|&f| orient(pts, f[0], f[1], f[2], p) != Sign::Negative)
-            })
-            .expect("point must lie inside the super-tet");
+        let start = self.locate(p);
 
-        // Adjacency for this pass.
-        let mut by_face: HashMap<[usize; 3], Vec<usize>> = HashMap::new();
-        for (ti, &t) in tets.iter().enumerate() {
-            for f in faces(t) {
-                by_face.entry(sorted3(f)).or_default().push(ti);
-            }
-        }
-        let neighbor = |ti: usize, f: [usize; 3]| -> Option<usize> {
-            by_face[&sorted3(f)].iter().copied().find(|&o| o != ti)
-        };
-
-        // Cavity: strict circumsphere violations, grown by BFS.
-        let mut in_cavity = vec![false; tets.len()];
-        in_cavity[containing] = true;
-        let mut stack = vec![containing];
-        while let Some(ti) = stack.pop() {
-            for f in faces(tets[ti]) {
-                if let Some(o) = neighbor(ti, f) {
-                    if !in_cavity[o] && insphere(pts, tets[o], p) == Sign::Positive {
-                        in_cavity[o] = true;
-                        stack.push(o);
-                    }
-                }
-            }
-        }
-        // Repair to star-shapedness: every cavity boundary face must see p
-        // strictly on its positive side; otherwise absorb the neighbor
-        // (handles p exactly on faces/edges and cospherical clusters).
-        loop {
-            let mut grew = false;
-            for ti in 0..tets.len() {
-                if !in_cavity[ti] {
+        // Cavity: strict circumsphere violations, grown through neighbors.
+        self.epoch += 1;
+        let epoch = self.epoch;
+        self.cavity.clear();
+        self.cavity.push(start);
+        self.mark[start as usize] = epoch;
+        let mut head = 0;
+        while head < self.cavity.len() {
+            let ti = self.cavity[head];
+            head += 1;
+            for i in 0..4 {
+                let nb = self.neighbors[ti as usize][i];
+                if nb == NONE || self.mark[nb as usize] == epoch {
                     continue;
                 }
-                for f in faces(tets[ti]) {
-                    let o = neighbor(ti, f);
-                    if o.is_some_and(|o| in_cavity[o]) {
+                if insphere(&self.pts, self.tets[nb as usize], p) == Sign::Positive {
+                    self.mark[nb as usize] = epoch;
+                    self.cavity.push(nb);
+                }
+            }
+        }
+        // Star-shape repair: absorb neighbors across faces that do not see p
+        // strictly (handles on-face inserts and cospherical clusters).
+        loop {
+            let mut grew = false;
+            let mut idx = 0;
+            while idx < self.cavity.len() {
+                let ti = self.cavity[idx];
+                idx += 1;
+                let t = self.tets[ti as usize];
+                for i in 0..4 {
+                    let nb = self.neighbors[ti as usize][i];
+                    if nb != NONE && self.mark[nb as usize] == epoch {
                         continue;
                     }
-                    if orient(pts, f[0], f[1], f[2], p) != Sign::Positive {
-                        let o = o.expect("cavity reached the super-tet hull");
-                        in_cavity[o] = true;
+                    let f = face(t, i);
+                    if orient(&self.pts, f[0], f[1], f[2], p) != Sign::Positive {
+                        let nb = if nb == NONE {
+                            panic!("cavity reached the super-tet hull")
+                        } else {
+                            nb
+                        };
+                        self.mark[nb as usize] = epoch;
+                        self.cavity.push(nb);
                         grew = true;
                     }
                 }
@@ -160,37 +256,73 @@ impl DelaunayBuilder {
             }
         }
 
-        // Re-fill: cone p to the cavity boundary.
-        let mut new_tets: Vec<[usize; 4]> = Vec::new();
-        for ti in 0..tets.len() {
-            if !in_cavity[ti] {
-                continue;
-            }
-            for f in faces(tets[ti]) {
-                if neighbor(ti, f).is_some_and(|o| in_cavity[o]) {
-                    continue;
+        // Boundary faces of the cavity.
+        self.boundary.clear();
+        for ci in 0..self.cavity.len() {
+            let ti = self.cavity[ci];
+            for i in 0..4 {
+                let nb = self.neighbors[ti as usize][i];
+                if nb == NONE || self.mark[nb as usize] != epoch {
+                    self.boundary.push((ti, i as u8));
                 }
-                debug_assert_eq!(orient(pts, f[0], f[1], f[2], p), Sign::Positive);
-                new_tets.push([f[0], f[1], f[2], p]);
             }
         }
-        let mut kept: Vec<[usize; 4]> = tets
-            .iter()
-            .enumerate()
-            .filter(|&(ti, _)| !in_cavity[ti])
-            .map(|(_, &t)| t)
-            .collect();
-        kept.extend(new_tets);
-        *tets = kept;
-        p - 4
+
+        // Re-fill: cone p to each boundary face, wiring neighbors locally.
+        self.edge_map.clear();
+        self.new_tets.clear();
+        for bi in 0..self.boundary.len() {
+            let (ti, fi) = self.boundary[bi];
+            let outside = self.neighbors[ti as usize][fi as usize];
+            let f = face(self.tets[ti as usize], fi as usize);
+            debug_assert_eq!(orient(&self.pts, f[0], f[1], f[2], p), Sign::Positive);
+            let nt = self.alloc([f[0], f[1], f[2], p]);
+            self.new_tets.push(nt);
+            // Across the boundary face (slot 3 = opposite p).
+            self.neighbors[nt as usize][3] = outside;
+            if outside != NONE {
+                let on = &mut self.neighbors[outside as usize];
+                let slot = (0..4)
+                    .find(|&k| on[k] == ti)
+                    .expect("outside tet must point at the cavity tet");
+                on[slot] = nt;
+            }
+            // Between new tets: shared faces contain p and one boundary edge.
+            for e in 0..3 {
+                let (a, b) = (f[e], f[(e + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                // Face of nt containing edge (a, b) and p is opposite the
+                // third face vertex, which sits at slot (e + 2) % 3.
+                let slot = ((e + 2) % 3) as u8;
+                match self.edge_map.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(o) => {
+                        let (ot, oslot) = *o.get();
+                        self.neighbors[nt as usize][slot as usize] = ot;
+                        self.neighbors[ot as usize][oslot as usize] = nt;
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert((nt, slot));
+                    }
+                }
+            }
+        }
+        // Retire the cavity.
+        for ci in 0..self.cavity.len() {
+            let ti = self.cavity[ci];
+            self.alive[ti as usize] = false;
+            self.free.push(ti);
+        }
+        self.last = *self.new_tets.last().expect("cavity has boundary faces");
+        (p - 4) as usize
     }
 
     /// Current real tets (super-corner tets excluded), in public indices.
     pub fn tets(&self) -> Vec<[usize; 4]> {
         self.tets
             .iter()
-            .filter(|t| t.iter().all(|&v| v >= 4))
-            .map(|t| std::array::from_fn(|k| t[k] - 4))
+            .enumerate()
+            .filter(|&(ti, t)| self.alive[ti] && t.iter().all(|&v| v >= 4))
+            .map(|(_, t)| std::array::from_fn(|k| (t[k] - 4) as usize))
             .collect()
     }
 }

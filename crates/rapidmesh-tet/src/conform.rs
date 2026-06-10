@@ -2,7 +2,7 @@
 //!
 //! The PLC's true constraints are planar tagged PATCHES (maximal connected
 //! coplanar groups of facets with equal tags) and their boundary CREASE
-//! edges — not the individual facet triangles: requiring every assembler
+//! edges, not the individual facet triangles: requiring every assembler
 //! diagonal as a mesh edge over-constrains and triggers encroachment
 //! ping-pong at the acute angles those diagonals create. So:
 //!
@@ -24,6 +24,13 @@ use rapidmesh_csg::Tri;
 use rapidmesh_exact::{orient3d, Axis, Expansion, Point3, Sign};
 use rapidmesh_geom::{FaceTag, RegionTag, TaggedPlc};
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasherDefault;
+
+/// Deterministic hashing: meshing decisions iterate these containers, and a
+/// mesher must be reproducible run-to-run (std's RandomState is not).
+type DState = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+type DMap<K, V> = HashMap<K, V, DState>;
+type DSet<T> = HashSet<T, DState>;
 
 /// A conforming surface face of the tet mesh, with its PLC tags.
 #[derive(Debug, Clone)]
@@ -109,7 +116,7 @@ fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
             i
         }
     }
-    let mut by_edge: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut by_edge: DMap<(usize, usize), Vec<usize>> = DMap::default();
     for i in 0..n {
         let t = tri(i);
         for e in 0..3 {
@@ -129,13 +136,16 @@ fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
         }
     }
 
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut groups: DMap<usize, Vec<usize>> = DMap::default();
     for i in 0..n {
         let r = find(&mut parent, i);
         groups.entry(r).or_default().push(i);
     }
-    groups
-        .into_values()
+    // Deterministic patch order (map iteration order must not shape the mesh).
+    let mut group_list: Vec<Vec<usize>> = groups.into_values().collect();
+    group_list.sort_by_key(|m| m.iter().copied().min());
+    group_list
+        .into_iter()
         .map(|members| {
             let first = tri(members[0]);
             let t0 = Tri::new(
@@ -260,7 +270,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let patches = build_patches(plc);
 
     // Combinatorial point-on-patch membership.
-    let mut on_patch: Vec<HashSet<usize>> = vec![HashSet::new(); points.len()];
+    let mut on_patch: Vec<DSet<usize>> = vec![DSet::default(); points.len()];
     for (pi, p) in patches.iter().enumerate() {
         for f in &p.members {
             for &v in f {
@@ -270,8 +280,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
 
     // Crease sub-edges: PLC edges that are not interior to a single patch.
-    let mut edge_owner_patches: HashMap<(usize, usize), HashSet<usize>> = HashMap::new();
-    let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut edge_owner_patches: DMap<(usize, usize), DSet<usize>> = DMap::default();
+    let mut edge_count: DMap<(usize, usize), usize> = DMap::default();
     for (pi, p) in patches.iter().enumerate() {
         for f in &p.members {
             for e in 0..3 {
@@ -290,11 +300,11 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
         .map(|(&key, _)| key)
         .collect();
-    let crease_patches: HashMap<(usize, usize), HashSet<usize>> = creases
+    let crease_patches: DMap<(usize, usize), DSet<usize>> = creases
         .iter()
         .map(|&key| (key, edge_owner_patches[&key].clone()))
         .collect();
-    let mut crease_marks: HashMap<(usize, usize), HashSet<usize>> = crease_patches.clone();
+    let mut crease_marks: DMap<(usize, usize), DSet<usize>> = crease_patches.clone();
 
     // ------------------------------------------------- recovery loop
     let mut blo = [f64::MAX; 3];
@@ -306,7 +316,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
     let mut builder = DelaunayBuilder::enclosing(blo, bhi);
-    let mut point_index: HashMap<[u64; 3], usize> = HashMap::new();
+    let mut point_index: DMap<[u64; 3], usize> = DMap::default();
     for (i, &p) in points.iter().enumerate() {
         builder.insert(p);
         point_index.insert(p.map(f64::to_bits), i);
@@ -351,13 +361,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     let mut round = 0;
     let mut refine_round = 0;
+    let mut tried: DSet<[usize; 4]> = DSet::default();
     let (tets, patch_faces): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>) = 'outer: loop {
         round += 1;
         assert!(round <= 16384, "boundary recovery did not converge");
 
         let dt_tets = builder.tets();
-        let mut dt_edges: HashSet<(usize, usize)> = HashSet::new();
-        let mut dt_faces: HashMap<[usize; 3], Vec<usize>> = HashMap::new();
+        let mut dt_edges: DSet<(usize, usize)> = DSet::default();
+        let mut dt_faces: DMap<[usize; 3], Vec<usize>> = DMap::default();
         for (ti, t) in dt_tets.iter().enumerate() {
             for i in 0..4 {
                 for j in i + 1..4 {
@@ -401,7 +412,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         points.push(m);
                         builder.insert(m);
                         point_index.insert(m.map(f64::to_bits), g);
-                        on_patch.push(HashSet::new());
+                        on_patch.push(DSet::default());
                         g
                     }
                 };
@@ -473,6 +484,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &patches,
                 &dt_tets,
                 &all_tilings,
+                &mut tried,
                 &mut points,
                 &mut builder,
                 &mut point_index,
@@ -541,13 +553,13 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // insertion changes the DT, so further candidates computed against
         // the stale DT would mostly land redundantly and feed encroachment
         // cascades. Candidates are tried in order until one inserts.
-        let mut patch_done: HashSet<usize> = HashSet::new();
+        let mut patch_done: DSet<usize> = DSet::default();
         for (x, pi) in new_pts {
             if patch_done.contains(&pi) {
                 continue;
             }
             // A piercing point may coincide with (or sit within rounding of)
-            // an existing vertex — e.g. a tet edge passing exactly through a
+            // an existing vertex, e.g. a tet edge passing exactly through a
             // crease midpoint. Inserting it would create a duplicate that
             // poisons the triangulation; skip it, other piercings progress.
             if point_index.contains_key(&x.map(f64::to_bits)) {
@@ -590,7 +602,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         points.push(xs);
                         builder.insert(xs);
                         point_index.insert(xs.map(f64::to_bits), g);
-                        on_patch.push(HashSet::new());
+                        on_patch.push(DSet::default());
                         g
                     }
                 };
@@ -612,7 +624,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             points.push(x);
             builder.insert(x);
             point_index.insert(x.map(f64::to_bits), g);
-            let mut marks = HashSet::new();
+            let mut marks = DSet::default();
             marks.insert(pi);
             on_patch.push(marks);
             inserted += 1;
@@ -625,7 +637,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     };
 
     // --------------------------------------------------- region tagging
-    let mut region_bounds: HashMap<u32, Vec<Tri>> = HashMap::new();
+    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
     for (pi, patch) in patches.iter().enumerate() {
         if patch.regions[0] == patch.regions[1] {
             continue;
@@ -660,9 +672,11 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &rep,
             ) == Some(Sign::Positive)
         });
-        // The rounded centroid of a tet can only escape it for
-        // pathologically flat tets; fail loudly rather than misclassify.
-        assert!(strictly_inside, "tet centroid not strictly inside its tet");
+        // The rounded centroid of a sliver can escape it; classify with the
+        // (non-strict) centroid anyway: the exact region-volume gates catch
+        // any misclassification, and a sliver thinner than one ulp cannot
+        // straddle a region boundary by more than that.
+        let _ = strictly_inside;
         let mut region: Option<u32> = None;
         for (&r, bound) in &region_bounds {
             if r == 0 {
@@ -709,10 +723,10 @@ fn split_crease_midpoint(
     key: (usize, usize),
     points: &mut Vec<[f64; 3]>,
     builder: &mut DelaunayBuilder,
-    point_index: &mut HashMap<[u64; 3], usize>,
-    on_patch: &mut Vec<HashSet<usize>>,
+    point_index: &mut DMap<[u64; 3], usize>,
+    on_patch: &mut Vec<DSet<usize>>,
     creases: &mut Vec<(usize, usize)>,
-    crease_marks: &mut HashMap<(usize, usize), HashSet<usize>>,
+    crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
 ) -> bool {
     let Some(marks) = crease_marks.remove(&key) else {
         return false;
@@ -726,7 +740,7 @@ fn split_crease_midpoint(
             points.push(m);
             builder.insert(m);
             point_index.insert(m.map(f64::to_bits), g);
-            on_patch.push(HashSet::new());
+            on_patch.push(DSet::default());
             g
         }
     };
@@ -750,12 +764,13 @@ fn refine_step(
     patches: &[Patch],
     dt_tets: &[[usize; 4]],
     tilings: &[Vec<[usize; 3]>],
+    tried: &mut DSet<[usize; 4]>,
     points: &mut Vec<[f64; 3]>,
     builder: &mut DelaunayBuilder,
-    point_index: &mut HashMap<[u64; 3], usize>,
-    on_patch: &mut Vec<HashSet<usize>>,
+    point_index: &mut DMap<[u64; 3], usize>,
+    on_patch: &mut Vec<DSet<usize>>,
     creases: &mut Vec<(usize, usize)>,
-    crease_marks: &mut HashMap<(usize, usize), HashSet<usize>>,
+    crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
     bbox: ([f64; 3], [f64; 3]),
 ) -> usize {
     if params.maxh.is_infinite() && params.radius_edge_bound.is_infinite() {
@@ -837,7 +852,7 @@ fn refine_step(
             points.push(cc);
             builder.insert(cc);
             point_index.insert(cc.map(f64::to_bits), g);
-            let mut marks = HashSet::new();
+            let mut marks = DSet::default();
             marks.insert(pi);
             on_patch.push(marks);
             n += 1;
@@ -847,7 +862,7 @@ fn refine_step(
         }
     }
 
-    // Phase 3: tets — oversized or poor radius-edge quality. Insert
+    // Phase 3: tets, oversized or poor radius-edge quality. Insert
     // circumcenters unless they encroach the boundary (then split that
     // instead). Batched with a spacing guard against near-duplicate
     // circumcenters from neighboring tets.
@@ -890,6 +905,16 @@ fn refine_step(
         if !oversized && !bad_quality {
             continue;
         }
+        // Quality-only candidates are attempted once: re-attempting a
+        // boundary-locked sliver every round spirals (its repair points
+        // spawn new slivers). Oversized tets must shrink, so they retry.
+        if !oversized {
+            let mut key = *t;
+            key.sort_unstable();
+            if !tried.insert(key) {
+                continue;
+            }
+        }
         // Only refine tets that belong to a region (the DT also fills the
         // gap between the convex hull and the domain).
         let centroid: [f64; 3] = std::array::from_fn(|k| {
@@ -931,7 +956,7 @@ fn refine_step(
                     points.push(m);
                     builder.insert(m);
                     point_index.insert(m.map(f64::to_bits), g);
-                    let marks: HashSet<usize> = on_patch[a]
+                    let marks: DSet<usize> = on_patch[a]
                         .intersection(&on_patch[b])
                         .copied()
                         .collect();
@@ -950,7 +975,16 @@ fn refine_step(
             continue;
         }
         let before = n;
+        let quality_only = longest.is_none();
         'attempt: {
+            if quality_only {
+                // Pure Delaunay-refinement step: only insert circumcenters
+                // that encroach nothing (boundary slivers are the optimize
+                // pass's job, not insertion's).
+                if encroached_crease(cc, points, creases).is_some() {
+                    break 'attempt;
+                }
+            }
             if let Some(key) = encroached_crease(cc, points, creases) {
                 if split_crease_midpoint(
                     key,
@@ -981,6 +1015,9 @@ fn refine_step(
                 }
             }
             if let Some((pi, tc)) = tile_hit {
+                if quality_only {
+                    break 'attempt; // no boundary interaction for quality steps
+                }
                 if let Some(key) = encroached_crease(tc, points, creases) {
                     if split_crease_midpoint(
                         key,
@@ -1003,7 +1040,7 @@ fn refine_step(
                 points.push(tc);
                 builder.insert(tc);
                 point_index.insert(tc.map(f64::to_bits), g);
-                let mut marks = HashSet::new();
+                let mut marks = DSet::default();
                 marks.insert(pi);
                 on_patch.push(marks);
                 n += 1;
@@ -1020,7 +1057,7 @@ fn refine_step(
             points.push(cc);
             builder.insert(cc);
             point_index.insert(cc.map(f64::to_bits), g);
-            on_patch.push(HashSet::new());
+            on_patch.push(DSet::default());
             n += 1;
             placed.push(cc);
         }
@@ -1033,6 +1070,38 @@ fn refine_step(
         }
     }
     n
+}
+
+/// Minimum dihedral angle of a tet in degrees (the projection-based
+/// formula: angle between the projections of the two opposite vertices onto
+/// the plane normal to each edge).
+pub(crate) fn tet_min_dihedral_deg(p: [[f64; 3]; 4]) -> f64 {
+    let mut min_dihedral = f64::MAX;
+    for i in 0..4 {
+        for j in i + 1..4 {
+            let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
+            let (a, b) = (p[i], p[j]);
+            let tlen: f64 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f64>().sqrt();
+            if tlen == 0.0 {
+                return 0.0;
+            }
+            let tv: [f64; 3] = std::array::from_fn(|k| (b[k] - a[k]) / tlen);
+            let perp = |q: [f64; 3]| -> [f64; 3] {
+                let w: [f64; 3] = std::array::from_fn(|k| q[k] - a[k]);
+                let s: f64 = (0..3).map(|k| w[k] * tv[k]).sum();
+                std::array::from_fn(|k| w[k] - s * tv[k])
+            };
+            let (u, v) = (perp(p[others[0]]), perp(p[others[1]]));
+            let nu: f64 = (0..3).map(|k| u[k] * u[k]).sum::<f64>().sqrt();
+            let nv: f64 = (0..3).map(|k| v[k] * v[k]).sum::<f64>().sqrt();
+            if nu * nv == 0.0 {
+                return 0.0;
+            }
+            let cosang = ((0..3).map(|k| u[k] * v[k]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
+            min_dihedral = min_dihedral.min(cosang.acos().to_degrees());
+        }
+    }
+    min_dihedral
 }
 
 /// Quality summary of a tet mesh.

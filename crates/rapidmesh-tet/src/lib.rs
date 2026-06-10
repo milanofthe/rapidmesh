@@ -13,6 +13,8 @@
 //!    PLC surface back-references (required for full Nédélec-2 convergence on
 //!    curved boundaries).
 
+pub mod conform;
 pub mod delaunay;
 
-pub use delaunay::{tetrahedralize, DelaunayTets};
+pub use conform::{mesh_plc, SurfaceFace, TetMesh};
+pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};

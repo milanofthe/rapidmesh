@@ -1,11 +1,12 @@
 //! Incremental 3D Delaunay tetrahedralization (Bowyer-Watson) with exact
 //! predicates.
 //!
-//! Points are inserted into a large enclosing super-tetrahedron; the cavity
-//! of circumsphere-violating tets is carved out (exact insphere), repaired to
+//! [`DelaunayBuilder`] holds a super-tetrahedron enclosing a caller-supplied
+//! bounding box and accepts incremental point insertion: the cavity of
+//! circumsphere-violating tets is carved out (exact insphere), repaired to
 //! star-shapedness (exact orient3d, which handles the heavily cospherical /
 //! on-face configurations of grid geometry), and re-filled by coning the new
-//! point to the cavity boundary. Super-tets are dropped at the end.
+//! point to the cavity boundary.
 //!
 //! Correctness first: location is a linear scan and adjacency is rebuilt per
 //! insertion. The HXT-style fast kernel can replace the internals later
@@ -33,8 +34,8 @@ fn insphere(pts: &[[f64; 3]], t: [usize; 4], p: usize) -> Sign {
     ))
 }
 
-/// The four faces of a tet, each oriented so the opposite vertex is on the
-/// positive side.
+/// The four faces of a positively oriented tet, each wound so the opposite
+/// vertex lies on its positive side.
 fn faces(t: [usize; 4]) -> [[usize; 3]; 4] {
     [
         [t[1], t[3], t[2]],
@@ -50,45 +51,62 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
     s
 }
 
-/// Exact Delaunay tetrahedralization of `points` (degenerate inputs allowed:
-/// duplicates are rejected by panic, fully coplanar input yields no tets).
-pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
-    let n = points.len();
-    // Working point array: inputs first, then the four super corners.
-    let mut pts: Vec<[f64; 3]> = points.to_vec();
-    let mut lo = [f64::MAX; 3];
-    let mut hi = [f64::MIN; 3];
-    for p in points {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
+/// Incremental Delaunay tetrahedralization. Internal indices 0..4 are the
+/// super-tet corners; public indices count inserted points from 0.
+pub struct DelaunayBuilder {
+    pts: Vec<[f64; 3]>,
+    tets: Vec<[usize; 4]>,
+}
+
+impl DelaunayBuilder {
+    /// A builder whose super-tetrahedron comfortably encloses the given
+    /// bounding box; every inserted point must lie inside that box.
+    pub fn enclosing(lo: [f64; 3], hi: [f64; 3]) -> DelaunayBuilder {
+        let c: [f64; 3] = std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]));
+        let d = (0..3).map(|k| hi[k] - lo[k]).fold(1.0_f64, f64::max);
+        let big = 64.0 * d;
+        let pts = vec![
+            [c[0] - big, c[1] - big, c[2] - big],
+            [c[0] + 3.0 * big, c[1] - big, c[2] - big],
+            [c[0] - big, c[1] + 3.0 * big, c[2] - big],
+            [c[0] - big, c[1] - big, c[2] + 3.0 * big],
+        ];
+        let mut seed = [0, 1, 2, 3];
+        if orient(&pts, seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
+            seed.swap(2, 3);
+        }
+        debug_assert_eq!(orient(&pts, seed[0], seed[1], seed[2], seed[3]), Sign::Positive);
+        DelaunayBuilder {
+            pts,
+            tets: vec![seed],
         }
     }
-    let c: [f64; 3] = std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]));
-    let d = (0..3).map(|k| hi[k] - lo[k]).fold(1.0_f64, f64::max);
-    let big = 64.0 * d;
-    pts.push([c[0] - big, c[1] - big, c[2] - big]);
-    pts.push([c[0] + 3.0 * big, c[1] - big, c[2] - big]);
-    pts.push([c[0] - big, c[1] + 3.0 * big, c[2] - big]);
-    pts.push([c[0] - big, c[1] - big, c[2] + 3.0 * big]);
-    let s = [n, n + 1, n + 2, n + 3];
-    let mut seed = [s[0], s[1], s[2], s[3]];
-    if orient(&pts, seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
-        seed.swap(2, 3);
-    }
-    assert_eq!(
-        orient(&pts, seed[0], seed[1], seed[2], seed[3]),
-        Sign::Positive
-    );
-    let mut tets: Vec<[usize; 4]> = vec![seed];
 
-    for p in 0..n {
+    /// Number of inserted points.
+    pub fn len(&self) -> usize {
+        self.pts.len() - 4
+    }
+
+    /// True if no points were inserted yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Inserts a point and returns its public index.
+    pub fn insert(&mut self, point: [f64; 3]) -> usize {
+        let p = self.pts.len();
+        self.pts.push(point);
+        let pts = &self.pts;
+        let tets = &mut self.tets;
+
         // Locate a tet containing p (closed).
         let containing = tets
             .iter()
-            .position(|&t| faces(t).iter().all(|&f| {
-                orient(&pts, f[0], f[1], f[2], p) != Sign::Negative
-            }))
+            .position(|&t| {
+                faces(t)
+                    .iter()
+                    .all(|&f| orient(pts, f[0], f[1], f[2], p) != Sign::Negative)
+            })
             .expect("point must lie inside the super-tet");
 
         // Adjacency for this pass.
@@ -109,7 +127,7 @@ pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
         while let Some(ti) = stack.pop() {
             for f in faces(tets[ti]) {
                 if let Some(o) = neighbor(ti, f) {
-                    if !in_cavity[o] && insphere(&pts, tets[o], p) == Sign::Positive {
+                    if !in_cavity[o] && insphere(pts, tets[o], p) == Sign::Positive {
                         in_cavity[o] = true;
                         stack.push(o);
                     }
@@ -130,7 +148,7 @@ pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
                     if o.is_some_and(|o| in_cavity[o]) {
                         continue;
                     }
-                    if orient(&pts, f[0], f[1], f[2], p) != Sign::Positive {
+                    if orient(pts, f[0], f[1], f[2], p) != Sign::Positive {
                         let o = o.expect("cavity reached the super-tet hull");
                         in_cavity[o] = true;
                         grew = true;
@@ -152,7 +170,7 @@ pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
                 if neighbor(ti, f).is_some_and(|o| in_cavity[o]) {
                     continue;
                 }
-                debug_assert_eq!(orient(&pts, f[0], f[1], f[2], p), Sign::Positive);
+                debug_assert_eq!(orient(pts, f[0], f[1], f[2], p), Sign::Positive);
                 new_tets.push([f[0], f[1], f[2], p]);
             }
         }
@@ -163,14 +181,37 @@ pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
             .map(|(_, &t)| t)
             .collect();
         kept.extend(new_tets);
-        tets = kept;
+        *tets = kept;
+        p - 4
     }
 
-    // Drop everything touching the super corners.
-    tets.retain(|t| t.iter().all(|&v| v < n));
-    pts.truncate(n);
-    for t in &tets {
-        debug_assert_eq!(orient(&pts, t[0], t[1], t[2], t[3]), Sign::Positive);
+    /// Current real tets (super-corner tets excluded), in public indices.
+    pub fn tets(&self) -> Vec<[usize; 4]> {
+        self.tets
+            .iter()
+            .filter(|t| t.iter().all(|&v| v >= 4))
+            .map(|t| std::array::from_fn(|k| t[k] - 4))
+            .collect()
     }
-    DelaunayTets { points: pts, tets }
+}
+
+/// Exact Delaunay tetrahedralization of `points` (duplicates not allowed;
+/// fully coplanar input yields no tets).
+pub fn tetrahedralize(points: &[[f64; 3]]) -> DelaunayTets {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for p in points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let mut b = DelaunayBuilder::enclosing(lo, hi);
+    for &p in points {
+        b.insert(p);
+    }
+    DelaunayTets {
+        points: points.to_vec(),
+        tets: b.tets(),
+    }
 }

@@ -1231,38 +1231,6 @@ fn refine_step(
     n
 }
 
-/// Minimum dihedral angle of a tet in degrees (the projection-based
-/// formula: angle between the projections of the two opposite vertices onto
-/// the plane normal to each edge).
-pub(crate) fn tet_min_dihedral_deg(p: [[f64; 3]; 4]) -> f64 {
-    let mut min_dihedral = f64::MAX;
-    for i in 0..4 {
-        for j in i + 1..4 {
-            let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
-            let (a, b) = (p[i], p[j]);
-            let tlen: f64 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f64>().sqrt();
-            if tlen == 0.0 {
-                return 0.0;
-            }
-            let tv: [f64; 3] = std::array::from_fn(|k| (b[k] - a[k]) / tlen);
-            let perp = |q: [f64; 3]| -> [f64; 3] {
-                let w: [f64; 3] = std::array::from_fn(|k| q[k] - a[k]);
-                let s: f64 = (0..3).map(|k| w[k] * tv[k]).sum();
-                std::array::from_fn(|k| w[k] - s * tv[k])
-            };
-            let (u, v) = (perp(p[others[0]]), perp(p[others[1]]));
-            let nu: f64 = (0..3).map(|k| u[k] * u[k]).sum::<f64>().sqrt();
-            let nv: f64 = (0..3).map(|k| v[k] * v[k]).sum::<f64>().sqrt();
-            if nu * nv == 0.0 {
-                return 0.0;
-            }
-            let cosang = ((0..3).map(|k| u[k] * v[k]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
-            min_dihedral = min_dihedral.min(cosang.acos().to_degrees());
-        }
-    }
-    min_dihedral
-}
-
 /// Quality summary of a tet mesh.
 #[derive(Debug, Clone, Copy)]
 pub struct QualityStats {

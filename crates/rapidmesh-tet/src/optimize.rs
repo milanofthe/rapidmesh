@@ -14,26 +14,40 @@
 //! positive orientation of the replacement tets, and the pass terminates
 //! when nothing improves.
 
-use crate::conform::{tet_min_dihedral_deg, TetMesh};
+use crate::conform::TetMesh;
 use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
 use rapidmesh_geom::SurfaceKind;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 
 type DState = BuildHasherDefault<rustc_hash::FxHasher>;
-type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
+
+/// The constrained surface complex: faces, edges, vertices.
+type Constrained = (DSet<[usize; 3]>, DSet<(usize, usize)>, DSet<usize>);
+
+/// Strict-improvement epsilon on the comparison quality scale (minus max
+/// dihedral cosine, in [-1, 1]): guards float noise and accept/reject
+/// cycling.
+const QUALITY_EPS: f64 = 1e-12;
+/// Smoothing moves below this fraction of the local edge length are
+/// discarded: their quality effect is immeasurable, but accepting them keeps
+/// neighborhoods dirty for dozens of micro-converging passes.
+const MIN_REL_MOVE: f64 = 1e-3;
 
 /// Parameters for [`optimize`].
 #[derive(Debug, Clone)]
 pub struct OptimizeParams {
-    /// Maximum number of smoothing+flip rounds.
+    /// Maximum number of smoothing+flip rounds. The loop exits at the fixed
+    /// point (a pass with zero accepted operations); passes after the first
+    /// only revisit the neighborhoods of previous changes, so a high cap
+    /// costs little.
     pub passes: usize,
 }
 
 impl Default for OptimizeParams {
     fn default() -> Self {
-        OptimizeParams { passes: 8 }
+        OptimizeParams { passes: 50 }
     }
 }
 
@@ -46,8 +60,53 @@ fn orient_positive(points: &[[f64; 3]], t: [usize; 4]) -> bool {
     )) == Sign::Positive
 }
 
+/// Comparison-scale tet quality: MINUS the maximum cosine over the six
+/// dihedral angles, in [-1, 1]. Strictly increasing in the minimum dihedral
+/// angle (acos is monotone decreasing), so every improvement gate can
+/// compare it directly and skip the acos/degrees of the reporting metric
+/// (`quality_stats` in conform).
 fn quality(points: &[[f64; 3]], t: [usize; 4]) -> f64 {
-    tet_min_dihedral_deg(std::array::from_fn(|k| points[t[k]]))
+    quality_above(points, t, f64::MIN).expect("MIN threshold never rejects")
+}
+
+/// [`quality`] with a cutoff: `None` as soon as one dihedral already bounds
+/// the result to `<= threshold` (the candidate cannot beat the incumbent).
+/// Most failing candidates exit after one or two edges instead of all six.
+fn quality_above(points: &[[f64; 3]], t: [usize; 4], threshold: f64) -> Option<f64> {
+    let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
+    let mut q = f64::MAX;
+    const OPP: [((usize, usize), (usize, usize)); 6] = [
+        ((0, 1), (2, 3)),
+        ((0, 2), (1, 3)),
+        ((0, 3), (1, 2)),
+        ((1, 2), (0, 3)),
+        ((1, 3), (0, 2)),
+        ((2, 3), (0, 1)),
+    ];
+    for ((i, j), (k, l)) in OPP {
+        let (a, b) = (p[i], p[j]);
+        let t2: f64 = (0..3).map(|m| (b[m] - a[m]).powi(2)).sum();
+        if t2 == 0.0 {
+            continue;
+        }
+        let perp = |c: [f64; 3]| -> [f64; 3] {
+            let w: [f64; 3] = std::array::from_fn(|m| c[m] - a[m]);
+            let s: f64 = (0..3).map(|m| w[m] * (b[m] - a[m])).sum::<f64>() / t2;
+            std::array::from_fn(|m| w[m] - s * (b[m] - a[m]))
+        };
+        let (u, v) = (perp(p[k]), perp(p[l]));
+        let nu: f64 = (0..3).map(|m| u[m] * u[m]).sum::<f64>().sqrt();
+        let nv: f64 = (0..3).map(|m| v[m] * v[m]).sum::<f64>().sqrt();
+        if nu * nv == 0.0 {
+            continue;
+        }
+        let cos = ((0..3).map(|m| u[m] * v[m]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
+        q = q.min(-cos);
+        if q <= threshold {
+            return None;
+        }
+    }
+    Some(q)
 }
 
 fn sorted3(f: [usize; 3]) -> [usize; 3] {
@@ -57,42 +116,157 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
 }
 
 /// In-place quality optimization. Returns the number of accepted operations.
+///
+/// Pass 0 sweeps everything; every later pass only revisits candidates whose
+/// one-ring contains a vertex changed by an accepted operation of the
+/// previous pass. The filtering is exact, not heuristic: an operation's
+/// outcome depends only on the positions and tets of its local complex, so a
+/// candidate with an unchanged neighborhood would be re-rejected verbatim.
+/// The fixed point is therefore identical to full sweeps, at a per-pass cost
+/// that scales with the remaining work.
 pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
+    let trace = std::env::var("RAPIDMESH_OPT_TRACE").is_ok();
     let mut total_ops = 0usize;
+    // Vertices changed by the previous pass; `None` = everything (pass 0).
+    let mut dirty: Option<DSet<usize>> = None;
+    // Constrained surface complex, cached across passes: its topology only
+    // changes when the surface pass re-tiles a patch.
+    let mut constrained: Option<Constrained> = None;
     for _pass in 0..params.passes {
         let mut ops = 0usize;
+        let t0 = std::time::Instant::now();
+
+        // Dilation: active vertices = dirty plus their tet one-ring; active
+        // tets = tets with an active vertex. Owner lookups built from active
+        // tets only are still COMPLETE for active candidates (every owner of
+        // a face/edge contains the candidate's active vertex).
+        let active_verts: Option<DSet<usize>> = dirty.as_ref().map(|d| {
+            let mut av: DSet<usize> = DSet::default();
+            for t in &mesh.tets {
+                if t.iter().any(|v| d.contains(v)) {
+                    for &v in t {
+                        av.insert(v);
+                    }
+                }
+            }
+            av
+        });
+        let active_tets: Vec<u32> = match &active_verts {
+            None => (0..mesh.tets.len() as u32).collect(),
+            Some(av) => mesh
+                .tets
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().any(|v| av.contains(v)))
+                .map(|(ti, _)| ti as u32)
+                .collect(),
+        };
+        // Tets feeding the flip owner maps: a much tighter set than
+        // `active_tets` (vertex dilation saturates small meshes). Every
+        // owner that a CHANGED candidate needs shares an edge with a tet
+        // containing a dirty vertex: face owners share three edges, ring
+        // tets share the ring edge itself, 2-2 tet pairs share the tile
+        // edge. Smoothing keeps the wide set (its incidence build is cheap).
+        let map_tets: Vec<u32> = match &dirty {
+            None => (0..mesh.tets.len() as u32).collect(),
+            Some(d) => {
+                let mut e1: DSet<(usize, usize)> = DSet::default();
+                for t in &mesh.tets {
+                    if t.iter().any(|v| d.contains(v)) {
+                        for i in 0..4 {
+                            for j in i + 1..4 {
+                                e1.insert((t[i].min(t[j]), t[i].max(t[j])));
+                            }
+                        }
+                    }
+                }
+                mesh.tets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| {
+                        (0..4).any(|i| {
+                            (i + 1..4)
+                                .any(|j| e1.contains(&(t[i].min(t[j]), t[i].max(t[j]))))
+                        })
+                    })
+                    .map(|(ti, _)| ti as u32)
+                    .collect()
+            }
+        };
+        let is_active =
+            |vs: &[usize]| active_verts.as_ref().is_none_or(|av| vs.iter().any(|v| av.contains(v)));
+        // Exact candidate filter: a candidate is re-evaluated only if its
+        // complex (the vertices its outcome depends on) contains a vertex
+        // CHANGED by the previous pass. `is_active` (one ring wider) only
+        // keeps the owner maps complete; filtering with it would saturate
+        // on small meshes.
+        let complex_changed =
+            |vs: &[usize]| dirty.as_ref().is_none_or(|d| vs.iter().any(|v| d.contains(v)));
+        let mut next_dirty: DSet<usize> = DSet::default();
 
         // Surface improvement first: boundary slivers cannot be fixed by
         // interior-only operations.
-        ops += surface_pass(mesh);
-
-        // Constrained surface (recomputed per pass: the surface pass re-tiles
-        // patches): faces, their edges, their vertices.
-        let mut constrained_faces: DSet<[usize; 3]> = DSet::default();
-        let mut constrained_edges: DSet<(usize, usize)> = DSet::default();
-        let mut constrained_verts: DSet<usize> = DSet::default();
-        for sf in &mesh.faces {
-            constrained_faces.insert(sorted3(sf.tri));
-            for e in 0..3 {
-                let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
-                constrained_edges.insert((a.min(b), a.max(b)));
-            }
-            for &v in &sf.tri {
-                constrained_verts.insert(v);
-            }
+        let (surf_ops, retiled) = surface_pass(
+            mesh,
+            &active_tets,
+            &map_tets,
+            &is_active,
+            &complex_changed,
+            &mut next_dirty,
+        );
+        ops += surf_ops;
+        if retiled {
+            constrained = None;
         }
+        let t_surf = t0.elapsed();
+        let t1 = std::time::Instant::now();
+
+        let (constrained_faces, constrained_edges, constrained_verts) =
+            constrained.get_or_insert_with(|| {
+                let mut cf: DSet<[usize; 3]> = DSet::default();
+                let mut ce: DSet<(usize, usize)> = DSet::default();
+                let mut cv: DSet<usize> = DSet::default();
+                for sf in &mesh.faces {
+                    cf.insert(sorted3(sf.tri));
+                    for e in 0..3 {
+                        let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
+                        ce.insert((a.min(b), a.max(b)));
+                    }
+                    for &v in &sf.tri {
+                        cv.insert(v);
+                    }
+                }
+                (cf, ce, cv)
+            });
 
         // ------------------------------------------------- smoothing
-        // Topology is fixed during smoothing, so incidence is built once.
+        // Topology is fixed during smoothing, so incidence is built once
+        // (from active tets only: complete for every active vertex).
         let mut incident: Vec<Vec<u32>> = vec![Vec::new(); mesh.points.len()];
-        for (ti, t) in mesh.tets.iter().enumerate() {
-            for &v in t {
-                incident[v].push(ti as u32);
+        for &ti in &active_tets {
+            for &v in &mesh.tets[ti as usize] {
+                incident[v].push(ti);
             }
+        }
+        // Per-tet quality cache for the incumbent ("old") side of every
+        // gate; entries are invalidated when a vertex move changes the tet.
+        // (Tet ids are stable here: topology changes only at the compact
+        // step at the end of the pass.)
+        let mut tet_q: Vec<f64> = vec![f64::NAN; mesh.tets.len()];
+        fn cached_q(
+            points: &[[f64; 3]],
+            tets: &[[usize; 4]],
+            tet_q: &mut [f64],
+            ti: usize,
+        ) -> f64 {
+            if tet_q[ti].is_nan() {
+                tet_q[ti] = quality(points, tets[ti]);
+            }
+            tet_q[ti]
         }
         let mut nbrs: Vec<usize> = Vec::new();
         for (v, inc) in incident.iter().enumerate() {
-            if constrained_verts.contains(&v) || inc.is_empty() {
+            if constrained_verts.contains(&v) || inc.is_empty() || !is_active(&[v]) {
                 continue;
             }
             nbrs.clear();
@@ -105,72 +279,101 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
             nbrs.sort_unstable();
             nbrs.dedup();
+            if !(complex_changed(&[v]) || complex_changed(&nbrs)) {
+                continue;
+            }
+            let old_pos = mesh.points[v];
             let mut avg = [0.0f64; 3];
+            let mut lref2 = 0.0f64;
             for &w in &nbrs {
+                let mut d2 = 0.0;
                 for (k, a) in avg.iter_mut().enumerate() {
                     *a += mesh.points[w][k];
+                    d2 += (mesh.points[w][k] - old_pos[k]).powi(2);
                 }
+                lref2 = lref2.max(d2);
             }
             for a in &mut avg {
                 *a /= nbrs.len() as f64;
             }
-            let old_pos = mesh.points[v];
-            let old_q = inc
-                .iter()
-                .map(|&ti| quality(&mesh.points, mesh.tets[ti as usize]))
-                .fold(f64::MAX, f64::min);
+            let move2: f64 = (0..3).map(|k| (avg[k] - old_pos[k]).powi(2)).sum();
+            if move2 < MIN_REL_MOVE * MIN_REL_MOVE * lref2 {
+                continue;
+            }
+            let mut old_q = f64::MAX;
+            for &ti in inc {
+                old_q = old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, ti as usize));
+            }
             mesh.points[v] = avg;
-            let valid = inc
-                .iter()
-                .all(|&ti| orient_positive(&mesh.points, mesh.tets[ti as usize]));
-            let new_q = if valid {
-                inc
-                    .iter()
-                    .map(|&ti| quality(&mesh.points, mesh.tets[ti as usize]))
-                    .fold(f64::MAX, f64::min)
-            } else {
-                f64::MIN
-            };
-            if new_q > old_q + 1e-9 {
+            let mut new_q = f64::MAX;
+            let mut ok = true;
+            for &ti in inc {
+                if !orient_positive(&mesh.points, mesh.tets[ti as usize]) {
+                    ok = false;
+                    break;
+                }
+                match quality_above(&mesh.points, mesh.tets[ti as usize], old_q) {
+                    Some(q) => new_q = new_q.min(q),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && new_q > old_q + QUALITY_EPS {
                 ops += 1;
+                next_dirty.insert(v);
+                for &ti in inc {
+                    tet_q[ti as usize] = f64::NAN;
+                }
             } else {
                 mesh.points[v] = old_pos;
             }
         }
 
+        let t_smooth = t1.elapsed();
+        let t2 = std::time::Instant::now();
+
         // ------------------------------------------------------ flips
         let mut alive: Vec<bool> = vec![true; mesh.tets.len()];
         let mut added: Vec<([usize; 4], rapidmesh_geom::RegionTag)> = Vec::new();
 
-        // Face map for 2-3 flips and edge map for 3-2 flips.
-        let mut face_map: DMap<[usize; 3], Vec<u32>> = DMap::default();
-        let mut edge_map: DMap<(usize, usize), Vec<u32>> = DMap::default();
-        for (ti, t) in mesh.tets.iter().enumerate() {
+        // Face map for 2-3 flips and edge map for 3-2 flips, over active
+        // tets (complete owner lists for active candidates). Sorted entry
+        // vectors instead of hash maps: grouping by sort is allocation-free
+        // and gives the deterministic key order directly.
+        let mut face_entries: Vec<([usize; 3], u32)> = Vec::with_capacity(map_tets.len() * 4);
+        let mut edge_entries: Vec<((usize, usize), u32)> = Vec::with_capacity(map_tets.len() * 6);
+        for &ti in &map_tets {
+            let t = &mesh.tets[ti as usize];
             for i in 0..4 {
-                let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
-                face_map
-                    .entry(sorted3([f[0], f[1], f[2]]))
-                    .or_default()
-                    .push(ti as u32);
+                let f: [usize; 3] = std::array::from_fn(|k| t[(i + 1 + k) % 4]);
+                face_entries.push((sorted3(f), ti));
             }
             for i in 0..4 {
                 for j in i + 1..4 {
                     let (a, b) = (t[i].min(t[j]), t[i].max(t[j]));
-                    edge_map.entry((a, b)).or_default().push(ti as u32);
+                    edge_entries.push(((a, b), ti));
                 }
             }
         }
+        face_entries.sort_unstable();
+        edge_entries.sort_unstable();
 
-        // Deterministic iteration: sort keys.
-        let mut faces: Vec<[usize; 3]> = face_map.keys().copied().collect();
-        faces.sort_unstable();
-        for f in faces {
-            let owners = &face_map[&f];
+        let mut gi = 0;
+        while gi < face_entries.len() {
+            let f = face_entries[gi].0;
+            let gj = gi + face_entries[gi..].iter().take_while(|e| e.0 == f).count();
+            let owners = &face_entries[gi..gj];
+            gi = gj;
             if owners.len() != 2 || constrained_faces.contains(&f) {
                 continue;
             }
-            let (t1, t2) = (owners[0] as usize, owners[1] as usize);
+            let (t1, t2) = (owners[0].1 as usize, owners[1].1 as usize);
             if !alive[t1] || !alive[t2] {
+                continue;
+            }
+            if !(complex_changed(&mesh.tets[t1]) || complex_changed(&mesh.tets[t2])) {
                 continue;
             }
             // Faces must still match (alive guard covers staleness).
@@ -214,12 +417,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             else {
                 continue;
             };
-            let old_q = quality(&mesh.points, mesh.tets[t1])
-                .min(quality(&mesh.points, mesh.tets[t2]));
-            let new_q = quality(&mesh.points, n1)
-                .min(quality(&mesh.points, n2))
-                .min(quality(&mesh.points, n3));
-            if new_q <= old_q + 1e-9 {
+            let old_q = cached_q(&mesh.points, &mesh.tets, &mut tet_q, t1)
+                .min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, t2));
+            let (Some(q1), Some(q2), Some(q3)) = (
+                quality_above(&mesh.points, n1, old_q),
+                quality_above(&mesh.points, n2, old_q),
+                quality_above(&mesh.points, n3, old_q),
+            ) else {
+                continue;
+            };
+            if q1.min(q2).min(q3) <= old_q + QUALITY_EPS {
                 continue;
             }
             alive[t1] = false;
@@ -228,6 +435,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             added.push((n1, region));
             added.push((n2, region));
             added.push((n3, region));
+            for v in f.iter().chain([d, e].iter()) {
+                next_dirty.insert(*v);
+            }
             ops += 1;
         }
 
@@ -238,19 +448,25 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // new tet in the FIXED ring orientation (no flipping): a folded
         // triangulation triangle then shows up as a negative tet, so the
         // accepted complex tiles exactly the old star.
-        let mut edges: Vec<(usize, usize)> = edge_map.keys().copied().collect();
-        edges.sort_unstable();
-        for key in edges {
-            if constrained_edges.contains(&key) {
-                continue;
-            }
-            let owners = &edge_map[&key];
+        let mut gi = 0;
+        while gi < edge_entries.len() {
+            let key = edge_entries[gi].0;
+            let gj = gi + edge_entries[gi..].iter().take_while(|e| e.0 == key).count();
+            let owners = &edge_entries[gi..gj];
+            gi = gj;
             let k = owners.len();
-            if !(3..=7).contains(&k) {
+            if !(3..=7).contains(&k) || constrained_edges.contains(&key) {
                 continue;
             }
-            let ts: Vec<usize> = owners.iter().map(|&t| t as usize).collect();
+            let mut ts = [0usize; 7];
+            for (i, e) in owners.iter().enumerate() {
+                ts[i] = e.1 as usize;
+            }
+            let ts = &ts[..k];
             if ts.iter().any(|&t| !alive[t]) {
+                continue;
+            }
+            if !ts.iter().any(|&t| complex_changed(&mesh.tets[t])) {
                 continue;
             }
             if ts
@@ -262,30 +478,59 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             let (d, e) = key;
             // Each tet contributes the pair of its two non-(d,e) vertices;
             // the pairs must chain into a single closed ring (interior
-            // edge), walked here into cyclic order.
-            let mut partners: DMap<usize, Vec<usize>> = DMap::default();
-            for &t in &ts {
+            // edge), walked here into cyclic order. All on the stack: a
+            // distinct-vertex table (k <= 7) with degree-2 adjacency.
+            let mut vs = [usize::MAX; 7];
+            let mut adj = [[usize::MAX; 2]; 7];
+            let mut deg = [0u8; 7];
+            let mut nv = 0usize;
+            let mut ok = true;
+            'tets: for &t in ts {
                 let mut pr = mesh.tets[t].iter().copied().filter(|&x| x != d && x != e);
                 let (a, b) = (pr.next().expect("pair"), pr.next().expect("pair"));
-                partners.entry(a).or_default().push(b);
-                partners.entry(b).or_default().push(a);
+                for x in [a, b] {
+                    let y = if x == a { b } else { a };
+                    let slot = match vs[..nv].iter().position(|&w| w == x) {
+                        Some(i) => i,
+                        None => {
+                            if nv == k {
+                                ok = false;
+                                break 'tets; // more than k distinct: not a ring
+                            }
+                            vs[nv] = x;
+                            nv += 1;
+                            nv - 1
+                        }
+                    };
+                    if deg[slot] == 2 {
+                        ok = false;
+                        break 'tets;
+                    }
+                    adj[slot][deg[slot] as usize] = y;
+                    deg[slot] += 1;
+                }
             }
-            if partners.len() != k || partners.values().any(|p| p.len() != 2) {
+            if !ok || nv != k || deg[..k].iter().any(|&x| x != 2) {
                 continue;
             }
-            let start = *partners.keys().min().expect("nonempty");
-            let mut ring: Vec<usize> = vec![start];
+            let start = *vs[..k].iter().min().expect("nonempty");
+            let mut ring = [usize::MAX; 7];
+            ring[0] = start;
             let mut prev = usize::MAX;
-            while ring.len() < k {
-                let cur = *ring.last().expect("nonempty");
-                let p = &partners[&cur];
+            for i in 1..k {
+                let cur = ring[i - 1];
+                let slot = vs[..k].iter().position(|&w| w == cur).expect("in table");
+                let p = adj[slot];
                 let next = if p[0] != prev { p[0] } else { p[1] };
                 prev = cur;
-                ring.push(next);
+                ring[i] = next;
             }
             // Closed ring?
-            if !partners[&ring[k - 1]].contains(&start) {
-                continue;
+            {
+                let slot = vs[..k].iter().position(|&w| w == ring[k - 1]).expect("in table");
+                if !adj[slot].contains(&start) {
+                    continue;
+                }
             }
             // Orient the cycle so that consecutive pairs rotate positively
             // around d-e: orient3d(a_i, a_{i+1}, d, e) > 0 for all i (an
@@ -299,7 +544,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 ))
             };
             if side(ring[0], ring[1]) == Sign::Negative {
-                ring.reverse();
+                ring[..k].reverse();
             }
             if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
                 continue;
@@ -308,6 +553,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             // quality of triangulating the sub-polygon ring[i..=j]. Each
             // triangle (p, q, r) in ring order spawns the tet pair
             // (p, q, r, e) and (p, r, q, d), both required positive.
+            // Values not above the incumbent old_q are clamped to MIN (the
+            // final gate rejects them anyway), which lets the quality
+            // evaluation exit early.
+            let old_q = {
+                let mut q = f64::MAX;
+                for &t in ts {
+                    q = q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, t));
+                }
+                q
+            };
             let pair_q = |i: usize, m: usize, j: usize| -> f64 {
                 let (p, q, r) = (ring[i], ring[m], ring[j]);
                 let t1 = [p, q, r, e];
@@ -315,10 +570,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 if !orient_positive(&mesh.points, t1) || !orient_positive(&mesh.points, t2) {
                     return f64::MIN;
                 }
-                quality(&mesh.points, t1).min(quality(&mesh.points, t2))
+                match (
+                    quality_above(&mesh.points, t1, old_q),
+                    quality_above(&mesh.points, t2, old_q),
+                ) {
+                    (Some(q1), Some(q2)) => q1.min(q2),
+                    _ => f64::MIN,
+                }
             };
-            let mut best = vec![vec![f64::MAX; k]; k];
-            let mut cut = vec![vec![usize::MAX; k]; k];
+            let mut best = [[f64::MAX; 7]; 7];
+            let mut cut = [[usize::MAX; 7]; 7];
             for len in 2..k {
                 for i in 0..k - len {
                     let j = i + len;
@@ -335,27 +596,31 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     cut[i][j] = bm;
                 }
             }
-            let old_q = ts
-                .iter()
-                .map(|&t| quality(&mesh.points, mesh.tets[t]))
-                .fold(f64::MAX, f64::min);
-            if best[0][k - 1] <= old_q + 1e-9 {
+            if best[0][k - 1] <= old_q + QUALITY_EPS {
                 continue;
             }
             let region = mesh.tet_regions[ts[0]];
-            let mut stack: Vec<(usize, usize)> = vec![(0, k - 1)];
-            while let Some((i, j)) = stack.pop() {
+            let mut stack = [(0usize, 0usize); 16];
+            stack[0] = (0, k - 1);
+            let mut sp = 1usize;
+            while sp > 0 {
+                sp -= 1;
+                let (i, j) = stack[sp];
                 if j - i < 2 {
                     continue;
                 }
                 let m = cut[i][j];
                 added.push(([ring[i], ring[m], ring[j], e], region));
                 added.push(([ring[i], ring[j], ring[m], d], region));
-                stack.push((i, m));
-                stack.push((m, j));
+                stack[sp] = (i, m);
+                stack[sp + 1] = (m, j);
+                sp += 2;
             }
-            for &t in &ts {
+            for &t in ts {
                 alive[t] = false;
+            }
+            for &v in ring.iter().chain([d, e].iter()) {
+                next_dirty.insert(v);
             }
             ops += 1;
         }
@@ -378,10 +643,20 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             mesh.tet_regions = regions;
         }
 
+        if trace {
+            eprintln!(
+                "opt pass {_pass}: surf {:?}, smooth {:?}, flips {:?}, ops {ops}, dirty {}",
+                t_surf,
+                t_smooth,
+                t2.elapsed(),
+                next_dirty.len()
+            );
+        }
         total_ops += ops;
         if ops == 0 {
             break;
         }
+        dirty = Some(next_dirty);
     }
     total_ops
 }
@@ -507,39 +782,60 @@ fn project_onto_all(cons: &[SurfConstraint], mut q: [f64; 3], tol: f64) -> Optio
     None
 }
 
-fn surface_pass(mesh: &mut TetMesh) -> usize {
+fn surface_pass(
+    mesh: &mut TetMesh,
+    active_tets: &[u32],
+    map_tets: &[u32],
+    is_active: &impl Fn(&[usize]) -> bool,
+    complex_changed: &impl Fn(&[usize]) -> bool,
+    next_dirty: &mut DSet<usize>,
+) -> (usize, bool) {
     let mut ops = 0usize;
+    let mut retiled = false;
 
+    // Maps over active tets/faces only: complete for active candidates (an
+    // owner of an active face/edge always contains the active vertex).
+    // Sorted entry vectors: grouping and binary search instead of hash maps.
     // ---------------------------------------------------- 2-2 flips
     {
-        let mut tets_of_face: DMap<[usize; 3], Vec<usize>> = DMap::default();
-        for (ti, t) in mesh.tets.iter().enumerate() {
+        let mut tof: Vec<([usize; 3], u32)> = Vec::with_capacity(map_tets.len() * 4);
+        for &ti in map_tets {
+            let t = &mesh.tets[ti as usize];
             for i in 0..4 {
-                let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
-                tets_of_face
-                    .entry(sorted3([f[0], f[1], f[2]]))
-                    .or_default()
-                    .push(ti);
+                let f: [usize; 3] = std::array::from_fn(|k| t[(i + 1 + k) % 4]);
+                tof.push((sorted3(f), ti));
             }
         }
-        let mut edge_faces: DMap<(usize, usize), Vec<usize>> = DMap::default();
+        tof.sort_unstable();
+        let tof_get = |key: [usize; 3]| -> &[([usize; 3], u32)] {
+            let lo = tof.partition_point(|e| e.0 < key);
+            let hi = lo + tof[lo..].iter().take_while(|e| e.0 == key).count();
+            &tof[lo..hi]
+        };
+        let mut edge_faces: Vec<((usize, usize), u32)> = Vec::with_capacity(mesh.faces.len() * 3);
         for (fi, sf) in mesh.faces.iter().enumerate() {
+            if !is_active(&sf.tri) {
+                continue;
+            }
             for e in 0..3 {
                 let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
-                edge_faces.entry((a.min(b), a.max(b))).or_default().push(fi);
+                edge_faces.push(((a.min(b), a.max(b)), fi as u32));
             }
         }
-        let mut keys: Vec<(usize, usize)> = edge_faces.keys().copied().collect();
-        keys.sort_unstable();
+        edge_faces.sort_unstable();
         let mut touched_faces: DSet<usize> = DSet::default();
         let mut touched_tets: DSet<usize> = DSet::default();
 
-        for key in keys {
-            let fids = &edge_faces[&key];
+        let mut gi = 0;
+        while gi < edge_faces.len() {
+            let key = edge_faces[gi].0;
+            let gj = gi + edge_faces[gi..].iter().take_while(|e| e.0 == key).count();
+            let fids = &edge_faces[gi..gj];
+            gi = gj;
             if fids.len() != 2 {
                 continue;
             }
-            let (fi1, fi2) = (fids[0], fids[1]);
+            let (fi1, fi2) = (fids[0].1 as usize, fids[1].1 as usize);
             if touched_faces.contains(&fi1) || touched_faces.contains(&fi2) {
                 continue;
             }
@@ -554,6 +850,17 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             let c = *sf1.tri.iter().find(|&&v| v != a && v != b).expect("apex");
             let d = *sf2.tri.iter().find(|&&v| v != a && v != b).expect("apex");
             if c == d {
+                continue;
+            }
+            // Exact candidate filter on the full complex (both faces plus
+            // their adjacent tet pairs), before any exact predicate work.
+            let unchanged = !complex_changed(&sf1.tri)
+                && !complex_changed(&sf2.tri)
+                && tof_get(sorted3(sf1.tri))
+                    .iter()
+                    .chain(tof_get(sorted3(sf2.tri)).iter())
+                    .all(|e| !complex_changed(&mesh.tets[e.1 as usize]));
+            if unchanged {
                 continue;
             }
             // Quad convexity, exactly, in the dominant projection.
@@ -576,12 +883,16 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 continue;
             }
             // Tet pairing by shared apex on every adjacent side.
-            let t1s = tets_of_face.get(&sorted3(sf1.tri)).cloned().unwrap_or_default();
-            let t2s = tets_of_face.get(&sorted3(sf2.tri)).cloned().unwrap_or_default();
+            let t1s = tof_get(sorted3(sf1.tri));
+            let t2s = tof_get(sorted3(sf2.tri));
             if t1s.len() != t2s.len() || t1s.is_empty() {
                 continue;
             }
-            if t1s.iter().chain(t2s.iter()).any(|t| touched_tets.contains(t)) {
+            if t1s
+                .iter()
+                .chain(t2s.iter())
+                .any(|e| touched_tets.contains(&(e.1 as usize)))
+            {
                 continue;
             }
             let apex = |ti: usize, tri: [usize; 3]| -> usize {
@@ -589,10 +900,11 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             };
             let mut pairs: Vec<(usize, usize, usize)> = Vec::new(); // (t1, t2, apex)
             let mut ok = true;
-            for &t1 in &t1s {
+            for e1 in t1s {
+                let t1 = e1.1 as usize;
                 let p = apex(t1, sf1.tri);
-                match t2s.iter().find(|&&t2| apex(t2, sf2.tri) == p) {
-                    Some(&t2) if mesh.tet_regions[t1] == mesh.tet_regions[t2] => {
+                match t2s.iter().map(|e| e.1 as usize).find(|&t2| apex(t2, sf2.tri) == p) {
+                    Some(t2) if mesh.tet_regions[t1] == mesh.tet_regions[t2] => {
                         pairs.push((t1, t2, p))
                     }
                     _ => {
@@ -628,7 +940,7 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 new_q = new_q.min(quality(&mesh.points, n1)).min(quality(&mesh.points, n2));
                 repl.push((t1, n1, t2, n2));
             }
-            if !ok || new_q <= old_q + 1e-9 {
+            if !ok || new_q <= old_q + QUALITY_EPS {
                 continue;
             }
             for (t1, n1, t2, n2) in repl {
@@ -636,38 +948,57 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 mesh.tets[t2] = n2;
                 touched_tets.insert(t1);
                 touched_tets.insert(t2);
+                for v in n1.iter().chain(n2.iter()) {
+                    next_dirty.insert(*v);
+                }
             }
             mesh.faces[fi1].tri = [c, d, a];
             mesh.faces[fi2].tri = [c, d, b];
             touched_faces.insert(fi1);
             touched_faces.insert(fi2);
+            retiled = true;
             ops += 1;
         }
     }
 
     // ------------------------------------------- in-plane smoothing
     {
-        let mut edge_faces: DMap<(usize, usize), Vec<usize>> = DMap::default();
-        let mut vertex_faces: DMap<usize, Vec<usize>> = DMap::default();
+        let mut edge_faces: Vec<((usize, usize), u32)> = Vec::with_capacity(mesh.faces.len() * 3);
+        let mut vertex_faces: Vec<(usize, u32)> = Vec::with_capacity(mesh.faces.len() * 3);
         for (fi, sf) in mesh.faces.iter().enumerate() {
+            if !is_active(&sf.tri) {
+                continue;
+            }
             for e in 0..3 {
                 let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
-                edge_faces.entry((a.min(b), a.max(b))).or_default().push(fi);
+                edge_faces.push(((a.min(b), a.max(b)), fi as u32));
             }
             for &v in &sf.tri {
-                vertex_faces.entry(v).or_default().push(fi);
+                vertex_faces.push((v, fi as u32));
             }
         }
+        edge_faces.sort_unstable();
+        vertex_faces.sort_unstable();
+        let ef_get = |key: (usize, usize)| -> &[((usize, usize), u32)] {
+            let lo = edge_faces.partition_point(|e| e.0 < key);
+            let hi = lo + edge_faces[lo..].iter().take_while(|e| e.0 == key).count();
+            &edge_faces[lo..hi]
+        };
         let mut incident: Vec<Vec<usize>> = vec![Vec::new(); mesh.points.len()];
-        for (ti, t) in mesh.tets.iter().enumerate() {
-            for &v in t {
-                incident[v].push(ti);
+        for &ti in active_tets {
+            for &v in &mesh.tets[ti as usize] {
+                incident[v].push(ti as usize);
             }
         }
-        let mut verts: Vec<usize> = vertex_faces.keys().copied().collect();
-        verts.sort_unstable();
-        for v in verts {
-            let vfs = &vertex_faces[&v];
+        let mut gi = 0;
+        while gi < vertex_faces.len() {
+            let v = vertex_faces[gi].0;
+            let gj = gi + vertex_faces[gi..].iter().take_while(|e| e.0 == v).count();
+            let vfs: Vec<usize> = vertex_faces[gi..gj].iter().map(|e| e.1 as usize).collect();
+            gi = gj;
+            if !is_active(&[v]) {
+                continue;
+            }
             let group = face_group(mesh, vfs[0]);
             let single_group = vfs.iter().all(|&fi| face_group(mesh, fi) == group);
             // Surface neighbors of v, and its FEATURE edges: surface edges
@@ -675,7 +1006,7 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             // patches). Feature edges are the mesh's 1D constraints.
             let mut nbrs: Vec<usize> = Vec::new();
             let mut feature_nbrs: Vec<usize> = Vec::new();
-            for &fi in vfs {
+            for &fi in &vfs {
                 let tri = mesh.faces[fi].tri;
                 for e in 0..3 {
                     let (x, y) = (tri[e], tri[(e + 1) % 3]);
@@ -684,8 +1015,10 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                     }
                     let w = if x == v { y } else { x };
                     nbrs.push(w);
-                    let efs = &edge_faces[&(x.min(y), x.max(y))];
-                    if efs.len() != 2 || face_group(mesh, efs[0]) != face_group(mesh, efs[1]) {
+                    let efs = ef_get((x.min(y), x.max(y)));
+                    if efs.len() != 2
+                        || face_group(mesh, efs[0].1 as usize) != face_group(mesh, efs[1].1 as usize)
+                    {
                         feature_nbrs.push(w);
                     }
                 }
@@ -695,6 +1028,14 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             feature_nbrs.sort_unstable();
             feature_nbrs.dedup();
             if nbrs.is_empty() {
+                continue;
+            }
+            // Exact candidate filter: validity and quality depend on the
+            // incident tets, fold-over and sliding on the face neighbors.
+            if !(complex_changed(&[v])
+                || complex_changed(&nbrs)
+                || incident[v].iter().any(|&ti| complex_changed(&mesh.tets[ti])))
+            {
                 continue;
             }
             let cur = mesh.points[v];
@@ -820,6 +1161,12 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 // Corner and junction vertices are pinned.
                 continue;
             };
+            if !snap {
+                let move2: f64 = (0..3).map(|k| (target[k] - cur[k]).powi(2)).sum();
+                if move2 < MIN_REL_MOVE * MIN_REL_MOVE * lref2 {
+                    continue;
+                }
+            }
             // Fold-over guard data: normals before the move, per face.
             let old_normals: Vec<[f64; 3]> = vfs
                 .iter()
@@ -855,15 +1202,16 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             let accept = if snap {
                 tets_ok && faces_ok
             } else {
-                new_q > old_q + 1e-9
+                new_q > old_q + QUALITY_EPS
             };
             if accept {
                 ops += 1;
+                next_dirty.insert(v);
             } else {
                 mesh.points[v] = cur;
             }
         }
     }
 
-    ops
+    (ops, retiled)
 }

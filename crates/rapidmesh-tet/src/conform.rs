@@ -392,6 +392,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     let mut round = 0;
     let mut refine_round = 0;
+    // Everything below this index existed before the previous refine step
+    // (drives the retry test for once-vetoed quality candidates).
+    let mut refine_seen_len = 0usize;
     // Patches whose tiling repair stagnated (see the stagnation guard).
     let mut abandoned: DSet<usize> = DSet::default();
     let mut patch_progress: DMap<usize, (f64, usize)> = DMap::default();
@@ -576,6 +579,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &all_tilings,
                 &tet_region,
                 &mut tried,
+                refine_seen_len,
                 &mut points,
                 &mut builder,
                 &mut point_index,
@@ -583,6 +587,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &mut creases,
                 &mut crease_marks,
             );
+            refine_seen_len = points.len();
             if trace && inserted > 0 {
                 eprintln!(
                     "refine round {refine_round}: inserted {inserted}, {} points, scan {:.1?} tile {:.1?} classify {:.1?} refine {:.1?}",
@@ -996,6 +1001,7 @@ fn refine_step(
     tilings: &[Vec<[usize; 3]>],
     tet_region: &[u32],
     tried: &mut DSet<[usize; 4]>,
+    new_since: usize,
     points: &mut Vec<[f64; 3]>,
     builder: &mut DelaunayBuilder,
     point_index: &mut DMap<[u64; 3], usize>,
@@ -1244,14 +1250,25 @@ fn refine_step(
         if !oversized && !quality_allowed {
             continue;
         }
-        // Quality-only candidates are attempted once: re-attempting a
-        // boundary-locked sliver every round spirals (its repair points
-        // spawn new slivers). Oversized tets must shrink, so they retry.
+        // Quality-only candidates do not blindly retry every round (most
+        // would re-run their veto verbatim), but they DO retry once their
+        // neighborhood changed: a point inserted since the last attempt
+        // within twice the circumradius of the candidate's center can change
+        // the insertion cavity and thus the verdict. (Spiraling through
+        // retries is structurally impossible since guarded insertion:
+        // a successful insert always destroys its candidate tet, and a veto
+        // inserts nothing.) Oversized tets must shrink, so they always
+        // retry.
         if !oversized {
             let mut key = *t;
             key.sort_unstable();
             if !tried.insert(key) {
-                continue;
+                let changed = points[new_since.min(points.len())..]
+                    .iter()
+                    .any(|q| dist2(cc, *q) < 4.0 * r * r);
+                if !changed {
+                    continue;
+                }
             }
         }
         // Batch spacing scales with the LOCAL TARGET SIZE: an insertion

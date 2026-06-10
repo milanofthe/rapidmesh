@@ -34,6 +34,65 @@ const QUALITY_EPS: f64 = 1e-12;
 /// discarded: their quality effect is immeasurable, but accepting them keeps
 /// neighborhoods dirty for dozens of micro-converging passes.
 const MIN_REL_MOVE: f64 = 1e-3;
+/// Largest tet ring handled by edge removal. Sliver fans hub around a vertex
+/// with a dozen incident tets; the Klincsek DP is O(k^3), so a generous cap
+/// stays cheap.
+const MAX_RING: usize = 12;
+/// Radius-edge ratio (circumradius over shortest edge) of a tet on explicit
+/// coordinates; `MAX` for degenerate tets. Guards vertex insertion against
+/// trading sliver dihedrals for huge-circumradius cones.
+fn radius_edge(p: [[f64; 3]; 4]) -> f64 {
+    // Solve 2 (p_i - p_0) . c = |p_i|^2 - |p_0|^2 for the circumcenter.
+    let mut m = [[0.0f64; 3]; 3];
+    let mut b = [0.0f64; 3];
+    for i in 0..3 {
+        for k in 0..3 {
+            m[i][k] = 2.0 * (p[i + 1][k] - p[0][k]);
+        }
+        b[i] = (0..3).map(|k| p[i + 1][k] * p[i + 1][k] - p[0][k] * p[0][k]).sum();
+    }
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if det.abs() < f64::MIN_POSITIVE {
+        return f64::MAX;
+    }
+    let inv = 1.0 / det;
+    let mut c = [0.0f64; 3];
+    for k in 0..3 {
+        // Cramer: replace column k with b.
+        let mut mm = m;
+        for i in 0..3 {
+            mm[i][k] = b[i];
+        }
+        c[k] = inv
+            * (mm[0][0] * (mm[1][1] * mm[2][2] - mm[1][2] * mm[2][1])
+                - mm[0][1] * (mm[1][0] * mm[2][2] - mm[1][2] * mm[2][0])
+                + mm[0][2] * (mm[1][0] * mm[2][1] - mm[1][1] * mm[2][0]));
+    }
+    let r2: f64 = (0..3).map(|k| (c[k] - p[0][k]).powi(2)).sum();
+    let mut lmin2 = f64::MAX;
+    for i in 0..4 {
+        for j in i + 1..4 {
+            lmin2 = lmin2.min((0..3).map(|k| (p[i][k] - p[j][k]).powi(2)).sum());
+        }
+    }
+    if lmin2 <= 0.0 {
+        return f64::MAX;
+    }
+    (r2 / lmin2).sqrt()
+}
+
+/// Tets below this minimum dihedral angle (degrees) become vertex-insertion
+/// candidates: boundary slivers with every vertex pinned to the surface are
+/// unreachable for smoothing, and their near-coplanar rings defeat edge
+/// removal; splitting their star from an interior Steiner point hands the
+/// region a FREE vertex that later smoothing passes position optimally.
+const INSERT_BELOW_DEG: f64 = 10.0;
+/// Cone tets of a vertex insertion may have radius-edge ratios up to this
+/// value unconditionally; beyond it only when not exceeding the cavity's
+/// own worst ratio (no minting of huge-circumsphere tets).
+const INSERT_RE_ALLOW: f64 = 16.0;
 
 /// Parameters for [`optimize`].
 #[derive(Debug, Clone)]
@@ -74,6 +133,12 @@ fn quality(points: &[[f64; 3]], t: [usize; 4]) -> f64 {
 /// Most failing candidates exit after one or two edges instead of all six.
 fn quality_above(points: &[[f64; 3]], t: [usize; 4], threshold: f64) -> Option<f64> {
     let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
+    quality_above_coords(p, threshold)
+}
+
+/// [`quality_above`] on explicit coordinates (speculative positions that are
+/// not mesh vertices yet, e.g. vertex-insertion position search).
+fn quality_above_coords(p: [[f64; 3]; 4], threshold: f64) -> Option<f64> {
     let mut q = f64::MAX;
     const OPP: [((usize, usize), (usize, usize)); 6] = [
         ((0, 1), (2, 3)),
@@ -455,10 +520,10 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             let owners = &edge_entries[gi..gj];
             gi = gj;
             let k = owners.len();
-            if !(3..=7).contains(&k) || constrained_edges.contains(&key) {
+            if !(3..=MAX_RING).contains(&k) || constrained_edges.contains(&key) {
                 continue;
             }
-            let mut ts = [0usize; 7];
+            let mut ts = [0usize; MAX_RING];
             for (i, e) in owners.iter().enumerate() {
                 ts[i] = e.1 as usize;
             }
@@ -480,9 +545,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             // the pairs must chain into a single closed ring (interior
             // edge), walked here into cyclic order. All on the stack: a
             // distinct-vertex table (k <= 7) with degree-2 adjacency.
-            let mut vs = [usize::MAX; 7];
-            let mut adj = [[usize::MAX; 2]; 7];
-            let mut deg = [0u8; 7];
+            let mut vs = [usize::MAX; MAX_RING];
+            let mut adj = [[usize::MAX; 2]; MAX_RING];
+            let mut deg = [0u8; MAX_RING];
             let mut nv = 0usize;
             let mut ok = true;
             'tets: for &t in ts {
@@ -514,7 +579,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 continue;
             }
             let start = *vs[..k].iter().min().expect("nonempty");
-            let mut ring = [usize::MAX; 7];
+            let mut ring = [usize::MAX; MAX_RING];
             ring[0] = start;
             let mut prev = usize::MAX;
             for i in 1..k {
@@ -578,8 +643,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     _ => f64::MIN,
                 }
             };
-            let mut best = [[f64::MAX; 7]; 7];
-            let mut cut = [[usize::MAX; 7]; 7];
+            let mut best = [[f64::MAX; MAX_RING]; MAX_RING];
+            let mut cut = [[usize::MAX; MAX_RING]; MAX_RING];
             for len in 2..k {
                 for i in 0..k - len {
                     let j = i + len;
@@ -600,7 +665,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 continue;
             }
             let region = mesh.tet_regions[ts[0]];
-            let mut stack = [(0usize, 0usize); 16];
+            let mut stack = [(0usize, 0usize); 2 * MAX_RING];
             stack[0] = (0, k - 1);
             let mut sp = 1usize;
             while sp > 0 {
@@ -623,6 +688,207 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 next_dirty.insert(v);
             }
             ops += 1;
+        }
+
+        // --------------------------------------------- vertex insertion
+        // (see INSERT_BELOW_DEG). The cavity is the bad tet plus its alive
+        // same-region face neighbors (1-ring: the owner map is complete for
+        // it), with no constrained face in its interior; the replacement is
+        // the cone from the cavity vertex centroid, gated on exact
+        // positivity against every boundary face (star-shapedness) and a
+        // strict min-quality improvement. Faces whose neighbor died in an
+        // earlier operation of this pass stay cavity boundary; their
+        // replacements tile the same space behind the shared interface.
+        {
+            // Face of positively oriented `t` opposite vertex slot `i`,
+            // wound so the opposite vertex lies on its positive side.
+            let opp_face = |t: [usize; 4], i: usize| -> [usize; 3] {
+                match i {
+                    0 => [t[1], t[3], t[2]],
+                    1 => [t[0], t[2], t[3]],
+                    2 => [t[0], t[3], t[1]],
+                    _ => [t[0], t[1], t[2]],
+                }
+            };
+            let face_owners = |key: [usize; 3]| -> &[([usize; 3], u32)] {
+                let lo = face_entries.partition_point(|e| e.0 < key);
+                let hi = lo + face_entries[lo..].iter().take_while(|e| e.0 == key).count();
+                &face_entries[lo..hi]
+            };
+            let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
+            let mut bad: Vec<(f64, u32)> = Vec::new();
+            for &ti in &map_tets {
+                if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
+                    continue;
+                }
+                let q = cached_q(&mesh.points, &mesh.tets, &mut tet_q, ti as usize);
+                if q < insert_below {
+                    bad.push((q, ti));
+                }
+            }
+            bad.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            'cands: for (_, ti) in bad {
+                let ti = ti as usize;
+                if !alive[ti] {
+                    continue;
+                }
+                let region = mesh.tet_regions[ti];
+                let t = mesh.tets[ti];
+                let mut cavity: Vec<usize> = vec![ti];
+                for i in 0..4 {
+                    let key = sorted3(opp_face(t, i));
+                    if constrained_faces.contains(&key) {
+                        continue; // stays cavity boundary
+                    }
+                    for e in face_owners(key) {
+                        let nb = e.1 as usize;
+                        if nb != ti && alive[nb] && mesh.tet_regions[nb] == region {
+                            cavity.push(nb);
+                        }
+                    }
+                }
+                cavity.sort_unstable();
+                cavity.dedup();
+                // Cavity faces: interior iff shared by two cavity tets.
+                // Constrained interior faces veto the candidate.
+                let mut faces: Vec<([usize; 3], [usize; 3])> = Vec::new(); // (sorted, oriented)
+                for &c in &cavity {
+                    for i in 0..4 {
+                        let of = opp_face(mesh.tets[c], i);
+                        faces.push((sorted3(of), of));
+                    }
+                }
+                faces.sort_unstable();
+                let mut bfaces: Vec<[usize; 3]> = Vec::new();
+                let mut fi = 0;
+                while fi < faces.len() {
+                    let same = faces[fi..].iter().take_while(|f| f.0 == faces[fi].0).count();
+                    if same == 1 {
+                        bfaces.push(faces[fi].1);
+                    } else if constrained_faces.contains(&faces[fi].0) {
+                        continue 'cands;
+                    }
+                    fi += same;
+                }
+                let mut verts: Vec<usize> = cavity.iter().flat_map(|&c| mesh.tets[c]).collect();
+                verts.sort_unstable();
+                verts.dedup();
+                let mut x = [0.0f64; 3];
+                let mut diag2 = 0.0f64;
+                for &v in &verts {
+                    for (k, a) in x.iter_mut().enumerate() {
+                        *a += mesh.points[v][k];
+                    }
+                }
+                for a in &mut x {
+                    *a /= verts.len() as f64;
+                }
+                for &v in &verts {
+                    let d2: f64 =
+                        (0..3).map(|k| (mesh.points[v][k] - x[k]).powi(2)).sum();
+                    diag2 = diag2.max(d2);
+                }
+                let mut old_q = f64::MAX;
+                for &c in &cavity {
+                    old_q = old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, c));
+                }
+                let mut old_re = 0.0f64;
+                for &c in &cavity {
+                    old_re = old_re.max(radius_edge(std::array::from_fn(|k| {
+                        mesh.points[mesh.tets[c][k]]
+                    })));
+                }
+                let re_cap = old_re.max(INSERT_RE_ALLOW);
+                // Optimization-based positioning (the Stellar recipe): the
+                // centroid cone of a squashed sliver cavity is itself thin,
+                // so the insertion point pattern-searches the position that
+                // maximizes the worst cone DIHEDRAL quality. The radius-edge
+                // cap is a hard constraint INSIDE the objective: needles
+                // have fine dihedrals, so without it the search happily
+                // walks into huge-circumsphere positions.
+                // Objective: worst cone dihedral quality, with the
+                // radius-edge cap as a PENALTY rather than a hard wall
+                // (infeasible start positions would otherwise sit on a MIN
+                // plateau the pattern search cannot leave). Acceptance at
+                // the end is strict on both.
+                let cone_eval = |x: [f64; 3]| -> (f64, f64) {
+                    let mut q = f64::MAX;
+                    let mut re = 0.0f64;
+                    for f in &bfaces {
+                        let p: [[f64; 3]; 4] = [
+                            mesh.points[f[0]],
+                            mesh.points[f[1]],
+                            mesh.points[f[2]],
+                            x,
+                        ];
+                        if Sign::of_f64(geometry_predicates::orient3d(p[0], p[1], p[2], p[3]))
+                            != Sign::Positive
+                        {
+                            return (f64::MIN, f64::MAX);
+                        }
+                        re = re.max(radius_edge(p));
+                        match quality_above_coords(p, f64::MIN) {
+                            Some(cq) => q = q.min(cq),
+                            None => return (f64::MIN, f64::MAX),
+                        }
+                    }
+                    (q, re)
+                };
+                let score = |(q, re): (f64, f64)| -> f64 {
+                    if q == f64::MIN {
+                        f64::MIN
+                    } else {
+                        q - 0.5 * ((re / re_cap) - 1.0).max(0.0)
+                    }
+                };
+                let mut best = cone_eval(x);
+                let mut best_s = score(best);
+                let mut step = 0.25 * diag2.sqrt();
+                for _ in 0..3 {
+                    loop {
+                        let mut improved = false;
+                        for k in 0..3 {
+                            for sgn in [-1.0, 1.0] {
+                                let mut cand = x;
+                                cand[k] += sgn * step;
+                                let e = cone_eval(cand);
+                                let sc = score(e);
+                                if sc > best_s {
+                                    best_s = sc;
+                                    best = e;
+                                    x = cand;
+                                    improved = true;
+                                }
+                            }
+                        }
+                        if !improved {
+                            break;
+                        }
+                    }
+                    step *= 0.5;
+                }
+                // Acceptance is on the dihedral objective alone: the
+                // radius-edge penalty steers the search away from needle
+                // positions, but a sliver removal is not sacrificed to the
+                // occasional long cone (slivers hurt Nedelec conditioning
+                // directly; needles with sound dihedrals do not).
+                if best.0 <= old_q + QUALITY_EPS {
+                    continue;
+                }
+                let xi = mesh.points.len();
+                mesh.points.push(x);
+                for &c in &cavity {
+                    alive[c] = false;
+                }
+                for f in bfaces {
+                    added.push(([f[0], f[1], f[2], xi], region));
+                }
+                for &v in &verts {
+                    next_dirty.insert(v);
+                }
+                next_dirty.insert(xi);
+                ops += 1;
+            }
         }
 
         // Compact.

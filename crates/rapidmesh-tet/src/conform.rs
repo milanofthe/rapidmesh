@@ -362,9 +362,17 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         )
         .expect("explicit")
     };
-    let inside_patch = |patch: &Patch, points: &[[f64; 3]], q: [f64; 3]| -> bool {
+    // Per-patch member index: PLC vertex positions never move, so this is
+    // built once for the whole run.
+    let patch_grids: Vec<Tri2Grid> = patches
+        .iter()
+        .map(|p| Tri2Grid::build(&points, &p.members, p.axis))
+        .collect();
+    let inside_patch = |pi: usize, patch: &Patch, points: &[[f64; 3]], q: [f64; 3]| -> bool {
         let qp = Point3::Explicit(q);
-        patch.members.iter().any(|f| {
+        let (u, v) = Tri2Grid::axis_uv(patch.axis);
+        patch_grids[pi].candidates([q[u], q[v]]).any(|mi| {
+            let f = patch.members[mi as usize];
             Tri::new(points[f[0]], points[f[1]], points[f[2]]).contains_coplanar(
                 &qp,
                 patch.axis,
@@ -375,9 +383,11 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // Strictly inside some member triangle: keeps Steiner points off the
     // patch boundary (the creases), which midpoint recovery could otherwise
     // never restore.
-    let strictly_inside_patch = |patch: &Patch, points: &[[f64; 3]], q: [f64; 3]| -> bool {
+    let strictly_inside_patch = |pi: usize, patch: &Patch, points: &[[f64; 3]], q: [f64; 3]| -> bool {
         let qp = Point3::Explicit(q);
-        patch.members.iter().any(|f| {
+        let (u, v) = Tri2Grid::axis_uv(patch.axis);
+        patch_grids[pi].candidates([q[u], q[v]]).any(|mi| {
+            let f = patch.members[mi as usize];
             (0..3).all(|e| {
                 rapidmesh_exact::orient2d(
                     &Point3::Explicit(points[f[e]]),
@@ -398,7 +408,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // Patches whose tiling repair stagnated (see the stagnation guard).
     let mut abandoned: DSet<usize> = DSet::default();
     let mut patch_progress: DMap<usize, (f64, usize)> = DMap::default();
-    let mut tried: DSet<[usize; 4]> = DSet::default();
+    let mut tried: DMap<[usize; 4], u8> = DMap::default();
     #[allow(clippy::type_complexity)]
     let (tets, patch_faces, tet_region): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>, Vec<u32>) = 'outer: loop {
         round += 1;
@@ -507,7 +517,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 let c: [f64; 3] = std::array::from_fn(|k| {
                     (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
                 });
-                if !inside_patch(patch, &points, c) {
+                if !inside_patch(pi, patch, &points, c) {
                     continue;
                 }
                 tile_area[pi] += area2_f64(f, patch.axis);
@@ -660,7 +670,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
                 let x: [f64; 3] =
                     std::array::from_fn(|k| points[a][k] + t * (points[b][k] - points[a][k]));
-                if strictly_inside_patch(patch, &points, x) {
+                if strictly_inside_patch(pi, patch, &points, x) {
                     new_pts.push((x, pi));
                 }
             }
@@ -908,6 +918,103 @@ fn split_crease_midpoint(
 }
 
 /// One sizing/quality refinement step on a conforming state. Returns the
+/// Per-patch 2D index over member triangles (in the patch's projection
+/// axis): point-in-patch queries on large coplanar patches (tessellated flat
+/// CAD faces hold thousands of members) would otherwise scan every member
+/// with exact predicates, once per tile per round. Members are static for
+/// the whole meshing run, so the grids are built once.
+struct Tri2Grid {
+    cell: f64,
+    origin: [f64; 2],
+    map: DMap<[i64; 2], Vec<u32>>,
+    /// Members spanning more than MAX_SPAN cells per axis.
+    large: Vec<u32>,
+}
+
+impl Tri2Grid {
+    const MAX_SPAN: i64 = 4;
+
+    fn axis_uv(axis: Axis) -> (usize, usize) {
+        match axis {
+            Axis::X => (1, 2),
+            Axis::Y => (2, 0),
+            Axis::Z => (0, 1),
+        }
+    }
+
+    fn build(points: &[[f64; 3]], members: &[[usize; 3]], axis: Axis) -> Tri2Grid {
+        let (u, v) = Tri2Grid::axis_uv(axis);
+        let bbox = |f: &[usize; 3]| -> ([f64; 2], [f64; 2]) {
+            let mut lo = [f64::MAX; 2];
+            let mut hi = [f64::MIN; 2];
+            for &w in f {
+                let q = [points[w][u], points[w][v]];
+                for k in 0..2 {
+                    lo[k] = lo[k].min(q[k]);
+                    hi[k] = hi[k].max(q[k]);
+                }
+            }
+            (lo, hi)
+        };
+        // Cell size from the median member extent.
+        let mut ext: Vec<f64> = members
+            .iter()
+            .map(|f| {
+                let (lo, hi) = bbox(f);
+                (hi[0] - lo[0]).max(hi[1] - lo[1])
+            })
+            .collect();
+        ext.sort_by(f64::total_cmp);
+        let cell = ext
+            .get(ext.len() / 2)
+            .copied()
+            .unwrap_or(1.0)
+            .max(f64::MIN_POSITIVE);
+        let origin = members
+            .first()
+            .map(|f| {
+                let (lo, _) = bbox(f);
+                lo
+            })
+            .unwrap_or([0.0; 2]);
+        let mut grid = Tri2Grid { cell, origin, map: DMap::default(), large: Vec::new() };
+        for (mi, f) in members.iter().enumerate() {
+            let (lo, hi) = bbox(f);
+            let clo = grid.cell_of(lo);
+            let chi = grid.cell_of(hi);
+            if (0..2).any(|k| chi[k] - clo[k] >= Tri2Grid::MAX_SPAN) {
+                grid.large.push(mi as u32);
+                continue;
+            }
+            for x in clo[0]..=chi[0] {
+                for y in clo[1]..=chi[1] {
+                    grid.map.entry([x, y]).or_default().push(mi as u32);
+                }
+            }
+        }
+        grid
+    }
+
+    fn cell_of(&self, q: [f64; 2]) -> [i64; 2] {
+        std::array::from_fn(|k| ((q[k] - self.origin[k]) / self.cell).floor() as i64)
+    }
+
+    /// Member candidates whose grid cells contain the query point.
+    fn candidates(&self, q: [f64; 2]) -> impl Iterator<Item = u32> + '_ {
+        self.map
+            .get(&self.cell_of(q))
+            .into_iter()
+            .flatten()
+            .copied()
+            .chain(self.large.iter().copied())
+    }
+}
+
+/// A vetoed quality candidate is re-attempted at most this many times after
+/// neighborhood changes (its verdict rarely changes beyond that, and
+/// unbounded retries re-pay the insertion cavity every round).
+const QUALITY_RETRY_LIMIT: u8 = 3;
+
 /// Sizing splits trigger above this multiple of the local target h. Splits
 /// roughly halve lengths, so triggering exactly at h lands edges at h/2 and
 /// over-refines about twofold against meshers that treat h as a target
@@ -1007,7 +1114,7 @@ fn refine_step(
     dt_tets: &[[usize; 4]],
     tilings: &[Vec<[usize; 3]>],
     tet_region: &[u32],
-    tried: &mut DSet<[usize; 4]>,
+    tried: &mut DMap<[usize; 4], u8>,
     new_since: usize,
     points: &mut Vec<[f64; 3]>,
     builder: &mut DelaunayBuilder,
@@ -1271,14 +1378,21 @@ fn refine_step(
         if !oversized {
             let mut key = *t;
             key.sort_unstable();
-            if !tried.insert(key) {
-                let changed = points[new_since.min(points.len())..]
-                    .iter()
-                    .any(|q| dist2(cc, *q) < 4.0 * r * r);
+            let attempts = tried.entry(key).or_insert(0);
+            if *attempts > 0 {
+                // Retry only when the neighborhood changed, and only a few
+                // times: candidates with huge circumradii match every new
+                // point and would otherwise re-pay their (vetoed) insertion
+                // cavity every single round.
+                let changed = *attempts <= QUALITY_RETRY_LIMIT
+                    && points[new_since.min(points.len())..]
+                        .iter()
+                        .any(|q| dist2(cc, *q) < 4.0 * r * r);
                 if !changed {
                     continue;
                 }
             }
+            *attempts = attempts.saturating_add(1);
         }
         // Batch spacing scales with the LOCAL TARGET SIZE: an insertion
         // fixes its whole neighborhood, so stale-DT candidates closer than

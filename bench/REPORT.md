@@ -18,10 +18,10 @@ metric for Nedelec conditioning). r/e = max circumradius/shortest-edge.
 
 | geometry | mesher | tets | points | min-dih | max r/e | time |
 |---|---|--:|--:|--:|--:|--:|
-| em_scene | rapidmesh | 3370 | 717 | 19.9 | 2.88 | 90 ms |
+| em_scene | rapidmesh | 3370 | 717 | 19.9 | 2.88 | 83 ms |
 | em_scene | gmsh | 2261 | 492 | 13.6 | 1.73 | 28 ms |
 | em_scene | tetgen | 2354 | 510 | 3.0 | 1.93 | 10 ms |
-| via | rapidmesh | 3057 | 738 | 23.1 | 2.23 | 121 ms |
+| via | rapidmesh | 3057 | 738 | 23.1 | 2.23 | 120 ms |
 | via | gmsh | 1566 | 437 | 13.7 | 1.32 | 19 ms |
 | via | tetgen | 2203 | 540 | 3.4 | 1.87 | 12 ms |
 | microstrip | rapidmesh | 5942 | 1384 | 20.7 | 2.70 | 166 ms |
@@ -30,29 +30,29 @@ metric for Nedelec conditioning). r/e = max circumradius/shortest-edge.
 | sphere | rapidmesh | 4472 | 944 | 15.7 | 4.13 | 179 ms |
 | sphere | gmsh | 1776 | 410 | 13.5 | 1.83 | 20 ms |
 | sphere | tetgen | 3784 | 752 | 3.2 | 2.02 | 27 ms |
-| l_prism | rapidmesh | 9829 | 2101 | 18.0 | 2.11 | 247 ms |
+| l_prism | rapidmesh | 9829 | 2101 | 18.0 | 2.11 | 246 ms |
 | l_prism | gmsh | 2751 | 711 | 12.2 | 1.49 | 34 ms |
 | l_prism | tetgen | 7459 | 1586 | 2.0 | 1.48 | 33 ms |
 | density_transition | rapidmesh | 1849 | 385 | 11.1 | 5.97 | 47 ms |
 | density_transition | gmsh | 1331 | 277 | 12.9 | 2.43 | 13 ms |
 | density_transition | tetgen | 1530 | 318 | 2.3 | 2.37 | 7 ms |
-| spot | rapidmesh | 14904 | 4188 | 1.2 | 48.56 | 1285 ms |
+| spot | rapidmesh | 14904 | 4188 | 1.2 | 48.56 | 1301 ms |
 | spot | tetgen | 21857 | 5844 | 1.4 | 14.22 | 127 ms |
-| fandisk | rapidmesh | 36777 | 9724 | 0.0 | 14.24 | 3577 ms |
+| fandisk | rapidmesh | 36777 | 9724 | 0.0 | 14.24 | 2283 ms |
 | fandisk | tetgen | 25893 | 7782 | 1.7 | 27.05 | 132 ms |
 
 ## rapidmesh stage timings
 
 | geometry | kind | input faces | plc faces | assemble | mesh | optimize | total |
 |---|---|--:|--:|--:|--:|--:|--:|
-| em_scene | scene | 0 | 34 | 1 ms | 14 ms | 75 ms | 90 ms |
-| via | scene | 0 | 100 | 18 ms | 20 ms | 83 ms | 121 ms |
-| microstrip | scene | 0 | 52 | 10 ms | 24 ms | 132 ms | 166 ms |
+| em_scene | scene | 0 | 34 | 1 ms | 12 ms | 70 ms | 83 ms |
+| via | scene | 0 | 100 | 19 ms | 18 ms | 83 ms | 120 ms |
+| microstrip | scene | 0 | 52 | 9 ms | 25 ms | 132 ms | 166 ms |
 | sphere | scene | 0 | 236 | 6 ms | 40 ms | 133 ms | 179 ms |
-| l_prism | scene | 0 | 32 | 1 ms | 42 ms | 204 ms | 247 ms |
+| l_prism | scene | 0 | 32 | 1 ms | 42 ms | 203 ms | 246 ms |
 | density_transition | scene | 0 | 24 | 0 ms | 5 ms | 42 ms | 47 ms |
-| spot | model | 5856 | 5856 | 24 ms | 702 ms | 559 ms | 1285 ms |
-| fandisk | model | 12946 | 12946 | 72 ms | 2176 ms | 1329 ms | 3577 ms |
+| spot | model | 5856 | 5856 | 24 ms | 717 ms | 560 ms | 1301 ms |
+| fandisk | model | 12946 | 12946 | 76 ms | 902 ms | 1305 ms | 2283 ms |
 
 ## Size grading (density_transition)
 

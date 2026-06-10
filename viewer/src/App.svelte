@@ -18,7 +18,6 @@
 	});
 
 	let settings: ViewSettings = $state({
-		surface: true,
 		surface_wire: true,
 		tet_fill: false,
 		tet_wire: false,
@@ -27,8 +26,7 @@
 		clip_t: 0.5
 	});
 
-	const layer_toggles: { key: 'surface' | 'surface_wire' | 'tet_fill' | 'tet_wire'; label: string; tip: string }[] = [
-		{ key: 'surface', label: 'srf', tip: 'Surface faces' },
+	const layer_toggles: { key: 'surface_wire' | 'tet_fill' | 'tet_wire'; label: string; tip: string }[] = [
 		{ key: 'surface_wire', label: 'wire', tip: 'Surface wireframe' },
 		{ key: 'tet_fill', label: 'tet', tip: 'Tet fill (use with clip)' },
 		{ key: 'tet_wire', label: 'edges', tip: 'Interior tet edges (use with clip)' }

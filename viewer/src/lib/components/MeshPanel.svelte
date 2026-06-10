@@ -12,7 +12,7 @@
 		setTagVisible,
 		type GLState
 	} from '$lib/render/canvas3d';
-	import { canvas as canvasTheme, palette, plotColors } from '$lib/theme';
+	import { canvas as canvasTheme, plotColors } from '$lib/theme';
 	import {
 		animate_camera,
 		camera,
@@ -34,7 +34,6 @@
 	} = $props();
 
 	// Display tags for visibility toggles.
-	const TAG_SURFACE = 1;
 	const TAG_TETFILL = 2;
 	const TAG_WIRE_SURFACE = 3;
 	const TAG_WIRE_TETS = 4;
@@ -47,7 +46,6 @@
 		];
 	}
 	const regionCycle = plotColors.cycle.map(hexToRgb);
-	const pecColor = hexToRgb(palette.accentSecondary);
 	// Wireframe colors are rapidfem canvas tokens: crosshair is what
 	// scene_builder uses for its wireframe overlay; grid for the dimmer
 	// interior edges.
@@ -167,32 +165,6 @@
 		prefix_meshes = [];
 		const pts = data.points;
 
-		// Surface faces grouped by color, each group sorted by face centroid.
-		const groups = new Map<string, { color: [number, number, number]; fis: number[] }>();
-		for (let fi = 0; fi < data.faces.length; fi++) {
-			const f = data.faces[fi];
-			const color = f.tag !== 0 ? pecColor : regionColor(Math.max(f.regions[0], f.regions[1]));
-			const key = color.join(',');
-			if (!groups.has(key)) groups.set(key, { color, fis: [] });
-			groups.get(key)!.fis.push(fi);
-		}
-		for (const g of groups.values()) {
-			g.fis.sort((a, b) => face_centroid[a][axis] - face_centroid[b][axis]);
-			const pos: number[] = [];
-			const nrm: number[] = [];
-			for (const fi of g.fis) {
-				const [a, b, c] = data.faces[fi].tri;
-				pushFace(pos, nrm, a, b, c);
-			}
-			prefix_meshes.push({
-				idx: state.meshes.length,
-				line: false,
-				vals: Float64Array.from(g.fis, (fi) => face_centroid[fi][axis]),
-				vpu: 3
-			});
-			addMesh(state, new Float32Array(pos), new Float32Array(nrm), g.color, TAG_SURFACE, [-1, -1]);
-		}
-
 		// Tet fill per region, sorted by tet centroid.
 		const byRegion = new Map<number, number[]>();
 		for (let ti = 0; ti < data.tets.length; ti++) {
@@ -294,7 +266,6 @@
 	$effect(() => {
 		// Read every dependency up front so they are tracked even while the
 		// GL state is not ready yet.
-		const surface = settings.surface;
 		const surface_wire = settings.surface_wire;
 		const tet_fill = settings.tet_fill;
 		const tet_wire = settings.tet_wire;
@@ -303,7 +274,6 @@
 		const clip_t = settings.clip_t;
 		if (!gl_state) return;
 		apply_clip(gl_state, clip_enable, clip_axis, clip_t);
-		setTagVisible(gl_state, TAG_SURFACE, surface);
 		setTagVisible(gl_state, TAG_WIRE_SURFACE, surface_wire);
 		setTagVisible(gl_state, TAG_TETFILL, tet_fill);
 		setTagVisible(gl_state, TAG_WIRE_TETS, tet_wire);

@@ -19,7 +19,6 @@ export interface MeshJson {
 }
 
 export interface ViewSettings {
-	surface: boolean;
 	surface_wire: boolean;
 	tet_fill: boolean;
 	tet_wire: boolean;

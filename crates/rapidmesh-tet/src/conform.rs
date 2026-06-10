@@ -888,6 +888,28 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     };
 
+    if std::env::var_os("RAPIDMESH_EDGE_DUMP").is_some() {
+        let lim = params.maxh * 1.45;
+        let mut seen: DSet<(usize, usize)> = DSet::default();
+        for t in &tets {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let (a, b) = sorted2(t[i], t[j]);
+                    let d = (0..3)
+                        .map(|k| (points[a][k] - points[b][k]).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    if d > lim && seen.insert((a, b)) {
+                        eprintln!(
+                            "long edge {d:.4}: v{a} h={:.3} {:?} -> v{b} h={:.3} {:?}",
+                            point_h[a], points[a], point_h[b], points[b]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------- output
     // Regions come from the last round's classification.
     let mut kept_tets: Vec<[usize; 4]> = Vec::new();
@@ -1167,7 +1189,7 @@ fn patch_inside_closed(
 /// over-refines about twofold against meshers that treat h as a target
 /// (gmsh, tetgen); triggering at 1.2 h centers the result near h and leaves
 /// the optimizer headroom inside the documented 1.5 h max-edge contract.
-const OVERSIZE_FACTOR: f64 = 1.2;
+const OVERSIZE_FACTOR: f64 = 1.3;
 
 /// Uniform grid over balls for "which ball contains this point" queries:
 /// linear scans over all crease/tile balls per refinement candidate are
@@ -1310,9 +1332,12 @@ fn refine_step(
             .iter()
             .copied()
             .filter(|key| {
+                // Mean of the endpoint targets: an edge leaving a fine
+                // feature is allowed to GROW along the graded field; the
+                // min would clamp it to the fine size over its whole
+                // length.
                 let h = crease_h(key)
-                    .min(point_h[key.0])
-                    .min(point_h[key.1]);
+                    .min(0.5 * (point_h[key.0] + point_h[key.1]));
                 h.is_finite()
                     && dist2(points[key.0], points[key.1])
                         > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h)
@@ -1387,9 +1412,7 @@ fn refine_step(
         for (pi, tiles) in tilings.iter().enumerate() {
             for f in tiles {
                 let h_t = patch_h[pi]
-                    .min(point_h[f[0]])
-                    .min(point_h[f[1]])
-                    .min(point_h[f[2]]);
+                    .min((point_h[f[0]] + point_h[f[1]] + point_h[f[2]]) / 3.0);
                 if !h_t.is_finite() {
                     continue;
                 }
@@ -1488,53 +1511,66 @@ fn refine_step(
         }
     }
     let tile_grid = BallGrid::build(tile_ball_geo);
-    // (cc, circumradius, spacing, lmin2, tet verts, longest edge if oversized)
+    // (cc+circumradius if usable, spacing, lmin2, tet verts, longest edge
+    // if oversized)
     #[allow(clippy::type_complexity)]
-    let mut candidates: Vec<([f64; 3], f64, f64, f64, [usize; 4], Option<(usize, usize)>)> =
-        Vec::new();
+    let mut candidates: Vec<(
+        Option<([f64; 3], f64)>,
+        f64,
+        f64,
+        [usize; 4],
+        Option<(usize, usize)>,
+    )> = Vec::new();
     for (ti, t) in dt_tets.iter().enumerate() {
-        let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
-        let mut lmin2 = f64::MAX;
-        let mut lmax2 = 0.0_f64;
-        let mut longest = (t[0], t[1]);
-        for i in 0..4 {
-            for j in i + 1..4 {
-                let d = dist2(p[i], p[j]);
-                lmin2 = lmin2.min(d);
-                if d > lmax2 {
-                    lmax2 = d;
-                    longest = (t[i], t[j]);
-                }
-            }
-        }
-        // Near-degenerate (sliver) tets have no usable circumcenter; their
-        // long edges are tolerated (sizing is a target, and forcing midpoint
-        // splits into slivers spawns new slivers without converging).
-        let Some((cc, r)) = tet_circumcenter(p) else {
-            continue;
-        };
-        let bad_quality = params.radius_edge_bound.is_finite()
-            && r > params.radius_edge_bound * lmin2.sqrt();
-        let maybe_oversized = sized && lmax2 > 0.0;
-        if !maybe_oversized && !bad_quality {
-            continue;
-        }
-        // Only refine tets that belong to a region (the DT also fills the
-        // gap between the convex hull and the domain); the region also
-        // selects the local size target.
+        // Region first: it caps every edge target (inherited growth must
+        // not undercut the region's own h INSIDE a fine region).
         let region = tet_region[ti];
         if region == 0 {
             continue;
         }
-        // Graded local target: the region cap tightened by the per-point
-        // size field (a tet touching a fine feature's envelope refines even
-        // deep inside a coarse region; sizes then grow with distance).
-        let h = h_of_region(region)
-            .min(point_h[t[0]])
-            .min(point_h[t[1]])
-            .min(point_h[t[2]])
-            .min(point_h[t[3]]);
-        let oversized = h.is_finite() && lmax2 > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h);
+        let h_region = h_of_region(region);
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
+        let mut lmin2 = f64::MAX;
+        let mut lmax2 = 0.0_f64;
+        let mut longest = (t[0], t[1]);
+        // Worst sizing violation over the edges, each judged against the
+        // MEAN of its endpoint targets (edges leaving fine features may
+        // grow along the graded field; the min would clamp them fine).
+        let mut worst_ratio2 = 0.0_f64;
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d = dist2(p[i], p[j]);
+                lmin2 = lmin2.min(d);
+                lmax2 = lmax2.max(d);
+                let h_ij = h_region.min(0.5 * (point_h[t[i]] + point_h[t[j]]));
+                let ratio2 = if h_ij.is_finite() {
+                    d / (h_ij * h_ij)
+                } else {
+                    0.0
+                };
+                if ratio2 > worst_ratio2 {
+                    worst_ratio2 = ratio2;
+                    longest = (t[i], t[j]);
+                }
+            }
+        }
+        // Near-degenerate (sliver) tets have no usable circumcenter. Their
+        // QUALITY is the optimizer's job, but their oversized edges still
+        // violate sizing and must split: cc-less candidates skip straight
+        // to the longest-edge fallback (skipping them entirely let
+        // 1.5x-contract-breaking edges survive inside slivers).
+        let cc_r = tet_circumcenter(p);
+        let bad_quality = params.radius_edge_bound.is_finite()
+            && cc_r.is_some_and(|(_, r)| r > params.radius_edge_bound * lmin2.sqrt());
+        let maybe_oversized = sized && lmax2 > 0.0;
+        if !maybe_oversized && !bad_quality {
+            continue;
+        }
+        // Graded local target for the quality floor and the batch spacing:
+        // the region cap tightened by the tet-mean of the per-point field.
+        let h = h_region
+            .min((point_h[t[0]] + point_h[t[1]] + point_h[t[2]] + point_h[t[3]]) / 4.0);
+        let oversized = worst_ratio2 > OVERSIZE_FACTOR * OVERSIZE_FACTOR;
         // Quality splits stop once the local mesh is at (or below) target
         // size: boundary slivers have huge circumradii whose centers all
         // land far away (e.g. a dense blob in a sphere's middle) and are the
@@ -1542,6 +1578,11 @@ fn refine_step(
         let quality_allowed = bad_quality
             && (!h.is_finite() || lmin2.sqrt() > 0.2 * h);
         if !oversized && !quality_allowed {
+            continue;
+        }
+        // Quality-only candidates need a usable circumcenter; degenerate
+        // oversized tets go straight to the longest-edge fallback.
+        if !oversized && cc_r.is_none() {
             continue;
         }
         // Quality-only candidates do not blindly retry every round (most
@@ -1562,6 +1603,7 @@ fn refine_step(
                 // times: candidates with huge circumradii match every new
                 // point and would otherwise re-pay their (vetoed) insertion
                 // cavity every single round.
+                let (cc, r) = cc_r.expect("quality candidates carry a circumcenter");
                 let changed = *attempts <= QUALITY_RETRY_LIMIT
                     && points[new_since.min(points.len())..]
                         .iter()
@@ -1580,10 +1622,10 @@ fn refine_step(
         } else {
             0.5 * lmin2.sqrt()
         };
-        candidates.push((cc, r, spacing, lmin2, *t, oversized.then_some(longest)));
+        candidates.push((cc_r, spacing, lmin2, *t, oversized.then_some(longest)));
     }
     if std::env::var_os("RAPIDMESH_CAND_TRACE").is_some() && !candidates.is_empty() {
-        let mut ls: Vec<f64> = candidates.iter().map(|c| c.2).collect();
+        let mut ls: Vec<f64> = candidates.iter().map(|c| c.1).collect();
         ls.sort_by(f64::total_cmp);
         eprintln!(
             "  cands {}: spacing min {:.2e} med {:.2e} max {:.2e}",
@@ -1593,7 +1635,11 @@ fn refine_step(
             ls[ls.len() - 1]
         );
     }
-    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    candidates.sort_by(|a, b| {
+        let ra = a.0.map_or(f64::INFINITY, |(_, r)| r);
+        let rb = b.0.map_or(f64::INFINITY, |(_, r)| r);
+        rb.total_cmp(&ra)
+    });
     let cand_trace = std::env::var_os("RAPIDMESH_CAND_TRACE").is_some();
     let t_cands = std::time::Instant::now();
     let n_cands = candidates.len();
@@ -1652,10 +1698,17 @@ fn refine_step(
             }
         }};
     }
-    for (cc, _r, spacing, lmin2, tverts, longest) in candidates {
+    for (cc_r, spacing, lmin2, tverts, longest) in candidates {
         if n >= 512 {
             break;
         }
+        let Some((cc, _r)) = cc_r else {
+            // Degenerate oversized tet: split its longest edge directly.
+            if let Some((a, b)) = longest {
+                split_longest_edge!(a, b);
+            }
+            continue;
+        };
         if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
             continue;
         }

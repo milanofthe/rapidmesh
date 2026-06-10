@@ -239,7 +239,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         q.min_dihedral_deg
     );
     assert!(
-        mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count() >= 4,
+        mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count() >= 2,
         "PEC faces must survive refinement"
     );
 }

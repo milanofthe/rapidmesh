@@ -328,6 +328,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &map_tets,
             &is_active,
             &complex_changed,
+            &edge_budget2,
             &mut next_dirty,
         );
         ops += surf_ops;
@@ -415,6 +416,26 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             let move2: f64 = (0..3).map(|k| (avg[k] - old_pos[k]).powi(2)).sum();
             if move2 < MIN_REL_MOVE * MIN_REL_MOVE * lref2 {
                 continue;
+            }
+            // Sizing contract: a move may not grow any incident edge past
+            // the local budget (unless it already was longer): smoothing
+            // was the one operation without the edge gate, and chains of
+            // moves walked edges past the documented 1.5 h bound.
+            {
+                let budget2 = edge_budget2(mesh.tet_regions[inc[0] as usize]);
+                let mut old_lmax2 = 0.0f64;
+                let mut new_lmax2 = 0.0f64;
+                for &w in &nbrs {
+                    let dw_old: f64 =
+                        (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
+                    let dw_new: f64 =
+                        (0..3).map(|k| (mesh.points[w][k] - avg[k]).powi(2)).sum();
+                    old_lmax2 = old_lmax2.max(dw_old);
+                    new_lmax2 = new_lmax2.max(dw_new);
+                }
+                if new_lmax2 > old_lmax2.max(budget2) {
+                    continue;
+                }
             }
             let mut old_q = f64::MAX;
             for &ti in inc {
@@ -1357,6 +1378,7 @@ fn surface_pass(
     map_tets: &[u32],
     is_active: &impl Fn(&[usize]) -> bool,
     complex_changed: &impl Fn(&[usize]) -> bool,
+    edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
     next_dirty: &mut DSet<usize>,
 ) -> (usize, bool) {
     let mut ops = 0usize;
@@ -1420,6 +1442,34 @@ fn surface_pass(
             let d = *sf2.tri.iter().find(|&&v| v != a && v != b).expect("apex");
             if c == d {
                 continue;
+            }
+            // Sizing contract: the new diagonal must stay within the local
+            // budget (or the old quad's own longest edge); the 2-2 flip was
+            // the one topological operation without the edge gate.
+            {
+                let quad = [a, b, c, d];
+                let mut lmax2 = 0.0f64;
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        if (quad[i], quad[j]) == (c, d) || (quad[i], quad[j]) == (d, c) {
+                            continue;
+                        }
+                        lmax2 = lmax2.max(
+                            (0..3)
+                                .map(|k| {
+                                    (mesh.points[quad[i]][k] - mesh.points[quad[j]][k]).powi(2)
+                                })
+                                .sum(),
+                        );
+                    }
+                }
+                let budget2 = edge_budget2(sf1.regions[0]).min(edge_budget2(sf1.regions[1]));
+                let new2: f64 = (0..3)
+                    .map(|k| (mesh.points[c][k] - mesh.points[d][k]).powi(2))
+                    .sum();
+                if new2 > lmax2.max(budget2) {
+                    continue;
+                }
             }
             // Exact candidate filter on the full complex (both faces plus
             // their adjacent tet pairs), before any exact predicate work.
@@ -1733,6 +1783,25 @@ fn surface_pass(
             if !snap {
                 let move2: f64 = (0..3).map(|k| (target[k] - cur[k]).powi(2)).sum();
                 if move2 < MIN_REL_MOVE * MIN_REL_MOVE * lref2 {
+                    continue;
+                }
+                // Sizing contract (see the volume smoothing gate). Snaps
+                // are constraints and exempt.
+                let mut budget2 = f64::INFINITY;
+                for &ti in &incident[v] {
+                    budget2 = budget2.min(edge_budget2(mesh.tet_regions[ti]));
+                }
+                let mut old_lmax2 = 0.0f64;
+                let mut new_lmax2 = 0.0f64;
+                for &w in &nbrs {
+                    let dw_old: f64 =
+                        (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum();
+                    let dw_new: f64 =
+                        (0..3).map(|k| (mesh.points[w][k] - target[k]).powi(2)).sum();
+                    old_lmax2 = old_lmax2.max(dw_old);
+                    new_lmax2 = new_lmax2.max(dw_new);
+                }
+                if new_lmax2 > old_lmax2.max(budget2) {
                     continue;
                 }
             }

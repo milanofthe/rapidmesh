@@ -84,7 +84,8 @@ fn radius_edge(p: [[f64; 3]; 4]) -> f64 {
     (r2 / lmin2).sqrt()
 }
 
-/// Tets below this minimum dihedral angle (degrees) become vertex-insertion
+/// Tets whose dihedral angles leave this band (below it, or above its
+/// 180-degree complement) become vertex-insertion
 /// candidates: boundary slivers with every vertex pinned to the surface are
 /// unreachable for smoothing, and their near-coplanar rings defeat edge
 /// removal; splitting their star from an interior Steiner point hands the
@@ -134,11 +135,12 @@ fn orient_positive(points: &[[f64; 3]], t: [usize; 4]) -> bool {
     )) == Sign::Positive
 }
 
-/// Comparison-scale tet quality: MINUS the maximum cosine over the six
-/// dihedral angles, in [-1, 1]. Strictly increasing in the minimum dihedral
-/// angle (acos is monotone decreasing), so every improvement gate can
-/// compare it directly and skip the acos/degrees of the reporting metric
-/// (`quality_stats` in conform).
+/// Comparison-scale tet quality: MINUS the maximum ABSOLUTE cosine over the
+/// six dihedral angles, in [-1, 0]. Penalizes both extremes: slivers (near
+/// 0 deg) and caps/wedges (near 180 deg) score equally badly, while the
+/// minimum-dihedral metric is blind to obtuse angles (cos(179 deg) = -1
+/// looks great to a max-cos gate). Every improvement gate compares this
+/// scale directly; degrees stay a reporting concern (`quality_stats`).
 fn quality(points: &[[f64; 3]], t: [usize; 4]) -> f64 {
     quality_above(points, t, f64::MIN).expect("MIN threshold never rejects")
 }
@@ -181,7 +183,7 @@ fn quality_above_coords(p: [[f64; 3]; 4], threshold: f64) -> Option<f64> {
             continue;
         }
         let cos = ((0..3).map(|m| u[m] * v[m]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
-        q = q.min(-cos);
+        q = q.min(-cos.abs());
         if q <= threshold {
             return None;
         }

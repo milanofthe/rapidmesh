@@ -156,11 +156,15 @@ class Geometry:
         global target tet edge length, used by :meth:`mesh` when no
         override is passed (sizing is a target with a documented
         1.5x max-edge contract, like gmsh's mesh size)
+    grading : float
+        default size-grading Lipschitz constant for :meth:`mesh` (see
+        there); 0.5 grows neighbor elements by roughly 1.5x
     """
 
-    def __init__(self, *, maxh: float | None = None) -> None:
+    def __init__(self, *, maxh: float | None = None, grading: float = 0.5) -> None:
         self._builder = _native.SceneBuilder()
         self._maxh = maxh
+        self._grading = grading
 
     # ------------------------------------------------------------ solids
 
@@ -356,7 +360,7 @@ class Geometry:
         maxh: float | None = None,
         radius_edge: float = 2.0,
         max_points: int = 500_000,
-        grading: float = 0.5,
+        grading: float | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -378,8 +382,9 @@ class Geometry:
             disables grading and sizes jump at region interfaces)
         """
         h = maxh if maxh is not None else self._maxh
+        g = grading if grading is not None else self._grading
         native = self._builder.mesh(
-            h if h is not None else math.inf, radius_edge, max_points, grading
+            h if h is not None else math.inf, radius_edge, max_points, g
         )
         return Mesh(native)
 

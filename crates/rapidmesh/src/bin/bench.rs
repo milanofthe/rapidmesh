@@ -58,7 +58,12 @@ fn run_one(
     let mesh_ms = t1.elapsed().as_millis();
     println!("  meshed: {} tets, {} ms", mesh.tets.len(), mesh_ms);
     let t2 = Instant::now();
-    optimize(&mut mesh, &OptimizeParams::default());
+    let opt = OptimizeParams {
+        maxh: params.maxh,
+        region_maxh: params.region_maxh.clone(),
+        ..OptimizeParams::default()
+    };
+    optimize(&mut mesh, &opt);
     let optimize_ms = t2.elapsed().as_millis();
     println!("  optimized: {} ms", optimize_ms);
     let total_ms = assemble_ms + mesh_ms + optimize_ms;

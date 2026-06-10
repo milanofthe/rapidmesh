@@ -908,6 +908,13 @@ fn split_crease_midpoint(
 }
 
 /// One sizing/quality refinement step on a conforming state. Returns the
+/// Sizing splits trigger above this multiple of the local target h. Splits
+/// roughly halve lengths, so triggering exactly at h lands edges at h/2 and
+/// over-refines about twofold against meshers that treat h as a target
+/// (gmsh, tetgen); triggering at 1.2 h centers the result near h and leaves
+/// the optimizer headroom inside the documented 1.5 h max-edge contract.
+const OVERSIZE_FACTOR: f64 = 1.2;
+
 /// Uniform grid over balls for "which ball contains this point" queries:
 /// linear scans over all crease/tile balls per refinement candidate are
 /// quadratic on surface models with tens of thousands of constraints. Balls
@@ -1048,7 +1055,9 @@ fn refine_step(
             .copied()
             .filter(|key| {
                 let h = crease_h(key);
-                h.is_finite() && dist2(points[key.0], points[key.1]) > h * h
+                h.is_finite()
+                    && dist2(points[key.0], points[key.1])
+                        > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h)
             })
             .collect();
         if !long.is_empty() {
@@ -1121,7 +1130,7 @@ fn refine_step(
             for f in tiles {
                 if let Some((cc, r)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
                 {
-                    if r > 0.5 * patch_h[pi] {
+                    if r > 0.5 * OVERSIZE_FACTOR * patch_h[pi] {
                         cands.push((cc, r, pi));
                     }
                 }
@@ -1240,7 +1249,7 @@ fn refine_step(
             continue;
         }
         let h = h_of_region(region);
-        let oversized = h.is_finite() && lmax2 > h * h;
+        let oversized = h.is_finite() && lmax2 > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h);
         // Quality splits stop once the local mesh is at (or below) target
         // size: boundary slivers have huge circumradii whose centers all
         // land far away (e.g. a dense blob in a sphere's middle) and are the

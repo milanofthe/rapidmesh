@@ -166,7 +166,14 @@ fn sized_box_respects_maxh_and_quality() {
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
-    let ops = optimize(&mut mesh, &OptimizeParams::default());
+    let ops = optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: params.maxh,
+            region_maxh: params.region_maxh.clone(),
+            ..OptimizeParams::default()
+        },
+    );
     let q = quality_stats(&mesh);
     eprintln!("sized box quality: {before:?} -> {q:?} ({ops} ops)");
     // Volume stays exact under interior refinement and optimization;
@@ -208,7 +215,14 @@ fn sized_em_scene_stays_exact_and_conforming() {
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
-    let ops = optimize(&mut mesh, &OptimizeParams::default());
+    let ops = optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: params.maxh,
+            region_maxh: params.region_maxh.clone(),
+            ..OptimizeParams::default()
+        },
+    );
     let q = quality_stats(&mesh);
     eprintln!("sized EM scene quality: {before:?} -> {q:?} ({ops} ops)");
     assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
@@ -241,7 +255,14 @@ fn per_region_sizing_creates_density_transition() {
         max_points: 40_000,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
-    optimize(&mut mesh, &OptimizeParams::default());
+    optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: params.maxh,
+            region_maxh: params.region_maxh.clone(),
+            ..OptimizeParams::default()
+        },
+    );
     assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
     assert_eq!(mesh_region_volume6(&mesh, diel), rat(24.0));
     check_structure(&mesh);

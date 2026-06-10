@@ -24,7 +24,12 @@ fn main() {
             max_points: 200_000,
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
-        optimize(&mut mesh, &OptimizeParams::default());
+        let opt = OptimizeParams {
+            maxh: params.maxh,
+            region_maxh: params.region_maxh.clone(),
+            ..OptimizeParams::default()
+        };
+        optimize(&mut mesh, &opt);
         let millis = t0.elapsed().as_millis();
         let q = quality_stats(&mesh);
         println!(

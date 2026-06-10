@@ -17,10 +17,11 @@
 use crate::conform::TetMesh;
 use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
 use rapidmesh_geom::SurfaceKind;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
 type DState = BuildHasherDefault<rustc_hash::FxHasher>;
+type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
 
 /// The constrained surface complex: faces, edges, vertices.
@@ -102,13 +103,27 @@ pub struct OptimizeParams {
     /// only revisit the neighborhoods of previous changes, so a high cap
     /// costs little.
     pub passes: usize,
+    /// The meshing size target (see [`crate::MeshParams::maxh`]): the
+    /// optimizer keeps every new edge within [`EDGE_CONTRACT`] times the
+    /// local target, so the mesher's sizing survives optimization.
+    pub maxh: f64,
+    /// Per-region size targets (see [`crate::MeshParams::region_maxh`]).
+    pub region_maxh: Vec<(u32, f64)>,
 }
 
 impl Default for OptimizeParams {
     fn default() -> Self {
-        OptimizeParams { passes: 50 }
+        OptimizeParams {
+            passes: 50,
+            maxh: f64::INFINITY,
+            region_maxh: Vec::new(),
+        }
     }
 }
+
+/// Edges up to this multiple of the local size target are legal (the same
+/// documented slack the mesher's own max-edge contract uses).
+const EDGE_CONTRACT: f64 = 1.5;
 
 fn orient_positive(points: &[[f64; 3]], t: [usize; 4]) -> bool {
     Sign::of_f64(geometry_predicates::orient3d(
@@ -174,6 +189,26 @@ fn quality_above_coords(p: [[f64; 3]; 4], threshold: f64) -> Option<f64> {
     Some(q)
 }
 
+/// Longest squared edge over a set of tets.
+fn lmax2_of(points: &[[f64; 3]], tets: &[[usize; 4]], ids: &[usize]) -> f64 {
+    let mut m = 0.0f64;
+    for &ti in ids {
+        let t = tets[ti];
+        for i in 0..4 {
+            for j in i + 1..4 {
+                m = m.max(
+                    (0..3).map(|k| (points[t[i]][k] - points[t[j]][k]).powi(2)).sum(),
+                );
+            }
+        }
+    }
+    m
+}
+
+fn dist2_pts(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
+}
+
 fn sorted3(f: [usize; 3]) -> [usize; 3] {
     let mut s = f;
     s.sort_unstable();
@@ -191,6 +226,22 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
 /// that scales with the remaining work.
 pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     let trace = std::env::var("RAPIDMESH_OPT_TRACE").is_ok();
+    // Squared edge-length budget per region: quality operations may create
+    // edges up to the sizing contract, or up to the local status quo where
+    // the mesh is already coarser (never blocking improvements there).
+    let edge_budget2 = |region: rapidmesh_geom::RegionTag| -> f64 {
+        let h = params
+            .region_maxh
+            .iter()
+            .find(|(r, _)| *r == region.0)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh);
+        if h.is_finite() {
+            (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
+        } else {
+            f64::INFINITY
+        }
+    };
     let mut total_ops = 0usize;
     // Vertices changed by the previous pass; `None` = everything (pass 0).
     let mut dirty: Option<DSet<usize>> = None;
@@ -398,6 +449,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
 
         let t_smooth = t1.elapsed();
         let t2 = std::time::Instant::now();
+        // Set when a surface split changes the constrained complex; the
+        // cached constraint sets are rebuilt next pass.
+        let mut face_split = false;
 
         // ------------------------------------------------------ flips
         let mut alive: Vec<bool> = vec![true; mesh.tets.len()];
@@ -448,6 +502,14 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             let d = *mesh.tets[t1].iter().find(|v| !f.contains(v)).expect("apex");
             let e = *mesh.tets[t2].iter().find(|v| !f.contains(v)).expect("apex");
             if d == e {
+                continue;
+            }
+            // Sizing contract: the new edge stays within the local size
+            // budget (or the local status quo where already coarser).
+            if dist2_pts(mesh.points[d], mesh.points[e])
+                > lmax2_of(&mesh.points, &mesh.tets, &[t1, t2])
+                    .max(edge_budget2(mesh.tet_regions[t1]))
+            {
                 continue;
             }
             // Geometric validity: the new edge d-e must cross the interior
@@ -628,8 +690,18 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
                 q
             };
+            let star_lmax2 = lmax2_of(&mesh.points, &mesh.tets, ts)
+                .max(edge_budget2(mesh.tet_regions[ts[0]]));
             let pair_q = |i: usize, m: usize, j: usize| -> f64 {
                 let (p, q, r) = (ring[i], ring[m], ring[j]);
+                // Sizing invariant: new chords stay within the old star's
+                // longest edge.
+                if dist2_pts(mesh.points[p], mesh.points[q]) > star_lmax2
+                    || dist2_pts(mesh.points[q], mesh.points[r]) > star_lmax2
+                    || dist2_pts(mesh.points[p], mesh.points[r]) > star_lmax2
+                {
+                    return f64::MIN;
+                }
                 let t1 = [p, q, r, e];
                 let t2 = [p, r, q, d];
                 if !orient_positive(&mesh.points, t1) || !orient_positive(&mesh.points, t2) {
@@ -716,6 +788,14 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 &face_entries[lo..hi]
             };
             let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
+            // Surface face records by vertex triple, for the surface-split
+            // fallback (kept in sync as splits happen).
+            let mut face_idx: DMap<[usize; 3], u32> = DMap::default();
+            for (fi, sf) in mesh.faces.iter().enumerate() {
+                face_idx.insert(sorted3(sf.tri), fi as u32);
+            }
+            let (mut split_cands, mut split_faces, mut split_gate, mut split_ok) =
+                (0usize, 0usize, 0usize, 0usize);
             let mut bad: Vec<(f64, u32)> = Vec::new();
             for &ti in &map_tets {
                 if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
@@ -727,13 +807,15 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
             bad.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            'cands: for (_, ti) in bad {
+            let n_bad = bad.len();
+            for (_, ti) in bad {
                 let ti = ti as usize;
                 if !alive[ti] {
                     continue;
                 }
                 let region = mesh.tet_regions[ti];
                 let t = mesh.tets[ti];
+                let interior_done = 'interior: {
                 let mut cavity: Vec<usize> = vec![ti];
                 for i in 0..4 {
                     let key = sorted3(opp_face(t, i));
@@ -766,7 +848,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     if same == 1 {
                         bfaces.push(faces[fi].1);
                     } else if constrained_faces.contains(&faces[fi].0) {
-                        continue 'cands;
+                        break 'interior false;
                     }
                     fi += same;
                 }
@@ -811,6 +893,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 // (infeasible start positions would otherwise sit on a MIN
                 // plateau the pattern search cannot leave). Acceptance at
                 // the end is strict on both.
+                let cav_lmax2 =
+                    lmax2_of(&mesh.points, &mesh.tets, &cavity).max(edge_budget2(region));
                 let cone_eval = |x: [f64; 3]| -> (f64, f64) {
                     let mut q = f64::MAX;
                     let mut re = 0.0f64;
@@ -821,6 +905,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                             mesh.points[f[2]],
                             x,
                         ];
+                        if (0..3).any(|k| dist2_pts(p[k], x) > cav_lmax2) {
+                            return (f64::MIN, f64::MAX);
+                        }
                         if Sign::of_f64(geometry_predicates::orient3d(p[0], p[1], p[2], p[3]))
                             != Sign::Positive
                         {
@@ -873,7 +960,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 // occasional long cone (slivers hurt Nedelec conditioning
                 // directly; needles with sound dihedrals do not).
                 if best.0 <= old_q + QUALITY_EPS {
-                    continue;
+                    break 'interior false;
                 }
                 let xi = mesh.points.len();
                 mesh.points.push(x);
@@ -888,6 +975,219 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
                 next_dirty.insert(xi);
                 ops += 1;
+                true
+                };
+                if interior_done {
+                    continue;
+                }
+
+                split_cands += 1;
+                // ------------------------------- surface split fallback
+                // Boundary caps and wedges with every vertex pinned to the
+                // surface are unreachable for interior insertion: their
+                // only roomy face IS a surface face. Split that face 1-3 at
+                // a Steiner point ON the geometry (in-plane for plane
+                // patches, projected for curved ones); every owner tet
+                // (both sides of an interface) splits 1-3 with it. The new
+                // vertex is a regular surface vertex that in-surface
+                // smoothing may slide afterwards. The in-plane search basis
+                // has exact zeros in the constant coordinate of
+                // axis-aligned planes, so exact region volumes survive.
+                for slot in 0..4 {
+                    let of = opp_face(t, slot);
+                    let key = sorted3(of);
+                    let Some(&fidx) = face_idx.get(&key) else {
+                        continue;
+                    };
+                    split_faces += 1;
+                    let owners = face_owners(key);
+                    if owners.is_empty() || owners.iter().any(|e| !alive[e.1 as usize]) {
+                        continue;
+                    }
+                    let sf = mesh.faces[fidx as usize].clone();
+                    let (fa, fb, fc) = (sf.tri[0], sf.tri[1], sf.tri[2]);
+                    let kind = mesh.surfaces[sf.surface as usize].clone();
+                    let (pa, pb, pc) = (mesh.points[fa], mesh.points[fb], mesh.points[fc]);
+                    let n = face_normal(&mesh.points, sf.tri);
+                    let mut e1: [f64; 3] = std::array::from_fn(|k| pb[k] - pa[k]);
+                    let l1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+                    if l1 <= 0.0 {
+                        continue;
+                    }
+                    for v in &mut e1 {
+                        *v /= l1;
+                    }
+                    let e2 = [
+                        n[1] * e1[2] - n[2] * e1[1],
+                        n[2] * e1[0] - n[0] * e1[2],
+                        n[0] * e1[1] - n[1] * e1[0],
+                    ];
+                    let axis = dominant_axis(n);
+                    let pe = |q: [f64; 3]| Point3::Explicit(q);
+                    let Some(face_ori) = orient2d(&pe(pa), &pe(pb), &pe(pc), axis) else {
+                        continue;
+                    };
+                    if face_ori == Sign::Zero {
+                        continue;
+                    }
+                    let strictly_inside = |x: [f64; 3]| -> bool {
+                        [(pa, pb), (pb, pc), (pc, pa)].iter().all(|&(u, v)| {
+                            orient2d(&pe(u), &pe(v), &pe(x), axis) == Some(face_ori)
+                        })
+                    };
+                    let mut old_q = f64::MAX;
+                    let mut old_re = 0.0f64;
+                    for e in owners {
+                        let o = e.1 as usize;
+                        old_q =
+                            old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, o));
+                        old_re = old_re.max(radius_edge(std::array::from_fn(|k| {
+                            mesh.points[mesh.tets[o][k]]
+                        })));
+                    }
+                    let re_cap = old_re.max(INSERT_RE_ALLOW);
+                    // Sub-tets: each owner with one face vertex replaced by x.
+                    let owner_ids: Vec<usize> =
+                        owners.iter().map(|e| e.1 as usize).collect();
+                    let own_lmax2 = lmax2_of(&mesh.points, &mesh.tets, &owner_ids)
+                        .max(edge_budget2(mesh.tet_regions[owner_ids[0]]));
+                    let split_eval = |x: [f64; 3]| -> (f64, f64) {
+                        if !strictly_inside(x) {
+                            return (f64::MIN, f64::MAX);
+                        }
+                        let mut q = f64::MAX;
+                        let mut re = 0.0f64;
+                        for e in owners {
+                            let ot = mesh.tets[e.1 as usize];
+                            for fv in [fa, fb, fc] {
+                                let p: [[f64; 3]; 4] = std::array::from_fn(|k| {
+                                    if ot[k] == fv {
+                                        x
+                                    } else {
+                                        mesh.points[ot[k]]
+                                    }
+                                });
+                                if (0..4).any(|k| {
+                                    p[k] != x && dist2_pts(p[k], x) > own_lmax2
+                                }) {
+                                    return (f64::MIN, f64::MAX);
+                                }
+                                if Sign::of_f64(geometry_predicates::orient3d(
+                                    p[0], p[1], p[2], p[3],
+                                )) != Sign::Positive
+                                {
+                                    return (f64::MIN, f64::MAX);
+                                }
+                                re = re.max(radius_edge(p));
+                                match quality_above_coords(p, f64::MIN) {
+                                    Some(cq) => q = q.min(cq),
+                                    None => return (f64::MIN, f64::MAX),
+                                }
+                            }
+                        }
+                        (q, re)
+                    };
+                    let score = |(q, re): (f64, f64)| -> f64 {
+                        if q == f64::MIN {
+                            f64::MIN
+                        } else {
+                            q - 0.5 * ((re / re_cap) - 1.0).max(0.0)
+                        }
+                    };
+                    let project = |x: [f64; 3]| -> [f64; 3] {
+                        match kind {
+                            SurfaceKind::Plane => x,
+                            ref curved => project_to_surface(curved, x),
+                        }
+                    };
+                    let mut x = project(std::array::from_fn(|k| {
+                        (pa[k] + pb[k] + pc[k]) / 3.0
+                    }));
+                    let mut best = split_eval(x);
+                    let mut best_s = score(best);
+                    let diag = (0..3)
+                        .map(|k| (pb[k] - pa[k]).powi(2) + (pc[k] - pa[k]).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    let mut step = 0.25 * diag;
+                    for _ in 0..3 {
+                        loop {
+                            let mut improved = false;
+                            for dir in [e1, e2] {
+                                for sgn in [-1.0, 1.0] {
+                                    let cand = project(std::array::from_fn(|k| {
+                                        x[k] + sgn * step * dir[k]
+                                    }));
+                                    let ev = split_eval(cand);
+                                    let sc = score(ev);
+                                    if sc > best_s {
+                                        best_s = sc;
+                                        best = ev;
+                                        x = cand;
+                                        improved = true;
+                                    }
+                                }
+                            }
+                            if !improved {
+                                break;
+                            }
+                        }
+                        step *= 0.5;
+                    }
+                    if best.0 <= old_q + QUALITY_EPS {
+                        split_gate += 1;
+                        continue;
+                    }
+                    // Commit: new surface vertex, three sub-faces, three
+                    // sub-tets per owner.
+                    let xi = mesh.points.len();
+                    mesh.points.push(x);
+                    for e in owners {
+                        let o = e.1 as usize;
+                        let ot = mesh.tets[o];
+                        let oregion = mesh.tet_regions[o];
+                        alive[o] = false;
+                        for fv in [fa, fb, fc] {
+                            let nt: [usize; 4] =
+                                std::array::from_fn(|k| if ot[k] == fv { xi } else { ot[k] });
+                            added.push((nt, oregion));
+                        }
+                        for &v in &ot {
+                            next_dirty.insert(v);
+                        }
+                    }
+                    let mut sub1 = sf.clone();
+                    let mut sub2 = sf.clone();
+                    mesh.faces[fidx as usize].tri = [fa, fb, xi];
+                    sub1.tri = [fb, fc, xi];
+                    sub2.tri = [fc, fa, xi];
+                    mesh.faces.push(sub1);
+                    mesh.faces.push(sub2);
+                    face_idx.remove(&key);
+                    face_idx.insert(sorted3([fa, fb, xi]), fidx);
+                    face_idx.insert(sorted3([fb, fc, xi]), (mesh.faces.len() - 2) as u32);
+                    face_idx.insert(sorted3([fc, fa, xi]), (mesh.faces.len() - 1) as u32);
+                    constrained_faces.insert(sorted3([fa, fb, xi]));
+                    constrained_faces.insert(sorted3([fb, fc, xi]));
+                    constrained_faces.insert(sorted3([fc, fa, xi]));
+                    for v in [fa, fb, fc] {
+                        constrained_edges.insert((v.min(xi), v.max(xi)));
+                    }
+                    constrained_verts.insert(xi);
+                    next_dirty.insert(xi);
+                    face_split = true;
+                    split_ok += 1;
+                    ops += 1;
+                    break;
+                }
+            }
+            if trace && n_bad > 0 {
+                eprintln!("  insert: {n_bad} bad cands");
+            }
+            if trace && split_cands > 0 {
+                eprintln!(
+                    "  split: {split_cands} cands, {split_faces} faces tried, {split_gate} gate-fail, {split_ok} ok"
+                );
             }
         }
 
@@ -917,6 +1217,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 t2.elapsed(),
                 next_dirty.len()
             );
+        }
+        if face_split {
+            constrained = None;
         }
         total_ops += ops;
         if ops == 0 {

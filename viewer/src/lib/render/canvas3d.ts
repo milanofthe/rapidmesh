@@ -8,7 +8,7 @@
  * with a triangle-mesh ingestion path that takes our parsed .msh data.
  */
 
-import { canvas as canvasTheme } from './theme';
+import { canvas as canvasTheme } from '$lib/theme';
 
 // ─── Types ───────────────────────────────────────────────────────────
 

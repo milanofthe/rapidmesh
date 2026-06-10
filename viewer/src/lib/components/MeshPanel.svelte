@@ -3,12 +3,12 @@
 	import {
 		addLineMesh,
 		addMesh,
+		clearMeshes,
 		disposeGL,
 		fitCamera,
 		initGL,
 		render3D,
 		setBBox,
-		setClipPlane,
 		setTagVisible,
 		type GLState
 	} from '$lib/render/canvas3d';
@@ -116,12 +116,39 @@
 		}
 	}
 
-	function build_meshes(state: GLState) {
+	// ── Crinkle clip precomputation ─────────────────────────────────────
+	// Whole tets are kept or dropped by their centroid against the clip
+	// plane (ParaView's crinkle clip): closed tetrahedra at the cut instead
+	// of fragment-sliced ones. The fragment clip of canvas3d stays unused.
+	const tet_centroid: [number, number, number][] = data.tets.map((t) => {
+		const p = data.points;
+		return [
+			(p[t[0]][0] + p[t[1]][0] + p[t[2]][0] + p[t[3]][0]) / 4,
+			(p[t[0]][1] + p[t[1]][1] + p[t[2]][1] + p[t[3]][1]) / 4,
+			(p[t[0]][2] + p[t[1]][2] + p[t[2]][2] + p[t[3]][2]) / 4
+		];
+	});
+	const face_centroid: [number, number, number][] = data.faces.map((f) => {
+		const p = data.points;
+		return [
+			(p[f.tri[0]][0] + p[f.tri[1]][0] + p[f.tri[2]][0]) / 3,
+			(p[f.tri[0]][1] + p[f.tri[1]][1] + p[f.tri[2]][1]) / 3,
+			(p[f.tri[0]][2] + p[f.tri[1]][2] + p[f.tri[2]][2]) / 3
+		];
+	});
+
+	function build_meshes(
+		state: GLState,
+		keep_tet: (ti: number) => boolean,
+		keep_face: (fi: number) => boolean
+	) {
 		const pts = data.points;
 
 		// Surface faces grouped by color (tagged sheets win over regions).
 		const groups = new Map<string, { color: [number, number, number]; tris: [number, number, number][] }>();
-		for (const f of data.faces) {
+		for (let fi = 0; fi < data.faces.length; fi++) {
+			if (!keep_face(fi)) continue;
+			const f = data.faces[fi];
 			const color = f.tag !== 0 ? pecColor : regionColor(Math.max(f.regions[0], f.regions[1]));
 			const key = color.join(',');
 			if (!groups.has(key)) groups.set(key, { color, tris: [] });
@@ -134,9 +161,10 @@
 			addMesh(state, new Float32Array(pos), new Float32Array(nrm), g.color, TAG_SURFACE, [-1, -1]);
 		}
 
-		// Tet fill (all faces, per region): interior becomes visible under clip.
+		// Tet fill (whole kept tets, per region).
 		const byRegion = new Map<number, number[]>();
 		for (let ti = 0; ti < data.tets.length; ti++) {
+			if (!keep_tet(ti)) continue;
 			const r = data.tet_regions[ti];
 			if (!byRegion.has(r)) byRegion.set(r, []);
 			byRegion.get(r)!.push(ti);
@@ -154,7 +182,8 @@
 			addMesh(state, new Float32Array(pos), new Float32Array(nrm), regionColor(r), TAG_TETFILL);
 		}
 
-		// Wireframes: surface edges, then all tet edges (deduplicated).
+		// Wireframes: surface edges, then interior tet edges (deduplicated;
+		// surface edges already belong to the wireframe layer).
 		const lines = (edges: Iterable<[number, number]>) => {
 			const out: number[] = [];
 			for (const [a, b] of edges) {
@@ -162,8 +191,18 @@
 			}
 			return new Float32Array(out);
 		};
-		const surfEdges = new Map<string, [number, number]>();
+		const allSurfEdges = new Set<string>();
 		for (const f of data.faces) {
+			for (let e = 0; e < 3; e++) {
+				const a = f.tri[e],
+					b = f.tri[(e + 1) % 3];
+				allSurfEdges.add(a < b ? `${a},${b}` : `${b},${a}`);
+			}
+		}
+		const surfEdges = new Map<string, [number, number]>();
+		for (let fi = 0; fi < data.faces.length; fi++) {
+			if (!keep_face(fi)) continue;
+			const f = data.faces[fi];
 			for (let e = 0; e < 3; e++) {
 				const a = f.tri[e],
 					b = f.tri[(e + 1) % 3];
@@ -172,21 +211,38 @@
 		}
 		addLineMesh(state, lines(surfEdges.values()), wireSurface, TAG_WIRE_SURFACE);
 
-		// Interior edges only: the surface edges already belong to the
-		// wireframe layer, duplicating them here would make the toggles
-		// redundant.
 		const tetEdges = new Map<string, [number, number]>();
-		for (const t of data.tets) {
+		for (let ti = 0; ti < data.tets.length; ti++) {
+			if (!keep_tet(ti)) continue;
+			const t = data.tets[ti];
 			for (let i = 0; i < 4; i++) {
 				for (let j = i + 1; j < 4; j++) {
 					const a = t[i],
 						b = t[j];
 					const key = a < b ? `${a},${b}` : `${b},${a}`;
-					if (!surfEdges.has(key)) tetEdges.set(key, [a, b]);
+					if (!allSurfEdges.has(key)) tetEdges.set(key, [a, b]);
 				}
 			}
 		}
 		addLineMesh(state, lines(tetEdges.values()), wireInterior, TAG_WIRE_TETS);
+	}
+
+	let last_clip_key = '';
+	function rebuild_clipped(state: GLState, clip_enable: boolean, clip_axis: 0 | 1 | 2, clip_t: number) {
+		const key = clip_enable ? `${clip_axis}:${clip_t}` : 'off';
+		if (key === last_clip_key) return;
+		last_clip_key = key;
+		clearMeshes(state);
+		if (!clip_enable) {
+			build_meshes(state, () => true, () => true);
+			return;
+		}
+		const d = bbox.min[clip_axis] + clip_t * (bbox.max[clip_axis] - bbox.min[clip_axis]);
+		build_meshes(
+			state,
+			(ti) => tet_centroid[ti][clip_axis] <= d,
+			(fi) => face_centroid[fi][clip_axis] <= d
+		);
 	}
 
 	// ── Settings → GL state ─────────────────────────────────────────────
@@ -200,16 +256,12 @@
 		const clip_enable = settings.clip_enable;
 		const clip_axis = settings.clip_axis;
 		const clip_t = settings.clip_t;
-		const lo = bbox.min[clip_axis];
-		const hi = bbox.max[clip_axis];
 		if (!gl_state) return;
+		rebuild_clipped(gl_state, clip_enable, clip_axis, clip_t);
 		setTagVisible(gl_state, TAG_SURFACE, surface);
 		setTagVisible(gl_state, TAG_WIRE_SURFACE, surface_wire);
 		setTagVisible(gl_state, TAG_TETFILL, tet_fill);
 		setTagVisible(gl_state, TAG_WIRE_TETS, tet_wire);
-		const normal: [number, number, number] = [0, 0, 0];
-		normal[clip_axis] = 1;
-		setClipPlane(gl_state, normal, lo + clip_t * (hi - lo), clip_enable);
 		render_all();
 	});
 
@@ -305,7 +357,8 @@
 		const min: [number, number, number] = [...bbox.min];
 		const max: [number, number, number] = [...bbox.max];
 		setBBox(gl_state, min, max);
-		build_meshes(gl_state);
+		// Geometry upload happens in the settings effect (rebuild_clipped),
+		// which re-runs now that gl_state exists.
 		unregister = register_renderer(render_frame);
 		const ro = new ResizeObserver(() => render_all());
 		ro.observe(container!);

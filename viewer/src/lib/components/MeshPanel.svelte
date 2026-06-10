@@ -137,39 +137,71 @@
 		];
 	});
 
-	function build_meshes(
-		state: GLState,
-		keep_tet: (ti: number) => boolean,
-		keep_face: (fi: number) => boolean
-	) {
+	// ── Prefix-sorted geometry for O(log n) crinkle clipping ────────────
+	// The clip plane is axis-aligned, so the kept tets/faces are exactly a
+	// PREFIX of the geometry sorted by centroid along that axis. Buffers are
+	// uploaded once per axis in sorted order; moving the slider only binary-
+	// searches the cut value and adjusts each draw count. No re-uploads.
+	interface PrefixMesh {
+		idx: number; // index into state.meshes / state.lineMeshes
+		line: boolean;
+		vals: Float64Array; // sorted unit centroid values along built_axis
+		vpu: number; // vertices per unit (12 per tet, 3 per face, 2 per edge)
+	}
+	let prefix_meshes: PrefixMesh[] = [];
+	let built_axis = -1;
+
+	function upper_bound(vals: Float64Array, d: number): number {
+		let lo = 0,
+			hi = vals.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (vals[mid] <= d) lo = mid + 1;
+			else hi = mid;
+		}
+		return lo;
+	}
+
+	function build_for_axis(state: GLState, axis: 0 | 1 | 2) {
+		clearMeshes(state);
+		prefix_meshes = [];
 		const pts = data.points;
 
-		// Surface faces grouped by color (tagged sheets win over regions).
-		const groups = new Map<string, { color: [number, number, number]; tris: [number, number, number][] }>();
+		// Surface faces grouped by color, each group sorted by face centroid.
+		const groups = new Map<string, { color: [number, number, number]; fis: number[] }>();
 		for (let fi = 0; fi < data.faces.length; fi++) {
-			if (!keep_face(fi)) continue;
 			const f = data.faces[fi];
 			const color = f.tag !== 0 ? pecColor : regionColor(Math.max(f.regions[0], f.regions[1]));
 			const key = color.join(',');
-			if (!groups.has(key)) groups.set(key, { color, tris: [] });
-			groups.get(key)!.tris.push(f.tri);
+			if (!groups.has(key)) groups.set(key, { color, fis: [] });
+			groups.get(key)!.fis.push(fi);
 		}
 		for (const g of groups.values()) {
+			g.fis.sort((a, b) => face_centroid[a][axis] - face_centroid[b][axis]);
 			const pos: number[] = [];
 			const nrm: number[] = [];
-			for (const [a, b, c] of g.tris) pushFace(pos, nrm, a, b, c);
+			for (const fi of g.fis) {
+				const [a, b, c] = data.faces[fi].tri;
+				pushFace(pos, nrm, a, b, c);
+			}
+			prefix_meshes.push({
+				idx: state.meshes.length,
+				line: false,
+				vals: Float64Array.from(g.fis, (fi) => face_centroid[fi][axis]),
+				vpu: 3
+			});
 			addMesh(state, new Float32Array(pos), new Float32Array(nrm), g.color, TAG_SURFACE, [-1, -1]);
 		}
 
-		// Tet fill (whole kept tets, per region).
+		// Tet fill per region, sorted by tet centroid.
 		const byRegion = new Map<number, number[]>();
 		for (let ti = 0; ti < data.tets.length; ti++) {
-			if (!keep_tet(ti)) continue;
 			const r = data.tet_regions[ti];
 			if (!byRegion.has(r)) byRegion.set(r, []);
 			byRegion.get(r)!.push(ti);
 		}
 		for (const [r, tis] of byRegion) {
+			tis.sort((a, b) => tet_centroid[a][axis] - tet_centroid[b][axis]);
 			const pos: number[] = [];
 			const nrm: number[] = [];
 			for (const ti of tis) {
@@ -179,70 +211,83 @@
 				pushFace(pos, nrm, t[0], t[3], t[1]);
 				pushFace(pos, nrm, t[0], t[1], t[2]);
 			}
+			prefix_meshes.push({
+				idx: state.meshes.length,
+				line: false,
+				vals: Float64Array.from(tis, (ti) => tet_centroid[ti][axis]),
+				vpu: 12
+			});
 			addMesh(state, new Float32Array(pos), new Float32Array(nrm), regionColor(r), TAG_TETFILL);
 		}
 
-		// Wireframes: surface edges, then interior tet edges (deduplicated;
-		// surface edges already belong to the wireframe layer).
-		const lines = (edges: Iterable<[number, number]>) => {
-			const out: number[] = [];
-			for (const [a, b] of edges) {
-				out.push(pts[a][0], pts[a][1], pts[a][2], pts[b][0], pts[b][1], pts[b][2]);
-			}
-			return new Float32Array(out);
-		};
-		const allSurfEdges = new Set<string>();
-		for (const f of data.faces) {
-			for (let e = 0; e < 3; e++) {
-				const a = f.tri[e],
-					b = f.tri[(e + 1) % 3];
-				allSurfEdges.add(a < b ? `${a},${b}` : `${b},${a}`);
-			}
-		}
-		const surfEdges = new Map<string, [number, number]>();
+		// Surface wireframe: an edge follows the first (smallest) adjacent
+		// face, so it appears exactly when some adjacent face is kept.
+		const surfEdgeVal = new Map<string, { a: number; b: number; val: number }>();
 		for (let fi = 0; fi < data.faces.length; fi++) {
-			if (!keep_face(fi)) continue;
 			const f = data.faces[fi];
+			const v = face_centroid[fi][axis];
 			for (let e = 0; e < 3; e++) {
 				const a = f.tri[e],
 					b = f.tri[(e + 1) % 3];
-				surfEdges.set(a < b ? `${a},${b}` : `${b},${a}`, [a, b]);
+				const key = a < b ? `${a},${b}` : `${b},${a}`;
+				const cur = surfEdgeVal.get(key);
+				if (!cur) surfEdgeVal.set(key, { a, b, val: v });
+				else cur.val = Math.min(cur.val, v);
 			}
 		}
-		addLineMesh(state, lines(surfEdges.values()), wireSurface, TAG_WIRE_SURFACE);
+		const push_edge_mesh = (
+			entries: { a: number; b: number; val: number }[],
+			color: [number, number, number],
+			tag: number
+		) => {
+			entries.sort((x, y) => x.val - y.val);
+			const pos: number[] = [];
+			for (const e of entries) {
+				pos.push(pts[e.a][0], pts[e.a][1], pts[e.a][2], pts[e.b][0], pts[e.b][1], pts[e.b][2]);
+			}
+			prefix_meshes.push({
+				idx: state.lineMeshes.length,
+				line: true,
+				vals: Float64Array.from(entries, (e) => e.val),
+				vpu: 2
+			});
+			addLineMesh(state, new Float32Array(pos), color, tag);
+		};
+		push_edge_mesh([...surfEdgeVal.values()], wireSurface, TAG_WIRE_SURFACE);
 
-		const tetEdges = new Map<string, [number, number]>();
+		// Interior edges: follow the smallest adjacent tet.
+		const intEdgeVal = new Map<string, { a: number; b: number; val: number }>();
 		for (let ti = 0; ti < data.tets.length; ti++) {
-			if (!keep_tet(ti)) continue;
 			const t = data.tets[ti];
+			const v = tet_centroid[ti][axis];
 			for (let i = 0; i < 4; i++) {
 				for (let j = i + 1; j < 4; j++) {
 					const a = t[i],
 						b = t[j];
 					const key = a < b ? `${a},${b}` : `${b},${a}`;
-					if (!allSurfEdges.has(key)) tetEdges.set(key, [a, b]);
+					if (surfEdgeVal.has(key)) continue;
+					const cur = intEdgeVal.get(key);
+					if (!cur) intEdgeVal.set(key, { a, b, val: v });
+					else cur.val = Math.min(cur.val, v);
 				}
 			}
 		}
-		addLineMesh(state, lines(tetEdges.values()), wireInterior, TAG_WIRE_TETS);
+		push_edge_mesh([...intEdgeVal.values()], wireInterior, TAG_WIRE_TETS);
 	}
 
-	let last_clip_key = '';
-	function rebuild_clipped(state: GLState, clip_enable: boolean, clip_axis: 0 | 1 | 2, clip_t: number) {
-		const key = clip_enable ? `${clip_axis}:${clip_t}` : 'off';
-		if (key === last_clip_key) return;
-		last_clip_key = key;
-		clearMeshes(state);
-		if (!clip_enable) {
-			build_meshes(state, () => true, () => true);
-			return;
+	function apply_clip(state: GLState, clip_enable: boolean, clip_axis: 0 | 1 | 2, clip_t: number) {
+		if (clip_axis !== built_axis) {
+			build_for_axis(state, clip_axis);
+			built_axis = clip_axis;
 		}
-		const d = bbox.min[clip_axis] + clip_t * (bbox.max[clip_axis] - bbox.min[clip_axis]);
-		build_meshes(
-			state,
-			(ti) => tet_centroid[ti][clip_axis] <= d,
-			(fi) => face_centroid[fi][clip_axis] <= d
-		);
+		const d = clip_enable
+			? bbox.min[clip_axis] + clip_t * (bbox.max[clip_axis] - bbox.min[clip_axis])
+			: Infinity;
+		for (const pm of prefix_meshes) {
+			const n = clip_enable ? upper_bound(pm.vals, d) : pm.vals.length;
+			const target = pm.line ? state.lineMeshes[pm.idx] : state.meshes[pm.idx];
+			target.count = n * pm.vpu;
+		}
 	}
 
 	// ── Settings → GL state ─────────────────────────────────────────────
@@ -257,7 +302,7 @@
 		const clip_axis = settings.clip_axis;
 		const clip_t = settings.clip_t;
 		if (!gl_state) return;
-		rebuild_clipped(gl_state, clip_enable, clip_axis, clip_t);
+		apply_clip(gl_state, clip_enable, clip_axis, clip_t);
 		setTagVisible(gl_state, TAG_SURFACE, surface);
 		setTagVisible(gl_state, TAG_WIRE_SURFACE, surface_wire);
 		setTagVisible(gl_state, TAG_TETFILL, tet_fill);

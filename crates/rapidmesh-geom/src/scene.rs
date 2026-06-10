@@ -179,25 +179,96 @@ impl Scene {
             eprintln!("assemble: classify+emit {:.1?}", t1.elapsed());
         }
         // ------------------------------------------------- snap and emit
-        let vertices: Vec<[f64; 3]> = pool
+        // The PLC is pure f64 from here on. Exact arithmetic faithfully
+        // preserves microscopic input asymmetries (e.g. cos and sin of the
+        // same angle rounding differently make concentric-ring "radials"
+        // not exactly collinear), so DISTINCT exact points can land on the
+        // SAME f64 triple. Weld them, drop facets that collapse, and merge
+        // facets that become coincident: zero-f64-area pieces carry no
+        // region area, and duplicate indices would poison the mesher.
+        let raw: Vec<[f64; 3]> = pool
             .verts
             .iter()
             .map(|p| p.approx().expect("valid point"))
             .collect();
-        let plc = TaggedPlc {
-            vertices,
-            triangles,
-            face_tags,
-            surface_refs,
-            region_tags,
-            surfaces,
+        // Tolerance welding: exact constructions land within an ulp or two
+        // of the input vertices they conceptually equal (cos and sin of the
+        // same angle round differently, so concentric "radials" are not
+        // exactly collinear and their crossings sit ~1e-16-relative off the
+        // ring vertices). Sub-tolerance twins create twin crease chains the
+        // Delaunay can never hold apart. Features below 1e-12 of the scene
+        // diagonal are therefore welded, input vertices winning over
+        // constructed points (inputs lie exactly on their planes).
+        let diag = (0..3).map(|k| (bhi_w(&raw, k) - blo_w(&raw, k)).powi(2)).sum::<f64>().sqrt();
+        fn blo_w(raw: &[[f64; 3]], k: usize) -> f64 {
+            raw.iter().map(|q| q[k]).fold(f64::MAX, f64::min)
+        }
+        fn bhi_w(raw: &[[f64; 3]], k: usize) -> f64 {
+            raw.iter().map(|q| q[k]).fold(f64::MIN, f64::max)
+        }
+        let tol = 1e-12 * diag.max(f64::MIN_POSITIVE);
+        let cell = 2.0 * tol;
+        let cell_of = |q: &[f64; 3]| -> [i64; 3] {
+            std::array::from_fn(|k| (q[k] / cell).floor() as i64)
         };
-        // Snapping must not have degenerated any facet.
-        for t in &plc.triangles {
+        let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+        let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(raw.len());
+        let mut remap: Vec<u32> = vec![u32::MAX; raw.len()];
+        let weld_pass = |explicit_only: bool,
+                             grid: &mut HashMap<[i64; 3], Vec<u32>>,
+                             vertices: &mut Vec<[f64; 3]>,
+                             remap: &mut Vec<u32>| {
+            for (i, q) in raw.iter().enumerate() {
+                if remap[i] != u32::MAX {
+                    continue;
+                }
+                if explicit_only && !matches!(pool.verts[i], Point3::Explicit(_)) {
+                    continue;
+                }
+                let base = cell_of(q);
+                let mut hit = None;
+                'search: for dx in -1..=1i64 {
+                    for dy in -1..=1i64 {
+                        for dz in -1..=1i64 {
+                            let key = [base[0] + dx, base[1] + dy, base[2] + dz];
+                            if let Some(ids) = grid.get(&key) {
+                                for &v in ids {
+                                    let p = vertices[v as usize];
+                                    let d2: f64 =
+                                        (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
+                                    if d2 <= tol * tol {
+                                        hit = Some(v);
+                                        break 'search;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                remap[i] = hit.unwrap_or_else(|| {
+                    let v = vertices.len() as u32;
+                    vertices.push(*q);
+                    grid.entry(base).or_default().push(v);
+                    v
+                });
+            }
+        };
+        weld_pass(true, &mut grid, &mut vertices, &mut remap);
+        weld_pass(false, &mut grid, &mut vertices, &mut remap);
+        let mut out_triangles: Vec<[u32; 3]> = Vec::with_capacity(triangles.len());
+        let mut out_face_tags: Vec<FaceTag> = Vec::with_capacity(triangles.len());
+        let mut out_surface_refs: Vec<SurfaceRef> = Vec::with_capacity(triangles.len());
+        let mut out_region_tags: Vec<[RegionTag; 2]> = Vec::with_capacity(triangles.len());
+        let mut emitted_snapped: HashMap<[u32; 3], usize> = HashMap::new();
+        for (i, t) in triangles.iter().enumerate() {
+            let m = t.map(|v| remap[v as usize]);
+            if m[0] == m[1] || m[1] == m[2] || m[0] == m[2] {
+                continue; // collapsed to an edge or point
+            }
             let (a, b, c) = (
-                plc.vertices[t[0] as usize],
-                plc.vertices[t[1] as usize],
-                plc.vertices[t[2] as usize],
+                vertices[m[0] as usize],
+                vertices[m[1] as usize],
+                vertices[m[2] as usize],
             );
             let u: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
             let v: [f64; 3] = std::array::from_fn(|k| c[k] - a[k]);
@@ -206,11 +277,30 @@ impl Scene {
                 u[2] * v[0] - u[0] * v[2],
                 u[0] * v[1] - u[1] * v[0],
             ];
-            assert!(
-                n.iter().any(|&x| x != 0.0),
-                "facet degenerated by f64 snapping"
-            );
+            if n.iter().all(|&x| x == 0.0) {
+                continue; // exactly degenerate in f64
+            }
+            let mut key = m;
+            key.sort_unstable();
+            if let Some(&e) = emitted_snapped.get(&key) {
+                // Coincident after welding: merge tags like the exact
+                // coincident-survivor merge above.
+                out_face_tags[e] = out_face_tags[e].max(face_tags[i]);
+                continue;
+            }
+            emitted_snapped.insert(key, out_triangles.len());
+            out_triangles.push(m);
+            out_face_tags.push(face_tags[i]);
+            out_surface_refs.push(surface_refs[i]);
+            out_region_tags.push(region_tags[i]);
         }
-        plc
+        TaggedPlc {
+            vertices,
+            triangles: out_triangles,
+            face_tags: out_face_tags,
+            surface_refs: out_surface_refs,
+            region_tags: out_region_tags,
+            surfaces,
+        }
     }
 }

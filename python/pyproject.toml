@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rapidmesh"
+version = "0.1.0"
+description = "Pure-Rust conforming tetrahedral mesher for electromagnetic FEM, with exact CSG and a Python builder API."
+requires-python = ">=3.10"
+authors = [
+    { name = "Milan Rother", email = "sporkhomat@gmail.com" },
+]
+keywords = ["mesh", "tetrahedral", "fem", "delaunay", "csg"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.26",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "rapidmesh._native"
+python-source = "python_src"

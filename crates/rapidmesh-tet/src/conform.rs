@@ -84,6 +84,28 @@ struct Patch {
     area2: Expansion,
 }
 
+/// Registers a crease child edge produced by a split. The child may ALREADY
+/// be a crease (f64 welding in scene assembly can create T-junctions whose
+/// split point is an existing crease endpoint): then its mark sets merge
+/// instead of duplicating the entry, which would desync `creases` from
+/// `crease_marks`.
+fn push_crease_child(
+    creases: &mut Vec<(usize, usize)>,
+    crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
+    key: (usize, usize),
+    marks: &DSet<usize>,
+) {
+    match crease_marks.entry(key) {
+        std::collections::hash_map::Entry::Occupied(mut o) => {
+            o.get_mut().extend(marks.iter().copied());
+        }
+        std::collections::hash_map::Entry::Vacant(v) => {
+            v.insert(marks.clone());
+            creases.push(key);
+        }
+    }
+}
+
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
@@ -350,7 +372,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut point_index: DMap<[u64; 3], usize> = DMap::default();
     for (i, &p) in points.iter().enumerate() {
         builder.insert(p);
-        point_index.insert(p.map(f64::to_bits), i);
+        point_index.insert(p.map(|x| (x + 0.0).to_bits()), i);
     }
 
     let plane_sign = |patch: &Patch, points: &[[f64; 3]], v: usize| -> Sign {
@@ -457,30 +479,39 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     "round {round}: {} missing crease edges (min len {min:.2e})",
                     missing.len()
                 );
+                if std::env::var_os("RAPIDMESH_CREASE_TRACE").is_some() {
+                    for &(a, b) in missing.iter().take(4) {
+                        eprintln!("  missing ({a},{b}): {:?} -> {:?}", points[a], points[b]);
+                    }
+                }
             }
             for (a, b) in missing {
                 let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
                 // A vertex may already sit exactly at the midpoint (e.g. a
                 // piercing Steiner point from a symmetric tet edge): reuse
                 // it as the chain split point instead of duplicating.
-                let g = match point_index.get(&m.map(f64::to_bits)) {
+                let g = match point_index.get(&m.map(|x| (x + 0.0).to_bits())) {
                     Some(&g) => g,
                     None => {
                         let g = points.len();
                         points.push(m);
                         builder.insert(m);
-                        point_index.insert(m.map(f64::to_bits), g);
+                        point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
                         g
                     }
                 };
+                if g == a || g == b {
+                    // The midpoint rounded onto an endpoint: the crease is at
+                    // f64 resolution and cannot be split further. Leave it;
+                    // looping a zero-length child forever helps nobody.
+                    continue;
+                }
                 let marks = crease_marks.remove(&(a, b)).expect("known crease");
                 on_patch[g].extend(marks.iter().copied());
                 creases.retain(|&e| e != (a, b));
-                creases.push(sorted2(a, g));
-                creases.push(sorted2(g, b));
-                crease_marks.insert(sorted2(a, g), marks.clone());
-                crease_marks.insert(sorted2(g, b), marks);
+                push_crease_child(&mut creases, &mut crease_marks, sorted2(a, g), &marks);
+                push_crease_child(&mut creases, &mut crease_marks, sorted2(g, b), &marks);
             }
             continue;
         }
@@ -585,6 +616,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let inserted = refine_step(
                 params,
                 &patches,
+                &patch_grids,
                 &dt_tets,
                 &all_tilings,
                 &tet_region,
@@ -689,7 +721,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // an existing vertex, e.g. a tet edge passing exactly through a
             // crease midpoint. Inserting it would create a duplicate that
             // poisons the triangulation; skip it, other piercings progress.
-            if point_index.contains_key(&x.map(f64::to_bits)) {
+            if point_index.contains_key(&x.map(|x| (x + 0.0).to_bits())) {
                 continue;
             }
             if points.iter().any(|q| {
@@ -722,13 +754,13 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
             if let Some(((a, b), xs)) = snapped {
-                let g = match point_index.get(&xs.map(f64::to_bits)) {
+                let g = match point_index.get(&xs.map(|x| (x + 0.0).to_bits())) {
                     Some(&g) => g,
                     None => {
                         let g = points.len();
                         points.push(xs);
                         builder.insert(xs);
-                        point_index.insert(xs.map(f64::to_bits), g);
+                        point_index.insert(xs.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
                         g
                     }
@@ -738,10 +770,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     on_patch[g].extend(marks.iter().copied());
                     on_patch[g].insert(pi);
                     creases.retain(|&e| e != (a, b));
-                    creases.push(sorted2(a, g));
-                    creases.push(sorted2(g, b));
-                    crease_marks.insert(sorted2(a, g), marks.clone());
-                    crease_marks.insert(sorted2(g, b), marks);
+                    push_crease_child(&mut creases, &mut crease_marks, sorted2(a, g), &marks);
+                    push_crease_child(&mut creases, &mut crease_marks, sorted2(g, b), &marks);
                     inserted += 1;
                     patch_done.insert(pi);
                 }
@@ -750,7 +780,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let g = points.len();
             points.push(x);
             builder.insert(x);
-            point_index.insert(x.map(f64::to_bits), g);
+            point_index.insert(x.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
             marks.insert(pi);
             on_patch.push(marks);
@@ -760,7 +790,19 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         if trace {
             eprintln!("round {round}: inserted {inserted} repair points, {} total", points.len());
         }
-        assert!(inserted > 0, "tiling deficit but no piercing edges found");
+        if inserted == 0 {
+            // No piercing edge to repair with: the missing area is covered
+            // by faces whose vertices carry the wrong patch marks (a
+            // bookkeeping corner the tessellation lottery can produce on
+            // curved patches). Give those patches up like the stagnation
+            // guard does; panicking would take the whole library down.
+            for &pi in &deficits {
+                eprintln!(
+                    "rapidmesh: giving up on patch {pi} tiling (no piercing edges); geometry near this patch needs review"
+                );
+                abandoned.insert(pi);
+            }
+        }
     };
 
     // ----------------------------------------------------- output
@@ -897,23 +939,21 @@ fn split_crease_midpoint(
     };
     let (a, b) = key;
     let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
-    let g = match point_index.get(&m.map(f64::to_bits)) {
+    let g = match point_index.get(&m.map(|x| (x + 0.0).to_bits())) {
         Some(&g) => g,
         None => {
             let g = points.len();
             points.push(m);
             builder.insert(m);
-            point_index.insert(m.map(f64::to_bits), g);
+            point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
             g
         }
     };
     on_patch[g].extend(marks.iter().copied());
     creases.retain(|&e| e != key);
-    creases.push((a.min(g), a.max(g)));
-    creases.push((g.min(b), g.max(b)));
-    crease_marks.insert((a.min(g), a.max(g)), marks.clone());
-    crease_marks.insert((g.min(b), g.max(b)), marks);
+    push_crease_child(creases, crease_marks, (a.min(g), a.max(g)), &marks);
+    push_crease_child(creases, crease_marks, (g.min(b), g.max(b)), &marks);
     true
 }
 
@@ -1015,6 +1055,27 @@ impl Tri2Grid {
 /// unbounded retries re-pay the insertion cavity every round).
 const QUALITY_RETRY_LIMIT: u8 = 3;
 
+/// Exact closed point-in-patch test (inside or on the boundary of some
+/// member), grid-indexed. Points exactly on internal member edges count as
+/// inside: the member triangulation is bookkeeping, not geometry.
+fn patch_inside_closed(
+    grid: &Tri2Grid,
+    patch: &Patch,
+    points: &[[f64; 3]],
+    q: [f64; 3],
+) -> bool {
+    let qp = Point3::Explicit(q);
+    let (u, v) = Tri2Grid::axis_uv(patch.axis);
+    grid.candidates([q[u], q[v]]).any(|mi| {
+        let f = patch.members[mi as usize];
+        Tri::new(points[f[0]], points[f[1]], points[f[2]]).contains_coplanar(
+            &qp,
+            patch.axis,
+            patch.orientation,
+        )
+    })
+}
+
 /// Sizing splits trigger above this multiple of the local target h. Splits
 /// roughly halve lengths, so triggering exactly at h lands edges at h/2 and
 /// over-refines about twofold against meshers that treat h as a target
@@ -1111,6 +1172,7 @@ impl BallGrid {
 fn refine_step(
     params: &MeshParams,
     patches: &[Patch],
+    patch_grids: &[Tri2Grid],
     dt_tets: &[[usize; 4]],
     tilings: &[Vec<[usize; 3]>],
     tet_region: &[u32],
@@ -1266,13 +1328,22 @@ fn refine_step(
                 }
                 continue;
             }
-            if point_index.contains_key(&cc.map(f64::to_bits)) {
+            if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
+                continue;
+            }
+            // A rim tile's circumcenter can land just OUTSIDE its patch
+            // (e.g. behind the neighboring barrel facet of a tessellated
+            // cylinder). Inserting it with this patch's mark poisons the
+            // neighbor's tiling bookkeeping (uncountable tiles, permanent
+            // deficit), so off-patch centers are skipped; the size target
+            // is still reached through phase 3's longest-edge fallback.
+            if !patch_inside_closed(&patch_grids[pi], &patches[pi], points, cc) {
                 continue;
             }
             let g = points.len();
             points.push(cc);
             builder.insert(cc);
-            point_index.insert(cc.map(f64::to_bits), g);
+            point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
             marks.insert(pi);
             on_patch.push(marks);
@@ -1448,11 +1519,11 @@ fn refine_step(
             } else {
                 let m: [f64; 3] =
                     std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
-                if !point_index.contains_key(&m.map(f64::to_bits)) {
+                if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
                     let g = points.len();
                     points.push(m);
                     builder.insert(m);
-                    point_index.insert(m.map(f64::to_bits), g);
+                    point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                     let marks: DSet<usize> = on_patch[a]
                         .intersection(&on_patch[b])
                         .copied()
@@ -1523,13 +1594,13 @@ fn refine_step(
                     }
                     break 'attempt;
                 }
-                if point_index.contains_key(&tc.map(f64::to_bits)) {
+                if point_index.contains_key(&tc.map(|x| (x + 0.0).to_bits())) {
                     break 'attempt;
                 }
                 let g = points.len();
                 points.push(tc);
                 builder.insert(tc);
-                point_index.insert(tc.map(f64::to_bits), g);
+                point_index.insert(tc.map(|x| (x + 0.0).to_bits()), g);
                 let mut marks = DSet::default();
                 marks.insert(pi);
                 on_patch.push(marks);
@@ -1542,7 +1613,7 @@ fn refine_step(
             // left its tet's region would encroach the diametral ball of a
             // tile it crossed (Shewchuk's containment argument) and was
             // redirected above.
-            if point_index.contains_key(&cc.map(f64::to_bits)) {
+            if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
                 break 'attempt;
             }
             if quality_only {
@@ -1567,7 +1638,7 @@ fn refine_step(
             }
             let g = points.len();
             points.push(cc);
-            point_index.insert(cc.map(f64::to_bits), g);
+            point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
             n += 1;
             placed.push(cc);

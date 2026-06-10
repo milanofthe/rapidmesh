@@ -264,6 +264,75 @@ impl Expansion {
     }
 }
 
+/// Correctly rounded quotient of two exact expansions (`w` nonzero): the
+/// f64 nearest to the exact value x/w, ties to even. Faithful float division
+/// is NOT enough where geometry relies on coordinates landing exactly on
+/// values they exactly equal (a constructed point on the plane z = 0.015
+/// must approximate to 0.015 bit-exactly, or planarity shatters downstream).
+pub fn div_round(x: &Expansion, w: &Expansion) -> f64 {
+    debug_assert!(w.sign() != Sign::Zero, "division by zero expansion");
+    // Newton refinement with exact residuals: q converges to within an ulp.
+    let west = w.approx();
+    let mut q = x.approx() / west;
+    if !q.is_finite() {
+        q = 0.0;
+    }
+    for _ in 0..3 {
+        let r = x.add(&w.scale(q).neg());
+        let dq = r.approx() / west;
+        if dq == 0.0 {
+            break;
+        }
+        let q2 = q + dq;
+        if q2 == q || !q2.is_finite() {
+            break;
+        }
+        q = q2;
+    }
+    // Exact placement: walk to the neighbor while the exact value lies
+    // beyond the midpoint between q and that neighbor.
+    let v_minus_q_sign = |q: f64| -> Sign {
+        // sign(x - q w) * sign(w) = sign(v - q)
+        let r = x.add(&w.scale(q).neg());
+        match (r.sign(), w.sign()) {
+            (Sign::Zero, _) => Sign::Zero,
+            (a, b) if a == b => Sign::Positive,
+            _ => Sign::Negative,
+        }
+    };
+    let beyond_mid = |a: f64, b: f64| -> Sign {
+        // sign(2v - (a + b)) relative: sign(2x - (a+b)w) * sign(w),
+        // computed without forming a+b in f64.
+        let m = x.add(x).add(&w.scale(a).neg()).add(&w.scale(b).neg());
+        match (m.sign(), w.sign()) {
+            (Sign::Zero, _) => Sign::Zero,
+            (s, t) if s == t => Sign::Positive,
+            _ => Sign::Negative,
+        }
+    };
+    loop {
+        match v_minus_q_sign(q) {
+            Sign::Zero => return q + 0.0, // normalize -0.0 to +0.0
+            Sign::Positive => {
+                let n = q.next_up();
+                match beyond_mid(q, n) {
+                    Sign::Positive => q = n,
+                    Sign::Negative => return q + 0.0,
+                    Sign::Zero => return if (q.to_bits() & 1) == 0 { q + 0.0 } else { n + 0.0 },
+                }
+            }
+            Sign::Negative => {
+                let n = q.next_down();
+                match beyond_mid(n, q) {
+                    Sign::Negative => q = n,
+                    Sign::Positive => return q + 0.0,
+                    Sign::Zero => return if (q.to_bits() & 1) == 0 { q + 0.0 } else { n + 0.0 },
+                }
+            }
+        }
+    }
+}
+
 impl Ring for Expansion {
     fn from_f64(v: f64) -> Self {
         Expansion::from_f64(v)

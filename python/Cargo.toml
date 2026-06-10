@@ -1,0 +1,16 @@
+[package]
+name = "rapidmesh-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rapidmesh"
+crate-type = ["cdylib"]
+
+[dependencies]
+rapidmesh-geom = { path = "../crates/rapidmesh-geom" }
+rapidmesh-tet = { path = "../crates/rapidmesh-tet" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+numpy = "0.22"
+
+[workspace]

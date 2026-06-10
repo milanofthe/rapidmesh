@@ -231,12 +231,23 @@ impl Point3 {
     /// Approximate f64 coordinates (for output/visualization, never for
     /// predicates). `None` if the f64 evaluation of w underflows to zero.
     pub fn approx(&self) -> Option<[f64; 3]> {
-        let h = self.hom::<Interval>();
-        let mid = |iv: &Interval| 0.5 * (iv.lo() + iv.hi());
-        let w = mid(&h[3]);
-        if w == 0.0 {
+        // Explicit points round-trip untouched.
+        if let Point3::Explicit(p) = self {
+            return Some(*p);
+        }
+        // Constructed points: correctly rounded coordinates from the exact
+        // homogeneous representation. Interval-midpoint evaluation is off
+        // by an ulp or two, which is enough to knock a point off a plane it
+        // exactly lies on (and exact planarity is what patches, creases,
+        // and region volumes are built from).
+        let h = self.hom::<Expansion>();
+        if h[3].sign() == Sign::Zero {
             return None;
         }
-        Some([mid(&h[0]) / w, mid(&h[1]) / w, mid(&h[2]) / w])
+        Some([
+            crate::expansion::div_round(&h[0], &h[3]),
+            crate::expansion::div_round(&h[1], &h[3]),
+            crate::expansion::div_round(&h[2], &h[3]),
+        ])
     }
 }

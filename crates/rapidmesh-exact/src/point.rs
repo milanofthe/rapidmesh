@@ -37,6 +37,16 @@ pub enum Point3 {
         /// The three defining planes, each as three points.
         planes: Box<[[[f64; 3]; 3]; 3]>,
     },
+    /// Barycenter of three points (which may themselves be implicit).
+    ///
+    /// Stays implicit even for explicit children: the division by 3 would
+    /// round, and the barycenter is used in predicates (e.g. as the interior
+    /// representative of an arrangement sub-triangle during inside/outside
+    /// classification), where exactness is required.
+    Bary {
+        /// The three points being averaged.
+        pts: Box<[Point3; 3]>,
+    },
 }
 
 impl Point3 {
@@ -105,6 +115,13 @@ impl Point3 {
         None
     }
 
+    /// The exact barycenter of three points.
+    pub fn bary(a: Point3, b: Point3, c: Point3) -> Point3 {
+        Point3::Bary {
+            pts: Box::new([a, b, c]),
+        }
+    }
+
     /// The coordinates if this point is explicit.
     pub fn as_explicit(&self) -> Option<[f64; 3]> {
         match self {
@@ -125,6 +142,22 @@ impl Point3 {
             ],
             Point3::Lpi { p, q, r, s, t } => lpi_hom(*p, *q, *r, *s, *t),
             Point3::Tpi { planes } => tpi_hom(planes),
+            Point3::Bary { pts } => {
+                // (p0 + p1 + p2) / 3 over homogeneous children:
+                // X_i = x0 w1 w2 + x1 w0 w2 + x2 w0 w1, W = 3 w0 w1 w2.
+                let h: [[T; 4]; 3] = std::array::from_fn(|k| pts[k].hom::<T>());
+                let w01 = h[0][3].mul(&h[1][3]);
+                let w12 = h[1][3].mul(&h[2][3]);
+                let w02 = h[0][3].mul(&h[2][3]);
+                let coord = |i: usize| {
+                    h[0][i]
+                        .mul(&w12)
+                        .add(&h[1][i].mul(&w02))
+                        .add(&h[2][i].mul(&w01))
+                };
+                let w = T::from_f64(3.0).mul(&w01).mul(&h[2][3]);
+                [coord(0), coord(1), coord(2), w]
+            }
         }
     }
 

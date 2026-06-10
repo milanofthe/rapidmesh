@@ -12,12 +12,16 @@
 //! Cherchi et al. (SIGGRAPH Asia 2022, indirect predicates).
 
 pub mod arrange;
+pub mod boolean;
+pub mod classify;
 pub mod constraint;
 pub mod tri;
 pub mod tri_tri;
 pub mod triangulate;
 
 pub use arrange::{arrange, Arrangement};
+pub use boolean::{boolean, BoolOp, BooleanResult, Solid};
+pub use classify::{classify, Placement};
 pub use constraint::{Constraint, ConstraintLine};
 pub use tri::Tri;
 pub use tri_tri::{tri_tri_intersection, TriTriIsect};

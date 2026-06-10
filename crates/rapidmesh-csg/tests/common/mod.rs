@@ -8,6 +8,7 @@ use rapidmesh_testutil::{affine, rat, rv_dot, Rv};
 
 /// Signed rational area (times 2) of a triangle in the facet projection.
 /// The cyclic pairing matches `Point3::hom2`: drop X -> (y, z), etc.
+#[allow(dead_code)]
 pub fn area2(tri: [&Rv; 3], axis: Axis) -> BigRational {
     let (u, v) = match axis {
         Axis::X => (1, 2),
@@ -21,6 +22,7 @@ pub fn area2(tri: [&Rv; 3], axis: Axis) -> BigRational {
 /// Full exact invariant suite for one triangulated facet:
 /// orientation/non-degeneracy, area conservation, Euler count, and exact
 /// coverage of every constraint by triangulation edges.
+#[allow(dead_code)]
 pub fn check_invariants(facet: &Tri, ft: &FacetTriangulation, constraints: &[Constraint]) {
     // 1. Every sub-triangle oriented like the facet, exactly.
     for t in &ft.triangles {
@@ -95,6 +97,44 @@ pub fn check_invariants(facet: &Tri, ft: &FacetTriangulation, constraints: &[Con
             covered,
             rat(1.0),
             "constraint must be exactly covered by triangulation edges"
+        );
+    }
+}
+
+/// Exact 6x the signed volume enclosed by an outward-oriented closed
+/// triangle surface (divergence theorem over origin tetrahedra).
+#[allow(dead_code)]
+pub fn volume6(vertices: &[Point3], triangles: &[[usize; 3]]) -> BigRational {
+    let verts_rat: Vec<Rv> = vertices.iter().map(affine).collect();
+    triangles.iter().fold(BigRational::zero(), |acc, t| {
+        let (a, b, c) = (&verts_rat[t[0]], &verts_rat[t[1]], &verts_rat[t[2]]);
+        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1])
+            - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
+            + &a[2] * (&b[0] * &c[1] - &b[1] * &c[0]);
+        acc + det
+    })
+}
+
+/// Asserts the surface is a closed orientable manifold: every directed edge
+/// appears exactly once and its reverse exists.
+#[allow(dead_code)]
+pub fn assert_watertight(triangles: &[[usize; 3]]) {
+    let mut directed: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for t in triangles {
+        assert!(
+            t[0] != t[1] && t[1] != t[2] && t[2] != t[0],
+            "degenerate output triangle {t:?}"
+        );
+        for e in 0..3 {
+            *directed.entry((t[e], t[(e + 1) % 3])).or_default() += 1;
+        }
+    }
+    for (&(u, v), &n) in &directed {
+        assert_eq!(n, 1, "directed edge ({u},{v}) used {n} times");
+        assert!(
+            directed.contains_key(&(v, u)),
+            "directed edge ({u},{v}) has no opposite — surface not closed"
         );
     }
 }

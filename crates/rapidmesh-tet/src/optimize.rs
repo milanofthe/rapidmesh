@@ -1,13 +1,18 @@
 //! Post-pass mesh quality optimization: smart Laplacian smoothing of free
-//! interior vertices and 2-3 / 3-2 bistellar flips, all constrained-aware.
+//! interior vertices, surface re-tiling and in-surface smoothing, 2-3 flips
+//! and generalized edge removal, all constrained-aware.
 //!
-//! The conforming surface (patch tiles) is untouchable: constrained faces
-//! are never flipped away, their edges never removed, and their vertices
-//! never moved, so conformity and the exact region volumes are invariants
-//! of this pass (interior modifications telescope over the fixed boundary).
-//! Every operation is gated on improving the local minimum dihedral angle
-//! and on exact positive orientation of the replacement tets, so the pass
-//! can only improve the mesh and terminates when nothing improves.
+//! Constrained faces are never flipped away and their edges never removed,
+//! so conformity is an invariant of this pass. Surface vertices move only
+//! WITHIN their geometry: in their plane patch, on their analytic curved
+//! surface, or along their (straight or curved) feature curve. Plane-only
+//! moves preserve the exact region volumes; fidelity snaps onto curved
+//! analytic geometry deliberately move the mesh from the faceted PLC
+//! approximation toward the true surface (accepted on validity, not
+//! quality: lying on the geometry is a constraint). All other operations
+//! are gated on improving the local minimum dihedral angle and on exact
+//! positive orientation of the replacement tets, and the pass terminates
+//! when nothing improves.
 
 use crate::conform::{tet_min_dihedral_deg, TetMesh};
 use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
@@ -226,6 +231,13 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             ops += 1;
         }
 
+        // EDGE REMOVAL (the 3-2 flip generalized to rings of k tets): the k
+        // tets around an unconstrained interior edge d-e are replaced by
+        // 2(k-2) tets over the max-min-quality triangulation of the ring
+        // polygon (Klincsek interval DP). Validity is positivity of every
+        // new tet in the FIXED ring orientation (no flipping): a folded
+        // triangulation triangle then shows up as a negative tet, so the
+        // accepted complex tiles exactly the old star.
         let mut edges: Vec<(usize, usize)> = edge_map.keys().copied().collect();
         edges.sort_unstable();
         for key in edges {
@@ -233,7 +245,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 continue;
             }
             let owners = &edge_map[&key];
-            if owners.len() != 3 {
+            let k = owners.len();
+            if !(3..=7).contains(&k) {
                 continue;
             }
             let ts: Vec<usize> = owners.iter().map(|&t| t as usize).collect();
@@ -247,59 +260,103 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 continue;
             }
             let (d, e) = key;
-            // Ring vertices: each tet contributes one vertex besides d, e.
-            let mut ring: Vec<usize> = Vec::new();
+            // Each tet contributes the pair of its two non-(d,e) vertices;
+            // the pairs must chain into a single closed ring (interior
+            // edge), walked here into cyclic order.
+            let mut partners: DMap<usize, Vec<usize>> = DMap::default();
             for &t in &ts {
-                for &v in &mesh.tets[t] {
-                    if v != d && v != e && !ring.contains(&v) {
-                        ring.push(v);
-                    }
-                }
+                let mut pr = mesh.tets[t].iter().copied().filter(|&x| x != d && x != e);
+                let (a, b) = (pr.next().expect("pair"), pr.next().expect("pair"));
+                partners.entry(a).or_default().push(b);
+                partners.entry(b).or_default().push(a);
             }
-            if ring.len() != 3 {
+            if partners.len() != k || partners.values().any(|p| p.len() != 2) {
                 continue;
             }
-            let (a, b, c) = (ring[0], ring[1], ring[2]);
-            // Geometric validity: the removed edge d-e must cross the
-            // interior of triangle (a, b, c), or the two new tets do not
-            // tile the ring's union.
-            let side = |u: usize, v: usize| {
+            let start = *partners.keys().min().expect("nonempty");
+            let mut ring: Vec<usize> = vec![start];
+            let mut prev = usize::MAX;
+            while ring.len() < k {
+                let cur = *ring.last().expect("nonempty");
+                let p = &partners[&cur];
+                let next = if p[0] != prev { p[0] } else { p[1] };
+                prev = cur;
+                ring.push(next);
+            }
+            // Closed ring?
+            if !partners[&ring[k - 1]].contains(&start) {
+                continue;
+            }
+            // Orient the cycle so that consecutive pairs rotate positively
+            // around d-e: orient3d(a_i, a_{i+1}, d, e) > 0 for all i (an
+            // embedded star is consistent; anything else is degenerate).
+            let side = |a: usize, b: usize| {
                 Sign::of_f64(geometry_predicates::orient3d(
-                    mesh.points[u],
-                    mesh.points[v],
+                    mesh.points[a],
+                    mesh.points[b],
                     mesh.points[d],
                     mesh.points[e],
                 ))
             };
-            let (s0, s1, s2) = (side(a, b), side(b, c), side(c, a));
-            if s0 == Sign::Zero || s0 != s1 || s1 != s2 {
+            if side(ring[0], ring[1]) == Sign::Negative {
+                ring.reverse();
+            }
+            if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
                 continue;
             }
-            let mk = |t: [usize; 4]| -> Option<[usize; 4]> {
-                if orient_positive(&mesh.points, t) {
-                    Some(t)
-                } else {
-                    let s = [t[0], t[2], t[1], t[3]];
-                    orient_positive(&mesh.points, s).then_some(s)
+            // Klincsek DP over the ring polygon: best[i][j] = max-min
+            // quality of triangulating the sub-polygon ring[i..=j]. Each
+            // triangle (p, q, r) in ring order spawns the tet pair
+            // (p, q, r, e) and (p, r, q, d), both required positive.
+            let pair_q = |i: usize, m: usize, j: usize| -> f64 {
+                let (p, q, r) = (ring[i], ring[m], ring[j]);
+                let t1 = [p, q, r, e];
+                let t2 = [p, r, q, d];
+                if !orient_positive(&mesh.points, t1) || !orient_positive(&mesh.points, t2) {
+                    return f64::MIN;
                 }
+                quality(&mesh.points, t1).min(quality(&mesh.points, t2))
             };
-            let (Some(n1), Some(n2)) = (mk([a, b, c, d]), mk([a, b, c, e])) else {
-                continue;
-            };
+            let mut best = vec![vec![f64::MAX; k]; k];
+            let mut cut = vec![vec![usize::MAX; k]; k];
+            for len in 2..k {
+                for i in 0..k - len {
+                    let j = i + len;
+                    let (mut bq, mut bm) = (f64::MIN, usize::MAX);
+                    #[allow(clippy::needless_range_loop)]
+                    for m in i + 1..j {
+                        let q = pair_q(i, m, j).min(best[i][m]).min(best[m][j]);
+                        if q > bq {
+                            bq = q;
+                            bm = m;
+                        }
+                    }
+                    best[i][j] = bq;
+                    cut[i][j] = bm;
+                }
+            }
             let old_q = ts
                 .iter()
                 .map(|&t| quality(&mesh.points, mesh.tets[t]))
                 .fold(f64::MAX, f64::min);
-            let new_q = quality(&mesh.points, n1).min(quality(&mesh.points, n2));
-            if new_q <= old_q + 1e-9 {
+            if best[0][k - 1] <= old_q + 1e-9 {
                 continue;
+            }
+            let region = mesh.tet_regions[ts[0]];
+            let mut stack: Vec<(usize, usize)> = vec![(0, k - 1)];
+            while let Some((i, j)) = stack.pop() {
+                if j - i < 2 {
+                    continue;
+                }
+                let m = cut[i][j];
+                added.push(([ring[i], ring[m], ring[j], e], region));
+                added.push(([ring[i], ring[j], ring[m], d], region));
+                stack.push((i, m));
+                stack.push((m, j));
             }
             for &t in &ts {
                 alive[t] = false;
             }
-            let region = mesh.tet_regions[ts[0]];
-            added.push((n1, region));
-            added.push((n2, region));
             ops += 1;
         }
 
@@ -408,6 +465,46 @@ fn face_group(mesh: &TetMesh, fi: usize) -> (u8, u32) {
         SurfaceKind::Plane => (0, sf.patch),
         _ => (1, sf.surface),
     }
+}
+
+/// One surface a vertex is constrained to: the (fixed) plane of a plane
+/// patch, or an analytic curved kind. A feature vertex on the seam of
+/// several surfaces is constrained to all of them at once.
+enum SurfConstraint {
+    Plane { n: [f64; 3], p0: [f64; 3] },
+    Curved(SurfaceKind),
+}
+
+impl SurfConstraint {
+    fn project(&self, q: [f64; 3]) -> [f64; 3] {
+        match self {
+            SurfConstraint::Plane { n, p0 } => {
+                let off: f64 = (0..3).map(|k| n[k] * (q[k] - p0[k])).sum();
+                std::array::from_fn(|k| q[k] - off * n[k])
+            }
+            SurfConstraint::Curved(kind) => project_to_surface(kind, q),
+        }
+    }
+
+    fn residual2(&self, q: [f64; 3]) -> f64 {
+        let p = self.project(q);
+        (0..3).map(|k| (p[k] - q[k]).powi(2)).sum()
+    }
+}
+
+/// Projects `q` onto the common intersection of all constraints by
+/// alternating projections; `None` if it does not converge within `tol`
+/// (tangential or degenerate seam).
+fn project_onto_all(cons: &[SurfConstraint], mut q: [f64; 3], tol: f64) -> Option<[f64; 3]> {
+    for _ in 0..32 {
+        for c in cons {
+            q = c.project(q);
+        }
+        if cons.iter().all(|c| c.residual2(q) <= tol * tol) {
+            return Some(q);
+        }
+    }
+    None
 }
 
 fn surface_pass(mesh: &mut TetMesh) -> usize {
@@ -601,6 +698,18 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 continue;
             }
             let cur = mesh.points[v];
+            // Local length scale and tolerance for "is the vertex on its
+            // analytic geometry".
+            let lref2 = nbrs
+                .iter()
+                .map(|&w| (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum::<f64>())
+                .fold(0.0_f64, f64::max);
+            let tol = 1e-7 * lref2.sqrt();
+            // A vertex OFF its analytic geometry is a constraint violation
+            // (chord-plane Steiner points): snapping it on is accepted on
+            // VALIDITY alone. A vertex already on the geometry slides
+            // quality-gated.
+            let mut snap = false;
             let target: [f64; 3] = if feature_nbrs.is_empty() && single_group {
                 // Free in-surface vertex: Laplacian over the surface
                 // neighbors. Plane groups project it back into the plane;
@@ -608,38 +717,105 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 // both keeps the vertex on the geometry and IMPROVES
                 // boundary fidelity.
                 let kind = mesh.surfaces[mesh.faces[vfs[0]].surface as usize].clone();
-                let n = face_normal(&mesh.points, mesh.faces[vfs[0]].tri);
-                let mut avg = [0.0f64; 3];
-                for &w in &nbrs {
-                    for (k, acc) in avg.iter_mut().enumerate() {
-                        *acc += mesh.points[w][k];
-                    }
-                }
-                for acc in &mut avg {
-                    *acc /= nbrs.len() as f64;
-                }
                 match kind {
                     SurfaceKind::Plane => {
+                        let n = face_normal(&mesh.points, mesh.faces[vfs[0]].tri);
+                        let mut avg = [0.0f64; 3];
+                        for &w in &nbrs {
+                            for (k, acc) in avg.iter_mut().enumerate() {
+                                *acc += mesh.points[w][k];
+                            }
+                        }
+                        for acc in &mut avg {
+                            *acc /= nbrs.len() as f64;
+                        }
                         let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
                         std::array::from_fn(|k| avg[k] - off * n[k])
                     }
-                    ref curved => project_to_surface(curved, avg),
+                    ref curved => {
+                        let proj_cur = project_to_surface(curved, cur);
+                        let d2: f64 = (0..3).map(|k| (proj_cur[k] - cur[k]).powi(2)).sum();
+                        if d2 > tol * tol {
+                            snap = true;
+                            proj_cur
+                        } else {
+                            let mut avg = [0.0f64; 3];
+                            for &w in &nbrs {
+                                for (k, acc) in avg.iter_mut().enumerate() {
+                                    *acc += mesh.points[w][k];
+                                }
+                            }
+                            for acc in &mut avg {
+                                *acc /= nbrs.len() as f64;
+                            }
+                            project_to_surface(curved, avg)
+                        }
+                    }
                 }
             } else if feature_nbrs.len() == 2 {
-                // Feature vertex with exactly two feature edges that are
-                // exactly collinear: the feature is straight here, so the
-                // vertex may SLIDE along it (1D Laplacian: the midpoint of
-                // its feature neighbors). Bent features must keep their
-                // corner; sliding would change the patch geometry and the
-                // region volumes. Coordinates shared by both neighbors are
-                // preserved bit-exactly, so axis-aligned creases stay
-                // exactly on their line and in their patches' planes.
                 let (u, w) = (feature_nbrs[0], feature_nbrs[1]);
-                let pe = |i: usize| Point3::Explicit(mesh.points[i]);
-                if collinear(&pe(u), &pe(v), &pe(w)) != Some(true) {
-                    continue;
+                // The distinct surfaces meeting at this feature vertex.
+                let mut group_reps: Vec<((u8, u32), usize)> =
+                    vfs.iter().map(|&fi| (face_group(mesh, fi), fi)).collect();
+                group_reps.sort_unstable_by_key(|&(g, _)| g);
+                group_reps.dedup_by_key(|&mut (g, _)| g);
+                if group_reps.iter().all(|&((k, _), _)| k == 0) {
+                    // All-plane feature with exactly collinear feature
+                    // edges: the feature is straight here, so the vertex
+                    // may SLIDE along it (1D Laplacian: the midpoint of its
+                    // feature neighbors). Bent plane-plane features must
+                    // keep their corner; sliding would change the patch
+                    // geometry and the region volumes. Coordinates shared
+                    // by both neighbors are preserved bit-exactly, so
+                    // axis-aligned creases stay exactly on their line and
+                    // in their patches' planes.
+                    let pe = |i: usize| Point3::Explicit(mesh.points[i]);
+                    if collinear(&pe(u), &pe(v), &pe(w)) != Some(true) {
+                        continue;
+                    }
+                    std::array::from_fn(|k| 0.5 * (mesh.points[u][k] + mesh.points[w][k]))
+                } else {
+                    // Curved feature curve (e.g. the rim circle where a
+                    // cylinder meets a plane): the true curve is the
+                    // intersection of the adjacent surfaces. Plane anchors
+                    // come from a face vertex OTHER than v (those lie on
+                    // the patch plane and do not move).
+                    let cons: Vec<SurfConstraint> = group_reps
+                        .iter()
+                        .map(|&((kind, _), fi)| {
+                            let tri = mesh.faces[fi].tri;
+                            if kind == 0 {
+                                let p0 = *tri.iter().find(|&&x| x != v).expect("anchor");
+                                SurfConstraint::Plane {
+                                    n: face_normal(&mesh.points, tri),
+                                    p0: mesh.points[p0],
+                                }
+                            } else {
+                                SurfConstraint::Curved(
+                                    mesh.surfaces[mesh.faces[fi].surface as usize].clone(),
+                                )
+                            }
+                        })
+                        .collect();
+                    let Some(snapped) = project_onto_all(&cons, cur, tol) else {
+                        continue; // tangential / degenerate seam: pinned
+                    };
+                    let d2: f64 = (0..3).map(|k| (snapped[k] - cur[k]).powi(2)).sum();
+                    if d2 > tol * tol {
+                        snap = true;
+                        snapped
+                    } else {
+                        // On the curve: slide along it (1D Laplacian of the
+                        // feature neighbors, projected back onto the curve).
+                        let mid: [f64; 3] = std::array::from_fn(|k| {
+                            0.5 * (mesh.points[u][k] + mesh.points[w][k])
+                        });
+                        let Some(t) = project_onto_all(&cons, mid, tol) else {
+                            continue;
+                        };
+                        t
+                    }
                 }
-                std::array::from_fn(|k| 0.5 * (mesh.points[u][k] + mesh.points[w][k]))
             } else {
                 // Corner and junction vertices are pinned.
                 continue;
@@ -673,7 +849,15 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             } else {
                 f64::MIN
             };
-            if new_q > old_q + 1e-9 {
+            // Fidelity snaps are a constraint, not an optimization: they
+            // are accepted whenever the result is valid; later passes
+            // recover quality SUBJECT to the geometry.
+            let accept = if snap {
+                tets_ok && faces_ok
+            } else {
+                new_q > old_q + 1e-9
+            };
+            if accept {
                 ops += 1;
             } else {
                 mesh.points[v] = cur;

@@ -5,14 +5,8 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>rapidmesh viewer</title>
 		<style>
-			:root {
-				--bg: #14171c;
-				--panel-bg: #1b1f26;
-				--border: #2a3038;
-				--text: #d8dde6;
-				--text-dim: #8a93a3;
-				--accent: #e8a33d;
-			}
+			/* Custom properties are injected at boot from src/theme.ts
+			   (toCSSVars), the same single source of truth as in rapidfem. */
 			* {
 				box-sizing: border-box;
 			}
@@ -20,7 +14,9 @@
 				margin: 0;
 				background: var(--bg);
 				color: var(--text);
-				font: 13px/1.4 'Segoe UI', system-ui, sans-serif;
+				font-family: var(--font-body);
+				font-size: 13px;
+				line-height: 1.4;
 				height: 100vh;
 				display: flex;
 				flex-direction: column;
@@ -35,11 +31,13 @@
 				align-items: center;
 				gap: 14px;
 				padding: 8px 14px;
+				background: var(--bg-mid);
 				border-bottom: 1px solid var(--border);
 				flex-wrap: wrap;
 			}
 			.brand {
 				font-weight: 600;
+				font-size: 15px;
 				color: var(--accent);
 				margin-right: 8px;
 			}
@@ -47,19 +45,36 @@
 				display: flex;
 				align-items: center;
 				gap: 5px;
-				color: var(--text-dim);
+				color: var(--text-muted);
 			}
 			header select,
 			header input[type='range'] {
-				background: var(--panel-bg);
+				background: var(--input-bg);
 				color: var(--text);
-				border: 1px solid var(--border);
+				border: 1px solid var(--input-border);
 				border-radius: 4px;
 				padding: 2px 6px;
+				font-family: var(--font-body);
+				font-size: 13px;
+			}
+			header select:hover,
+			header input[type='range']:hover {
+				border-color: var(--input-hover);
+			}
+			header select:focus {
+				border-color: var(--input-focus);
+				outline: none;
+			}
+			input[type='checkbox'] {
+				accent-color: var(--accent);
+			}
+			input[type='range'] {
+				accent-color: var(--accent);
 			}
 			.hint {
 				margin-left: auto;
 				color: var(--text-dim);
+				font-size: 11px;
 			}
 			#panels {
 				flex: 1;
@@ -72,8 +87,8 @@
 			.panel {
 				display: flex;
 				flex-direction: column;
-				background: var(--panel-bg);
-				border: 1px solid var(--border);
+				background: var(--bg-surface);
+				border: 1px solid var(--border-subtle);
 				border-radius: 6px;
 				overflow: hidden;
 				min-height: 0;
@@ -83,20 +98,23 @@
 				align-items: baseline;
 				gap: 10px;
 				padding: 6px 10px;
-				border-bottom: 1px solid var(--border);
+				background: var(--bg-mid);
+				border-bottom: 1px solid var(--border-subtle);
 			}
 			.panel-title b {
 				color: var(--accent);
 			}
 			.panel-title span {
-				color: var(--text-dim);
-				font-size: 12px;
+				color: var(--text-muted);
+				font-family: var(--font-mono);
+				font-size: 11px;
 			}
 			.panel canvas {
 				flex: 1;
 				width: 100%;
 				min-height: 0;
 				display: block;
+				background: var(--canvas-bg);
 			}
 		</style>
 	</head>

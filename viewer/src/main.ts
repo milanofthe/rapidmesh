@@ -18,7 +18,22 @@ import {
 	type Camera,
 	type GLState
 } from './canvas3d';
-import { colors, pecColor, regionPalette, wireSurface, wireTets } from './theme';
+import { canvas as canvasTheme, palette, plotColors, toCSSVars } from './theme';
+
+function hexToRgb(hex: string): [number, number, number] {
+	return [
+		parseInt(hex.slice(1, 3), 16) / 255,
+		parseInt(hex.slice(3, 5), 16) / 255,
+		parseInt(hex.slice(5, 7), 16) / 255
+	];
+}
+
+/** Region colors from the rapidfem plot trace cycle. */
+const regionPalette = plotColors.cycle.map(hexToRgb);
+/** Tagged sheet faces (PEC, ports) use the secondary accent. */
+const pecColor = hexToRgb(palette.accentSecondary);
+const wireSurface = hexToRgb(canvasTheme.bg);
+const wireTets = hexToRgb(palette.accentPurple);
 
 const MESHERS = ['rapidmesh', 'gmsh', 'tetgen'];
 
@@ -243,6 +258,11 @@ function attachCameraControls(canvas: HTMLCanvasElement) {
 
 // ─── UI shell ───────────────────────────────────────────────────────
 
+// CSS custom properties come from the shared theme, exactly as in rapidfem.
+const styleEl = document.createElement('style');
+styleEl.textContent = `:root { ${toCSSVars()} }`;
+document.head.appendChild(styleEl);
+
 const app = document.getElementById('app')!;
 app.innerHTML = `
 	<header>
@@ -347,5 +367,4 @@ async function boot() {
 	requestAnimationFrame(frame);
 }
 
-void colors;
 boot();

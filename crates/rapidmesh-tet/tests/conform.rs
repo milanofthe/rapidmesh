@@ -163,6 +163,7 @@ fn sized_box_respects_maxh_and_quality() {
         region_maxh: Vec::new(),
         radius_edge_bound: 2.0,
         max_points: 20_000,
+        grading: 0.5,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -212,6 +213,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         region_maxh: Vec::new(),
         radius_edge_bound: 2.0,
         max_points: 20_000,
+        grading: 0.5,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -253,6 +255,7 @@ fn per_region_sizing_creates_density_transition() {
         region_maxh: vec![(diel.0, 0.5)],
         radius_edge_bound: 2.0,
         max_points: 40_000,
+        grading: 0.5,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(

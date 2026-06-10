@@ -22,6 +22,7 @@ fn main() {
             region_maxh: bs.region_maxh.clone(),
             radius_edge_bound: 2.0,
             max_points: 200_000,
+            grading: 0.5,
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
         let opt = OptimizeParams {

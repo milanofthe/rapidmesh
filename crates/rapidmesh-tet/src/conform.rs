@@ -84,6 +84,30 @@ struct Patch {
     area2: Expansion,
 }
 
+/// Graded size value for a new point: the regional cap, tightened by the
+/// Lipschitz envelopes of its parent vertices (h_parent + grading * dist).
+/// Every insertion inherits from the vertices of the simplex it refines, so
+/// the per-point size field is Lipschitz by construction and sizes GROW
+/// gradually away from fine features instead of jumping at interfaces.
+fn child_h(
+    pos: [f64; 3],
+    parents: &[usize],
+    points: &[[f64; 3]],
+    point_h: &[f64],
+    grading: f64,
+    cap: f64,
+) -> f64 {
+    let mut h = cap;
+    for &v in parents {
+        let d = (0..3)
+            .map(|k| (pos[k] - points[v][k]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        h = h.min(point_h[v] + grading * d);
+    }
+    h
+}
+
 /// Registers a crease child edge produced by a split. The child may ALREADY
 /// be a crease (f64 welding in scene assembly can create T-junctions whose
 /// split point is an existing crease endpoint): then its mark sets merge
@@ -238,6 +262,11 @@ pub struct MeshParams {
     pub radius_edge_bound: f64,
     /// Refinement stops (best effort) once this many points exist.
     pub max_points: usize,
+    /// Size grading: the target edge length may grow by at most this factor
+    /// per unit distance from finer features (h(x) is Lipschitz with this
+    /// constant). 0.5 grows neighbor elements by roughly 1.5x; INFINITY
+    /// disables grading (sizes jump at region interfaces).
+    pub grading: f64,
 }
 
 impl Default for MeshParams {
@@ -247,6 +276,7 @@ impl Default for MeshParams {
             region_maxh: Vec::new(),
             radius_edge_bound: 2.0,
             max_points: 100_000,
+            grading: 0.5,
         }
     }
 }
@@ -310,6 +340,7 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
             region_maxh: Vec::new(),
             radius_edge_bound: f64::INFINITY,
             max_points: usize::MAX,
+            grading: 0.5,
         },
     )
 }
@@ -422,6 +453,33 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
     };
 
+    // Per-point graded size targets (see child_h): PLC vertices start from
+    // the finest adjacent patch target.
+    let h_of_region_init = |r: u32| -> f64 {
+        if r == 0 {
+            return f64::INFINITY;
+        }
+        params
+            .region_maxh
+            .iter()
+            .find(|(rr, _)| *rr == r)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh)
+    };
+    let patch_h_init: Vec<f64> = patches
+        .iter()
+        .map(|p| h_of_region_init(p.regions[0].0).min(h_of_region_init(p.regions[1].0)))
+        .collect();
+    let mut point_h: Vec<f64> = (0..points.len())
+        .map(|v| {
+            on_patch[v]
+                .iter()
+                .map(|&pi| patch_h_init[pi])
+                .fold(params.maxh, f64::min)
+        })
+        .collect();
+    let point_h = &mut point_h;
+
     let mut round = 0;
     let mut refine_round = 0;
     // Everything below this index existed before the previous refine step
@@ -495,6 +553,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     None => {
                         let g = points.len();
                         points.push(m);
+                        point_h.push(child_h(
+                            m,
+                            &[a, b],
+                            &points,
+                            point_h,
+                            params.grading,
+                            f64::INFINITY,
+                        ));
                         builder.insert(m);
                         point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
@@ -623,6 +689,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &mut tried,
                 refine_seen_len,
                 &mut points,
+                point_h,
                 &mut builder,
                 &mut point_index,
                 &mut on_patch,
@@ -672,7 +739,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
         let mut inserted = 0;
-        let mut new_pts: Vec<([f64; 3], usize)> = Vec::new();
+        let mut new_pts: Vec<([f64; 3], usize, (usize, usize))> = Vec::new();
         for &pi in &deficits {
             let patch = &patches[pi];
             for &(a, b) in &all_edges {
@@ -703,7 +770,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 let x: [f64; 3] =
                     std::array::from_fn(|k| points[a][k] + t * (points[b][k] - points[a][k]));
                 if strictly_inside_patch(pi, patch, &points, x) {
-                    new_pts.push((x, pi));
+                    new_pts.push((x, pi, (a, b)));
                 }
             }
         }
@@ -713,7 +780,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // the stale DT would mostly land redundantly and feed encroachment
         // cascades. Candidates are tried in order until one inserts.
         let mut patch_done: DSet<usize> = DSet::default();
-        for (x, pi) in new_pts {
+        for (x, pi, (a, b)) in new_pts {
             if patch_done.contains(&pi) {
                 continue;
             }
@@ -759,6 +826,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     None => {
                         let g = points.len();
                         points.push(xs);
+                        point_h.push(child_h(
+                            xs,
+                            &[a, b],
+                            &points,
+                            point_h,
+                            params.grading,
+                            f64::INFINITY,
+                        ));
                         builder.insert(xs);
                         point_index.insert(xs.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
@@ -779,6 +854,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
             let g = points.len();
             points.push(x);
+            point_h.push(child_h(
+                x,
+                &[a, b],
+                &points,
+                point_h,
+                params.grading,
+                patch_h_init[pi],
+            ));
             builder.insert(x);
             point_index.insert(x.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
@@ -925,9 +1008,12 @@ fn classify_tet_regions(
 /// coincident existing vertex if present). Returns false if the chain entry
 /// vanished (already split).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn split_crease_midpoint(
     key: (usize, usize),
     points: &mut Vec<[f64; 3]>,
+    point_h: &mut Vec<f64>,
+    grading: f64,
     builder: &mut DelaunayBuilder,
     point_index: &mut DMap<[u64; 3], usize>,
     on_patch: &mut Vec<DSet<usize>>,
@@ -944,6 +1030,7 @@ fn split_crease_midpoint(
         None => {
             let g = points.len();
             points.push(m);
+            point_h.push(child_h(m, &[a, b], points, point_h, grading, f64::INFINITY));
             builder.insert(m);
             point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
@@ -1179,6 +1266,7 @@ fn refine_step(
     tried: &mut DMap<[usize; 4], u8>,
     new_since: usize,
     points: &mut Vec<[f64; 3]>,
+    point_h: &mut Vec<f64>,
     builder: &mut DelaunayBuilder,
     point_index: &mut DMap<[u64; 3], usize>,
     on_patch: &mut Vec<DSet<usize>>,
@@ -1223,7 +1311,9 @@ fn refine_step(
             .iter()
             .copied()
             .filter(|key| {
-                let h = crease_h(key);
+                let h = crease_h(key)
+                    .min(point_h[key.0])
+                    .min(point_h[key.1]);
                 h.is_finite()
                     && dist2(points[key.0], points[key.1])
                         > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h)
@@ -1235,6 +1325,8 @@ fn refine_step(
                 if split_crease_midpoint(
                     key,
                     points,
+                    point_h,
+                    params.grading,
                     builder,
                     point_index,
                     on_patch,
@@ -1291,16 +1383,20 @@ fn refine_step(
     // computed against the stale DT are only redundant when they cluster,
     // and clustered points would create short edges anyway).
     if sized {
-        let mut cands: Vec<([f64; 3], f64, usize)> = Vec::new();
+        let mut cands: Vec<([f64; 3], f64, usize, f64, [usize; 3])> = Vec::new();
         for (pi, tiles) in tilings.iter().enumerate() {
-            if !patch_h[pi].is_finite() {
-                continue;
-            }
             for f in tiles {
+                let h_t = patch_h[pi]
+                    .min(point_h[f[0]])
+                    .min(point_h[f[1]])
+                    .min(point_h[f[2]]);
+                if !h_t.is_finite() {
+                    continue;
+                }
                 if let Some((cc, r)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
                 {
-                    if r > 0.5 * OVERSIZE_FACTOR * patch_h[pi] {
-                        cands.push((cc, r, pi));
+                    if r > 0.5 * OVERSIZE_FACTOR * h_t {
+                        cands.push((cc, r, pi, h_t, *f));
                     }
                 }
             }
@@ -1308,8 +1404,8 @@ fn refine_step(
         cands.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut n = 0;
         let mut placed: Vec<[f64; 3]> = Vec::new();
-        for (cc, _r, pi) in cands {
-            let spacing = 0.5 * patch_h[pi];
+        for (cc, _r, pi, h_t, f) in cands {
+            let spacing = 0.5 * h_t;
             if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
                 continue;
             }
@@ -1317,6 +1413,8 @@ fn refine_step(
                 if split_crease_midpoint(
                     key,
                     points,
+                    point_h,
+                    params.grading,
                     builder,
                     point_index,
                     on_patch,
@@ -1342,6 +1440,7 @@ fn refine_step(
             }
             let g = points.len();
             points.push(cc);
+            point_h.push(child_h(cc, &f, points, point_h, params.grading, patch_h[pi]));
             builder.insert(cc);
             point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
@@ -1378,20 +1477,21 @@ fn refine_step(
         .collect();
     // Tile circumcircles, precomputed once for the per-candidate
     // encroachment checks.
-    let mut tile_balls: Vec<([f64; 3], usize)> = Vec::new();
+    let mut tile_balls: Vec<([f64; 3], usize, [usize; 3])> = Vec::new();
     let mut tile_ball_geo: Vec<([f64; 3], f64)> = Vec::new();
     for (pi, tiles) in tilings.iter().enumerate() {
         for f in tiles {
             if let Some((tc, tr)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]) {
-                tile_balls.push((tc, pi));
+                tile_balls.push((tc, pi, *f));
                 tile_ball_geo.push((tc, tr));
             }
         }
     }
     let tile_grid = BallGrid::build(tile_ball_geo);
-    // (cc, circumradius, spacing, lmin2, longest edge if oversized)
+    // (cc, circumradius, spacing, lmin2, tet verts, longest edge if oversized)
     #[allow(clippy::type_complexity)]
-    let mut candidates: Vec<([f64; 3], f64, f64, f64, Option<(usize, usize)>)> = Vec::new();
+    let mut candidates: Vec<([f64; 3], f64, f64, f64, [usize; 4], Option<(usize, usize)>)> =
+        Vec::new();
     for (ti, t) in dt_tets.iter().enumerate() {
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
         let mut lmin2 = f64::MAX;
@@ -1426,7 +1526,14 @@ fn refine_step(
         if region == 0 {
             continue;
         }
-        let h = h_of_region(region);
+        // Graded local target: the region cap tightened by the per-point
+        // size field (a tet touching a fine feature's envelope refines even
+        // deep inside a coarse region; sizes then grow with distance).
+        let h = h_of_region(region)
+            .min(point_h[t[0]])
+            .min(point_h[t[1]])
+            .min(point_h[t[2]])
+            .min(point_h[t[3]]);
         let oversized = h.is_finite() && lmax2 > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h);
         // Quality splits stop once the local mesh is at (or below) target
         // size: boundary slivers have huge circumradii whose centers all
@@ -1473,7 +1580,7 @@ fn refine_step(
         } else {
             0.5 * lmin2.sqrt()
         };
-        candidates.push((cc, r, spacing, lmin2, oversized.then_some(longest)));
+        candidates.push((cc, r, spacing, lmin2, *t, oversized.then_some(longest)));
     }
     if std::env::var_os("RAPIDMESH_CAND_TRACE").is_some() && !candidates.is_empty() {
         let mut ls: Vec<f64> = candidates.iter().map(|c| c.2).collect();
@@ -1508,6 +1615,8 @@ fn refine_step(
                 if split_crease_midpoint(
                     key,
                     points,
+                    point_h,
+                    params.grading,
                     builder,
                     point_index,
                     on_patch,
@@ -1522,6 +1631,14 @@ fn refine_step(
                 if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
                     let g = points.len();
                     points.push(m);
+                    point_h.push(child_h(
+                        m,
+                        &[a, b],
+                        points,
+                        point_h,
+                        params.grading,
+                        f64::INFINITY,
+                    ));
                     builder.insert(m);
                     point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                     let marks: DSet<usize> = on_patch[a]
@@ -1535,7 +1652,7 @@ fn refine_step(
             }
         }};
     }
-    for (cc, _r, spacing, lmin2, longest) in candidates {
+    for (cc, _r, spacing, lmin2, tverts, longest) in candidates {
         if n >= 512 {
             break;
         }
@@ -1560,6 +1677,8 @@ fn refine_step(
                 if split_crease_midpoint(
                     key,
                     points,
+                    point_h,
+                    params.grading,
                     builder,
                     point_index,
                     on_patch,
@@ -1572,10 +1691,10 @@ fn refine_step(
                 break 'attempt;
             }
             // Encroached patch tile: insert that tile's circumcenter instead.
-            let tile_hit: Option<(usize, [f64; 3])> = tile_grid
+            let tile_hit: Option<(usize, [f64; 3], [usize; 3])> = tile_grid
                 .first_containing(cc, |_| true)
-                .map(|i| (tile_balls[i].1, tile_balls[i].0));
-            if let Some((pi, tc)) = tile_hit {
+                .map(|i| (tile_balls[i].1, tile_balls[i].0, tile_balls[i].2));
+            if let Some((pi, tc, tile_f)) = tile_hit {
                 if quality_only {
                     break 'attempt; // no boundary interaction for quality steps
                 }
@@ -1583,6 +1702,8 @@ fn refine_step(
                     if split_crease_midpoint(
                         key,
                         points,
+                        point_h,
+                        params.grading,
                         builder,
                         point_index,
                         on_patch,
@@ -1599,6 +1720,14 @@ fn refine_step(
                 }
                 let g = points.len();
                 points.push(tc);
+                point_h.push(child_h(
+                    tc,
+                    &tile_f,
+                    points,
+                    point_h,
+                    params.grading,
+                    patch_h[pi],
+                ));
                 builder.insert(tc);
                 point_index.insert(tc.map(|x| (x + 0.0).to_bits()), g);
                 let mut marks = DSet::default();
@@ -1638,6 +1767,14 @@ fn refine_step(
             }
             let g = points.len();
             points.push(cc);
+            point_h.push(child_h(
+                cc,
+                &tverts,
+                points,
+                point_h,
+                params.grading,
+                f64::INFINITY,
+            ));
             point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
             n += 1;

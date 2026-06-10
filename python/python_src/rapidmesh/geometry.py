@@ -356,6 +356,7 @@ class Geometry:
         maxh: float | None = None,
         radius_edge: float = 2.0,
         max_points: int = 500_000,
+        grading: float = 0.5,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -370,10 +371,15 @@ class Geometry:
             provable refinement regime is >= 2.0
         max_points : int
             best-effort refinement point budget
+        grading : float
+            size-grading Lipschitz constant: the edge-length target may grow
+            by at most this factor per unit distance from finer features
+            (0.5 means neighbor elements grow by roughly 1.5x; math.inf
+            disables grading and sizes jump at region interfaces)
         """
         h = maxh if maxh is not None else self._maxh
         native = self._builder.mesh(
-            h if h is not None else math.inf, radius_edge, max_points
+            h if h is not None else math.inf, radius_edge, max_points, grading
         )
         return Mesh(native)
 

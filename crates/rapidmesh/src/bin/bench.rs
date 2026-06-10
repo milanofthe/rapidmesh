@@ -111,6 +111,7 @@ fn main() {
             region_maxh: bs.region_maxh.clone(),
             radius_edge_bound: 2.0,
             max_points: 200_000,
+            grading: 0.5,
         };
         records.push(run_one(
             bs.name,
@@ -180,6 +181,7 @@ fn main() {
             region_maxh: Vec::new(),
             radius_edge_bound: 2.0,
             max_points: 500_000,
+            grading: 0.5,
         };
         records.push(run_one(
             &name,

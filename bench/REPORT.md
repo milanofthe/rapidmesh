@@ -18,41 +18,41 @@ metric for Nedelec conditioning). r/e = max circumradius/shortest-edge.
 
 | geometry | mesher | tets | points | min-dih | max r/e | time |
 |---|---|--:|--:|--:|--:|--:|
-| em_scene | rapidmesh | 3370 | 717 | 19.9 | 2.88 | 83 ms |
-| em_scene | gmsh | 2261 | 492 | 13.6 | 1.73 | 28 ms |
+| em_scene | rapidmesh | 5708 | 1128 | 22.6 | 1.84 | 158 ms |
+| em_scene | gmsh | 2261 | 492 | 13.6 | 1.73 | 27 ms |
 | em_scene | tetgen | 2354 | 510 | 3.0 | 1.93 | 10 ms |
-| via | rapidmesh | 3057 | 738 | 23.1 | 2.23 | 120 ms |
+| via | rapidmesh | 4190 | 978 | 14.4 | 3.57 | 138 ms |
 | via | gmsh | 1566 | 437 | 13.7 | 1.32 | 19 ms |
 | via | tetgen | 2203 | 540 | 3.4 | 1.87 | 12 ms |
-| microstrip | rapidmesh | 5942 | 1384 | 20.7 | 2.70 | 166 ms |
-| microstrip | gmsh | 3497 | 898 | 12.3 | 1.52 | 39 ms |
+| microstrip | rapidmesh | 10175 | 2144 | 22.1 | 1.95 | 314 ms |
+| microstrip | gmsh | 3497 | 898 | 12.3 | 1.52 | 38 ms |
 | microstrip | tetgen | 5126 | 1166 | 1.5 | 2.03 | 24 ms |
-| sphere | rapidmesh | 4472 | 944 | 15.7 | 4.13 | 179 ms |
-| sphere | gmsh | 1776 | 410 | 13.5 | 1.83 | 20 ms |
-| sphere | tetgen | 3784 | 752 | 3.2 | 2.02 | 27 ms |
-| l_prism | rapidmesh | 9829 | 2101 | 18.0 | 2.11 | 246 ms |
-| l_prism | gmsh | 2751 | 711 | 12.2 | 1.49 | 34 ms |
-| l_prism | tetgen | 7459 | 1586 | 2.0 | 1.48 | 33 ms |
-| density_transition | rapidmesh | 1849 | 385 | 11.1 | 5.97 | 47 ms |
+| sphere | rapidmesh | 7984 | 1529 | 19.2 | 3.45 | 310 ms |
+| sphere | gmsh | 1776 | 410 | 13.5 | 1.83 | 19 ms |
+| sphere | tetgen | 3784 | 752 | 3.2 | 2.02 | 26 ms |
+| l_prism | rapidmesh | 9829 | 2101 | 18.0 | 2.11 | 249 ms |
+| l_prism | gmsh | 2751 | 711 | 12.2 | 1.49 | 33 ms |
+| l_prism | tetgen | 7459 | 1586 | 2.0 | 1.48 | 32 ms |
+| density_transition | rapidmesh | 5528 | 1061 | 16.0 | 2.16 | 147 ms |
 | density_transition | gmsh | 1331 | 277 | 12.9 | 2.43 | 13 ms |
 | density_transition | tetgen | 1530 | 318 | 2.3 | 2.37 | 7 ms |
-| spot | rapidmesh | 14904 | 4188 | 1.2 | 48.56 | 1301 ms |
-| spot | tetgen | 21857 | 5844 | 1.4 | 14.22 | 127 ms |
-| fandisk | rapidmesh | 36777 | 9724 | 0.0 | 14.24 | 2283 ms |
-| fandisk | tetgen | 25893 | 7782 | 1.7 | 27.05 | 132 ms |
+| spot | rapidmesh | 14904 | 4188 | 1.2 | 48.56 | 1311 ms |
+| spot | tetgen | 21857 | 5844 | 1.4 | 14.22 | 123 ms |
+| fandisk | rapidmesh | 36777 | 9724 | 0.0 | 14.24 | 2397 ms |
+| fandisk | tetgen | 25893 | 7782 | 1.7 | 27.05 | 124 ms |
 
 ## rapidmesh stage timings
 
 | geometry | kind | input faces | plc faces | assemble | mesh | optimize | total |
 |---|---|--:|--:|--:|--:|--:|--:|
-| em_scene | scene | 0 | 34 | 1 ms | 12 ms | 70 ms | 83 ms |
-| via | scene | 0 | 100 | 19 ms | 18 ms | 83 ms | 120 ms |
-| microstrip | scene | 0 | 52 | 9 ms | 25 ms | 132 ms | 166 ms |
-| sphere | scene | 0 | 236 | 6 ms | 40 ms | 133 ms | 179 ms |
-| l_prism | scene | 0 | 32 | 1 ms | 42 ms | 203 ms | 246 ms |
-| density_transition | scene | 0 | 24 | 0 ms | 5 ms | 42 ms | 47 ms |
-| spot | model | 5856 | 5856 | 24 ms | 717 ms | 560 ms | 1301 ms |
-| fandisk | model | 12946 | 12946 | 76 ms | 902 ms | 1305 ms | 2283 ms |
+| em_scene | scene | 0 | 34 | 1 ms | 21 ms | 136 ms | 158 ms |
+| via | scene | 0 | 100 | 19 ms | 23 ms | 96 ms | 138 ms |
+| microstrip | scene | 0 | 52 | 9 ms | 56 ms | 249 ms | 314 ms |
+| sphere | scene | 0 | 236 | 6 ms | 52 ms | 252 ms | 310 ms |
+| l_prism | scene | 0 | 32 | 1 ms | 43 ms | 205 ms | 249 ms |
+| density_transition | scene | 0 | 24 | 0 ms | 19 ms | 128 ms | 147 ms |
+| spot | model | 5856 | 5856 | 25 ms | 724 ms | 562 ms | 1311 ms |
+| fandisk | model | 12946 | 12946 | 77 ms | 926 ms | 1394 ms | 2397 ms |
 
 ## Size grading (density_transition)
 
@@ -63,7 +63,7 @@ backlog.
 
 | mesher | inside | 0-0.5 | 0.5-1 | 1-1.5 | >1.5 |
 |---|--:|--:|--:|--:|--:|
-| rapidmesh | 0.35 | 0.69 | 1.11 | 1.20 | 1.20 |
+| rapidmesh | 0.34 | 0.37 | 0.54 | 0.66 | 0.85 |
 | gmsh | 0.46 | 0.67 | 1.02 | 1.21 | 1.28 |
 | tetgen | 0.40 | 0.64 | 1.05 | 1.23 | 1.22 |
 

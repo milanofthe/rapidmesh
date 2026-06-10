@@ -146,6 +146,7 @@ impl SceneBuilder {
         maxh: f64,
         radius_edge: f64,
         max_points: usize,
+        grading: f64,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         // The heavy pipeline runs without the GIL.
@@ -156,6 +157,7 @@ impl SceneBuilder {
                 region_maxh: self.region_maxh.clone(),
                 radius_edge_bound: radius_edge,
                 max_points,
+                grading,
             };
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
             let opt = OptimizeParams {

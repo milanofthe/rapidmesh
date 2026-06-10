@@ -54,7 +54,10 @@
 
 	let container: HTMLDivElement | undefined = $state();
 	let canvas: HTMLCanvasElement | undefined = $state();
-	let gl_state: GLState | null = null;
+	// Reactive: the settings $effect runs before initGL and must re-run once
+	// the GL state exists (a plain let would leave it with no tracked
+	// dependencies after the early return, never re-running).
+	let gl_state: GLState | null = $state(null);
 	let is_dragging = false;
 	let is_right_drag = false;
 	let last_mouse = { x: 0, y: 0 };
@@ -181,15 +184,25 @@
 
 	// ── Settings → GL state ─────────────────────────────────────────────
 	$effect(() => {
+		// Read every dependency up front so they are tracked even while the
+		// GL state is not ready yet.
+		const surface = settings.surface;
+		const surface_wire = settings.surface_wire;
+		const tet_fill = settings.tet_fill;
+		const tet_wire = settings.tet_wire;
+		const clip_enable = settings.clip_enable;
+		const clip_axis = settings.clip_axis;
+		const clip_t = settings.clip_t;
+		const lo = bbox.min[clip_axis];
+		const hi = bbox.max[clip_axis];
 		if (!gl_state) return;
-		setTagVisible(gl_state, TAG_SURFACE, settings.surface);
-		setTagVisible(gl_state, TAG_WIRE_SURFACE, settings.surface_wire);
-		setTagVisible(gl_state, TAG_TETFILL, settings.tet_fill);
-		setTagVisible(gl_state, TAG_WIRE_TETS, settings.tet_wire);
+		setTagVisible(gl_state, TAG_SURFACE, surface);
+		setTagVisible(gl_state, TAG_WIRE_SURFACE, surface_wire);
+		setTagVisible(gl_state, TAG_TETFILL, tet_fill);
+		setTagVisible(gl_state, TAG_WIRE_TETS, tet_wire);
 		const normal: [number, number, number] = [0, 0, 0];
-		normal[settings.clip_axis] = 1;
-		const d = bbox.min[settings.clip_axis] + settings.clip_t * (bbox.max[settings.clip_axis] - bbox.min[settings.clip_axis]);
-		setClipPlane(gl_state, normal, d, settings.clip_enable);
+		normal[clip_axis] = 1;
+		setClipPlane(gl_state, normal, lo + clip_t * (hi - lo), clip_enable);
 		render_all();
 	});
 

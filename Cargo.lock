@@ -141,8 +141,12 @@ dependencies = [
 name = "rapidmesh-tet"
 version = "0.1.0"
 dependencies = [
+ "geometry-predicates",
+ "num-rational",
+ "num-traits",
  "rapidmesh-exact",
  "rapidmesh-geom",
+ "rapidmesh-testutil",
  "rayon",
 ]
 

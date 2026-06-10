@@ -8,3 +8,9 @@ publish.workspace = true
 rapidmesh-exact.workspace = true
 rapidmesh-geom.workspace = true
 rayon.workspace = true
+geometry-predicates.workspace = true
+
+[dev-dependencies]
+rapidmesh-testutil.workspace = true
+num-rational = "0.4"
+num-traits = "0.2"

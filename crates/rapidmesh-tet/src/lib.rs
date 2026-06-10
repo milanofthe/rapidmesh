@@ -12,3 +12,7 @@
 //! 4. Optional order-2 midside snapping onto the analytic surface via the
 //!    PLC surface back-references (required for full Nédélec-2 convergence on
 //!    curved boundaries).
+
+pub mod delaunay;
+
+pub use delaunay::{tetrahedralize, DelaunayTets};

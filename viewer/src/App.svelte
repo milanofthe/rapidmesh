@@ -31,7 +31,7 @@
 		{ key: 'surface', label: 'srf', tip: 'Surface faces' },
 		{ key: 'surface_wire', label: 'wire', tip: 'Surface wireframe' },
 		{ key: 'tet_fill', label: 'tet', tip: 'Tet fill (use with clip)' },
-		{ key: 'tet_wire', label: 'edges', tip: 'All tet edges' }
+		{ key: 'tet_wire', label: 'edges', tip: 'Interior tet edges (use with clip)' }
 	];
 
 	async function load_geometry(name: string) {

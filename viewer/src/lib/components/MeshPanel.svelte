@@ -48,8 +48,11 @@
 	}
 	const regionCycle = plotColors.cycle.map(hexToRgb);
 	const pecColor = hexToRgb(palette.accentSecondary);
-	const wireSurface = hexToRgb(canvasTheme.bg);
-	const wireTets = hexToRgb(palette.accentPurple);
+	// Wireframe colors are rapidfem canvas tokens: crosshair is what
+	// scene_builder uses for its wireframe overlay; grid for the dimmer
+	// interior edges.
+	const wireSurface = hexToRgb(canvasTheme.crosshair);
+	const wireInterior = hexToRgb(canvasTheme.grid);
 	const regionColor = (r: number) => regionCycle[(r + regionCycle.length - 1) % regionCycle.length];
 
 	let container: HTMLDivElement | undefined = $state();
@@ -169,17 +172,21 @@
 		}
 		addLineMesh(state, lines(surfEdges.values()), wireSurface, TAG_WIRE_SURFACE);
 
+		// Interior edges only: the surface edges already belong to the
+		// wireframe layer, duplicating them here would make the toggles
+		// redundant.
 		const tetEdges = new Map<string, [number, number]>();
 		for (const t of data.tets) {
 			for (let i = 0; i < 4; i++) {
 				for (let j = i + 1; j < 4; j++) {
 					const a = t[i],
 						b = t[j];
-					tetEdges.set(a < b ? `${a},${b}` : `${b},${a}`, [a, b]);
+					const key = a < b ? `${a},${b}` : `${b},${a}`;
+					if (!surfEdges.has(key)) tetEdges.set(key, [a, b]);
 				}
 			}
 		}
-		addLineMesh(state, lines(tetEdges.values()), wireTets, TAG_WIRE_TETS);
+		addLineMesh(state, lines(tetEdges.values()), wireInterior, TAG_WIRE_TETS);
 	}
 
 	// ── Settings → GL state ─────────────────────────────────────────────

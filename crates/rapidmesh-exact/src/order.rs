@@ -61,6 +61,25 @@ pub fn cmp_along(a: &Point3, b: &Point3, p: &Point3, q: &Point3) -> Option<Sign>
     Some(sign)
 }
 
+/// Exact lexicographic comparison of two (possibly implicit) points by
+/// (x, y, z). `None` if a point is invalid.
+pub fn lex_cmp(p: &Point3, q: &Point3) -> Option<std::cmp::Ordering> {
+    let origin = Point3::explicit(0.0, 0.0, 0.0);
+    let axes = [
+        Point3::explicit(1.0, 0.0, 0.0),
+        Point3::explicit(0.0, 1.0, 0.0),
+        Point3::explicit(0.0, 0.0, 1.0),
+    ];
+    for axis in &axes {
+        match cmp_along(&origin, axis, p, q)? {
+            Sign::Positive => return Some(std::cmp::Ordering::Less),
+            Sign::Negative => return Some(std::cmp::Ordering::Greater),
+            Sign::Zero => {}
+        }
+    }
+    Some(std::cmp::Ordering::Equal)
+}
+
 /// Exact 3D collinearity: true if `a`, `b`, `c` lie on one line (zero
 /// orientation in every axis projection). `None` if a point is invalid.
 pub fn collinear(a: &Point3, b: &Point3, c: &Point3) -> Option<bool> {

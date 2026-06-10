@@ -11,9 +11,11 @@ pub mod faceted;
 pub mod plc;
 pub mod polygon;
 pub mod prim;
+pub mod scene;
 
 pub use faceted::{Faceted, SurfaceKind};
-pub use plc::TaggedPlc;
+pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
+pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};
 pub use prim::{
     cylinder, extrude_polygon, frustum, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere,

@@ -1,5 +1,7 @@
 //! Tagged piecewise-linear complex: the central intermediate representation.
 
+use crate::faceted::SurfaceKind;
+
 /// Identifies the analytic surface a PLC facet originated from, so that
 /// downstream stages (order-2 midside snapping) can project points back onto
 /// the exact geometry instead of the linear facet.
@@ -8,12 +10,14 @@ pub struct SurfaceRef(pub u32);
 
 /// Region (material) tag carried through CSG into the volume mesh. Every output
 /// tet lies in exactly one region — conformal material interfaces are a hard
-/// requirement for Maxwell FEM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// requirement for Maxwell FEM. `RegionTag(0)` is the background (outside all
+/// scene solids).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegionTag(pub u32);
 
 /// Boundary/face tag for ports, PEC surfaces, ABC/PML interfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `FaceTag(0)` means untagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FaceTag(pub u32);
 
 /// Watertight tagged triangle surface complex.
@@ -32,5 +36,8 @@ pub struct TaggedPlc {
     /// Per-triangle back-reference to the originating analytic surface.
     pub surface_refs: Vec<SurfaceRef>,
     /// Per-triangle region tags on both sides (front, back) of the facet.
+    /// Front is the side the triangle normal points into.
     pub region_tags: Vec<[RegionTag; 2]>,
+    /// The analytic surfaces referenced by `surface_refs`.
+    pub surfaces: Vec<SurfaceKind>,
 }

@@ -19,7 +19,7 @@
 use crate::constraint::Constraint;
 use crate::tri::Tri;
 use rapidmesh_exact::{
-    cmp_along, collinear, orient2d, strictly_between, Axis, Point3, Sign,
+    cmp_along, collinear, incircle2d, lex_cmp, orient2d, strictly_between, Axis, Point3, Sign,
 };
 
 /// Result of triangulating a facet.
@@ -170,6 +170,16 @@ pub fn triangulate_facet(
         );
     }
 
+    // Canonical (constrained Delaunay) pass: makes the triangulation a pure
+    // function of the geometry, so coincident coplanar facets of different
+    // inputs triangulate their overlap identically and can be matched
+    // triangle-by-triangle downstream.
+    let constrained: std::collections::HashSet<(usize, usize)> = chain_edges
+        .iter()
+        .map(|&(u, v)| (u.min(v), u.max(v)))
+        .collect();
+    delaunay_pass(&mut tris, &pool, axis, orientation, &constrained);
+
     FacetTriangulation {
         vertices: pool,
         triangles: tris,
@@ -240,6 +250,74 @@ fn split_edge(tris: &mut Vec<[usize; 3]>, ti: usize, x: usize, y: usize, k: usiz
         let d = opposite_vertex(tris[tj], y, x);
         tris[tj] = [y, k, d];
         tris.push([k, x, d]);
+    }
+}
+
+/// Flips non-constrained edges to the constrained Delaunay triangulation,
+/// with a deterministic geometric tie-break for cocircular quads (prefer the
+/// diagonal containing the lexicographically smallest of the four vertices).
+/// The result is unique given the vertex set and constraints — the property
+/// that makes coincident facets of different inputs match exactly.
+fn delaunay_pass(
+    tris: &mut [[usize; 3]],
+    pool: &[Point3],
+    axis: Axis,
+    orientation: Sign,
+    constrained: &std::collections::HashSet<(usize, usize)>,
+) {
+    let o2d = |a: usize, b: usize, c: usize| -> Sign {
+        orient2d(&pool[a], &pool[b], &pool[c], axis).expect("valid")
+    };
+    let mut queue: std::collections::VecDeque<(usize, usize)> = tris
+        .iter()
+        .flat_map(|t| (0..3).map(move |e| (t[e], t[(e + 1) % 3])))
+        .filter(|&(x, y)| x < y)
+        .collect();
+    let cap = 1000 + 64 * tris.len() * tris.len();
+    let mut steps = 0usize;
+    while let Some((x, y)) = queue.pop_front() {
+        steps += 1;
+        assert!(steps <= cap, "Delaunay pass did not converge");
+        if constrained.contains(&(x.min(y), x.max(y))) {
+            continue;
+        }
+        let left = (0..tris.len()).find(|&i| has_directed_edge(tris[i], x, y));
+        let right = (0..tris.len()).find(|&i| has_directed_edge(tris[i], y, x));
+        let (Some(li), Some(ri)) = (left, right) else {
+            continue; // boundary edge or already flipped away
+        };
+        let c = opposite_vertex(tris[li], x, y);
+        let d = opposite_vertex(tris[ri], y, x);
+        // In-circle in the triangle's own handedness: (x, y, c) has the
+        // facet orientation, so "d inside" carries that sign.
+        let s = incircle2d(&pool[x], &pool[y], &pool[c], &pool[d], axis).expect("valid");
+        let flip = if s == orientation {
+            true
+        } else if s == Sign::Zero {
+            // Cocircular: prefer the diagonal owning the lex-smallest vertex.
+            let min_of = |a: usize, b: usize| -> usize {
+                match lex_cmp(&pool[a], &pool[b]).expect("valid") {
+                    std::cmp::Ordering::Greater => b,
+                    _ => a,
+                }
+            };
+            let overall = min_of(min_of(x, y), min_of(c, d));
+            overall == c || overall == d
+        } else {
+            false
+        };
+        if !flip {
+            continue;
+        }
+        // Quad must be strictly convex (guards collinear/degenerate ties).
+        if o2d(c, d, x).combine(o2d(c, d, y)) != Sign::Negative {
+            continue;
+        }
+        tris[li] = [c, x, d];
+        tris[ri] = [d, y, c];
+        for &(p, q) in &[(c, x), (x, d), (d, y), (y, c)] {
+            queue.push_back((p.min(q), p.max(q)));
+        }
     }
 }
 

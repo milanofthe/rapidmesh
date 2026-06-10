@@ -3,7 +3,7 @@
 //! scene.
 
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
+use num_traits::Zero;
 use rapidmesh_geom::{sheet_rect, solid_box, FaceTag, RegionTag, Scene, TaggedPlc};
 use rapidmesh_testutil::rat;
 

@@ -5,4 +5,7 @@
 //! (rapidmesh-tet), and export of the resulting volume mesh (rapidfem format,
 //! .msh/.vtk for inspection).
 
+pub mod export;
+pub mod scenes;
+
 pub use rapidmesh_geom::TaggedPlc;

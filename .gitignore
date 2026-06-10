@@ -2,3 +2,8 @@
 viewer/node_modules
 viewer/public/meshes
 viewer/dist
+bench/models
+bench/models_hold
+bench/plc
+bench/results.json
+__pycache__/

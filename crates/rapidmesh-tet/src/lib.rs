@@ -16,5 +16,5 @@
 pub mod conform;
 pub mod delaunay;
 
-pub use conform::{mesh_plc, SurfaceFace, TetMesh};
+pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, TetMesh};
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};

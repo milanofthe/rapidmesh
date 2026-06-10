@@ -5,7 +5,7 @@
 use num_rational::BigRational;
 use num_traits::Zero;
 use rapidmesh_geom::{cylinder, sheet_rect, solid_box, FaceTag, RegionTag, Scene, TaggedPlc};
-use rapidmesh_tet::{mesh_plc, TetMesh};
+use rapidmesh_tet::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, TetMesh};
 use rapidmesh_testutil::rat;
 
 /// Exact 6x volume of a PLC region from its interface facets.
@@ -149,6 +149,65 @@ fn cylinder_via_in_box_meshes_exactly() {
     );
     close(mesh_region_volume6(&mesh, via), plc_region_volume6(&plc, via));
     check_structure(&mesh);
+}
+
+#[test]
+fn sized_box_respects_maxh_and_quality() {
+    let mut scene = Scene::new();
+    let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]));
+    let plc = scene.assemble();
+    let params = MeshParams {
+        maxh: 0.6,
+        radius_edge_bound: 2.0,
+        max_points: 20_000,
+    };
+    let mesh = mesh_plc_with(&plc, &params);
+    // Volume stays exact under interior refinement; structure intact.
+    assert_eq!(mesh_region_volume6(&mesh, r), rat(36.0));
+    check_structure(&mesh);
+    let q = quality_stats(&mesh);
+    eprintln!("sized box quality: {q:?}");
+    assert!(
+        q.max_edge <= 1.5 * params.maxh,
+        "edge {} too long",
+        q.max_edge
+    );
+    assert!(
+        q.max_radius_edge <= params.radius_edge_bound * 1.25,
+        "radius-edge {} too large",
+        q.max_radius_edge
+    );
+    assert!(q.n_tets > 100, "expected real refinement, got {} tets", q.n_tets);
+}
+
+#[test]
+fn sized_em_scene_stays_exact_and_conforming() {
+    let mut scene = Scene::new();
+    let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
+    let diel = scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
+    scene.add_sheet(
+        sheet_rect([1.5, 1.5, 2.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        FaceTag(7),
+    );
+    let plc = scene.assemble();
+    let params = MeshParams {
+        maxh: 1.1,
+        radius_edge_bound: 2.0,
+        max_points: 20_000,
+    };
+    let mesh = mesh_plc_with(&plc, &params);
+    assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
+    assert_eq!(mesh_region_volume6(&mesh, diel), rat(24.0));
+    check_structure(&mesh);
+    let q = quality_stats(&mesh);
+    eprintln!("sized EM scene quality: {q:?}");
+    // Sizing is a target (like gmsh's mesh size), not a hard bound; allow
+    // slack for corner configurations.
+    assert!(q.max_edge <= 1.5 * params.maxh, "edge {} too long", q.max_edge);
+    assert!(
+        mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count() >= 4,
+        "PEC faces must survive refinement"
+    );
 }
 
 #[test]

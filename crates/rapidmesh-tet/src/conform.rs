@@ -166,9 +166,95 @@ fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
         .collect()
 }
 
-/// Meshes a tagged PLC into a conforming, region-tagged tet mesh.
-/// Background (region 0) tets are dropped.
+/// Sizing and quality parameters for [`mesh_plc_with`].
+#[derive(Debug, Clone)]
+pub struct MeshParams {
+    /// Target maximum edge length (creases, patch tiles, and tet edges).
+    pub maxh: f64,
+    /// Delaunay-refinement quality bound: tets with
+    /// circumradius / shortest-edge above this get their circumcenter
+    /// inserted. The provable refinement regime is >= 2.0.
+    pub radius_edge_bound: f64,
+    /// Refinement stops (best effort) once this many points exist.
+    pub max_points: usize,
+}
+
+impl Default for MeshParams {
+    fn default() -> Self {
+        MeshParams {
+            maxh: f64::INFINITY,
+            radius_edge_bound: 2.0,
+            max_points: 100_000,
+        }
+    }
+}
+
+/// Circumcenter and circumradius of a tet, `None` if degenerate.
+fn tet_circumcenter(p: [[f64; 3]; 4]) -> Option<([f64; 3], f64)> {
+    // Rows 2(p_i - p_0), rhs |p_i|^2 - |p_0|^2.
+    let row = |i: usize| -> [f64; 3] { std::array::from_fn(|k| 2.0 * (p[i][k] - p[0][k])) };
+    let sq = |q: [f64; 3]| -> f64 { q.iter().map(|x| x * x).sum() };
+    let (r1, r2, r3) = (row(1), row(2), row(3));
+    let b = [sq(p[1]) - sq(p[0]), sq(p[2]) - sq(p[0]), sq(p[3]) - sq(p[0])];
+    let det3 = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| -> f64 {
+        a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0])
+    };
+    let d = det3(r1, r2, r3);
+    let scale: f64 = [r1, r2, r3]
+        .iter()
+        .map(|r| r.iter().map(|x| x.abs()).fold(0.0, f64::max))
+        .fold(0.0, f64::max);
+    if d.abs() < 1e-12 * scale.powi(3) {
+        return None;
+    }
+    let col = |j: usize| -> f64 {
+        let mut m = [r1, r2, r3];
+        for (i, row) in m.iter_mut().enumerate() {
+            row[j] = b[i];
+        }
+        det3(m[0], m[1], m[2]) / d
+    };
+    let c = [col(0), col(1), col(2)];
+    let r = (0..3).map(|k| (c[k] - p[0][k]).powi(2)).sum::<f64>().sqrt();
+    Some((c, r))
+}
+
+/// In-plane circumcenter and circumradius of a 3D triangle, `None` if
+/// degenerate.
+fn tri_circumcenter(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> Option<([f64; 3], f64)> {
+    let u: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
+    let v: [f64; 3] = std::array::from_fn(|k| c[k] - a[k]);
+    let dot = |x: [f64; 3], y: [f64; 3]| -> f64 { (0..3).map(|k| x[k] * y[k]).sum() };
+    let (uu, uv, vv) = (dot(u, u), dot(u, v), dot(v, v));
+    let det = uu * vv - uv * uv;
+    if det.abs() < 1e-12 * uu * vv + f64::MIN_POSITIVE {
+        return None;
+    }
+    let alpha = 0.5 * (uu * vv - uv * vv) / det;
+    let beta = 0.5 * (uu * vv - uv * uu) / det;
+    let cc: [f64; 3] = std::array::from_fn(|k| a[k] + alpha * u[k] + beta * v[k]);
+    let r = (0..3).map(|k| (cc[k] - a[k]).powi(2)).sum::<f64>().sqrt();
+    Some((cc, r))
+}
+
+/// Meshes a tagged PLC into a conforming, region-tagged tet mesh without
+/// sizing or quality refinement. Background (region 0) tets are dropped.
 pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
+    mesh_plc_with(
+        plc,
+        &MeshParams {
+            maxh: f64::INFINITY,
+            radius_edge_bound: f64::INFINITY,
+            max_points: usize::MAX,
+        },
+    )
+}
+
+/// Meshes a tagged PLC into a conforming, region-tagged tet mesh, refined to
+/// the given sizing and quality targets (best effort under
+/// `params.max_points`).
+pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let trace = std::env::var_os("RAPIDMESH_TRACE").is_some();
     let mut points: Vec<[f64; 3]> = plc.vertices.clone();
     let patches = build_patches(plc);
@@ -264,9 +350,10 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
     };
 
     let mut round = 0;
-    let (tets, patch_faces): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>) = loop {
+    let mut refine_round = 0;
+    let (tets, patch_faces): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>) = 'outer: loop {
         round += 1;
-        assert!(round <= 512, "boundary recovery did not converge");
+        assert!(round <= 16384, "boundary recovery did not converge");
 
         let dt_tets = builder.tets();
         let mut dt_edges: HashSet<(usize, usize)> = HashSet::new();
@@ -364,7 +451,46 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
             all_tilings.push(tiles);
         }
         if deficits.is_empty() {
-            break (dt_tets, all_tilings);
+            // Conforming. Apply one sizing/quality refinement step; when it
+            // makes no insertion (or the point budget is spent), finish.
+            if points.len() >= params.max_points {
+                if trace {
+                    eprintln!("refinement stopped at point budget ({})", points.len());
+                }
+                break 'outer (dt_tets, all_tilings);
+            }
+            refine_round += 1;
+            if refine_round > 200 {
+                // Sizing/quality are targets, not hard bounds (as in gmsh):
+                // stop best-effort instead of chasing corner configurations.
+                if trace {
+                    eprintln!("refinement stopped at round budget");
+                }
+                break 'outer (dt_tets, all_tilings);
+            }
+            let inserted = refine_step(
+                params,
+                &patches,
+                &dt_tets,
+                &all_tilings,
+                &mut points,
+                &mut builder,
+                &mut point_index,
+                &mut on_patch,
+                &mut creases,
+                &mut crease_marks,
+                (blo, bhi),
+            );
+            if trace && inserted > 0 {
+                eprintln!(
+                    "refine round {refine_round}: inserted {inserted}, {} points",
+                    points.len()
+                );
+            }
+            if inserted == 0 {
+                break 'outer (dt_tets, all_tilings);
+            }
+            continue;
         }
         if trace {
             eprintln!("round {round}: {} patches with tiling deficit", deficits.len());
@@ -572,5 +698,405 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
         tets: kept_tets,
         tet_regions,
         faces: out_faces,
+    }
+}
+
+/// Splits the crease sub-edge `key` at its midpoint (reusing an exactly
+/// coincident existing vertex if present). Returns false if the chain entry
+/// vanished (already split).
+#[allow(clippy::too_many_arguments)]
+fn split_crease_midpoint(
+    key: (usize, usize),
+    points: &mut Vec<[f64; 3]>,
+    builder: &mut DelaunayBuilder,
+    point_index: &mut HashMap<[u64; 3], usize>,
+    on_patch: &mut Vec<HashSet<usize>>,
+    creases: &mut Vec<(usize, usize)>,
+    crease_marks: &mut HashMap<(usize, usize), HashSet<usize>>,
+) -> bool {
+    let Some(marks) = crease_marks.remove(&key) else {
+        return false;
+    };
+    let (a, b) = key;
+    let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+    let g = match point_index.get(&m.map(f64::to_bits)) {
+        Some(&g) => g,
+        None => {
+            let g = points.len();
+            points.push(m);
+            builder.insert(m);
+            point_index.insert(m.map(f64::to_bits), g);
+            on_patch.push(HashSet::new());
+            g
+        }
+    };
+    on_patch[g].extend(marks.iter().copied());
+    creases.retain(|&e| e != key);
+    creases.push((a.min(g), a.max(g)));
+    creases.push((g.min(b), g.max(b)));
+    crease_marks.insert((a.min(g), a.max(g)), marks.clone());
+    crease_marks.insert((g.min(b), g.max(b)), marks);
+    true
+}
+
+/// One sizing/quality refinement step on a conforming state. Returns the
+/// number of inserted points (0 = all targets met). Shewchuk phase order:
+/// oversized creases, then oversized patch tiles, then oversized or
+/// poor-quality tets (circumcenters, with encroachment redirected to the
+/// boundary).
+#[allow(clippy::too_many_arguments)]
+fn refine_step(
+    params: &MeshParams,
+    patches: &[Patch],
+    dt_tets: &[[usize; 4]],
+    tilings: &[Vec<[usize; 3]>],
+    points: &mut Vec<[f64; 3]>,
+    builder: &mut DelaunayBuilder,
+    point_index: &mut HashMap<[u64; 3], usize>,
+    on_patch: &mut Vec<HashSet<usize>>,
+    creases: &mut Vec<(usize, usize)>,
+    crease_marks: &mut HashMap<(usize, usize), HashSet<usize>>,
+    bbox: ([f64; 3], [f64; 3]),
+) -> usize {
+    if params.maxh.is_infinite() && params.radius_edge_bound.is_infinite() {
+        return 0;
+    }
+    let dist2 = |a: [f64; 3], b: [f64; 3]| -> f64 {
+        (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
+    };
+
+    // Phase 1: creases longer than maxh (disjoint midpoint splits batch
+    // safely).
+    if params.maxh.is_finite() {
+        let long: Vec<(usize, usize)> = creases
+            .iter()
+            .copied()
+            .filter(|&(a, b)| dist2(points[a], points[b]) > params.maxh * params.maxh)
+            .collect();
+        if !long.is_empty() {
+            let mut n = 0;
+            for key in long {
+                if split_crease_midpoint(
+                    key,
+                    points,
+                    builder,
+                    point_index,
+                    on_patch,
+                    creases,
+                    crease_marks,
+                ) {
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+
+    // Encroachment helper: the crease sub-edge whose diametral ball contains
+    // x, if any.
+    let encroached_crease = |x: [f64; 3], points: &[[f64; 3]], creases: &[(usize, usize)]| {
+        creases.iter().copied().find(|&(a, b)| {
+            let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+            dist2(x, m) < 0.25 * dist2(points[a], points[b])
+        })
+    };
+
+    // Phase 2: oversized patch tiles (one per patch per step; insertions
+    // change the DT).
+    if params.maxh.is_finite() {
+        let mut n = 0;
+        for (pi, tiles) in tilings.iter().enumerate() {
+            let Some((cc, _r)) = tiles
+                .iter()
+                .filter_map(|f| tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]))
+                .filter(|&(_, r)| r > 0.5 * params.maxh)
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+            else {
+                continue;
+            };
+            if let Some(key) = encroached_crease(cc, points, creases) {
+                if split_crease_midpoint(
+                    key,
+                    points,
+                    builder,
+                    point_index,
+                    on_patch,
+                    creases,
+                    crease_marks,
+                ) {
+                    n += 1;
+                }
+                continue;
+            }
+            if point_index.contains_key(&cc.map(f64::to_bits)) {
+                continue;
+            }
+            let g = points.len();
+            points.push(cc);
+            builder.insert(cc);
+            point_index.insert(cc.map(f64::to_bits), g);
+            let mut marks = HashSet::new();
+            marks.insert(pi);
+            on_patch.push(marks);
+            n += 1;
+        }
+        if n > 0 {
+            return n;
+        }
+    }
+
+    // Phase 3: tets — oversized or poor radius-edge quality. Insert
+    // circumcenters unless they encroach the boundary (then split that
+    // instead). Batched with a spacing guard against near-duplicate
+    // circumcenters from neighboring tets.
+    let mut region_bounds: Vec<Tri> = Vec::new();
+    for (pi, patch) in patches.iter().enumerate() {
+        if patch.regions[0] == patch.regions[1] {
+            continue;
+        }
+        for f in &tilings[pi] {
+            region_bounds.push(Tri::new(points[f[0]], points[f[1]], points[f[2]]));
+        }
+    }
+    // (cc, circumradius, spacing, longest edge if oversized)
+    #[allow(clippy::type_complexity)]
+    let mut candidates: Vec<([f64; 3], f64, f64, Option<(usize, usize)>)> = Vec::new();
+    for t in dt_tets {
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
+        let mut lmin2 = f64::MAX;
+        let mut lmax2 = 0.0_f64;
+        let mut longest = (t[0], t[1]);
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d = dist2(p[i], p[j]);
+                lmin2 = lmin2.min(d);
+                if d > lmax2 {
+                    lmax2 = d;
+                    longest = (t[i], t[j]);
+                }
+            }
+        }
+        let oversized = params.maxh.is_finite() && lmax2 > params.maxh * params.maxh;
+        // Near-degenerate (sliver) tets have no usable circumcenter; their
+        // long edges are tolerated (sizing is a target, and forcing midpoint
+        // splits into slivers spawns new slivers without converging).
+        let Some((cc, r)) = tet_circumcenter(p) else {
+            continue;
+        };
+        let bad_quality = params.radius_edge_bound.is_finite()
+            && r > params.radius_edge_bound * lmin2.sqrt();
+        if !oversized && !bad_quality {
+            continue;
+        }
+        // Only refine tets that belong to a region (the DT also fills the
+        // gap between the convex hull and the domain).
+        let centroid: [f64; 3] = std::array::from_fn(|k| {
+            0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k])
+        });
+        if !point_inside_solid(&Point3::Explicit(centroid), &region_bounds, bbox) {
+            continue;
+        }
+        candidates.push((cc, r, 0.5 * lmin2.sqrt(), oversized.then_some(longest)));
+    }
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut n = 0;
+    let mut placed: Vec<[f64; 3]> = Vec::new();
+    // Longest-edge midpoint fallback for oversized tets whose circumcenter
+    // is rejected (outside the domain, duplicate): crease edges split their
+    // chain, surface edges inherit the shared patch marks, interior edges
+    // insert plainly.
+    macro_rules! split_longest_edge {
+        ($a:expr, $b:expr) => {{
+            let (a, b) = ($a, $b);
+            let key = (a.min(b), a.max(b));
+            if crease_marks.contains_key(&key) {
+                if split_crease_midpoint(
+                    key,
+                    points,
+                    builder,
+                    point_index,
+                    on_patch,
+                    creases,
+                    crease_marks,
+                ) {
+                    n += 1;
+                }
+            } else {
+                let m: [f64; 3] =
+                    std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+                if !point_index.contains_key(&m.map(f64::to_bits)) {
+                    let g = points.len();
+                    points.push(m);
+                    builder.insert(m);
+                    point_index.insert(m.map(f64::to_bits), g);
+                    let marks: HashSet<usize> = on_patch[a]
+                        .intersection(&on_patch[b])
+                        .copied()
+                        .collect();
+                    on_patch.push(marks);
+                    n += 1;
+                    placed.push(m);
+                }
+            }
+        }};
+    }
+    for (cc, _r, spacing, longest) in candidates {
+        if n >= 32 {
+            break;
+        }
+        if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
+            continue;
+        }
+        let before = n;
+        'attempt: {
+            if let Some(key) = encroached_crease(cc, points, creases) {
+                if split_crease_midpoint(
+                    key,
+                    points,
+                    builder,
+                    point_index,
+                    on_patch,
+                    creases,
+                    crease_marks,
+                ) {
+                    n += 1;
+                    placed.push(cc);
+                }
+                break 'attempt;
+            }
+            // Encroached patch tile: insert that tile's circumcenter instead.
+            let mut tile_hit: Option<(usize, [f64; 3])> = None;
+            'tiles: for (pi, tiles) in tilings.iter().enumerate() {
+                for f in tiles {
+                    if let Some((tc, tr)) =
+                        tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
+                    {
+                        if dist2(cc, tc) < tr * tr {
+                            tile_hit = Some((pi, tc));
+                            break 'tiles;
+                        }
+                    }
+                }
+            }
+            if let Some((pi, tc)) = tile_hit {
+                if let Some(key) = encroached_crease(tc, points, creases) {
+                    if split_crease_midpoint(
+                        key,
+                        points,
+                        builder,
+                        point_index,
+                        on_patch,
+                        creases,
+                        crease_marks,
+                    ) {
+                        n += 1;
+                        placed.push(tc);
+                    }
+                    break 'attempt;
+                }
+                if point_index.contains_key(&tc.map(f64::to_bits)) {
+                    break 'attempt;
+                }
+                let g = points.len();
+                points.push(tc);
+                builder.insert(tc);
+                point_index.insert(tc.map(f64::to_bits), g);
+                let mut marks = HashSet::new();
+                marks.insert(pi);
+                on_patch.push(marks);
+                n += 1;
+                placed.push(tc);
+                break 'attempt;
+            }
+            // Free interior point: must lie inside some region.
+            if point_index.contains_key(&cc.map(f64::to_bits))
+                || !point_inside_solid(&Point3::Explicit(cc), &region_bounds, bbox)
+            {
+                break 'attempt;
+            }
+            let g = points.len();
+            points.push(cc);
+            builder.insert(cc);
+            point_index.insert(cc.map(f64::to_bits), g);
+            on_patch.push(HashSet::new());
+            n += 1;
+            placed.push(cc);
+        }
+        // No progress on an oversized tet via the circumcenter routes:
+        // longest-edge midpoint fallback guarantees the size target.
+        if n == before {
+            if let Some((a, b)) = longest {
+                split_longest_edge!(a, b);
+            }
+        }
+    }
+    n
+}
+
+/// Quality summary of a tet mesh.
+#[derive(Debug, Clone, Copy)]
+pub struct QualityStats {
+    /// Number of tets.
+    pub n_tets: usize,
+    /// Smallest dihedral angle in degrees (sliver indicator; the
+    /// load-bearing metric for Nedelec conditioning).
+    pub min_dihedral_deg: f64,
+    /// Largest circumradius / shortest-edge ratio.
+    pub max_radius_edge: f64,
+    /// Longest edge in the mesh.
+    pub max_edge: f64,
+}
+
+/// Computes quality statistics over all tets.
+pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
+    let mut min_dihedral = f64::MAX;
+    let mut max_re = 0.0_f64;
+    let mut max_edge2 = 0.0_f64;
+    for t in &mesh.tets {
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| mesh.points[t[k]]);
+        let mut lmin2 = f64::MAX;
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d2: f64 = (0..3).map(|k| (p[i][k] - p[j][k]).powi(2)).sum();
+                lmin2 = lmin2.min(d2);
+                max_edge2 = max_edge2.max(d2);
+            }
+        }
+        if let Some((_, r)) = tet_circumcenter(p) {
+            max_re = max_re.max(r / lmin2.sqrt());
+        }
+        // Dihedral angle at each of the 6 edges: angle between the
+        // projections of the two opposite vertices onto the plane normal to
+        // the edge.
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
+                let (a, b) = (p[i], p[j]);
+                let tlen: f64 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f64>().sqrt();
+                let tv: [f64; 3] = std::array::from_fn(|k| (b[k] - a[k]) / tlen);
+                let perp = |q: [f64; 3]| -> [f64; 3] {
+                    let w: [f64; 3] = std::array::from_fn(|k| q[k] - a[k]);
+                    let s: f64 = (0..3).map(|k| w[k] * tv[k]).sum();
+                    std::array::from_fn(|k| w[k] - s * tv[k])
+                };
+                let (u, v) = (perp(p[others[0]]), perp(p[others[1]]));
+                let nu: f64 = (0..3).map(|k| u[k] * u[k]).sum::<f64>().sqrt();
+                let nv: f64 = (0..3).map(|k| v[k] * v[k]).sum::<f64>().sqrt();
+                if nu * nv == 0.0 {
+                    continue;
+                }
+                let cosang =
+                    ((0..3).map(|k| u[k] * v[k]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
+                min_dihedral = min_dihedral.min(cosang.acos().to_degrees());
+            }
+        }
+    }
+    QualityStats {
+        n_tets: mesh.tets.len(),
+        min_dihedral_deg: min_dihedral,
+        max_radius_edge: max_re,
+        max_edge: max_edge2.sqrt(),
     }
 }

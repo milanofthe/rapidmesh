@@ -1,13 +1,10 @@
 //! triangulate_facet invariants, checked exactly via the rational oracle.
 
-mod common;
-
-use common::check_invariants;
 use rapidmesh_csg::{
     tri_tri_intersection, triangulate_facet, Constraint, ConstraintLine, Tri, TriTriIsect,
 };
 use rapidmesh_exact::Point3;
-use rapidmesh_testutil::Rng;
+use rapidmesh_testutil::{check_invariants, Rng};
 
 #[test]
 fn empty_facet_is_a_single_triangle() {

@@ -118,10 +118,14 @@ rapidmesh/                workspace
                           Ring trait (same geometric code runs as filter, exact,
                           or rational test oracle), implicit points (LPI/TPI as
                           lazy homogeneous coordinates), staged-exact predicates
-    rapidmesh-geom        primitives (box/cylinder/sphere/extrude/...), tagged PLC
-                          type, surface back-references, transforms
-    rapidmesh-csg         exact mesh arrangements + multi-operand booleans
+    rapidmesh-csg         exact mesh arrangements + booleans on raw triangles
                           (indirect predicates, interval filter, expansion fallback)
+    rapidmesh-geom        primitives (solids: box/cylinder/frustum/cone/sphere/
+                          extruded polygon with holes; sheets: rect/polygon/disk),
+                          exact polygon triangulation (even-odd parity, reuses the
+                          csg constrained triangulation), SurfaceKind back-references
+                          for order-2 snapping, rigid transforms, tagged PLC type.
+                          Depends on rapidmesh-csg (geom orchestrates the engine).
     rapidmesh-tet         CDT (boundary recovery via implicit Steiner points),
                           Delaunay refinement, sizing fields, quality pass,
                           order-2 snapping

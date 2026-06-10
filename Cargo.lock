@@ -101,7 +101,6 @@ dependencies = [
  "num-rational",
  "num-traits",
  "rapidmesh-exact",
- "rapidmesh-geom",
  "rapidmesh-testutil",
 ]
 
@@ -119,6 +118,13 @@ dependencies = [
 [[package]]
 name = "rapidmesh-geom"
 version = "0.1.0"
+dependencies = [
+ "num-rational",
+ "num-traits",
+ "rapidmesh-csg",
+ "rapidmesh-exact",
+ "rapidmesh-testutil",
+]
 
 [[package]]
 name = "rapidmesh-testutil"
@@ -127,6 +133,7 @@ dependencies = [
  "num-bigint",
  "num-rational",
  "num-traits",
+ "rapidmesh-csg",
  "rapidmesh-exact",
 ]
 

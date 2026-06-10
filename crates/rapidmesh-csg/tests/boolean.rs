@@ -1,12 +1,9 @@
 //! Boolean operations on box pairs: exact rational volumes vs analytic
 //! ground truth, plus watertightness of every non-empty result.
 
-mod common;
-
-use common::{assert_watertight, box_tris, volume6};
 use num_rational::BigRational;
 use rapidmesh_csg::{boolean, BoolOp, BooleanResult, Solid};
-use rapidmesh_testutil::rat;
+use rapidmesh_testutil::{assert_watertight, box_tris, rat, volume6};
 
 fn solid(min: [f64; 3], max: [f64; 3]) -> Solid {
     Solid {

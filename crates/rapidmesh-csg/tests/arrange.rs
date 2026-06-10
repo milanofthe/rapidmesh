@@ -2,11 +2,9 @@
 //! cross-facet glue property (shared intersection vertices coincide exactly
 //! across the facets of every intersecting pair).
 
-mod common;
-
-use common::{box_tris, check_invariants};
 use rapidmesh_csg::{arrange, tri_tri_intersection, Tri, TriTriIsect};
 use rapidmesh_exact::{collinear, within_closed, Point3};
+use rapidmesh_testutil::{box_tris, check_invariants};
 
 /// Triangulation vertices lying on the closed segment [a, b].
 fn vertices_on_segment<'a>(

@@ -6,7 +6,6 @@ publish.workspace = true
 
 [dependencies]
 rapidmesh-exact.workspace = true
-rapidmesh-geom.workspace = true
 
 [dev-dependencies]
 rapidmesh-testutil.workspace = true

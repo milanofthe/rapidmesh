@@ -41,6 +41,9 @@ pub struct SurfaceFace {
     pub face_tag: FaceTag,
     /// Region tags on (front, back) of the source patch.
     pub regions: [RegionTag; 2],
+    /// Identity of the source patch (faces of one patch are coplanar and may
+    /// be re-tiled by the optimizer).
+    pub patch: u32,
 }
 
 /// A region-tagged conforming tetrahedral mesh.
@@ -181,6 +184,11 @@ fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
 pub struct MeshParams {
     /// Target maximum edge length (creases, patch tiles, and tet edges).
     pub maxh: f64,
+    /// Per-region target edge length, overriding maxh inside that region
+    /// (Maxwell FEM sizes regions by local wavelength, h ~ lambda/sqrt(eps)).
+    /// Interfaces and creases follow the finer adjacent region; transitions
+    /// into coarser regions grade naturally through Delaunay refinement.
+    pub region_maxh: Vec<(u32, f64)>,
     /// Delaunay-refinement quality bound: tets with
     /// circumradius / shortest-edge above this get their circumcenter
     /// inserted. The provable refinement regime is >= 2.0.
@@ -193,6 +201,7 @@ impl Default for MeshParams {
     fn default() -> Self {
         MeshParams {
             maxh: f64::INFINITY,
+            region_maxh: Vec::new(),
             radius_edge_bound: 2.0,
             max_points: 100_000,
         }
@@ -255,6 +264,7 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
         plc,
         &MeshParams {
             maxh: f64::INFINITY,
+            region_maxh: Vec::new(),
             radius_edge_bound: f64::INFINITY,
             max_points: usize::MAX,
         },
@@ -703,6 +713,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 tri: *f,
                 face_tag: patch.face_tag,
                 regions: patch.regions,
+                patch: pi as u32,
             });
         }
     }
@@ -773,20 +784,47 @@ fn refine_step(
     crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
     bbox: ([f64; 3], [f64; 3]),
 ) -> usize {
-    if params.maxh.is_infinite() && params.radius_edge_bound.is_infinite() {
+    let sized = params.maxh.is_finite() || !params.region_maxh.is_empty();
+    if !sized && params.radius_edge_bound.is_infinite() {
         return 0;
     }
+    // Per-region targets: region 0 (background) is unconstrained; interfaces
+    // and creases follow their finest adjacent region.
+    let h_of_region = |r: u32| -> f64 {
+        if r == 0 {
+            return f64::INFINITY;
+        }
+        params
+            .region_maxh
+            .iter()
+            .find(|(rr, _)| *rr == r)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh)
+    };
+    let patch_h: Vec<f64> = patches
+        .iter()
+        .map(|p| h_of_region(p.regions[0].0).min(h_of_region(p.regions[1].0)))
+        .collect();
     let dist2 = |a: [f64; 3], b: [f64; 3]| -> f64 {
         (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
     };
 
     // Phase 1: creases longer than maxh (disjoint midpoint splits batch
     // safely).
-    if params.maxh.is_finite() {
+    if sized {
+        let crease_h = |key: &(usize, usize)| -> f64 {
+            crease_marks
+                .get(key)
+                .map(|marks| marks.iter().map(|&pi| patch_h[pi]).fold(f64::INFINITY, f64::min))
+                .unwrap_or(f64::INFINITY)
+        };
         let long: Vec<(usize, usize)> = creases
             .iter()
             .copied()
-            .filter(|&(a, b)| dist2(points[a], points[b]) > params.maxh * params.maxh)
+            .filter(|key| {
+                let h = crease_h(key);
+                h.is_finite() && dist2(points[key.0], points[key.1]) > h * h
+            })
             .collect();
         if !long.is_empty() {
             let mut n = 0;
@@ -820,13 +858,13 @@ fn refine_step(
 
     // Phase 2: oversized patch tiles (one per patch per step; insertions
     // change the DT).
-    if params.maxh.is_finite() {
+    if sized {
         let mut n = 0;
         for (pi, tiles) in tilings.iter().enumerate() {
             let Some((cc, _r)) = tiles
                 .iter()
                 .filter_map(|f| tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]))
-                .filter(|&(_, r)| r > 0.5 * params.maxh)
+                .filter(|&(_, r)| patch_h[pi].is_finite() && r > 0.5 * patch_h[pi])
                 .max_by(|a, b| a.1.total_cmp(&b.1))
             else {
                 continue;
@@ -866,15 +904,22 @@ fn refine_step(
     // circumcenters unless they encroach the boundary (then split that
     // instead). Batched with a spacing guard against near-duplicate
     // circumcenters from neighboring tets.
-    let mut region_bounds: Vec<Tri> = Vec::new();
+    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
     for (pi, patch) in patches.iter().enumerate() {
         if patch.regions[0] == patch.regions[1] {
             continue;
         }
         for f in &tilings[pi] {
-            region_bounds.push(Tri::new(points[f[0]], points[f[1]], points[f[2]]));
+            let t = Tri::new(points[f[0]], points[f[1]], points[f[2]]);
+            for tag in patch.regions {
+                if tag.0 != 0 {
+                    region_bounds.entry(tag.0).or_default().push(t);
+                }
+            }
         }
     }
+    let mut region_ids: Vec<u32> = region_bounds.keys().copied().collect();
+    region_ids.sort_unstable();
     // (cc, circumradius, spacing, longest edge if oversized)
     #[allow(clippy::type_complexity)]
     let mut candidates: Vec<([f64; 3], f64, f64, Option<(usize, usize)>)> = Vec::new();
@@ -893,7 +938,6 @@ fn refine_step(
                 }
             }
         }
-        let oversized = params.maxh.is_finite() && lmax2 > params.maxh * params.maxh;
         // Near-degenerate (sliver) tets have no usable circumcenter; their
         // long edges are tolerated (sizing is a target, and forcing midpoint
         // splits into slivers spawns new slivers without converging).
@@ -902,6 +946,25 @@ fn refine_step(
         };
         let bad_quality = params.radius_edge_bound.is_finite()
             && r > params.radius_edge_bound * lmin2.sqrt();
+        let maybe_oversized = sized && lmax2 > 0.0;
+        if !maybe_oversized && !bad_quality {
+            continue;
+        }
+        // Only refine tets that belong to a region (the DT also fills the
+        // gap between the convex hull and the domain); the region also
+        // selects the local size target.
+        let centroid: [f64; 3] = std::array::from_fn(|k| {
+            0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k])
+        });
+        let region = region_ids
+            .iter()
+            .copied()
+            .find(|rid| point_inside_solid(&Point3::Explicit(centroid), &region_bounds[rid], bbox));
+        let Some(region) = region else {
+            continue;
+        };
+        let h = h_of_region(region);
+        let oversized = h.is_finite() && lmax2 > h * h;
         if !oversized && !bad_quality {
             continue;
         }
@@ -914,14 +977,6 @@ fn refine_step(
             if !tried.insert(key) {
                 continue;
             }
-        }
-        // Only refine tets that belong to a region (the DT also fills the
-        // gap between the convex hull and the domain).
-        let centroid: [f64; 3] = std::array::from_fn(|k| {
-            0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k])
-        });
-        if !point_inside_solid(&Point3::Explicit(centroid), &region_bounds, bbox) {
-            continue;
         }
         candidates.push((cc, r, 0.5 * lmin2.sqrt(), oversized.then_some(longest)));
     }
@@ -1049,7 +1104,9 @@ fn refine_step(
             }
             // Free interior point: must lie inside some region.
             if point_index.contains_key(&cc.map(f64::to_bits))
-                || !point_inside_solid(&Point3::Explicit(cc), &region_bounds, bbox)
+                || !region_ids.iter().any(|rid| {
+                    point_inside_solid(&Point3::Explicit(cc), &region_bounds[rid], bbox)
+                })
             {
                 break 'attempt;
             }

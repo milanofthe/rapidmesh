@@ -10,7 +10,7 @@
 //! can only improve the mesh and terminates when nothing improves.
 
 use crate::conform::{tet_min_dihedral_deg, TetMesh};
-use rapidmesh_exact::Sign;
+use rapidmesh_exact::{orient2d, Axis, Point3, Sign};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -52,24 +52,29 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
 
 /// In-place quality optimization. Returns the number of accepted operations.
 pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
-    // Constrained surface: faces, their edges, their vertices.
-    let mut constrained_faces: DSet<[usize; 3]> = DSet::default();
-    let mut constrained_edges: DSet<(usize, usize)> = DSet::default();
-    let mut constrained_verts: DSet<usize> = DSet::default();
-    for sf in &mesh.faces {
-        constrained_faces.insert(sorted3(sf.tri));
-        for e in 0..3 {
-            let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
-            constrained_edges.insert((a.min(b), a.max(b)));
-        }
-        for &v in &sf.tri {
-            constrained_verts.insert(v);
-        }
-    }
-
     let mut total_ops = 0usize;
     for _pass in 0..params.passes {
         let mut ops = 0usize;
+
+        // Surface improvement first: boundary slivers cannot be fixed by
+        // interior-only operations.
+        ops += surface_pass(mesh);
+
+        // Constrained surface (recomputed per pass: the surface pass re-tiles
+        // patches): faces, their edges, their vertices.
+        let mut constrained_faces: DSet<[usize; 3]> = DSet::default();
+        let mut constrained_edges: DSet<(usize, usize)> = DSet::default();
+        let mut constrained_verts: DSet<usize> = DSet::default();
+        for sf in &mesh.faces {
+            constrained_faces.insert(sorted3(sf.tri));
+            for e in 0..3 {
+                let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
+                constrained_edges.insert((a.min(b), a.max(b)));
+            }
+            for &v in &sf.tri {
+                constrained_verts.insert(v);
+            }
+        }
 
         // ------------------------------------------------- smoothing
         // Topology is fixed during smoothing, so incidence is built once.
@@ -321,4 +326,268 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
     }
     total_ops
+}
+
+/// Normalized face normal (f64; used for projections and fold-over guards,
+/// never for exact decisions).
+fn face_normal(points: &[[f64; 3]], t: [usize; 3]) -> [f64; 3] {
+    let u: [f64; 3] = std::array::from_fn(|k| points[t[1]][k] - points[t[0]][k]);
+    let v: [f64; 3] = std::array::from_fn(|k| points[t[2]][k] - points[t[0]][k]);
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(f64::MIN_POSITIVE);
+    [n[0] / l, n[1] / l, n[2] / l]
+}
+
+fn dominant_axis(n: [f64; 3]) -> Axis {
+    if n[0].abs() >= n[1].abs() && n[0].abs() >= n[2].abs() {
+        Axis::X
+    } else if n[1].abs() >= n[2].abs() {
+        Axis::Y
+    } else {
+        Axis::Z
+    }
+}
+
+/// Surface quality pass: 2-2 diagonal flips of patch tiles (with the
+/// matching tet pairs re-split on both sides) and in-plane Laplacian
+/// smoothing of patch-interior surface vertices. The patch REGION is the
+/// constraint, not its triangulation, so re-tiling it is legal; crease and
+/// rim vertices stay fixed.
+fn surface_pass(mesh: &mut TetMesh) -> usize {
+    let mut ops = 0usize;
+
+    // ---------------------------------------------------- 2-2 flips
+    {
+        let mut tets_of_face: DMap<[usize; 3], Vec<usize>> = DMap::default();
+        for (ti, t) in mesh.tets.iter().enumerate() {
+            for i in 0..4 {
+                let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
+                tets_of_face
+                    .entry(sorted3([f[0], f[1], f[2]]))
+                    .or_default()
+                    .push(ti);
+            }
+        }
+        let mut edge_faces: DMap<(usize, usize), Vec<usize>> = DMap::default();
+        for (fi, sf) in mesh.faces.iter().enumerate() {
+            for e in 0..3 {
+                let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
+                edge_faces.entry((a.min(b), a.max(b))).or_default().push(fi);
+            }
+        }
+        let mut keys: Vec<(usize, usize)> = edge_faces.keys().copied().collect();
+        keys.sort_unstable();
+        let mut touched_faces: DSet<usize> = DSet::default();
+        let mut touched_tets: DSet<usize> = DSet::default();
+
+        for key in keys {
+            let fids = &edge_faces[&key];
+            if fids.len() != 2 {
+                continue;
+            }
+            let (fi1, fi2) = (fids[0], fids[1]);
+            if touched_faces.contains(&fi1) || touched_faces.contains(&fi2) {
+                continue;
+            }
+            let (sf1, sf2) = (mesh.faces[fi1].clone(), mesh.faces[fi2].clone());
+            if sf1.patch != sf2.patch {
+                continue;
+            }
+            let (a, b) = key;
+            let c = *sf1.tri.iter().find(|&&v| v != a && v != b).expect("apex");
+            let d = *sf2.tri.iter().find(|&&v| v != a && v != b).expect("apex");
+            if c == d {
+                continue;
+            }
+            // Quad convexity, exactly, in the dominant projection.
+            let axis = dominant_axis(face_normal(&mesh.points, sf1.tri));
+            let pe = |v: usize| Point3::Explicit(mesh.points[v]);
+            let opp = |s1: Option<Sign>, s2: Option<Sign>| -> bool {
+                matches!(
+                    (s1, s2),
+                    (Some(Sign::Positive), Some(Sign::Negative))
+                        | (Some(Sign::Negative), Some(Sign::Positive))
+                )
+            };
+            if !opp(
+                orient2d(&pe(a), &pe(b), &pe(c), axis),
+                orient2d(&pe(a), &pe(b), &pe(d), axis),
+            ) || !opp(
+                orient2d(&pe(c), &pe(d), &pe(a), axis),
+                orient2d(&pe(c), &pe(d), &pe(b), axis),
+            ) {
+                continue;
+            }
+            // Tet pairing by shared apex on every adjacent side.
+            let t1s = tets_of_face.get(&sorted3(sf1.tri)).cloned().unwrap_or_default();
+            let t2s = tets_of_face.get(&sorted3(sf2.tri)).cloned().unwrap_or_default();
+            if t1s.len() != t2s.len() || t1s.is_empty() {
+                continue;
+            }
+            if t1s.iter().chain(t2s.iter()).any(|t| touched_tets.contains(t)) {
+                continue;
+            }
+            let apex = |ti: usize, tri: [usize; 3]| -> usize {
+                *mesh.tets[ti].iter().find(|v| !tri.contains(v)).expect("apex")
+            };
+            let mut pairs: Vec<(usize, usize, usize)> = Vec::new(); // (t1, t2, apex)
+            let mut ok = true;
+            for &t1 in &t1s {
+                let p = apex(t1, sf1.tri);
+                match t2s.iter().find(|&&t2| apex(t2, sf2.tri) == p) {
+                    Some(&t2) if mesh.tet_regions[t1] == mesh.tet_regions[t2] => {
+                        pairs.push((t1, t2, p))
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            // Replacement tets, orientation-fixed; gate on quality gain.
+            let mk = |x: usize, p: usize| -> Option<[usize; 4]> {
+                let cand = [c, d, x, p];
+                if orient_positive(&mesh.points, cand) {
+                    Some(cand)
+                } else {
+                    let s = [d, c, x, p];
+                    orient_positive(&mesh.points, s).then_some(s)
+                }
+            };
+            let mut old_q = f64::MAX;
+            let mut new_q = f64::MAX;
+            let mut repl: Vec<(usize, [usize; 4], usize, [usize; 4])> = Vec::new();
+            for &(t1, t2, p) in &pairs {
+                old_q = old_q
+                    .min(quality(&mesh.points, mesh.tets[t1]))
+                    .min(quality(&mesh.points, mesh.tets[t2]));
+                let (Some(n1), Some(n2)) = (mk(a, p), mk(b, p)) else {
+                    ok = false;
+                    break;
+                };
+                new_q = new_q.min(quality(&mesh.points, n1)).min(quality(&mesh.points, n2));
+                repl.push((t1, n1, t2, n2));
+            }
+            if !ok || new_q <= old_q + 1e-9 {
+                continue;
+            }
+            for (t1, n1, t2, n2) in repl {
+                mesh.tets[t1] = n1;
+                mesh.tets[t2] = n2;
+                touched_tets.insert(t1);
+                touched_tets.insert(t2);
+            }
+            mesh.faces[fi1].tri = [c, d, a];
+            mesh.faces[fi2].tri = [c, d, b];
+            touched_faces.insert(fi1);
+            touched_faces.insert(fi2);
+            ops += 1;
+        }
+    }
+
+    // ------------------------------------------- in-plane smoothing
+    {
+        let mut edge_faces: DMap<(usize, usize), Vec<usize>> = DMap::default();
+        let mut vertex_faces: DMap<usize, Vec<usize>> = DMap::default();
+        for (fi, sf) in mesh.faces.iter().enumerate() {
+            for e in 0..3 {
+                let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
+                edge_faces.entry((a.min(b), a.max(b))).or_default().push(fi);
+            }
+            for &v in &sf.tri {
+                vertex_faces.entry(v).or_default().push(fi);
+            }
+        }
+        let mut incident: Vec<Vec<usize>> = vec![Vec::new(); mesh.points.len()];
+        for (ti, t) in mesh.tets.iter().enumerate() {
+            for &v in t {
+                incident[v].push(ti);
+            }
+        }
+        let mut verts: Vec<usize> = vertex_faces.keys().copied().collect();
+        verts.sort_unstable();
+        for v in verts {
+            let vfs = &vertex_faces[&v];
+            // Free in-plane: all incident faces on ONE patch, and every
+            // incident surface edge interior to the complex (2 faces) — rim
+            // and crease vertices stay fixed.
+            let patch = mesh.faces[vfs[0]].patch;
+            if vfs.iter().any(|&fi| mesh.faces[fi].patch != patch) {
+                continue;
+            }
+            let mut nbrs: Vec<usize> = Vec::new();
+            let mut rim = false;
+            for &fi in vfs {
+                let tri = mesh.faces[fi].tri;
+                for e in 0..3 {
+                    let (x, y) = (tri[e], tri[(e + 1) % 3]);
+                    if x != v && y != v {
+                        continue;
+                    }
+                    let w = if x == v { y } else { x };
+                    nbrs.push(w);
+                    if edge_faces[&(x.min(y), x.max(y))].len() != 2 {
+                        rim = true;
+                    }
+                }
+            }
+            if rim || nbrs.is_empty() {
+                continue;
+            }
+            nbrs.sort_unstable();
+            nbrs.dedup();
+            // Laplacian over the surface neighbors, projected back onto the
+            // patch plane through the current position.
+            let n = face_normal(&mesh.points, mesh.faces[vfs[0]].tri);
+            let mut avg = [0.0f64; 3];
+            for &w in &nbrs {
+                for (k, acc) in avg.iter_mut().enumerate() {
+                    *acc += mesh.points[w][k];
+                }
+            }
+            for acc in &mut avg {
+                *acc /= nbrs.len() as f64;
+            }
+            let cur = mesh.points[v];
+            let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
+            let target: [f64; 3] = std::array::from_fn(|k| avg[k] - off * n[k]);
+
+            let old_q = incident[v]
+                .iter()
+                .map(|&ti| quality(&mesh.points, mesh.tets[ti]))
+                .fold(f64::MAX, f64::min);
+            mesh.points[v] = target;
+            let tets_ok = incident[v]
+                .iter()
+                .all(|&ti| orient_positive(&mesh.points, mesh.tets[ti]));
+            // Fold-over guard: every incident surface face keeps its normal
+            // direction.
+            let faces_ok = vfs.iter().all(|&fi| {
+                let nf = face_normal(&mesh.points, mesh.faces[fi].tri);
+                nf[0] * n[0] + nf[1] * n[1] + nf[2] * n[2] > 0.1
+            });
+            let new_q = if tets_ok && faces_ok {
+                incident[v]
+                    .iter()
+                    .map(|&ti| quality(&mesh.points, mesh.tets[ti]))
+                    .fold(f64::MAX, f64::min)
+            } else {
+                f64::MIN
+            };
+            if new_q > old_q + 1e-9 {
+                ops += 1;
+            } else {
+                mesh.points[v] = cur;
+            }
+        }
+    }
+
+    ops
 }

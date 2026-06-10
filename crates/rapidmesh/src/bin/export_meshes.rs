@@ -36,10 +36,21 @@ struct MeshJson {
 }
 
 fn export(name: &str, scene: &Scene, maxh: f64, out_dir: &std::path::Path) {
+    export_with(name, scene, maxh, Vec::new(), out_dir)
+}
+
+fn export_with(
+    name: &str,
+    scene: &Scene,
+    maxh: f64,
+    region_maxh: Vec<(u32, f64)>,
+    out_dir: &std::path::Path,
+) {
     let t0 = Instant::now();
     let plc = scene.assemble();
     let params = MeshParams {
         maxh,
+        region_maxh,
         radius_edge_bound: 2.0,
         max_points: 200_000,
     };
@@ -155,6 +166,15 @@ fn main() {
         ));
         export("l_prism", &scene, 0.5, &out_dir);
         names.push("l_prism");
+    }
+
+    // 6. Density transition: fine dielectric inside coarse air.
+    {
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
+        let diel = scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
+        export_with("density_transition", &scene, 1.4, vec![(diel.0, 0.45)], &out_dir);
+        names.push("density_transition");
     }
 
     std::fs::write(

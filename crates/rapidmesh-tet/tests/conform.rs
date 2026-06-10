@@ -160,6 +160,7 @@ fn sized_box_respects_maxh_and_quality() {
     let plc = scene.assemble();
     let params = MeshParams {
         maxh: 0.6,
+        region_maxh: Vec::new(),
         radius_edge_bound: 2.0,
         max_points: 20_000,
     };
@@ -201,6 +202,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
     let plc = scene.assemble();
     let params = MeshParams {
         maxh: 1.1,
+        region_maxh: Vec::new(),
         radius_edge_bound: 2.0,
         max_points: 20_000,
     };
@@ -224,6 +226,49 @@ fn sized_em_scene_stays_exact_and_conforming() {
         mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count() >= 4,
         "PEC faces must survive refinement"
     );
+}
+
+#[test]
+fn per_region_sizing_creates_density_transition() {
+    let mut scene = Scene::new();
+    let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
+    let diel = scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
+    let plc = scene.assemble();
+    let params = MeshParams {
+        maxh: 1.4,
+        region_maxh: vec![(diel.0, 0.5)],
+        radius_edge_bound: 2.0,
+        max_points: 40_000,
+    };
+    let mut mesh = mesh_plc_with(&plc, &params);
+    optimize(&mut mesh, &OptimizeParams::default());
+    assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
+    assert_eq!(mesh_region_volume6(&mesh, diel), rat(24.0));
+    check_structure(&mesh);
+    // Per-region max edge respects each region's target (with slack).
+    let max_edge_in = |r: RegionTag| -> f64 {
+        let mut m: f64 = 0.0;
+        for (t, &tr) in mesh.tets.iter().zip(&mesh.tet_regions) {
+            if tr != r {
+                continue;
+            }
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let d2: f64 = (0..3)
+                        .map(|k| (mesh.points[t[i]][k] - mesh.points[t[j]][k]).powi(2))
+                        .sum();
+                    m = m.max(d2.sqrt());
+                }
+            }
+        }
+        m
+    };
+    let (e_diel, e_air) = (max_edge_in(diel), max_edge_in(air));
+    eprintln!("density transition: diel max edge {e_diel:.3}, air max edge {e_air:.3}");
+    assert!(e_diel <= 1.5 * 0.5, "dielectric too coarse: {e_diel}");
+    assert!(e_air <= 1.5 * 1.4, "air too coarse: {e_air}");
+    // The transition exists: air really is coarser than the dielectric.
+    assert!(e_air > 1.5 * e_diel, "expected a density transition");
 }
 
 #[test]

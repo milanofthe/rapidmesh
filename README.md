@@ -20,3 +20,14 @@ See [DESIGN.md](DESIGN.md) for architecture, research basis, and roadmap.
 | `rapidmesh` | Facade API and mesh export |
 
 Proprietary. All rights reserved.
+
+## Viewer
+
+Standalone mesh comparison viewer (WebGL2, extracted from rapidfem):
+
+```powershell
+cargo run --release --bin export_meshes   # writes viewer/public/meshes/*.json
+cd viewer; npm install; npm run dev        # http://localhost:5199 (or vite default)
+```
+
+One panel per mesher (rapidmesh / gmsh / tetgen, whichever JSON exists), synced cameras, surface/wireframe/tet-fill toggles, movable clip plane.

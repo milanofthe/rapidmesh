@@ -1,1 +1,4 @@
 /target
+viewer/node_modules
+viewer/public/meshes
+viewer/dist

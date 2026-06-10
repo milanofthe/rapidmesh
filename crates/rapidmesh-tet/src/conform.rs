@@ -22,7 +22,7 @@ use crate::delaunay::DelaunayBuilder;
 use rapidmesh_csg::classify::point_inside_solid;
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::{orient3d, Axis, Expansion, Point3, Sign};
-use rapidmesh_geom::{FaceTag, RegionTag, TaggedPlc};
+use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -44,6 +44,10 @@ pub struct SurfaceFace {
     /// Identity of the source patch (faces of one patch are coplanar and may
     /// be re-tiled by the optimizer).
     pub patch: u32,
+    /// Analytic surface this face approximates (index into
+    /// [TetMesh::surfaces]); curved kinds let the optimizer move surface
+    /// vertices on the true surface.
+    pub surface: u32,
 }
 
 /// A region-tagged conforming tetrahedral mesh.
@@ -57,6 +61,8 @@ pub struct TetMesh {
     pub tet_regions: Vec<RegionTag>,
     /// The mesh faces tiling the PLC patches, with tags.
     pub faces: Vec<SurfaceFace>,
+    /// The analytic surfaces referenced by [SurfaceFace::surface].
+    pub surfaces: Vec<SurfaceKind>,
 }
 
 /// A maximal coplanar group of equally tagged PLC facets.
@@ -70,12 +76,20 @@ struct Patch {
     orientation: Sign,
     face_tag: FaceTag,
     regions: [RegionTag; 2],
+    /// Analytic surface of the members (index into the PLC surface table).
+    surface: u32,
     /// Exact double area of the patch in the projection.
     area2: Expansion,
 }
 
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
+}
+
+fn sorted3(f: [usize; 3]) -> [usize; 3] {
+    let mut s = f;
+    s.sort_unstable();
+    s
 }
 
 /// Exact double signed area of the projected triangle, as an expansion.
@@ -173,6 +187,7 @@ fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
                 orientation,
                 face_tag: plc.face_tags[members[0]],
                 regions: plc.region_tags[members[0]],
+                surface: plc.surface_refs[members[0]].0,
                 area2,
             }
         })
@@ -437,39 +452,51 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             continue;
         }
 
-        // 2. Patch tiling: exact projected-area comparison.
-        let mut all_tilings: Vec<Vec<[usize; 3]>> = Vec::with_capacity(patches.len());
-        let mut deficits: Vec<usize> = Vec::new();
-        for (pi, patch) in patches.iter().enumerate() {
-            let mut tiles: Vec<[usize; 3]> = Vec::new();
-            let mut sum = Expansion::from_f64(0.0);
-            for f in dt_faces.keys() {
-                if !f.iter().all(|&v| on_patch[v].contains(&pi)) {
+        // 2. Patch tiling check. Candidate patches per face come from the
+        // intersection of its vertices' patch memberships (iterating all
+        // faces per patch is O(patches * faces) and dominated large meshes),
+        // and the area gate runs in f64: it is tolerant anyway (Steiner
+        // chain points sit within rounding of patch boundaries, leaving
+        // ~1e-16-relative slivers no refinement can remove), and the f64
+        // shoelace noise (~1e-15 relative) is far below the 1e-9 gate.
+        // Structural conformity stays exact: tiles are actual tet faces.
+        let mut all_tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
+        let mut tile_area: Vec<f64> = vec![0.0; patches.len()];
+        let area2_f64 = |f: &[usize; 3], axis: Axis| -> f64 {
+            let (u, v) = match axis {
+                Axis::X => (1, 2),
+                Axis::Y => (2, 0),
+                Axis::Z => (0, 1),
+            };
+            let (a, b, c) = (points[f[0]], points[f[1]], points[f[2]]);
+            ((b[u] - a[u]) * (c[v] - a[v]) - (b[v] - a[v]) * (c[u] - a[u])).abs()
+        };
+        for f in dt_faces.keys() {
+            let (s0, s1, s2) = (&on_patch[f[0]], &on_patch[f[1]], &on_patch[f[2]]);
+            if s0.is_empty() || s1.is_empty() || s2.is_empty() {
+                continue;
+            }
+            for &pi in s0 {
+                if !s1.contains(&pi) || !s2.contains(&pi) {
                     continue;
                 }
+                let patch = &patches[pi];
                 let c: [f64; 3] = std::array::from_fn(|k| {
                     (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
                 });
                 if !inside_patch(patch, &points, c) {
                     continue;
                 }
-                let mut a = area2_exact(&points, *f, patch.axis);
-                if a.sign() == Sign::Negative {
-                    a = a.neg();
-                }
-                sum = sum.add(&a);
-                tiles.push(*f);
+                tile_area[pi] += area2_f64(f, patch.axis);
+                all_tilings[pi].push(*f);
             }
-            // Tolerant area gate: Steiner chain points sit within rounding
-            // of patch boundaries, so the tiling can differ from the exact
-            // patch area by slivers of relative size ~1e-16 that no further
-            // refinement can remove. Structural conformity stays exact (all
-            // tiles are actual tet faces); only "fully tiled" is tolerant.
-            let diff = sum.add(&patch.area2.neg()).approx().abs();
-            if diff > 1e-9 * patch.area2.approx().abs() {
+        }
+        let mut deficits: Vec<usize> = Vec::new();
+        for (pi, patch) in patches.iter().enumerate() {
+            let want = patch.area2.approx().abs();
+            if (tile_area[pi] - want).abs() > 1e-9 * want {
                 deficits.push(pi);
             }
-            all_tilings.push(tiles);
         }
         if deficits.is_empty() {
             // Conforming. Apply one sizing/quality refinement step; when it
@@ -660,49 +687,86 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
 
-    let mut kept_tets: Vec<[usize; 4]> = Vec::new();
-    let mut tet_regions: Vec<RegionTag> = Vec::new();
-    for t in &tets {
+    // Region assignment by FLOOD FILL: parity ray casting per tet is
+    // O(tets * boundary faces) and dominated large meshes; instead, tets
+    // are connected through their shared faces (constraint faces switch to
+    // the face's other region, free faces keep it), with one parity-seeded
+    // component root each.
+    let mut face_regions: DMap<[usize; 3], [u32; 2]> = DMap::default();
+    for (pi, patch) in patches.iter().enumerate() {
+        for f in &patch_faces[pi] {
+            face_regions.insert(sorted3(*f), [patch.regions[0].0, patch.regions[1].0]);
+        }
+    }
+    let mut tet_face_owners: DMap<[usize; 3], Vec<usize>> = DMap::default();
+    for (ti, t) in tets.iter().enumerate() {
+        for i in 0..4 {
+            let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
+            tet_face_owners
+                .entry(sorted3([f[0], f[1], f[2]]))
+                .or_default()
+                .push(ti);
+        }
+    }
+    let mut region_of: Vec<Option<u32>> = vec![None; tets.len()];
+    for seed in 0..tets.len() {
+        if region_of[seed].is_some() {
+            continue;
+        }
+        // Parity-classify the component root by its centroid.
+        let t = tets[seed];
         let c: [f64; 3] = std::array::from_fn(|k| {
             0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
         });
         let rep = Point3::Explicit(c);
-        let strictly_inside = [
-            [t[1], t[3], t[2]],
-            [t[0], t[2], t[3]],
-            [t[0], t[3], t[1]],
-            [t[0], t[1], t[2]],
-        ]
-        .iter()
-        .all(|f| {
-            orient3d(
-                &Point3::Explicit(points[f[0]]),
-                &Point3::Explicit(points[f[1]]),
-                &Point3::Explicit(points[f[2]]),
-                &rep,
-            ) == Some(Sign::Positive)
-        });
-        // The rounded centroid of a sliver can escape it; classify with the
-        // (non-strict) centroid anyway: the exact region-volume gates catch
-        // any misclassification, and a sliver thinner than one ulp cannot
-        // straddle a region boundary by more than that.
-        let _ = strictly_inside;
-        let mut region: Option<u32> = None;
+        let mut seed_region = 0u32;
         for (&r, bound) in &region_bounds {
-            if r == 0 {
-                continue;
-            }
-            if point_inside_solid(&rep, bound, (blo, bhi)) {
-                assert!(
-                    region.is_none(),
-                    "tet centroid inside two regions: PLC regions not disjoint"
-                );
-                region = Some(r);
+            if r != 0 && point_inside_solid(&rep, bound, (blo, bhi)) {
+                seed_region = r;
+                break;
             }
         }
-        if let Some(r) = region {
-            kept_tets.push(*t);
-            tet_regions.push(RegionTag(r));
+        region_of[seed] = Some(seed_region);
+        let mut stack = vec![seed];
+        while let Some(ti) = stack.pop() {
+            let cur = region_of[ti].expect("set before push");
+            let t = tets[ti];
+            for i in 0..4 {
+                let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
+                let key = sorted3([f[0], f[1], f[2]]);
+                let next_region = match face_regions.get(&key) {
+                    // Crossing a constraint face flips to its other side
+                    // (embedded sheets have equal sides: no change).
+                    Some(&[a, b]) => {
+                        if a == cur {
+                            b
+                        } else if b == cur {
+                            a
+                        } else {
+                            // Inconsistent: leave for the neighbor's own
+                            // component seed.
+                            continue;
+                        }
+                    }
+                    None => cur,
+                };
+                for &nb in &tet_face_owners[&key] {
+                    if nb != ti && region_of[nb].is_none() {
+                        region_of[nb] = Some(next_region);
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    let mut kept_tets: Vec<[usize; 4]> = Vec::new();
+    let mut tet_regions: Vec<RegionTag> = Vec::new();
+    for (ti, t) in tets.iter().enumerate() {
+        if let Some(r) = region_of[ti] {
+            if r != 0 {
+                kept_tets.push(*t);
+                tet_regions.push(RegionTag(r));
+            }
         }
     }
 
@@ -714,6 +778,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 face_tag: patch.face_tag,
                 regions: patch.regions,
                 patch: pi as u32,
+                surface: patch.surface,
             });
         }
     }
@@ -723,6 +788,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         tets: kept_tets,
         tet_regions,
         faces: out_faces,
+        surfaces: plc.surfaces.clone(),
     }
 }
 
@@ -965,7 +1031,13 @@ fn refine_step(
         };
         let h = h_of_region(region);
         let oversized = h.is_finite() && lmax2 > h * h;
-        if !oversized && !bad_quality {
+        // Quality splits stop once the local mesh is at (or below) target
+        // size: boundary slivers have huge circumradii whose centers all
+        // land far away (e.g. a dense blob in a sphere's middle) and are the
+        // optimizer's job, not insertion's.
+        let quality_allowed = bad_quality
+            && (!h.is_finite() || lmin2.sqrt() > 0.2 * h);
+        if !oversized && !quality_allowed {
             continue;
         }
         // Quality-only candidates are attempted once: re-attempting a
@@ -978,7 +1050,12 @@ fn refine_step(
                 continue;
             }
         }
-        candidates.push((cc, r, 0.5 * lmin2.sqrt(), oversized.then_some(longest)));
+        let spacing = if h.is_finite() {
+            (0.5 * lmin2.sqrt()).max(0.2 * h)
+        } else {
+            0.5 * lmin2.sqrt()
+        };
+        candidates.push((cc, r, spacing, oversized.then_some(longest)));
     }
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
     let mut n = 0;

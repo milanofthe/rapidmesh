@@ -11,6 +11,7 @@
 
 use crate::conform::{tet_min_dihedral_deg, TetMesh};
 use rapidmesh_exact::{orient2d, Axis, Point3, Sign};
+use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -357,6 +358,58 @@ fn dominant_axis(n: [f64; 3]) -> Axis {
 /// smoothing of patch-interior surface vertices. The patch REGION is the
 /// constraint, not its triangulation, so re-tiling it is legal; crease and
 /// rim vertices stay fixed.
+/// Projects a point onto an analytic surface (identity for planes).
+fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
+    match kind {
+        SurfaceKind::Plane => p,
+        SurfaceKind::Sphere { center, radius } => {
+            let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
+            let l = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+            if l < f64::MIN_POSITIVE {
+                return p;
+            }
+            std::array::from_fn(|k| center[k] + radius * w[k] / l)
+        }
+        SurfaceKind::Cylinder { center, axis, radius } => {
+            let al = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+            let a: [f64; 3] = std::array::from_fn(|k| axis[k] / al);
+            let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
+            let t: f64 = (0..3).map(|k| w[k] * a[k]).sum();
+            let radial: [f64; 3] = std::array::from_fn(|k| w[k] - t * a[k]);
+            let rl = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if rl < f64::MIN_POSITIVE {
+                return p;
+            }
+            std::array::from_fn(|k| center[k] + t * a[k] + radius * radial[k] / rl)
+        }
+        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            let al = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+            let a: [f64; 3] = std::array::from_fn(|k| axis[k] / al);
+            let w: [f64; 3] = std::array::from_fn(|k| p[k] - apex[k]);
+            let t: f64 = (0..3).map(|k| w[k] * a[k]).sum();
+            let radial: [f64; 3] = std::array::from_fn(|k| w[k] - t * a[k]);
+            let rl = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if rl < f64::MIN_POSITIVE || t <= 0.0 {
+                return p;
+            }
+            let r_target = t * tan_half_angle;
+            std::array::from_fn(|k| apex[k] + t * a[k] + r_target * radial[k] / rl)
+        }
+    }
+}
+
+/// Faces of one PLANE patch may be re-tiled freely; faces of one CURVED
+/// analytic surface (sphere/cylinder/cone barrel) form a single smooth group
+/// in which vertices slide on the true surface and diagonals flip across the
+/// (near-coplanar) facet pairs.
+fn face_group(mesh: &TetMesh, fi: usize) -> (u8, u32) {
+    let sf = &mesh.faces[fi];
+    match mesh.surfaces[sf.surface as usize] {
+        SurfaceKind::Plane => (0, sf.patch),
+        _ => (1, sf.surface),
+    }
+}
+
 fn surface_pass(mesh: &mut TetMesh) -> usize {
     let mut ops = 0usize;
 
@@ -394,7 +447,10 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 continue;
             }
             let (sf1, sf2) = (mesh.faces[fi1].clone(), mesh.faces[fi2].clone());
-            if sf1.patch != sf2.patch {
+            if face_group(mesh, fi1) != face_group(mesh, fi2)
+                || sf1.regions != sf2.regions
+                || sf1.face_tag != sf2.face_tag
+            {
                 continue;
             }
             let (a, b) = key;
@@ -515,13 +571,15 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
         verts.sort_unstable();
         for v in verts {
             let vfs = &vertex_faces[&v];
-            // Free in-plane: all incident faces on ONE patch, and every
-            // incident surface edge interior to the complex (2 faces) — rim
-            // and crease vertices stay fixed.
-            let patch = mesh.faces[vfs[0]].patch;
-            if vfs.iter().any(|&fi| mesh.faces[fi].patch != patch) {
+            // Free in-surface: all incident faces in ONE group (plane patch
+            // or curved analytic surface), and every incident surface edge
+            // interior to the complex (2 faces); rim and crease vertices
+            // stay fixed.
+            let group = face_group(mesh, vfs[0]);
+            if vfs.iter().any(|&fi| face_group(mesh, fi) != group) {
                 continue;
             }
+            let kind = mesh.surfaces[mesh.faces[vfs[0]].surface as usize].clone();
             let mut nbrs: Vec<usize> = Vec::new();
             let mut rim = false;
             for &fi in vfs {
@@ -556,8 +614,21 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                 *acc /= nbrs.len() as f64;
             }
             let cur = mesh.points[v];
-            let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
-            let target: [f64; 3] = std::array::from_fn(|k| avg[k] - off * n[k]);
+            // Plane groups project the Laplacian back into the plane; curved
+            // groups project it onto the analytic surface, which both keeps
+            // the vertex on the geometry and IMPROVES boundary fidelity.
+            let target: [f64; 3] = match kind {
+                SurfaceKind::Plane => {
+                    let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
+                    std::array::from_fn(|k| avg[k] - off * n[k])
+                }
+                ref curved => project_to_surface(curved, avg),
+            };
+            // Fold-over guard data: normals before the move, per face.
+            let old_normals: Vec<[f64; 3]> = vfs
+                .iter()
+                .map(|&fi| face_normal(&mesh.points, mesh.faces[fi].tri))
+                .collect();
 
             let old_q = incident[v]
                 .iter()
@@ -567,11 +638,12 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
             let tets_ok = incident[v]
                 .iter()
                 .all(|&ti| orient_positive(&mesh.points, mesh.tets[ti]));
-            // Fold-over guard: every incident surface face keeps its normal
-            // direction.
-            let faces_ok = vfs.iter().all(|&fi| {
+            // Fold-over guard: every incident surface face keeps its own
+            // previous normal direction (per-face, so curved groups with
+            // varying normals are handled correctly).
+            let faces_ok = vfs.iter().zip(&old_normals).all(|(&fi, no)| {
                 let nf = face_normal(&mesh.points, mesh.faces[fi].tri);
-                nf[0] * n[0] + nf[1] * n[1] + nf[2] * n[2] > 0.1
+                nf[0] * no[0] + nf[1] * no[1] + nf[2] * no[2] > 0.1
             });
             let new_q = if tets_ok && faces_ok {
                 incident[v]

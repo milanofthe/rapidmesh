@@ -100,7 +100,7 @@ fn main() {
     {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
-        scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
+        let diel = scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
         scene.add_sheet(
             sheet_rect([1.5, 1.5, 2.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             FaceTag(7),
@@ -109,7 +109,7 @@ fn main() {
             sheet_rect([0.5, 0.5, 3.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             FaceTag(7),
         );
-        export("em_scene", &scene, 0.7, &out_dir);
+        export_with("em_scene", &scene, 0.9, vec![(diel.0, 0.45)], &out_dir);
         names.push("em_scene");
     }
 
@@ -117,8 +117,8 @@ fn main() {
     {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([-2.0, -2.0, 0.0], [2.0, 2.0, 1.0]));
-        scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.75, 12));
-        export("via", &scene, 0.45, &out_dir);
+        let via = scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.75, 12));
+        export_with("via", &scene, 0.6, vec![(via.0, 0.3)], &out_dir);
         names.push("via");
     }
 
@@ -126,12 +126,12 @@ fn main() {
     {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [6.0, 3.0, 3.0]));
-        scene.add_solid(solid_box([0.0, 0.0, 0.0], [6.0, 3.0, 0.5]));
+        let subst = scene.add_solid(solid_box([0.0, 0.0, 0.0], [6.0, 3.0, 0.5]));
         scene.add_sheet(
             sheet_rect([0.0, 1.25, 0.5], [6.0, 0.0, 0.0], [0.0, 0.5, 0.0]),
             FaceTag(7),
         );
-        export("microstrip", &scene, 0.6, &out_dir);
+        export_with("microstrip", &scene, 0.8, vec![(subst.0, 0.35)], &out_dir);
         names.push("microstrip");
     }
 
@@ -139,8 +139,8 @@ fn main() {
     {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]));
-        scene.add_solid(sphere([0.0, 0.0, 0.0], 1.0, 16, 8));
-        export("sphere", &scene, 0.6, &out_dir);
+        let ball = scene.add_solid(sphere([0.0, 0.0, 0.0], 1.0, 16, 8));
+        export_with("sphere", &scene, 0.8, vec![(ball.0, 0.4)], &out_dir);
         names.push("sphere");
     }
 

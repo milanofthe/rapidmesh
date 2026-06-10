@@ -1008,7 +1008,6 @@ fn classify_tet_regions(
 /// coincident existing vertex if present). Returns false if the chain entry
 /// vanished (already split).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn split_crease_midpoint(
     key: (usize, usize),
     points: &mut Vec<[f64; 3]>,
@@ -1383,6 +1382,7 @@ fn refine_step(
     // computed against the stale DT are only redundant when they cluster,
     // and clustered points would create short edges anyway).
     if sized {
+        #[allow(clippy::type_complexity)]
         let mut cands: Vec<([f64; 3], f64, usize, f64, [usize; 3])> = Vec::new();
         for (pi, tiles) in tilings.iter().enumerate() {
             for f in tiles {

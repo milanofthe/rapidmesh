@@ -7,64 +7,10 @@
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use rapidmesh_csg::{tri_tri_intersection, Tri, TriTriIsect};
-use rapidmesh_exact::{orient3d, Point3, Ring, Sign};
-
-// ------------------------------------------------------------- rational ring
-
-#[derive(Clone)]
-struct Rat(BigRational);
-
-impl Ring for Rat {
-    fn from_f64(v: f64) -> Self {
-        Rat(BigRational::from_float(v).expect("finite f64"))
-    }
-    fn add(&self, other: &Self) -> Self {
-        Rat(&self.0 + &other.0)
-    }
-    fn sub(&self, other: &Self) -> Self {
-        Rat(&self.0 - &other.0)
-    }
-    fn mul(&self, other: &Self) -> Self {
-        Rat(&self.0 * &other.0)
-    }
-    fn neg(&self) -> Self {
-        Rat(-&self.0)
-    }
-}
-
-type Rv = [BigRational; 3];
-
-fn rv(p: [f64; 3]) -> Rv {
-    std::array::from_fn(|i| BigRational::from_float(p[i]).expect("finite f64"))
-}
-
-fn sub(a: &Rv, b: &Rv) -> Rv {
-    std::array::from_fn(|i| &a[i] - &b[i])
-}
-
-fn cross(a: &Rv, b: &Rv) -> Rv {
-    [
-        &a[1] * &b[2] - &a[2] * &b[1],
-        &a[2] * &b[0] - &a[0] * &b[2],
-        &a[0] * &b[1] - &a[1] * &b[0],
-    ]
-}
-
-fn dot(a: &Rv, b: &Rv) -> BigRational {
-    &a[0] * &b[0] + &a[1] * &b[1] + &a[2] * &b[2]
-}
-
-fn lerp(a: &Rv, b: &Rv, tau: &BigRational) -> Rv {
-    std::array::from_fn(|i| &a[i] + tau * (&b[i] - &a[i]))
-}
-
-/// Rational affine coordinates of a (valid) Point3.
-fn affine(p: &Point3) -> Rv {
-    let h = p.hom::<Rat>();
-    let w = h[3].0.clone();
-    assert!(!w.is_zero(), "point must be valid");
-    std::array::from_fn(|i| &h[i].0 / &w)
-}
+use rapidmesh_exact::{orient3d, Point3, Sign};
+use rapidmesh_testutil::{
+    affine, rv, rv_cross as cross, rv_dot as dot, rv_lerp as lerp, rv_sub as sub, Rng, Rv,
+};
 
 // -------------------------------------------------------- rational reference
 
@@ -162,30 +108,15 @@ fn reference(t0: &Tri, t1: &Tri) -> RefIsect {
 
 // ------------------------------------------------------------------ test rng
 
-struct Rng(u64);
+trait RngExt {
+    fn tri(&mut self, coarse: bool) -> Tri;
+}
 
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.max(1))
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn grid(&mut self) -> f64 {
-        ((self.next_u64() % 17) as f64 - 8.0) / 4.0
-    }
-    fn coarse(&mut self) -> f64 {
-        (self.next_u64() % 3) as f64 - 1.0
-    }
+impl RngExt for Rng {
     fn tri(&mut self, coarse: bool) -> Tri {
         loop {
             let mut p = || -> [f64; 3] {
-                std::array::from_fn(|_| if coarse { self.coarse() } else { self.grid() })
+                std::array::from_fn(|_| if coarse { self.coarse() } else { self.grid(8) })
             };
             let t = Tri::new(p(), p(), p());
             // Reject exactly degenerate triangles.

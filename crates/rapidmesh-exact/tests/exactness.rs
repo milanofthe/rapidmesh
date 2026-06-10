@@ -6,7 +6,7 @@
 //! homogeneous formulas themselves.
 
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
+use num_traits::Zero;
 use rapidmesh_exact::expansion::Expansion;
 use rapidmesh_exact::geom::{det3, det4};
 use rapidmesh_exact::interval::Interval;
@@ -14,86 +14,15 @@ use rapidmesh_exact::orient::{orient2d, orient3d};
 use rapidmesh_exact::point::Point3;
 use rapidmesh_exact::ring::Ring;
 use rapidmesh_exact::{Axis, Sign};
+use rapidmesh_testutil::{expansion_to_rat, rat, sign_of_rat, Rat, Rng};
 
-// ---------------------------------------------------------------- oracle ring
-
-#[derive(Clone)]
-struct Rat(BigRational);
-
-impl Ring for Rat {
-    fn from_f64(v: f64) -> Self {
-        Rat(BigRational::from_float(v).expect("finite f64"))
-    }
-    fn add(&self, other: &Self) -> Self {
-        Rat(&self.0 + &other.0)
-    }
-    fn sub(&self, other: &Self) -> Self {
-        Rat(&self.0 - &other.0)
-    }
-    fn mul(&self, other: &Self) -> Self {
-        Rat(&self.0 * &other.0)
-    }
-    fn neg(&self) -> Self {
-        Rat(-&self.0)
-    }
+trait RngExt {
+    fn point_grid(&mut self) -> [f64; 3];
 }
 
-fn rat(v: f64) -> BigRational {
-    BigRational::from_float(v).expect("finite f64")
-}
-
-fn sign_of_rat(r: &BigRational) -> Sign {
-    if r.is_zero() {
-        Sign::Zero
-    } else if r.is_positive() {
-        Sign::Positive
-    } else {
-        Sign::Negative
-    }
-}
-
-fn expansion_to_rat(e: &Expansion) -> BigRational {
-    e.components()
-        .iter()
-        .fold(BigRational::zero(), |acc, &c| acc + rat(c))
-}
-
-// ------------------------------------------------------------------ test rng
-
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.max(1))
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn f64_unit(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-    /// Random f64 spanning many magnitudes (stress for expansions).
-    fn f64_wide(&mut self) -> f64 {
-        let mantissa = 2.0 * self.f64_unit() - 1.0;
-        let exp = (self.next_u64() % 81) as i32 - 40; // 2^-40 .. 2^40
-        mantissa * (exp as f64).exp2()
-    }
-    /// Grid coordinate k/4 with k integer in [-16, 16]: exact in f64, prone
-    /// to exact degeneracies.
-    fn grid(&mut self) -> f64 {
-        ((self.next_u64() % 33) as f64 - 16.0) / 4.0
-    }
+impl RngExt for Rng {
     fn point_grid(&mut self) -> [f64; 3] {
-        [self.grid(), self.grid(), self.grid()]
-    }
-    /// Coarse grid coordinate in {-1, 0, 1}: forces exact degeneracies.
-    fn point_coarse(&mut self) -> [f64; 3] {
-        std::array::from_fn(|_| (self.next_u64() % 3) as f64 - 1.0)
+        self.point3(16)
     }
 }
 

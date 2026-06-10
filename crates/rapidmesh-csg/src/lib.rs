@@ -11,8 +11,12 @@
 //! Blueprints: Lévy (ACM TOG 2024, exact mesh CSG / Weiler model) and
 //! Cherchi et al. (SIGGRAPH Asia 2022, indirect predicates).
 
+pub mod constraint;
 pub mod tri;
 pub mod tri_tri;
+pub mod triangulate;
 
+pub use constraint::{Constraint, ConstraintLine};
 pub use tri::Tri;
 pub use tri_tri::{tri_tri_intersection, TriTriIsect};
+pub use triangulate::{triangulate_facet, FacetTriangulation};

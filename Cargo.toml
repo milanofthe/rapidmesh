@@ -6,6 +6,7 @@ members = [
     "crates/rapidmesh-csg",
     "crates/rapidmesh-tet",
     "crates/rapidmesh",
+    "crates/rapidmesh-testutil",
 ]
 
 [workspace.package]
@@ -16,6 +17,7 @@ publish = false
 [workspace.dependencies]
 rapidmesh-exact = { path = "crates/rapidmesh-exact" }
 rapidmesh-geom = { path = "crates/rapidmesh-geom" }
+rapidmesh-testutil = { path = "crates/rapidmesh-testutil" }
 rapidmesh-csg = { path = "crates/rapidmesh-csg" }
 rapidmesh-tet = { path = "crates/rapidmesh-tet" }
 geometry-predicates = "0.3"

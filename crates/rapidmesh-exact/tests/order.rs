@@ -5,56 +5,16 @@ use num_traits::{Signed, Zero};
 use rapidmesh_exact::{
     cmp_along, collinear, strictly_between, within_closed, Point3, Sign,
 };
+use rapidmesh_testutil::{affine, rat, Rng};
 
-fn rat(v: f64) -> BigRational {
-    BigRational::from_float(v).expect("finite f64")
+trait RngExt {
+    fn point_grid(&mut self) -> [f64; 3];
+    fn lpi(&mut self) -> Point3;
 }
 
-/// Rational affine coordinates via the homogeneous Rat evaluation.
-fn affine(p: &Point3) -> [BigRational; 3] {
-    #[derive(Clone)]
-    struct Rat2(BigRational);
-    impl rapidmesh_exact::Ring for Rat2 {
-        fn from_f64(v: f64) -> Self {
-            Rat2(rat(v))
-        }
-        fn add(&self, o: &Self) -> Self {
-            Rat2(&self.0 + &o.0)
-        }
-        fn sub(&self, o: &Self) -> Self {
-            Rat2(&self.0 - &o.0)
-        }
-        fn mul(&self, o: &Self) -> Self {
-            Rat2(&self.0 * &o.0)
-        }
-        fn neg(&self) -> Self {
-            Rat2(-&self.0)
-        }
-    }
-    let h = p.hom::<Rat2>();
-    assert!(!h[3].0.is_zero());
-    std::array::from_fn(|i| &h[i].0 / &h[3].0)
-}
-
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.max(1))
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn grid(&mut self) -> f64 {
-        ((self.next_u64() % 17) as f64 - 8.0) / 4.0
-    }
+impl RngExt for Rng {
     fn point_grid(&mut self) -> [f64; 3] {
-        std::array::from_fn(|_| self.grid())
+        self.point3(8)
     }
     fn lpi(&mut self) -> Point3 {
         loop {
@@ -78,7 +38,7 @@ fn cmp_along_matches_rational_oracle() {
     for i in 0..300 {
         // Mix explicit and implicit points.
         let mut pt = |k: u64| -> Point3 {
-            if (i + k) % 3 == 0 {
+            if (i + k).is_multiple_of(3) {
                 rng.lpi()
             } else {
                 Point3::Explicit(rng.point_grid())
@@ -141,8 +101,8 @@ fn lli_coplanar_intersection_is_on_both_lines() {
         // Exactly coplanar configuration: all points in the plane z = x
         // (exact for grid coordinates).
         let mut pt = || -> [f64; 3] {
-            let x = rng.grid();
-            let y = rng.grid();
+            let x = rng.grid(8);
+            let y = rng.grid(8);
             [x, y, x]
         };
         let (p, q, a, b) = (pt(), pt(), pt(), pt());

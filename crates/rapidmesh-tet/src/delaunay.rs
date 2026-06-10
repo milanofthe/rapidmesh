@@ -15,6 +15,13 @@
 //! safe.
 
 use rapidmesh_exact::Sign;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Diagnostic counters (RAPIDMESH_CAND_TRACE): linear-scan point locations
+/// and guarded-insert outcomes.
+pub static LOCATE_SCANS: AtomicU64 = AtomicU64::new(0);
+pub static GUARDED_NN_BAILS: AtomicU64 = AtomicU64::new(0);
+pub static GUARDED_KEEP_VETOES: AtomicU64 = AtomicU64::new(0);
 
 /// A Delaunay tetrahedralization of a point set.
 #[derive(Debug)]
@@ -149,6 +156,7 @@ impl DelaunayBuilder {
     }
 
     fn locate_scan(&self, p: u32) -> u32 {
+        LOCATE_SCANS.fetch_add(1, Ordering::Relaxed);
         for (ti, &t) in self.tets.iter().enumerate() {
             if !self.alive[ti] {
                 continue;
@@ -223,7 +231,8 @@ impl DelaunayBuilder {
     pub fn insert(&mut self, point: [f64; 3]) -> usize {
         let p = self.pts.len() as u32;
         self.pts.push(point);
-        self.compute_cavity(p);
+        let ok = self.compute_cavity(p, -1.0, usize::MAX);
+        debug_assert!(ok);
         self.refill(p)
     }
 
@@ -257,7 +266,15 @@ impl DelaunayBuilder {
         }
         let p = self.pts.len() as u32;
         self.pts.push(point);
-        self.compute_cavity(p);
+        // Legitimate refinement cavities hold a few dozen tets; pathological
+        // ones (corrupted circumcenters skimming the boundary) grow into the
+        // hundreds and pay an exact insphere per tet. Capping rejects them
+        // early; a wrongly capped legitimate insert is merely skipped.
+        if !self.compute_cavity(p, min_dist2, 1024) {
+            GUARDED_NN_BAILS.fetch_add(1, Ordering::Relaxed);
+            self.pts.pop();
+            return None;
+        }
 
         // Surviving edges: every edge of a cavity-boundary face remains (the
         // face is re-coned to p). An edge of a cavity tet on NO boundary
@@ -268,16 +285,6 @@ impl DelaunayBuilder {
         for &(ti, fi) in &self.boundary {
             self.scratch_bfaces.insert((ti, fi));
             let f = face(self.tets[ti as usize], fi as usize);
-            for &v in &f {
-                if v >= 4 {
-                    let q = self.pts[v as usize];
-                    let d2: f64 = (0..3).map(|k| (point[k] - q[k]).powi(2)).sum();
-                    if d2 < min_dist2 {
-                        self.pts.pop();
-                        return None;
-                    }
-                }
-            }
             for e in 0..3 {
                 let (a, b) = (f[e], f[(e + 1) % 3]);
                 self.scratch_edges.insert((a.min(b), a.max(b)));
@@ -297,6 +304,7 @@ impl DelaunayBuilder {
                 let mut pf = f.map(|v| (v - 4) as usize);
                 pf.sort_unstable();
                 if !keep(Removal::Face(pf)) {
+                    GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                     self.pts.pop();
                     return None;
                 }
@@ -311,6 +319,7 @@ impl DelaunayBuilder {
                         continue;
                     }
                     if !keep(Removal::Edge((a - 4) as usize, (b - 4) as usize)) {
+                        GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                         self.pts.pop();
                         return None;
                     }
@@ -322,9 +331,25 @@ impl DelaunayBuilder {
 
     /// Grows the cavity of `p` (strict circumsphere violations plus the
     /// star-shape repair) into `self.cavity` and its boundary faces into
-    /// `self.boundary`. Read-only apart from scratch state.
-    fn compute_cavity(&mut self, p: u32) {
+    /// `self.boundary`. Read-only apart from scratch state. Returns `false`
+    /// (cavity state undefined) as soon as a vertex of a cavity tet is
+    /// closer to `p` than `min_dist2` allows: the nearest neighbor of `p`
+    /// is always among the cavity vertices, so the bail is exact, and it
+    /// fires before most of the exact insphere work for rejected points.
+    fn compute_cavity(&mut self, p: u32, min_dist2: f64, max_cavity: usize) -> bool {
         let start = self.locate(p);
+        let too_close = |pts: &[[f64; 3]], t: [u32; 4]| -> bool {
+            t.iter().any(|&v| {
+                v >= 4 && {
+                    let q = pts[v as usize];
+                    let x = pts[p as usize];
+                    (0..3).map(|k| (x[k] - q[k]).powi(2)).sum::<f64>() < min_dist2
+                }
+            })
+        };
+        if too_close(&self.pts, self.tets[start as usize]) {
+            return false;
+        }
 
         // Cavity: strict circumsphere violations, grown through neighbors.
         self.epoch += 1;
@@ -342,6 +367,11 @@ impl DelaunayBuilder {
                     continue;
                 }
                 if insphere(&self.pts, self.tets[nb as usize], p) == Sign::Positive {
+                    if too_close(&self.pts, self.tets[nb as usize])
+                        || self.cavity.len() >= max_cavity
+                    {
+                        return false;
+                    }
                     self.mark[nb as usize] = epoch;
                     self.cavity.push(nb);
                 }
@@ -368,6 +398,9 @@ impl DelaunayBuilder {
                         } else {
                             nb
                         };
+                        if too_close(&self.pts, self.tets[nb as usize]) {
+                            return false;
+                        }
                         self.mark[nb as usize] = epoch;
                         self.cavity.push(nb);
                         grew = true;
@@ -390,6 +423,7 @@ impl DelaunayBuilder {
                 }
             }
         }
+        true
     }
 
     /// Re-fill: cone p to each boundary face, wiring neighbors locally.

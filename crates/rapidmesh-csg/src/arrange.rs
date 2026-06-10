@@ -223,9 +223,125 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
         self_pairs(&bvh, &boxes, &mut pairs);
     }
 
+    let trace = std::env::var_os("RAPIDMESH_TRACE").is_some();
+    let t_pairs = std::time::Instant::now();
+    let n_pairs = pairs.len();
     let mut points: Vec<Vec<Point3>> = vec![Vec::new(); tris.len()];
     let mut constraints: Vec<Vec<Constraint>> = vec![Vec::new(); tris.len()];
+    let mut skipped = [0usize; 4];
     for (i, j) in pairs {
+        // Fast paths for mesh-adjacent pairs, the dominant candidate kind in
+        // clean closed surfaces (shared vertices are bit-identical there).
+        // They contribute nothing to the arrangement: a shared edge of two
+        // non-coplanar triangles is exactly their intersection and already a
+        // boundary edge of both facets; a shared vertex with the remaining
+        // vertices strictly on one side of the other plane is exactly a
+        // touching point and already a facet corner. The signs come from the
+        // adaptive exact predicate, so the skips are exact, and every other
+        // configuration (coplanar, piercing) falls through to the full
+        // intersection machinery.
+        {
+            let side = |t: &Tri, q: [f64; 3]| -> Sign {
+                Sign::of_f64(geometry_predicates::orient3d(t.v[0], t.v[1], t.v[2], q))
+            };
+            let mut shared_j = [false; 3];
+            let mut n_shared = 0;
+            for (b, flag) in shared_j.iter_mut().enumerate() {
+                if tris[i].v.iter().any(|&a| a == tris[j].v[b]) {
+                    *flag = true;
+                    n_shared += 1;
+                }
+            }
+            let signs: [Sign; 3] = std::array::from_fn(|b| side(&tris[i], tris[j].v[b]));
+            if signs == [Sign::Zero; 3] {
+                // Exactly coplanar: tessellated flat regions produce many
+                // such pairs whose intersection is at most a shared edge or
+                // vertex. An exact 2D separating line among the six edges
+                // proves it: one triangle's vertices weakly on one side, the
+                // other's weakly on the other, and every on-line vertex is
+                // either an endpoint of the line itself or shared between
+                // the triangles (a non-shared on-line vertex could be a
+                // T-configuration touching point, which the full machinery
+                // must handle).
+                let is_shared = |q: [f64; 3]| -> bool {
+                    tris[i].v.contains(&q) && tris[j].v.contains(&q)
+                };
+                let (axis, _) = tris[i].projection_axis();
+                let separated = (0..6).any(|e| {
+                    let (t_edge, _t_other) = if e < 3 { (&tris[i], &tris[j]) } else { (&tris[j], &tris[i]) };
+                    let (p, q) = (t_edge.v[e % 3], t_edge.v[(e + 1) % 3]);
+                    let line_sign = |r: [f64; 3]| -> Option<Sign> {
+                        rapidmesh_exact::orient2d(
+                            &Point3::Explicit(p),
+                            &Point3::Explicit(q),
+                            &Point3::Explicit(r),
+                            axis,
+                        )
+                        
+                    };
+                    let mut side_i = Sign::Zero;
+                    let mut side_j = Sign::Zero;
+                    for r in tris[i].v {
+                        match line_sign(r) {
+                            Some(Sign::Zero) => {
+                                if !(r == p || r == q || is_shared(r)) {
+                                    return false;
+                                }
+                            }
+                            Some(sg) => {
+                                if side_i != Sign::Zero && side_i != sg {
+                                    return false;
+                                }
+                                side_i = sg;
+                            }
+                            None => return false,
+                        }
+                    }
+                    for r in tris[j].v {
+                        match line_sign(r) {
+                            Some(Sign::Zero) => {
+                                if !(r == p || r == q || is_shared(r)) {
+                                    return false;
+                                }
+                            }
+                            Some(sg) => {
+                                if side_j != Sign::Zero && side_j != sg {
+                                    return false;
+                                }
+                                side_j = sg;
+                            }
+                            None => return false,
+                        }
+                    }
+                    side_i != Sign::Zero && side_j != Sign::Zero && side_i != side_j
+                });
+                if separated {
+                    skipped[3] += 1;
+                    continue;
+                }
+            } else if n_shared == 2 {
+                let opp = (0..3).find(|&b| !shared_j[b]).expect("one non-shared");
+                if signs[opp] != Sign::Zero {
+                    skipped[2] += 1;
+                    continue;
+                }
+            } else if n_shared == 1 {
+                let mut others = (0..3).filter(|&b| !shared_j[b]);
+                let (b1, b2) = (others.next().expect("two"), others.next().expect("two"));
+                let (s1, s2) = (signs[b1], signs[b2]);
+                if s1 != Sign::Zero && s1 == s2 {
+                    skipped[1] += 1;
+                    continue;
+                }
+            } else if n_shared == 0
+                && (signs.iter().all(|&x| x == Sign::Positive)
+                    || signs.iter().all(|&x| x == Sign::Negative))
+            {
+                // Strictly one side of the plane: disjoint.
+                skipped[0] += 1;
+                continue;
+            }
+        }
         match tri_tri_intersection(&tris[i], &tris[j]) {
             TriTriIsect::Disjoint => {}
             TriTriIsect::Touching(p) => {
@@ -267,11 +383,24 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
         }
     }
 
+    if trace {
+        eprintln!(
+            "arrange: {n_pairs} pairs in {:.1?} (skipped edge {} vert {} oneside {})",
+            t_pairs.elapsed(),
+            skipped[2],
+            skipped[1],
+            skipped[0] + skipped[3]
+        );
+    }
+    let t_tri = std::time::Instant::now();
     let facets = tris
         .iter()
         .enumerate()
         .map(|(i, t)| triangulate_facet(t, &points[i], &constraints[i]))
         .collect();
+    if trace {
+        eprintln!("arrange: triangulate {:.1?}", t_tri.elapsed());
+    }
     Arrangement {
         facets,
         constraints,

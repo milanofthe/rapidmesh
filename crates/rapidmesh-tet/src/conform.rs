@@ -401,6 +401,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         round += 1;
         assert!(round <= 16384, "boundary recovery did not converge");
 
+        let t_round = std::time::Instant::now();
         let dt_tets = builder.tets();
         // Edges are only ever queried between crease endpoints (the missing
         // check below); collecting all 6 edges of every tet would dominate
@@ -423,6 +424,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
 
+        let t_scan = t_round.elapsed();
         // 1. Missing crease sub-edges: midpoint split.
         let missing: Vec<(usize, usize)> = creases
             .iter()
@@ -548,8 +550,10 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // refinement), then apply one sizing/quality refinement step;
             // when it makes no insertion (or the point budget is spent),
             // finish.
+            let t_tile = t_round.elapsed();
             let tet_region =
                 classify_tet_regions(&points, &dt_tets, &patches, &all_tilings, &dt_faces, (blo, bhi));
+            let t_classify = t_round.elapsed();
             if points.len() >= params.max_points {
                 if trace {
                     eprintln!("refinement stopped at point budget ({})", points.len());
@@ -581,8 +585,12 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             );
             if trace && inserted > 0 {
                 eprintln!(
-                    "refine round {refine_round}: inserted {inserted}, {} points",
-                    points.len()
+                    "refine round {refine_round}: inserted {inserted}, {} points, scan {:.1?} tile {:.1?} classify {:.1?} refine {:.1?}",
+                    points.len(),
+                    t_scan,
+                    t_tile - t_scan,
+                    t_classify - t_tile,
+                    t_round.elapsed() - t_classify
                 );
             }
             if inserted == 0 {
@@ -895,6 +903,87 @@ fn split_crease_midpoint(
 }
 
 /// One sizing/quality refinement step on a conforming state. Returns the
+/// Uniform grid over balls for "which ball contains this point" queries:
+/// linear scans over all crease/tile balls per refinement candidate are
+/// quadratic on surface models with tens of thousands of constraints. Balls
+/// spanning more than [`BallGrid::MAX_SPAN`] cells per axis go into a small
+/// linearly-checked overflow list.
+struct BallGrid {
+    cell: f64,
+    origin: [f64; 3],
+    map: DMap<[i64; 3], Vec<u32>>,
+    large: Vec<u32>,
+    balls: Vec<([f64; 3], f64)>,
+}
+
+impl BallGrid {
+    const MAX_SPAN: i64 = 4;
+
+    fn build(balls: Vec<([f64; 3], f64)>) -> BallGrid {
+        let mut radii: Vec<f64> = balls.iter().map(|b| b.1).collect();
+        radii.sort_by(f64::total_cmp);
+        let median_r = radii.get(radii.len() / 2).copied().unwrap_or(1.0);
+        let cell = (2.0 * median_r).max(f64::MIN_POSITIVE);
+        let origin = balls.first().map(|b| b.0).unwrap_or([0.0; 3]);
+        let mut grid = BallGrid {
+            cell,
+            origin,
+            map: DMap::default(),
+            large: Vec::new(),
+            balls,
+        };
+        for bi in 0..grid.balls.len() {
+            let (c, r) = grid.balls[bi];
+            let lo = grid.cell_of(std::array::from_fn(|k| c[k] - r));
+            let hi = grid.cell_of(std::array::from_fn(|k| c[k] + r));
+            if (0..3).any(|k| hi[k] - lo[k] >= BallGrid::MAX_SPAN) {
+                grid.large.push(bi as u32);
+                continue;
+            }
+            for x in lo[0]..=hi[0] {
+                for y in lo[1]..=hi[1] {
+                    for z in lo[2]..=hi[2] {
+                        grid.map.entry([x, y, z]).or_default().push(bi as u32);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    fn cell_of(&self, p: [f64; 3]) -> [i64; 3] {
+        std::array::from_fn(|k| ((p[k] - self.origin[k]) / self.cell).floor() as i64)
+    }
+
+    /// Index of the first ball (in insertion order) containing `x` and
+    /// accepted by `live`, if any. Matches the linear-scan semantics: the
+    /// FIRST hit in ball order wins.
+    fn first_containing(&self, x: [f64; 3], live: impl Fn(usize) -> bool) -> Option<usize> {
+        let dist2 = |a: [f64; 3], b: [f64; 3]| -> f64 {
+            (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
+        };
+        let mut best: Option<usize> = None;
+        let mut consider = |bi: u32| {
+            let (c, r) = self.balls[bi as usize];
+            if dist2(x, c) < r * r
+                && best.is_none_or(|b| (bi as usize) < b)
+                && live(bi as usize)
+            {
+                best = Some(bi as usize);
+            }
+        };
+        if let Some(v) = self.map.get(&self.cell_of(x)) {
+            for &bi in v {
+                consider(bi);
+            }
+        }
+        for &bi in &self.large {
+            consider(bi);
+        }
+        best
+    }
+}
+
 /// number of inserted points (0 = all targets met). Shewchuk phase order:
 /// oversized creases, then oversized patch tiles, then oversized or
 /// poor-quality tets (circumcenters, with encroachment redirected to the
@@ -978,12 +1067,39 @@ fn refine_step(
     }
 
     // Encroachment helper: the crease sub-edge whose diametral ball contains
-    // x, if any.
-    let encroached_crease = |x: [f64; 3], points: &[[f64; 3]], creases: &[(usize, usize)]| {
-        creases.iter().copied().find(|&(a, b)| {
-            let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
-            dist2(x, m) < 0.25 * dist2(points[a], points[b])
-        })
+    // x, if any. Grid-indexed over the creases at entry (linear scans are
+    // quadratic on surface models); creases split DURING this step are the
+    // small overlay tail of the vec, scanned linearly, and dead snapshot
+    // entries are filtered via crease_marks (the canonical live set). Vec
+    // order semantics (first live hit) are preserved: retain keeps survivor
+    // order and children append.
+    let crease_snapshot: Vec<(usize, usize)> = creases.clone();
+    let crease_grid = BallGrid::build(
+        crease_snapshot
+            .iter()
+            .map(|&(a, b)| {
+                let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+                (m, 0.5 * dist2(points[a], points[b]).sqrt())
+            })
+            .collect(),
+    );
+    let encroached_crease = |x: [f64; 3],
+                             points: &[[f64; 3]],
+                             creases: &[(usize, usize)],
+                             live: &DMap<(usize, usize), DSet<usize>>|
+     -> Option<(usize, usize)> {
+        if let Some(i) =
+            crease_grid.first_containing(x, |i| live.contains_key(&crease_snapshot[i]))
+        {
+            return Some(crease_snapshot[i]);
+        }
+        creases[crease_snapshot.len().min(creases.len())..]
+            .iter()
+            .copied()
+            .find(|&(a, b)| {
+                let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+                dist2(x, m) < 0.25 * dist2(points[a], points[b])
+            })
     };
 
     // Phase 2: oversized patch tiles. Batched: all oversized tile
@@ -1013,7 +1129,7 @@ fn refine_step(
             if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
                 continue;
             }
-            if let Some(key) = encroached_crease(cc, points, creases) {
+            if let Some(key) = encroached_crease(cc, points, creases, crease_marks) {
                 if split_crease_midpoint(
                     key,
                     points,
@@ -1069,14 +1185,17 @@ fn refine_step(
         .collect();
     // Tile circumcircles, precomputed once for the per-candidate
     // encroachment checks.
-    let mut tile_balls: Vec<([f64; 3], f64, usize)> = Vec::new();
+    let mut tile_balls: Vec<([f64; 3], usize)> = Vec::new();
+    let mut tile_ball_geo: Vec<([f64; 3], f64)> = Vec::new();
     for (pi, tiles) in tilings.iter().enumerate() {
         for f in tiles {
             if let Some((tc, tr)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]) {
-                tile_balls.push((tc, tr, pi));
+                tile_balls.push((tc, pi));
+                tile_ball_geo.push((tc, tr));
             }
         }
     }
+    let tile_grid = BallGrid::build(tile_ball_geo);
     // (cc, circumradius, spacing, lmin2, longest edge if oversized)
     #[allow(clippy::type_complexity)]
     let mut candidates: Vec<([f64; 3], f64, f64, f64, Option<(usize, usize)>)> = Vec::new();
@@ -1157,6 +1276,13 @@ fn refine_step(
         );
     }
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let cand_trace = std::env::var_os("RAPIDMESH_CAND_TRACE").is_some();
+    let t_cands = std::time::Instant::now();
+    let n_cands = candidates.len();
+    let mut guarded_ok = 0usize;
+    let mut guarded_veto = 0usize;
+    let mut t_guarded = std::time::Duration::ZERO;
+    let mut t_encroach = std::time::Duration::ZERO;
     let mut n = 0;
     let mut placed: Vec<[f64; 3]> = Vec::new();
     // Longest-edge midpoint fallback for oversized tets whose circumcenter
@@ -1212,11 +1338,14 @@ fn refine_step(
                 // Pure Delaunay-refinement step: only insert circumcenters
                 // that encroach nothing (boundary slivers are the optimize
                 // pass's job, not insertion's).
-                if encroached_crease(cc, points, creases).is_some() {
+                let te = std::time::Instant::now();
+                let hit = encroached_crease(cc, points, creases, crease_marks).is_some();
+                t_encroach += te.elapsed();
+                if hit {
                     break 'attempt;
                 }
             }
-            if let Some(key) = encroached_crease(cc, points, creases) {
+            if let Some(key) = encroached_crease(cc, points, creases, crease_marks) {
                 if split_crease_midpoint(
                     key,
                     points,
@@ -1232,15 +1361,14 @@ fn refine_step(
                 break 'attempt;
             }
             // Encroached patch tile: insert that tile's circumcenter instead.
-            let tile_hit: Option<(usize, [f64; 3])> = tile_balls
-                .iter()
-                .find(|&&(tc, tr, _)| dist2(cc, tc) < tr * tr)
-                .map(|&(tc, _, pi)| (pi, tc));
+            let tile_hit: Option<(usize, [f64; 3])> = tile_grid
+                .first_containing(cc, |_| true)
+                .map(|i| (tile_balls[i].1, tile_balls[i].0));
             if let Some((pi, tc)) = tile_hit {
                 if quality_only {
                     break 'attempt; // no boundary interaction for quality steps
                 }
-                if let Some(key) = encroached_crease(tc, points, creases) {
+                if let Some(key) = encroached_crease(tc, points, creases, crease_marks) {
                     if split_crease_midpoint(
                         key,
                         points,
@@ -1283,13 +1411,17 @@ fn refine_step(
                 // shortest edge (an exact circumcenter lands at distance
                 // >= 2x that; closer means the float circumcenter of a
                 // near-degenerate tet is numerically corrupted).
+                let tg = std::time::Instant::now();
                 let admitted = builder.insert_guarded(cc, lmin2, |rem| match rem {
                     crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
                     crate::delaunay::Removal::Edge(a, b) => !crease_set.contains(&(a, b)),
                 });
+                t_guarded += tg.elapsed();
                 if admitted.is_none() {
+                    guarded_veto += 1;
                     break 'attempt;
                 }
+                guarded_ok += 1;
             } else {
                 builder.insert(cc);
             }
@@ -1307,6 +1439,18 @@ fn refine_step(
                 split_longest_edge!(a, b);
             }
         }
+    }
+    if cand_trace && n_cands > 0 {
+        use std::sync::atomic::Ordering;
+        eprintln!(
+            "  phase3: {n_cands} cands, {guarded_ok} ok, {guarded_veto} veto (nn {}, keep {}), scans {}, insert loop {:.1?} (guarded {:.1?}, encroach {:.1?})",
+            crate::delaunay::GUARDED_NN_BAILS.swap(0, Ordering::Relaxed),
+            crate::delaunay::GUARDED_KEEP_VETOES.swap(0, Ordering::Relaxed),
+            crate::delaunay::LOCATE_SCANS.swap(0, Ordering::Relaxed),
+            t_cands.elapsed(),
+            t_guarded,
+            t_encroach
+        );
     }
     n
 }

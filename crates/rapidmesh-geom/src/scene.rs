@@ -75,7 +75,13 @@ impl Scene {
             flatten(f, None, *tag);
         }
 
+        let trace = std::env::var_os("RAPIDMESH_TRACE").is_some();
+        let t0 = std::time::Instant::now();
         let arr = arrange(&tris);
+        if trace {
+            eprintln!("assemble: arrange {:.1?}", t0.elapsed());
+        }
+        let t1 = std::time::Instant::now();
 
         // Scene bounding box for ray targets.
         let mut lo = [f64::MAX; 3];
@@ -169,6 +175,9 @@ impl Scene {
             }
         }
 
+        if trace {
+            eprintln!("assemble: classify+emit {:.1?}", t1.elapsed());
+        }
         // ------------------------------------------------- snap and emit
         let vertices: Vec<[f64; 3]> = pool
             .verts

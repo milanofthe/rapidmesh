@@ -27,6 +27,16 @@ pub struct DelaunayTets {
 
 const NONE: u32 = u32::MAX;
 
+/// A simplex an insertion would remove from the triangulation (public
+/// vertex indices). See [`DelaunayBuilder::insert_guarded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// An interior cavity face, vertices sorted ascending.
+    Face([usize; 3]),
+    /// A fully interior edge, as (min, max).
+    Edge(usize, usize),
+}
+
 fn orient(pts: &[[f64; 3]], a: u32, b: u32, c: u32, d: u32) -> Sign {
     Sign::of_f64(geometry_predicates::orient3d(
         pts[a as usize],
@@ -79,6 +89,10 @@ pub struct DelaunayBuilder {
     /// Edge -> (new tet, face slot) for wiring new tets to each other.
     edge_map: rustc_hash::FxHashMap<(u32, u32), (u32, u8)>,
     new_tets: Vec<u32>,
+    /// Guarded-insert scratch: surviving cavity-boundary edges.
+    scratch_edges: rustc_hash::FxHashSet<(u32, u32)>,
+    /// Guarded-insert scratch: cavity-boundary faces as (tet, face slot).
+    scratch_bfaces: rustc_hash::FxHashSet<(u32, u8)>,
 }
 
 impl DelaunayBuilder {
@@ -112,6 +126,8 @@ impl DelaunayBuilder {
             boundary: Vec::new(),
             edge_map: rustc_hash::FxHashMap::default(),
             new_tets: Vec::new(),
+            scratch_edges: rustc_hash::FxHashSet::default(),
+            scratch_bfaces: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -200,7 +216,100 @@ impl DelaunayBuilder {
     pub fn insert(&mut self, point: [f64; 3]) -> usize {
         let p = self.pts.len() as u32;
         self.pts.push(point);
+        self.compute_cavity(p);
+        self.refill(p)
+    }
 
+    /// Inserts a point unless `keep` rejects one of the faces or edges the
+    /// insertion would REMOVE from the triangulation (public vertex indices;
+    /// faces sorted ascending, edges as (min, max)). On rejection the
+    /// triangulation is left untouched and `None` is returned.
+    ///
+    /// This is how refinement keeps recovered constraints intact: a quality
+    /// insertion whose cavity would swallow a constraint face or crease edge
+    /// is simply not performed (encroachment tests on diametral balls are
+    /// only sufficient for Gabriel simplices; weakly Delaunay constraints
+    /// can be knocked out by points outside every ball).
+    /// `min_dist2`: minimum allowed SQUARED distance from the new point to
+    /// every existing vertex it would connect to (the cavity boundary).
+    /// Numerically corrupted circumcenters of near-degenerate tets land
+    /// arbitrarily close to existing points; without this floor they seed
+    /// ever-shorter edges and refinement cascades below the input scale.
+    pub fn insert_guarded(
+        &mut self,
+        point: [f64; 3],
+        min_dist2: f64,
+        mut keep: impl FnMut(Removal) -> bool,
+    ) -> Option<usize> {
+        let p = self.pts.len() as u32;
+        self.pts.push(point);
+        self.compute_cavity(p);
+
+        // Surviving edges: every edge of a cavity-boundary face remains (the
+        // face is re-coned to p). An edge of a cavity tet on NO boundary
+        // face is interior and vanishes; a face of a cavity tet that is not
+        // a boundary face is interior and vanishes.
+        self.scratch_edges.clear();
+        self.scratch_bfaces.clear();
+        for &(ti, fi) in &self.boundary {
+            self.scratch_bfaces.insert((ti, fi));
+            let f = face(self.tets[ti as usize], fi as usize);
+            for &v in &f {
+                if v >= 4 {
+                    let q = self.pts[v as usize];
+                    let d2: f64 = (0..3).map(|k| (point[k] - q[k]).powi(2)).sum();
+                    if d2 < min_dist2 {
+                        self.pts.pop();
+                        return None;
+                    }
+                }
+            }
+            for e in 0..3 {
+                let (a, b) = (f[e], f[(e + 1) % 3]);
+                self.scratch_edges.insert((a.min(b), a.max(b)));
+            }
+        }
+        for ci in 0..self.cavity.len() {
+            let ti = self.cavity[ci];
+            let t = self.tets[ti as usize];
+            for i in 0..4 {
+                if self.scratch_bfaces.contains(&(ti, i as u8)) {
+                    continue;
+                }
+                let f = face(t, i);
+                if f.iter().any(|&v| v < 4) {
+                    continue; // touches a super-tet corner: never a constraint
+                }
+                let mut pf = f.map(|v| (v - 4) as usize);
+                pf.sort_unstable();
+                if !keep(Removal::Face(pf)) {
+                    self.pts.pop();
+                    return None;
+                }
+            }
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let (a, b) = (t[i].min(t[j]), t[i].max(t[j]));
+                    if a < 4 {
+                        continue;
+                    }
+                    if self.scratch_edges.contains(&(a, b)) {
+                        continue;
+                    }
+                    if !keep(Removal::Edge((a - 4) as usize, (b - 4) as usize)) {
+                        self.pts.pop();
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(self.refill(p))
+    }
+
+    /// Grows the cavity of `p` (strict circumsphere violations plus the
+    /// star-shape repair) into `self.cavity` and its boundary faces into
+    /// `self.boundary`. Read-only apart from scratch state.
+    fn compute_cavity(&mut self, p: u32) {
         let start = self.locate(p);
 
         // Cavity: strict circumsphere violations, grown through neighbors.
@@ -267,8 +376,10 @@ impl DelaunayBuilder {
                 }
             }
         }
+    }
 
-        // Re-fill: cone p to each boundary face, wiring neighbors locally.
+    /// Re-fill: cone p to each boundary face, wiring neighbors locally.
+    fn refill(&mut self, p: u32) -> usize {
         self.edge_map.clear();
         self.new_tets.clear();
         for bi in 0..self.boundary.len() {

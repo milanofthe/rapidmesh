@@ -1013,6 +1013,23 @@ fn refine_step(
     // circumcenters unless they encroach the boundary (then split that
     // instead). Batched with a spacing guard against near-duplicate
     // circumcenters from neighboring tets.
+    // Constraint sets for guarded quality insertions: a quality insertion
+    // must never remove a recovered tile face or crease edge (otherwise
+    // recovery re-splits the boundary ever finer and refinement spirals,
+    // which is what made organic surface imports non-terminating).
+    let crease_set: DSet<(usize, usize)> = creases
+        .iter()
+        .map(|&(a, b)| (a.min(b), a.max(b)))
+        .collect();
+    let tile_set: DSet<[usize; 3]> = tilings
+        .iter()
+        .flatten()
+        .map(|f| {
+            let mut t = *f;
+            t.sort_unstable();
+            t
+        })
+        .collect();
     // Tile circumcircles, precomputed once for the per-candidate
     // encroachment checks.
     let mut tile_balls: Vec<([f64; 3], f64, usize)> = Vec::new();
@@ -1023,9 +1040,9 @@ fn refine_step(
             }
         }
     }
-    // (cc, circumradius, spacing, longest edge if oversized)
+    // (cc, circumradius, spacing, lmin2, longest edge if oversized)
     #[allow(clippy::type_complexity)]
-    let mut candidates: Vec<([f64; 3], f64, f64, Option<(usize, usize)>)> = Vec::new();
+    let mut candidates: Vec<([f64; 3], f64, f64, f64, Option<(usize, usize)>)> = Vec::new();
     for (ti, t) in dt_tets.iter().enumerate() {
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
         let mut lmin2 = f64::MAX;
@@ -1089,7 +1106,18 @@ fn refine_step(
         } else {
             0.5 * lmin2.sqrt()
         };
-        candidates.push((cc, r, spacing, oversized.then_some(longest)));
+        candidates.push((cc, r, spacing, lmin2, oversized.then_some(longest)));
+    }
+    if std::env::var_os("RAPIDMESH_CAND_TRACE").is_some() && !candidates.is_empty() {
+        let mut ls: Vec<f64> = candidates.iter().map(|c| c.2).collect();
+        ls.sort_by(f64::total_cmp);
+        eprintln!(
+            "  cands {}: spacing min {:.2e} med {:.2e} max {:.2e}",
+            ls.len(),
+            ls[0],
+            ls[ls.len() / 2],
+            ls[ls.len() - 1]
+        );
     }
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
     let mut n = 0;
@@ -1133,7 +1161,7 @@ fn refine_step(
             }
         }};
     }
-    for (cc, _r, spacing, longest) in candidates {
+    for (cc, _r, spacing, lmin2, longest) in candidates {
         if n >= 512 {
             break;
         }
@@ -1212,9 +1240,24 @@ fn refine_step(
             if point_index.contains_key(&cc.map(f64::to_bits)) {
                 break 'attempt;
             }
+            if quality_only {
+                // Guarded: never remove a constraint (see crease_set above),
+                // and never create an edge shorter than the candidate's own
+                // shortest edge (an exact circumcenter lands at distance
+                // >= 2x that; closer means the float circumcenter of a
+                // near-degenerate tet is numerically corrupted).
+                let admitted = builder.insert_guarded(cc, lmin2, |rem| match rem {
+                    crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
+                    crate::delaunay::Removal::Edge(a, b) => !crease_set.contains(&(a, b)),
+                });
+                if admitted.is_none() {
+                    break 'attempt;
+                }
+            } else {
+                builder.insert(cc);
+            }
             let g = points.len();
             points.push(cc);
-            builder.insert(cc);
             point_index.insert(cc.map(f64::to_bits), g);
             on_patch.push(DSet::default());
             n += 1;

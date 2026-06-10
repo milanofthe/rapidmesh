@@ -28,7 +28,9 @@ use std::hash::BuildHasherDefault;
 
 /// Deterministic hashing: meshing decisions iterate these containers, and a
 /// mesher must be reproducible run-to-run (std's RandomState is not).
-type DState = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+/// FxHasher is unseeded (deterministic) and much faster than SipHash on the
+/// short integer keys these maps use.
+type DState = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
 
@@ -85,6 +87,10 @@ struct Patch {
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
+
+/// The four vertex-index triples spanning a tet's faces (unoriented; users
+/// sort the result for keying).
+const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
 
 fn sorted3(f: [usize; 3]) -> [usize; 3] {
     let mut s = f;
@@ -387,21 +393,30 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut round = 0;
     let mut refine_round = 0;
     let mut tried: DSet<[usize; 4]> = DSet::default();
-    let (tets, patch_faces): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>) = 'outer: loop {
+    #[allow(clippy::type_complexity)]
+    let (tets, patch_faces, tet_region): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>, Vec<u32>) = 'outer: loop {
         round += 1;
         assert!(round <= 16384, "boundary recovery did not converge");
 
         let dt_tets = builder.tets();
+        // Edges are only ever queried between crease endpoints (the missing
+        // check below); collecting all 6 edges of every tet would dominate
+        // the round.
+        let crease_endpoint: DSet<usize> =
+            creases.iter().flat_map(|&(a, b)| [a, b]).collect();
         let mut dt_edges: DSet<(usize, usize)> = DSet::default();
-        let mut dt_faces: DMap<[usize; 3], Vec<usize>> = DMap::default();
+        let mut dt_faces: DMap<[usize; 3], Vec<u32>> = DMap::default();
         for (ti, t) in dt_tets.iter().enumerate() {
             for i in 0..4 {
                 for j in i + 1..4 {
-                    dt_edges.insert(sorted2(t[i], t[j]));
+                    if crease_endpoint.contains(&t[i]) && crease_endpoint.contains(&t[j]) {
+                        dt_edges.insert(sorted2(t[i], t[j]));
+                    }
                 }
-                let mut f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
-                f.sort_unstable();
-                dt_faces.entry([f[0], f[1], f[2]]).or_default().push(ti);
+                dt_faces
+                    .entry(sorted3(TET_FACES[i].map(|k| t[k])))
+                    .or_default()
+                    .push(ti as u32);
             }
         }
 
@@ -499,28 +514,34 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
         if deficits.is_empty() {
-            // Conforming. Apply one sizing/quality refinement step; when it
-            // makes no insertion (or the point budget is spent), finish.
+            // Conforming. Classify every tet ONCE per round (flood fill;
+            // the per-candidate ray casting it replaces dominated
+            // refinement), then apply one sizing/quality refinement step;
+            // when it makes no insertion (or the point budget is spent),
+            // finish.
+            let tet_region =
+                classify_tet_regions(&points, &dt_tets, &patches, &all_tilings, &dt_faces, (blo, bhi));
             if points.len() >= params.max_points {
                 if trace {
                     eprintln!("refinement stopped at point budget ({})", points.len());
                 }
-                break 'outer (dt_tets, all_tilings);
+                break 'outer (dt_tets, all_tilings, tet_region);
             }
             refine_round += 1;
-            if refine_round > 200 {
+            if refine_round > 1000 {
                 // Sizing/quality are targets, not hard bounds (as in gmsh):
                 // stop best-effort instead of chasing corner configurations.
                 if trace {
                     eprintln!("refinement stopped at round budget");
                 }
-                break 'outer (dt_tets, all_tilings);
+                break 'outer (dt_tets, all_tilings, tet_region);
             }
             let inserted = refine_step(
                 params,
                 &patches,
                 &dt_tets,
                 &all_tilings,
+                &tet_region,
                 &mut tried,
                 &mut points,
                 &mut builder,
@@ -528,7 +549,6 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &mut on_patch,
                 &mut creases,
                 &mut crease_marks,
-                (blo, bhi),
             );
             if trace && inserted > 0 {
                 eprintln!(
@@ -537,7 +557,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 );
             }
             if inserted == 0 {
-                break 'outer (dt_tets, all_tilings);
+                break 'outer (dt_tets, all_tilings, tet_region);
             }
             continue;
         }
@@ -549,11 +569,21 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // patch. ONE point per patch per round: every insertion changes the
         // DT, so batch insertions computed against a stale DT mostly land
         // redundantly and feed encroachment cascades.
+        // The piercing search needs ALL tet edges (built lazily: deficits
+        // only exist in the few recovery rounds, not during refinement).
+        let mut all_edges: DSet<(usize, usize)> = DSet::default();
+        for t in &dt_tets {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    all_edges.insert(sorted2(t[i], t[j]));
+                }
+            }
+        }
         let mut inserted = 0;
         let mut new_pts: Vec<([f64; 3], usize)> = Vec::new();
         for &pi in &deficits {
             let patch = &patches[pi];
-            for &(a, b) in &dt_edges {
+            for &(a, b) in &all_edges {
                 let sa = plane_sign(patch, &points, a);
                 let sb = plane_sign(patch, &points, b);
                 if sa.combine(sb) != Sign::Negative {
@@ -673,100 +703,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         assert!(inserted > 0, "tiling deficit but no piercing edges found");
     };
 
-    // --------------------------------------------------- region tagging
-    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
-    for (pi, patch) in patches.iter().enumerate() {
-        if patch.regions[0] == patch.regions[1] {
-            continue;
-        }
-        for f in &patch_faces[pi] {
-            let t = Tri::new(points[f[0]], points[f[1]], points[f[2]]);
-            for tag in patch.regions {
-                region_bounds.entry(tag.0).or_default().push(t);
-            }
-        }
-    }
-
-    // Region assignment by FLOOD FILL: parity ray casting per tet is
-    // O(tets * boundary faces) and dominated large meshes; instead, tets
-    // are connected through their shared faces (constraint faces switch to
-    // the face's other region, free faces keep it), with one parity-seeded
-    // component root each.
-    let mut face_regions: DMap<[usize; 3], [u32; 2]> = DMap::default();
-    for (pi, patch) in patches.iter().enumerate() {
-        for f in &patch_faces[pi] {
-            face_regions.insert(sorted3(*f), [patch.regions[0].0, patch.regions[1].0]);
-        }
-    }
-    let mut tet_face_owners: DMap<[usize; 3], Vec<usize>> = DMap::default();
-    for (ti, t) in tets.iter().enumerate() {
-        for i in 0..4 {
-            let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
-            tet_face_owners
-                .entry(sorted3([f[0], f[1], f[2]]))
-                .or_default()
-                .push(ti);
-        }
-    }
-    let mut region_of: Vec<Option<u32>> = vec![None; tets.len()];
-    for seed in 0..tets.len() {
-        if region_of[seed].is_some() {
-            continue;
-        }
-        // Parity-classify the component root by its centroid.
-        let t = tets[seed];
-        let c: [f64; 3] = std::array::from_fn(|k| {
-            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
-        });
-        let rep = Point3::Explicit(c);
-        let mut seed_region = 0u32;
-        for (&r, bound) in &region_bounds {
-            if r != 0 && point_inside_solid(&rep, bound, (blo, bhi)) {
-                seed_region = r;
-                break;
-            }
-        }
-        region_of[seed] = Some(seed_region);
-        let mut stack = vec![seed];
-        while let Some(ti) = stack.pop() {
-            let cur = region_of[ti].expect("set before push");
-            let t = tets[ti];
-            for i in 0..4 {
-                let f: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
-                let key = sorted3([f[0], f[1], f[2]]);
-                let next_region = match face_regions.get(&key) {
-                    // Crossing a constraint face flips to its other side
-                    // (embedded sheets have equal sides: no change).
-                    Some(&[a, b]) => {
-                        if a == cur {
-                            b
-                        } else if b == cur {
-                            a
-                        } else {
-                            // Inconsistent: leave for the neighbor's own
-                            // component seed.
-                            continue;
-                        }
-                    }
-                    None => cur,
-                };
-                for &nb in &tet_face_owners[&key] {
-                    if nb != ti && region_of[nb].is_none() {
-                        region_of[nb] = Some(next_region);
-                        stack.push(nb);
-                    }
-                }
-            }
-        }
-    }
+    // ----------------------------------------------------- output
+    // Regions come from the last round's classification.
     let mut kept_tets: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     for (ti, t) in tets.iter().enumerate() {
-        if let Some(r) = region_of[ti] {
-            if r != 0 {
-                kept_tets.push(*t);
-                tet_regions.push(RegionTag(r));
-            }
+        if tet_region[ti] != 0 {
+            kept_tets.push(*t);
+            tet_regions.push(RegionTag(tet_region[ti]));
         }
     }
 
@@ -790,6 +734,89 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         faces: out_faces,
         surfaces: plc.surfaces.clone(),
     }
+}
+
+/// Region of every tet by FLOOD FILL through shared faces: crossing a
+/// constraint face flips to the face's other region, free faces keep it.
+/// Parity ray casting runs once per CONNECTED COMPONENT (per-tet casting is
+/// O(tets * boundary faces) and dominated large meshes).
+fn classify_tet_regions(
+    points: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    patches: &[Patch],
+    tilings: &[Vec<[usize; 3]>],
+    face_owners: &DMap<[usize; 3], Vec<u32>>,
+    bbox: ([f64; 3], [f64; 3]),
+) -> Vec<u32> {
+    let mut face_regions: DMap<[usize; 3], [u32; 2]> = DMap::default();
+    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
+    for (pi, patch) in patches.iter().enumerate() {
+        for f in &tilings[pi] {
+            face_regions.insert(sorted3(*f), [patch.regions[0].0, patch.regions[1].0]);
+            if patch.regions[0] != patch.regions[1] {
+                let t = Tri::new(points[f[0]], points[f[1]], points[f[2]]);
+                for tag in patch.regions {
+                    if tag.0 != 0 {
+                        region_bounds.entry(tag.0).or_default().push(t);
+                    }
+                }
+            }
+        }
+    }
+    let mut region_ids: Vec<u32> = region_bounds.keys().copied().collect();
+    region_ids.sort_unstable();
+
+    let mut region_of: Vec<Option<u32>> = vec![None; tets.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for seed in 0..tets.len() {
+        if region_of[seed].is_some() {
+            continue;
+        }
+        // Parity-classify the component root by its centroid.
+        let t = tets[seed];
+        let c: [f64; 3] = std::array::from_fn(|k| {
+            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
+        });
+        let rep = Point3::Explicit(c);
+        let seed_region = region_ids
+            .iter()
+            .copied()
+            .find(|r| point_inside_solid(&rep, &region_bounds[r], bbox))
+            .unwrap_or(0);
+        region_of[seed] = Some(seed_region);
+        stack.push(seed);
+        while let Some(ti) = stack.pop() {
+            let cur = region_of[ti].expect("set before push");
+            let t = tets[ti];
+            for fi in TET_FACES {
+                let key = sorted3(fi.map(|k| t[k]));
+                let next_region = match face_regions.get(&key) {
+                    // Crossing a constraint face flips to its other side
+                    // (embedded sheets have equal sides: no change).
+                    Some(&[a, b]) => {
+                        if a == cur {
+                            b
+                        } else if b == cur {
+                            a
+                        } else {
+                            // Inconsistent: leave for the neighbor's own
+                            // component seed.
+                            continue;
+                        }
+                    }
+                    None => cur,
+                };
+                for &nb in &face_owners[&key] {
+                    let nb = nb as usize;
+                    if nb != ti && region_of[nb].is_none() {
+                        region_of[nb] = Some(next_region);
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    region_of.into_iter().map(|r| r.unwrap_or(0)).collect()
 }
 
 /// Splits the crease sub-edge `key` at its midpoint (reusing an exactly
@@ -841,6 +868,7 @@ fn refine_step(
     patches: &[Patch],
     dt_tets: &[[usize; 4]],
     tilings: &[Vec<[usize; 3]>],
+    tet_region: &[u32],
     tried: &mut DSet<[usize; 4]>,
     points: &mut Vec<[f64; 3]>,
     builder: &mut DelaunayBuilder,
@@ -848,7 +876,6 @@ fn refine_step(
     on_patch: &mut Vec<DSet<usize>>,
     creases: &mut Vec<(usize, usize)>,
     crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
-    bbox: ([f64; 3], [f64; 3]),
 ) -> usize {
     let sized = params.maxh.is_finite() || !params.region_maxh.is_empty();
     if !sized && params.radius_edge_bound.is_infinite() {
@@ -922,19 +949,33 @@ fn refine_step(
         })
     };
 
-    // Phase 2: oversized patch tiles (one per patch per step; insertions
-    // change the DT).
+    // Phase 2: oversized patch tiles. Batched: all oversized tile
+    // circumcenters in one step, thinned by a spacing guard (insertions
+    // computed against the stale DT are only redundant when they cluster,
+    // and clustered points would create short edges anyway).
     if sized {
-        let mut n = 0;
+        let mut cands: Vec<([f64; 3], f64, usize)> = Vec::new();
         for (pi, tiles) in tilings.iter().enumerate() {
-            let Some((cc, _r)) = tiles
-                .iter()
-                .filter_map(|f| tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]))
-                .filter(|&(_, r)| patch_h[pi].is_finite() && r > 0.5 * patch_h[pi])
-                .max_by(|a, b| a.1.total_cmp(&b.1))
-            else {
+            if !patch_h[pi].is_finite() {
                 continue;
-            };
+            }
+            for f in tiles {
+                if let Some((cc, r)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
+                {
+                    if r > 0.5 * patch_h[pi] {
+                        cands.push((cc, r, pi));
+                    }
+                }
+            }
+        }
+        cands.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let mut n = 0;
+        let mut placed: Vec<[f64; 3]> = Vec::new();
+        for (cc, _r, pi) in cands {
+            let spacing = 0.5 * patch_h[pi];
+            if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
+                continue;
+            }
             if let Some(key) = encroached_crease(cc, points, creases) {
                 if split_crease_midpoint(
                     key,
@@ -946,6 +987,7 @@ fn refine_step(
                     crease_marks,
                 ) {
                     n += 1;
+                    placed.push(cc);
                 }
                 continue;
             }
@@ -960,6 +1002,7 @@ fn refine_step(
             marks.insert(pi);
             on_patch.push(marks);
             n += 1;
+            placed.push(cc);
         }
         if n > 0 {
             return n;
@@ -970,26 +1013,20 @@ fn refine_step(
     // circumcenters unless they encroach the boundary (then split that
     // instead). Batched with a spacing guard against near-duplicate
     // circumcenters from neighboring tets.
-    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
-    for (pi, patch) in patches.iter().enumerate() {
-        if patch.regions[0] == patch.regions[1] {
-            continue;
-        }
-        for f in &tilings[pi] {
-            let t = Tri::new(points[f[0]], points[f[1]], points[f[2]]);
-            for tag in patch.regions {
-                if tag.0 != 0 {
-                    region_bounds.entry(tag.0).or_default().push(t);
-                }
+    // Tile circumcircles, precomputed once for the per-candidate
+    // encroachment checks.
+    let mut tile_balls: Vec<([f64; 3], f64, usize)> = Vec::new();
+    for (pi, tiles) in tilings.iter().enumerate() {
+        for f in tiles {
+            if let Some((tc, tr)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]]) {
+                tile_balls.push((tc, tr, pi));
             }
         }
     }
-    let mut region_ids: Vec<u32> = region_bounds.keys().copied().collect();
-    region_ids.sort_unstable();
     // (cc, circumradius, spacing, longest edge if oversized)
     #[allow(clippy::type_complexity)]
     let mut candidates: Vec<([f64; 3], f64, f64, Option<(usize, usize)>)> = Vec::new();
-    for t in dt_tets {
+    for (ti, t) in dt_tets.iter().enumerate() {
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
         let mut lmin2 = f64::MAX;
         let mut lmax2 = 0.0_f64;
@@ -1019,16 +1056,10 @@ fn refine_step(
         // Only refine tets that belong to a region (the DT also fills the
         // gap between the convex hull and the domain); the region also
         // selects the local size target.
-        let centroid: [f64; 3] = std::array::from_fn(|k| {
-            0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k])
-        });
-        let region = region_ids
-            .iter()
-            .copied()
-            .find(|rid| point_inside_solid(&Point3::Explicit(centroid), &region_bounds[rid], bbox));
-        let Some(region) = region else {
+        let region = tet_region[ti];
+        if region == 0 {
             continue;
-        };
+        }
         let h = h_of_region(region);
         let oversized = h.is_finite() && lmax2 > h * h;
         // Quality splits stop once the local mesh is at (or below) target
@@ -1050,8 +1081,11 @@ fn refine_step(
                 continue;
             }
         }
+        // Batch spacing scales with the LOCAL TARGET SIZE: an insertion
+        // fixes its whole neighborhood, so stale-DT candidates closer than
+        // about half the target are redundant and would over-refine.
         let spacing = if h.is_finite() {
-            (0.5 * lmin2.sqrt()).max(0.2 * h)
+            (0.5 * lmin2.sqrt()).max(0.5 * h)
         } else {
             0.5 * lmin2.sqrt()
         };
@@ -1100,7 +1134,7 @@ fn refine_step(
         }};
     }
     for (cc, _r, spacing, longest) in candidates {
-        if n >= 32 {
+        if n >= 512 {
             break;
         }
         if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
@@ -1133,19 +1167,10 @@ fn refine_step(
                 break 'attempt;
             }
             // Encroached patch tile: insert that tile's circumcenter instead.
-            let mut tile_hit: Option<(usize, [f64; 3])> = None;
-            'tiles: for (pi, tiles) in tilings.iter().enumerate() {
-                for f in tiles {
-                    if let Some((tc, tr)) =
-                        tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
-                    {
-                        if dist2(cc, tc) < tr * tr {
-                            tile_hit = Some((pi, tc));
-                            break 'tiles;
-                        }
-                    }
-                }
-            }
+            let tile_hit: Option<(usize, [f64; 3])> = tile_balls
+                .iter()
+                .find(|&&(tc, tr, _)| dist2(cc, tc) < tr * tr)
+                .map(|&(tc, _, pi)| (pi, tc));
             if let Some((pi, tc)) = tile_hit {
                 if quality_only {
                     break 'attempt; // no boundary interaction for quality steps
@@ -1179,12 +1204,12 @@ fn refine_step(
                 placed.push(tc);
                 break 'attempt;
             }
-            // Free interior point: must lie inside some region.
-            if point_index.contains_key(&cc.map(f64::to_bits))
-                || !region_ids.iter().any(|rid| {
-                    point_inside_solid(&Point3::Explicit(cc), &region_bounds[rid], bbox)
-                })
-            {
+            // Free interior point. No inside-the-domain test needed: the
+            // boundary is tiled by Delaunay faces, so a circumcenter that
+            // left its tet's region would encroach the diametral ball of a
+            // tile it crossed (Shewchuk's containment argument) and was
+            // redirected above.
+            if point_index.contains_key(&cc.map(f64::to_bits)) {
                 break 'attempt;
             }
             let g = points.len();

@@ -77,7 +77,7 @@ pub struct DelaunayBuilder {
     /// Boundary faces as (cavity tet, face index).
     boundary: Vec<(u32, u8)>,
     /// Edge -> (new tet, face slot) for wiring new tets to each other.
-    edge_map: std::collections::HashMap<(u32, u32), (u32, u8)>,
+    edge_map: rustc_hash::FxHashMap<(u32, u32), (u32, u8)>,
     new_tets: Vec<u32>,
 }
 
@@ -110,7 +110,7 @@ impl DelaunayBuilder {
             epoch: 0,
             cavity: Vec::new(),
             boundary: Vec::new(),
-            edge_map: std::collections::HashMap::new(),
+            edge_map: rustc_hash::FxHashMap::default(),
             new_tets: Vec::new(),
         }
     }

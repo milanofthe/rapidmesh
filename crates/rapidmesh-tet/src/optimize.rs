@@ -10,12 +10,12 @@
 //! can only improve the mesh and terminates when nothing improves.
 
 use crate::conform::{tet_min_dihedral_deg, TetMesh};
-use rapidmesh_exact::{orient2d, Axis, Point3, Sign};
+use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
 use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
-type DState = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+type DState = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
 
@@ -571,17 +571,13 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
         verts.sort_unstable();
         for v in verts {
             let vfs = &vertex_faces[&v];
-            // Free in-surface: all incident faces in ONE group (plane patch
-            // or curved analytic surface), and every incident surface edge
-            // interior to the complex (2 faces); rim and crease vertices
-            // stay fixed.
             let group = face_group(mesh, vfs[0]);
-            if vfs.iter().any(|&fi| face_group(mesh, fi) != group) {
-                continue;
-            }
-            let kind = mesh.surfaces[mesh.faces[vfs[0]].surface as usize].clone();
+            let single_group = vfs.iter().all(|&fi| face_group(mesh, fi) == group);
+            // Surface neighbors of v, and its FEATURE edges: surface edges
+            // not interior to one smooth group (sheet rims, creases between
+            // patches). Feature edges are the mesh's 1D constraints.
             let mut nbrs: Vec<usize> = Vec::new();
-            let mut rim = false;
+            let mut feature_nbrs: Vec<usize> = Vec::new();
             for &fi in vfs {
                 let tri = mesh.faces[fi].tri;
                 for e in 0..3 {
@@ -591,38 +587,62 @@ fn surface_pass(mesh: &mut TetMesh) -> usize {
                     }
                     let w = if x == v { y } else { x };
                     nbrs.push(w);
-                    if edge_faces[&(x.min(y), x.max(y))].len() != 2 {
-                        rim = true;
+                    let efs = &edge_faces[&(x.min(y), x.max(y))];
+                    if efs.len() != 2 || face_group(mesh, efs[0]) != face_group(mesh, efs[1]) {
+                        feature_nbrs.push(w);
                     }
                 }
             }
-            if rim || nbrs.is_empty() {
-                continue;
-            }
             nbrs.sort_unstable();
             nbrs.dedup();
-            // Laplacian over the surface neighbors, projected back onto the
-            // patch plane through the current position.
-            let n = face_normal(&mesh.points, mesh.faces[vfs[0]].tri);
-            let mut avg = [0.0f64; 3];
-            for &w in &nbrs {
-                for (k, acc) in avg.iter_mut().enumerate() {
-                    *acc += mesh.points[w][k];
-                }
-            }
-            for acc in &mut avg {
-                *acc /= nbrs.len() as f64;
+            feature_nbrs.sort_unstable();
+            feature_nbrs.dedup();
+            if nbrs.is_empty() {
+                continue;
             }
             let cur = mesh.points[v];
-            // Plane groups project the Laplacian back into the plane; curved
-            // groups project it onto the analytic surface, which both keeps
-            // the vertex on the geometry and IMPROVES boundary fidelity.
-            let target: [f64; 3] = match kind {
-                SurfaceKind::Plane => {
-                    let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
-                    std::array::from_fn(|k| avg[k] - off * n[k])
+            let target: [f64; 3] = if feature_nbrs.is_empty() && single_group {
+                // Free in-surface vertex: Laplacian over the surface
+                // neighbors. Plane groups project it back into the plane;
+                // curved groups project it onto the analytic surface, which
+                // both keeps the vertex on the geometry and IMPROVES
+                // boundary fidelity.
+                let kind = mesh.surfaces[mesh.faces[vfs[0]].surface as usize].clone();
+                let n = face_normal(&mesh.points, mesh.faces[vfs[0]].tri);
+                let mut avg = [0.0f64; 3];
+                for &w in &nbrs {
+                    for (k, acc) in avg.iter_mut().enumerate() {
+                        *acc += mesh.points[w][k];
+                    }
                 }
-                ref curved => project_to_surface(curved, avg),
+                for acc in &mut avg {
+                    *acc /= nbrs.len() as f64;
+                }
+                match kind {
+                    SurfaceKind::Plane => {
+                        let off: f64 = (0..3).map(|k| n[k] * (avg[k] - cur[k])).sum();
+                        std::array::from_fn(|k| avg[k] - off * n[k])
+                    }
+                    ref curved => project_to_surface(curved, avg),
+                }
+            } else if feature_nbrs.len() == 2 {
+                // Feature vertex with exactly two feature edges that are
+                // exactly collinear: the feature is straight here, so the
+                // vertex may SLIDE along it (1D Laplacian: the midpoint of
+                // its feature neighbors). Bent features must keep their
+                // corner; sliding would change the patch geometry and the
+                // region volumes. Coordinates shared by both neighbors are
+                // preserved bit-exactly, so axis-aligned creases stay
+                // exactly on their line and in their patches' planes.
+                let (u, w) = (feature_nbrs[0], feature_nbrs[1]);
+                let pe = |i: usize| Point3::Explicit(mesh.points[i]);
+                if collinear(&pe(u), &pe(v), &pe(w)) != Some(true) {
+                    continue;
+                }
+                std::array::from_fn(|k| 0.5 * (mesh.points[u][k] + mesh.points[w][k]))
+            } else {
+                // Corner and junction vertices are pinned.
+                continue;
             };
             // Fold-over guard data: normals before the move, per face.
             let old_normals: Vec<[f64; 3]> = vfs

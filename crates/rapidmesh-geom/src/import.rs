@@ -226,6 +226,47 @@ pub fn import_obj(path: &Path) -> Result<Faceted, ImportError> {
 
 // ---------------------------------------------------------- validation
 
+/// Smallest triangle height (altitude) of the shape relative to its
+/// bounding-box diagonal. Near-degenerate facets put neighboring facet
+/// planes within float rounding of each other, which exact conforming
+/// meshing cannot tile; inputs below roughly `1e-3` need mesh repair and
+/// should be screened before meshing.
+pub fn min_height_ratio(f: &Faceted) -> f64 {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    let mut min_h = f64::MAX;
+    for t in &f.tris {
+        for v in &t.v {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        let [a, b, c] = t.v;
+        let u: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
+        let w: [f64; 3] = std::array::from_fn(|k| c[k] - a[k]);
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let area2 = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let e = |p: [f64; 3], q: [f64; 3]| -> f64 {
+            (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt()
+        };
+        let lmax = e(a, b).max(e(b, c)).max(e(c, a));
+        if lmax > 0.0 {
+            min_h = min_h.min(area2 / lmax);
+        }
+    }
+    let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
+    if diag > 0.0 {
+        min_h / diag
+    } else {
+        0.0
+    }
+}
+
 /// Checks the closed-solid invariant [`crate::Scene::add_solid`] requires:
 /// after welding bit-identical vertices, every undirected edge must be shared
 /// by exactly two facets with opposite directions (watertight, consistently

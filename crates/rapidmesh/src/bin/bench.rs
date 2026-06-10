@@ -6,7 +6,7 @@
 
 use rapidmesh::export::{write_manifest, write_mesh_json, write_plc_json};
 use rapidmesh::scenes::comparison_scenes;
-use rapidmesh_geom::{import_obj, import_stl, validate_closed, Scene, TaggedPlc};
+use rapidmesh_geom::{import_obj, import_stl, min_height_ratio, validate_closed, Scene, TaggedPlc};
 use rapidmesh_tet::{mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,11 @@ use std::time::Instant;
 /// Viewer JSONs above this tet count are skipped (the canvas viewer is not
 /// built for multi-hundred-MB payloads).
 const VIEWER_TET_LIMIT: usize = 300_000;
+
+/// Models whose smallest facet height (relative to the bounding-box
+/// diagonal) is below this need mesh repair (near-degenerate facets defeat
+/// exact conforming meshing) and are skipped.
+const MIN_FACET_HEIGHT_REL: f64 = 5e-4;
 
 #[derive(Serialize)]
 struct BenchRecord {
@@ -153,6 +158,11 @@ fn main() {
         };
         if let Err(e) = validate_closed(&faceted) {
             println!("  SKIP ({e})");
+            continue;
+        }
+        let hr = min_height_ratio(&faceted);
+        if hr < MIN_FACET_HEIGHT_REL {
+            println!("  SKIP (needs mesh repair: min facet height {hr:.1e} of bbox diagonal)");
             continue;
         }
         let n_input = faceted.tris.len();

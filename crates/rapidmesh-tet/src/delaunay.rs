@@ -70,6 +70,9 @@ fn face(t: [u32; 4], i: usize) -> [u32; 3] {
 /// Incremental Delaunay tetrahedralization. Internal indices 0..4 are the
 /// super-tet corners; public indices count inserted points from 0.
 pub struct DelaunayBuilder {
+    /// The super-tet interior: per-axis lower bounds and the upper bound on
+    /// the coordinate sum (the four face planes of the super-tet).
+    domain: ([f64; 3], f64),
     pts: Vec<[f64; 3]>,
     tets: Vec<[u32; 4]>,
     /// neighbors[t][i] = tet across the face opposite vertex i (NONE at the
@@ -114,6 +117,10 @@ impl DelaunayBuilder {
         }
         debug_assert_eq!(orient(&pts, seed[0], seed[1], seed[2], seed[3]), Sign::Positive);
         DelaunayBuilder {
+            domain: (
+                std::array::from_fn(|k| c[k] - big),
+                c[0] + c[1] + c[2] + big,
+            ),
             pts,
             tets: vec![seed],
             neighbors: vec![[NONE; 4]],
@@ -241,6 +248,13 @@ impl DelaunayBuilder {
         min_dist2: f64,
         mut keep: impl FnMut(Removal) -> bool,
     ) -> Option<usize> {
+        // Circumcenters of near-degenerate tets can land anywhere, including
+        // outside the super-tet; a guarded insert simply declines those.
+        if (0..3).any(|k| point[k] <= self.domain.0[k])
+            || point[0] + point[1] + point[2] >= self.domain.1
+        {
+            return None;
+        }
         let p = self.pts.len() as u32;
         self.pts.push(point);
         self.compute_cavity(p);

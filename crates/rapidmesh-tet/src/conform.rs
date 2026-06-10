@@ -392,6 +392,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     let mut round = 0;
     let mut refine_round = 0;
+    // Patches whose tiling repair stagnated (see the stagnation guard).
+    let mut abandoned: DSet<usize> = DSet::default();
+    let mut patch_progress: DMap<usize, (f64, usize)> = DMap::default();
     let mut tried: DSet<[usize; 4]> = DSet::default();
     #[allow(clippy::type_complexity)]
     let (tets, patch_faces, tet_region): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>, Vec<u32>) = 'outer: loop {
@@ -508,11 +511,37 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         let mut deficits: Vec<usize> = Vec::new();
         for (pi, patch) in patches.iter().enumerate() {
+            if abandoned.contains(&pi) {
+                continue;
+            }
             let want = patch.area2.approx().abs();
             if (tile_area[pi] - want).abs() > 1e-9 * want {
                 deficits.push(pi);
             }
         }
+        // Stagnation guard: a deficit that repair points stop improving is
+        // structurally stuck (near-degenerate input facets whose neighbor
+        // planes are within float rounding: off-plane Steiner points of the
+        // neighbor block exact in-plane tiles forever). Give the patch up
+        // and keep its partial tiling instead of looping; such inputs need
+        // mesh repair, which is out of scope for a PLC mesher.
+        for &pi in &deficits {
+            let want = patches[pi].area2.approx().abs();
+            let e = patch_progress.entry(pi).or_insert((f64::MIN, 0usize));
+            if tile_area[pi] > e.0 + 1e-6 * want {
+                *e = (tile_area[pi], 0);
+            } else {
+                e.1 += 1;
+                if e.1 >= 10 {
+                    eprintln!(
+                        "rapidmesh: giving up on patch {pi} tiling ({:.1}% area uncovered); input likely needs mesh repair",
+                        100.0 * (want - tile_area[pi]) / want
+                    );
+                    abandoned.insert(pi);
+                }
+            }
+        }
+        deficits.retain(|pi| !abandoned.contains(pi));
         if deficits.is_empty() {
             // Conforming. Classify every tet ONCE per round (flood fill;
             // the per-candidate ray casting it replaces dominated
@@ -563,6 +592,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         if trace {
             eprintln!("round {round}: {} patches with tiling deficit", deficits.len());
+            for &pi in deficits.iter().take(8) {
+                let want = patches[pi].area2.approx().abs();
+                eprintln!(
+                    "  patch {pi}: rel deficit {:.3e} ({} tiles)",
+                    (tile_area[pi] - want) / want,
+                    all_tilings[pi].len()
+                );
+            }
         }
 
         // 3. Repair: Steiner points where tet edges pierce a deficient

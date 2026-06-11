@@ -18,7 +18,10 @@ pub mod conform;
 pub mod delaunay;
 pub mod optimize;
 
-pub use cdt::{acute_vertices, recover_segments, RecoveredSegment};
+pub use cdt::{
+    acute_vertices, recover_faces, recover_plc, recover_segments, resume_segments, FacetRef,
+    SegmentChains,
+};
 pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, TetMesh};
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};

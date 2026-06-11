@@ -67,14 +67,14 @@ fn check_recovery(plc: &TaggedPlc) -> (usize, usize) {
     let segments = unique_edges(plc);
     let acute = acute_vertices(&plc.vertices, &segments);
     let recovered = recover_segments(&mut b, &segments, &acute);
-    assert_eq!(recovered.len(), segments.len());
+    assert_eq!(recovered.segment_count(), segments.len());
 
     let mut steiner = 0;
-    for (k, rs) in recovered.iter().enumerate() {
-        let (sa, sb) = segments[k];
-        assert_eq!(rs.chain[0], sa, "segment {k} chain must start at v1");
-        assert_eq!(*rs.chain.last().expect("chain non-empty"), sb);
-        for w in rs.chain.windows(2) {
+    for (k, &(sa, sb)) in segments.iter().enumerate() {
+        let chain = recovered.chain(k);
+        assert_eq!(chain[0], sa, "segment {k} chain must start at v1");
+        assert_eq!(*chain.last().expect("chain non-empty"), sb);
+        for w in chain.windows(2) {
             assert!(
                 b.edge_exists(w[0], w[1]),
                 "piece ({}, {}) of segment {k} is not a DT edge",
@@ -86,7 +86,7 @@ fn check_recovery(plc: &TaggedPlc) -> (usize, usize) {
         let pb = Point3::Explicit(plc.vertices[sb]);
         let (w1, w2) = line_witnesses(plc.vertices[sa], plc.vertices[sb]);
         let (w1, w2) = (Point3::Explicit(w1), Point3::Explicit(w2));
-        for &v in &rs.chain[1..rs.chain.len() - 1] {
+        for &v in &chain[1..chain.len() - 1] {
             let p = b.exact_point(v);
             if !matches!(p, Point3::Lnc { .. }) {
                 continue; // adopted T-junction vertex, on the line only in f64

@@ -701,11 +701,25 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             creases.iter().flat_map(|&(a, b)| [a, b]).collect();
         let mut dt_edges: DSet<(usize, usize)> = DSet::default();
         let mut dt_faces: DMap<[usize; 3], Vec<u32>> = DMap::default();
+        // DT neighbors of crease endpoints, for the on-segment adoption in
+        // the missing-crease split below: a foreign point sitting ON the
+        // crease segment is connected to its endpoints in the DT.
+        let mut endpoint_nbrs: DMap<usize, Vec<usize>> = DMap::default();
         for (ti, t) in dt_tets.iter().enumerate() {
             for i in 0..4 {
                 for j in i + 1..4 {
-                    if crease_endpoint.contains(&t[i]) && crease_endpoint.contains(&t[j]) {
+                    let (ci, cj) = (
+                        crease_endpoint.contains(&t[i]),
+                        crease_endpoint.contains(&t[j]),
+                    );
+                    if ci && cj {
                         dt_edges.insert(sorted2(t[i], t[j]));
+                    }
+                    if ci {
+                        endpoint_nbrs.entry(t[i]).or_default().push(t[j]);
+                    }
+                    if cj {
+                        endpoint_nbrs.entry(t[j]).or_default().push(t[i]);
                     }
                 }
                 dt_faces
@@ -716,6 +730,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
 
         let t_scan = t_round.elapsed();
+        let scale = (0..3).map(|k| bhi[k] - blo[k]).fold(1.0_f64, f64::max);
         // 1. Missing crease sub-edges: midpoint split.
         let missing: Vec<(usize, usize)> = creases
             .iter()
@@ -776,29 +791,74 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     }
                 }
             }
+            let mut n_adopted = 0usize;
             for (a, b) in missing {
-                let m: [f64; 3] = std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
-                // A vertex may already sit exactly at the midpoint (e.g. a
-                // piercing Steiner point from a symmetric tet edge): reuse
-                // it as the chain split point instead of duplicating.
-                let g = match point_index.get(&m.map(|x| (x + 0.0).to_bits())) {
-                    Some(&g) => g,
-                    None => {
-                        let g = points.len();
-                        points.push(m);
-                        point_h.push(child_h(
-                            m,
-                            &[a, b],
-                            &points,
-                            point_h,
-                            params.grading,
-                            f64::INFINITY,
-                    &params.size_points,
-                ));
-                        builder.insert(m);
-                        point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
-                        on_patch.push(DSet::default());
-                        g
+                // A FOREIGN point already sitting on the open segment (a
+                // stray Steiner landing on the line within snap tolerance)
+                // makes every midpoint descendant miss again: the splits
+                // cascade toward that point forever, halving lengths (the
+                // patch-antenna PML triple-edge runaway). Adopt it as the
+                // chain split point instead of splitting blind.
+                let seg_tol = 1e-9 * scale;
+                let on_segment = |x: usize| -> bool {
+                    if x == a || x == b {
+                        return false;
+                    }
+                    let d: [f64; 3] =
+                        std::array::from_fn(|k| points[b][k] - points[a][k]);
+                    let w: [f64; 3] =
+                        std::array::from_fn(|k| points[x][k] - points[a][k]);
+                    let dd: f64 = d.iter().map(|v| v * v).sum();
+                    if dd == 0.0 {
+                        return false;
+                    }
+                    let t = (0..3).map(|k| w[k] * d[k]).sum::<f64>() / dd;
+                    if !(1e-6..=1.0 - 1e-6).contains(&t) {
+                        return false;
+                    }
+                    let off: f64 = (0..3)
+                        .map(|k| (w[k] - t * d[k]).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    off < seg_tol
+                };
+                let adopted = endpoint_nbrs
+                    .get(&a)
+                    .into_iter()
+                    .chain(endpoint_nbrs.get(&b))
+                    .flatten()
+                    .copied()
+                    .find(|&x| on_segment(x));
+
+                let g = if let Some(x) = adopted {
+                    n_adopted += 1;
+                    x
+                } else {
+                    let m: [f64; 3] =
+                        std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+                    // A vertex may already sit exactly at the midpoint (e.g.
+                    // a piercing Steiner point from a symmetric tet edge):
+                    // reuse it as the chain split point instead of
+                    // duplicating.
+                    match point_index.get(&m.map(|x| (x + 0.0).to_bits())) {
+                        Some(&g) => g,
+                        None => {
+                            let g = points.len();
+                            points.push(m);
+                            point_h.push(child_h(
+                                m,
+                                &[a, b],
+                                &points,
+                                point_h,
+                                params.grading,
+                                f64::INFINITY,
+                                &params.size_points,
+                            ));
+                            builder.insert(m);
+                            point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
+                            on_patch.push(DSet::default());
+                            g
+                        }
                     }
                 };
                 if g == a || g == b {
@@ -812,6 +872,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 creases.retain(|&e| e != (a, b));
                 push_crease_child(&mut creases, &mut crease_marks, sorted2(a, g), &marks);
                 push_crease_child(&mut creases, &mut crease_marks, sorted2(g, b), &marks);
+            }
+            if trace && n_adopted > 0 {
+                eprintln!("  adopted {n_adopted} on-segment strays as chain split points");
             }
             continue;
         }
@@ -833,7 +896,6 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let (a, b, c) = (points[f[0]], points[f[1]], points[f[2]]);
             ((b[u] - a[u]) * (c[v] - a[v]) - (b[v] - a[v]) * (c[u] - a[u])).abs()
         };
-        let scale = (0..3).map(|k| bhi[k] - blo[k]).fold(1.0_f64, f64::max);
         let mut all_tilings: Vec<Vec<[usize; 3]>>;
         let mut tile_area: Vec<f64>;
         // The tiling scan re-runs after adoptions (marks only grow, so this
@@ -998,12 +1060,16 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 on_patch[v].insert(pi);
             }
         }
+        let micro_floor = (MICRO_PATCH_REL * scale) * (MICRO_PATCH_REL * scale);
         let mut deficits: Vec<usize> = Vec::new();
         for (pi, patch) in patches.iter().enumerate() {
             if abandoned.contains(&pi) {
                 continue;
             }
             let want = patch.area2.approx().abs();
+            if want < micro_floor {
+                continue; // rounding sliver, see MICRO_PATCH_REL
+            }
             if (tile_area[pi] - want).abs() > 1e-9 * want {
                 deficits.push(pi);
             }
@@ -1833,6 +1899,14 @@ fn patch_inside_closed(
         )
     })
 }
+
+/// Patches whose exact area is below (this * scene scale)^2 are ROUNDING
+/// SLIVERS from f64 welding of coincident facets (sub-nanometre at metre
+/// scale, observed 4e-19 m^2 at PML corner triples). No Delaunay face can
+/// tile them, so holding them to the conformity gate spins the repair loop
+/// into a guaranteed giveup; they are simply not required to tile (their
+/// missing constraint is identical to the abandon that would follow).
+const MICRO_PATCH_REL: f64 = 1e-8;
 
 /// Sizing splits trigger above this multiple of the local target h. Splits
 /// roughly halve lengths, so triggering exactly at h lands edges at h/2 and

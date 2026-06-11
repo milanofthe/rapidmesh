@@ -549,9 +549,6 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     let mut round = 0;
     let mut refine_round = 0;
-    // Everything below this index existed before the previous refine step
-    // (drives the retry test for once-vetoed quality candidates).
-    let mut refine_seen_len = 0usize;
     // Patches whose tiling repair stagnated (see the stagnation guard).
     let mut abandoned: DSet<usize> = DSet::default();
     let mut patch_progress: DMap<usize, (f64, usize)> = DMap::default();
@@ -562,7 +559,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         assert!(round <= 16384, "boundary recovery did not converge");
 
         let t_round = std::time::Instant::now();
-        let dt_tets = builder.tets();
+        let slot_tets = builder.tets_with_slots();
+        let dt_tets: Vec<[usize; 4]> = slot_tets.iter().map(|&(_, t)| t).collect();
         // Convex-hull faces with the super corner on their far side: a
         // candidate tile with a single real owner compares against the
         // outside via this corner (see the tiling rule below).
@@ -892,15 +890,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
                 break 'outer (dt_tets, all_tilings, tet_region);
             }
-            let inserted = refine_step(
+            let inserted = refine_queue(
                 params,
                 &patches,
                 &patch_grids,
-                &dt_tets,
+                &slot_tets,
                 &all_tilings,
                 &tet_region,
                 &mut tried,
-                refine_seen_len,
                 &mut points,
                 point_h,
                 &mut builder,
@@ -909,7 +906,6 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 &mut creases,
                 &mut crease_marks,
             );
-            refine_seen_len = points.len();
             if trace && inserted > 0 {
                 eprintln!(
                     "refine round {refine_round}: inserted {inserted}, {} points, scan {:.1?} tile {:.1?} classify {:.1?} refine {:.1?}",
@@ -1317,6 +1313,9 @@ fn split_crease_midpoint(
         Some(&g) => g,
         None => {
             let g = points.len();
+            if std::env::var_os("RAPIDMESH_INS_TRACE").is_some() {
+                eprintln!("ins crease v{g} {m:?} (of {a},{b})");
+            }
             points.push(m);
             point_h.push(child_h(m, &[a, b], points, point_h, grading, f64::INFINITY));
             builder.insert(m);
@@ -1332,7 +1331,6 @@ fn split_crease_midpoint(
     true
 }
 
-/// One sizing/quality refinement step on a conforming state. Returns the
 /// Per-patch 2D index over member triangles (in the patch's projection
 /// axis): point-in-patch queries on large coplanar patches (tessellated flat
 /// CAD faces hold thousands of members) would otherwise scan every member
@@ -1539,20 +1537,33 @@ impl BallGrid {
     }
 }
 
-/// number of inserted points (0 = all targets met). Shewchuk phase order:
+/// Queue-driven sizing/quality refinement on a conforming state; returns
+/// the number of insertions (0 = all targets met). Shewchuk priority:
 /// oversized creases, then oversized patch tiles, then oversized or
 /// poor-quality tets (circumcenters, with encroachment redirected to the
 /// boundary).
+///
+/// Everything the criteria and guards need (per-tet regions, the live tile
+/// set, encroachment balls) is maintained INCREMENTALLY through each
+/// insertion's cavity deltas, so one call refines to a fixpoint. The
+/// caller's global rescans (tiling check, flood-fill classification) then
+/// run once per CALL as verification instead of once per insertion batch,
+/// which is what made surface models pay O(rounds * tets).
+fn ins_trace(path: &str, g: usize, pos: [f64; 3]) {
+    if std::env::var_os("RAPIDMESH_INS_TRACE").is_some() {
+        eprintln!("ins {path} v{g} {pos:?}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn refine_step(
+fn refine_queue(
     params: &MeshParams,
     patches: &[Patch],
     patch_grids: &[Tri2Grid],
-    dt_tets: &[[usize; 4]],
+    slot_tets: &[(u32, [usize; 4])],
     tilings: &[Vec<[usize; 3]>],
     tet_region: &[u32],
     tried: &mut DMap<[usize; 4], u8>,
-    new_since: usize,
     points: &mut Vec<[f64; 3]>,
     point_h: &mut Vec<f64>,
     builder: &mut DelaunayBuilder,
@@ -1561,6 +1572,7 @@ fn refine_step(
     creases: &mut Vec<(usize, usize)>,
     crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
 ) -> usize {
+    use std::collections::VecDeque;
     let sized = params.maxh.is_finite() || !params.region_maxh.is_empty();
     if !sized && params.radius_edge_bound.is_infinite() {
         return 0;
@@ -1586,60 +1598,37 @@ fn refine_step(
         (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
     };
 
-    // Phase 1: creases longer than maxh (disjoint midpoint splits batch
-    // safely).
-    if sized {
-        let crease_h = |key: &(usize, usize)| -> f64 {
-            crease_marks
-                .get(key)
-                .map(|marks| marks.iter().map(|&pi| patch_h[pi]).fold(f64::INFINITY, f64::min))
-                .unwrap_or(f64::INFINITY)
-        };
-        let long: Vec<(usize, usize)> = creases
-            .iter()
-            .copied()
-            .filter(|key| {
-                // Mean of the endpoint targets: an edge leaving a fine
-                // feature is allowed to GROW along the graded field; the
-                // min would clamp it to the fine size over its whole
-                // length.
-                let h = crease_h(key)
-                    .min(0.5 * (point_h[key.0] + point_h[key.1]));
-                h.is_finite()
-                    && dist2(points[key.0], points[key.1])
-                        > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h)
-            })
-            .collect();
-        if !long.is_empty() {
-            let mut n = 0;
-            for key in long {
-                if split_crease_midpoint(
-                    key,
-                    points,
-                    point_h,
-                    params.grading,
-                    builder,
-                    point_index,
-                    on_patch,
-                    creases,
-                    crease_marks,
-                ) {
-                    n += 1;
-                }
-            }
-            if n > 0 {
-                return n;
-            }
+    // ------------------------------------ incremental bookkeeping
+    // Region per builder slot, seeded from the caller's flood fill (which
+    // covers every alive all-real tet; super-touching slots stay 0 = the
+    // outside, which is exactly their region).
+    let mut region_by_slot: Vec<u32> = vec![0; builder.slot_count()];
+    for (&(slot, _), &r) in slot_tets.iter().zip(tet_region) {
+        region_by_slot[slot as usize] = r;
+    }
+    // The live tile set (face -> patch), seeded from the caller's tiling
+    // scan and the keep-set of every guarded insert.
+    let mut tile_map: DMap<[usize; 3], usize> = DMap::default();
+    for (pi, tiles) in tilings.iter().enumerate() {
+        for f in tiles {
+            tile_map.insert(sorted3(*f), pi);
         }
     }
 
+    // Work queues, seeded in deterministic Vec order; entries re-verify on
+    // pop (slots are reused, tiles retile, creases split).
+    let mut crease_q: VecDeque<(usize, usize)> = creases.iter().copied().collect();
+    let mut tile_q: VecDeque<[usize; 3]> = tilings
+        .iter()
+        .flat_map(|ts| ts.iter().map(|f| sorted3(*f)))
+        .collect();
+    let mut tet_q: VecDeque<(u32, [usize; 4])> = slot_tets.iter().copied().collect();
+
     // Encroachment helper: the crease sub-edge whose diametral ball contains
-    // x, if any. Grid-indexed over the creases at entry (linear scans are
-    // quadratic on surface models); creases split DURING this step are the
-    // small overlay tail of the vec, scanned linearly, and dead snapshot
-    // entries are filtered via crease_marks (the canonical live set). Vec
-    // order semantics (first live hit) are preserved: retain keeps survivor
-    // order and children append.
+    // x, if any. Grid-indexed over the creases at entry; creases split
+    // DURING the call are the overlay tail of the vec, scanned linearly, and
+    // dead snapshot entries are filtered via crease_marks (the canonical
+    // live set).
     let crease_snapshot: Vec<(usize, usize)> = creases.clone();
     let crease_grid = BallGrid::build(
         crease_snapshot
@@ -1669,104 +1658,9 @@ fn refine_step(
             })
     };
 
-    // Phase 2: oversized patch tiles. Batched: all oversized tile
-    // circumcenters in one step, thinned by a spacing guard (insertions
-    // computed against the stale DT are only redundant when they cluster,
-    // and clustered points would create short edges anyway).
-    if sized {
-        #[allow(clippy::type_complexity)]
-        let mut cands: Vec<([f64; 3], f64, usize, f64, [usize; 3])> = Vec::new();
-        for (pi, tiles) in tilings.iter().enumerate() {
-            for f in tiles {
-                let h_t = patch_h[pi]
-                    .min((point_h[f[0]] + point_h[f[1]] + point_h[f[2]]) / 3.0);
-                if !h_t.is_finite() {
-                    continue;
-                }
-                if let Some((cc, r)) = tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
-                {
-                    if r > 0.5 * OVERSIZE_FACTOR * h_t {
-                        cands.push((cc, r, pi, h_t, *f));
-                    }
-                }
-            }
-        }
-        cands.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let mut n = 0;
-        let mut placed: Vec<[f64; 3]> = Vec::new();
-        for (cc, _r, pi, h_t, f) in cands {
-            let spacing = 0.5 * h_t;
-            if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
-                continue;
-            }
-            if let Some(key) = encroached_crease(cc, points, creases, crease_marks) {
-                if split_crease_midpoint(
-                    key,
-                    points,
-                    point_h,
-                    params.grading,
-                    builder,
-                    point_index,
-                    on_patch,
-                    creases,
-                    crease_marks,
-                ) {
-                    n += 1;
-                    placed.push(cc);
-                }
-                continue;
-            }
-            if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
-                continue;
-            }
-            // A rim tile's circumcenter can land just OUTSIDE its patch
-            // (e.g. behind the neighboring barrel facet of a tessellated
-            // cylinder). Inserting it with this patch's mark poisons the
-            // neighbor's tiling bookkeeping (uncountable tiles, permanent
-            // deficit), so off-patch centers are skipped; the size target
-            // is still reached through phase 3's longest-edge fallback.
-            if !patch_inside_closed(&patch_grids[pi], &patches[pi], points, cc) {
-                continue;
-            }
-            let g = points.len();
-            points.push(cc);
-            point_h.push(child_h(cc, &f, points, point_h, params.grading, patch_h[pi]));
-            builder.insert(cc);
-            point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
-            let mut marks = DSet::default();
-            marks.insert(pi);
-            on_patch.push(marks);
-            n += 1;
-            placed.push(cc);
-        }
-        if n > 0 {
-            return n;
-        }
-    }
-
-    // Phase 3: tets, oversized or poor radius-edge quality. Insert
-    // circumcenters unless they encroach the boundary (then split that
-    // instead). Batched with a spacing guard against near-duplicate
-    // circumcenters from neighboring tets.
-    // Constraint sets for guarded quality insertions: a quality insertion
-    // must never remove a recovered tile face or crease edge (otherwise
-    // recovery re-splits the boundary ever finer and refinement spirals,
-    // which is what made organic surface imports non-terminating).
-    let crease_set: DSet<(usize, usize)> = creases
-        .iter()
-        .map(|&(a, b)| (a.min(b), a.max(b)))
-        .collect();
-    let tile_set: DSet<[usize; 3]> = tilings
-        .iter()
-        .flatten()
-        .map(|f| {
-            let mut t = *f;
-            t.sort_unstable();
-            t
-        })
-        .collect();
-    // Tile circumcircles, precomputed once for the per-candidate
-    // encroachment checks.
+    // Tile circumballs for circumcenter redirection: a snapshot grid plus a
+    // linearly scanned overlay of tiles created during the call; both are
+    // live-checked against tile_map.
     let mut tile_balls: Vec<([f64; 3], usize, [usize; 3])> = Vec::new();
     let mut tile_ball_geo: Vec<([f64; 3], f64)> = Vec::new();
     for (pi, tiles) in tilings.iter().enumerate() {
@@ -1778,164 +1672,102 @@ fn refine_step(
         }
     }
     let tile_grid = BallGrid::build(tile_ball_geo);
-    // (cc+circumradius if usable, spacing, lmin2, tet verts, longest edge
-    // if oversized)
-    #[allow(clippy::type_complexity)]
-    let mut candidates: Vec<(
-        Option<([f64; 3], f64)>,
-        f64,
-        f64,
-        [usize; 4],
-        Option<(usize, usize)>,
-    )> = Vec::new();
-    for (ti, t) in dt_tets.iter().enumerate() {
-        // Region first: it caps every edge target (inherited growth must
-        // not undercut the region's own h INSIDE a fine region).
-        let region = tet_region[ti];
-        if region == 0 {
-            continue;
+    let mut tile_overlay: Vec<([f64; 3], f64, usize, [usize; 3])> = Vec::new();
+    let encroached_tile = |x: [f64; 3],
+                           tile_map: &DMap<[usize; 3], usize>,
+                           overlay: &[([f64; 3], f64, usize, [usize; 3])]|
+     -> Option<(usize, [f64; 3], [usize; 3])> {
+        if let Some(i) = tile_grid.first_containing(x, |i| {
+            let (_, pi, f) = tile_balls[i];
+            tile_map.get(&sorted3(f)) == Some(&pi)
+        }) {
+            let (tc, pi, f) = tile_balls[i];
+            return Some((pi, tc, f));
         }
-        let h_region = h_of_region(region);
-        let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[t[k]]);
-        let mut lmin2 = f64::MAX;
-        let mut lmax2 = 0.0_f64;
-        let mut longest = (t[0], t[1]);
-        // Worst sizing violation over the edges, each judged against the
-        // MEAN of its endpoint targets (edges leaving fine features may
-        // grow along the graded field; the min would clamp them fine).
-        let mut worst_ratio2 = 0.0_f64;
-        for i in 0..4 {
-            for j in i + 1..4 {
-                let d = dist2(p[i], p[j]);
-                lmin2 = lmin2.min(d);
-                lmax2 = lmax2.max(d);
-                let h_ij = h_region.min(0.5 * (point_h[t[i]] + point_h[t[j]]));
-                let ratio2 = if h_ij.is_finite() {
-                    d / (h_ij * h_ij)
-                } else {
-                    0.0
-                };
-                if ratio2 > worst_ratio2 {
-                    worst_ratio2 = ratio2;
-                    longest = (t[i], t[j]);
-                }
-            }
-        }
-        // Near-degenerate (sliver) tets have no usable circumcenter. Their
-        // QUALITY is the optimizer's job, but their oversized edges still
-        // violate sizing and must split: cc-less candidates skip straight
-        // to the longest-edge fallback (skipping them entirely let
-        // 1.5x-contract-breaking edges survive inside slivers).
-        let cc_r = tet_circumcenter(p);
-        let bad_quality = params.radius_edge_bound.is_finite()
-            && cc_r.is_some_and(|(_, r)| r > params.radius_edge_bound * lmin2.sqrt());
-        let maybe_oversized = sized && lmax2 > 0.0;
-        if !maybe_oversized && !bad_quality {
-            continue;
-        }
-        // Graded local target for the quality floor and the batch spacing:
-        // the region cap tightened by the tet-mean of the per-point field.
-        let h = h_region
-            .min((point_h[t[0]] + point_h[t[1]] + point_h[t[2]] + point_h[t[3]]) / 4.0);
-        let oversized = worst_ratio2 > OVERSIZE_FACTOR * OVERSIZE_FACTOR;
-        // Quality splits stop once the local mesh is at (or below) target
-        // size: boundary slivers have huge circumradii whose centers all
-        // land far away (e.g. a dense blob in a sphere's middle) and are the
-        // optimizer's job, not insertion's.
-        let quality_allowed = bad_quality
-            && (!h.is_finite() || lmin2.sqrt() > 0.2 * h);
-        if !oversized && !quality_allowed {
-            continue;
-        }
-        // Quality-only candidates need a usable circumcenter; degenerate
-        // oversized tets go straight to the longest-edge fallback.
-        if !oversized && cc_r.is_none() {
-            continue;
-        }
-        // Quality-only candidates do not blindly retry every round (most
-        // would re-run their veto verbatim), but they DO retry once their
-        // neighborhood changed: a point inserted since the last attempt
-        // within twice the circumradius of the candidate's center can change
-        // the insertion cavity and thus the verdict. (Spiraling through
-        // retries is structurally impossible since guarded insertion:
-        // a successful insert always destroys its candidate tet, and a veto
-        // inserts nothing.) Oversized tets must shrink, so they always
-        // retry.
-        if !oversized {
-            let mut key = *t;
-            key.sort_unstable();
-            let attempts = tried.entry(key).or_insert(0);
-            if *attempts > 0 {
-                // Retry only when the neighborhood changed, and only a few
-                // times: candidates with huge circumradii match every new
-                // point and would otherwise re-pay their (vetoed) insertion
-                // cavity every single round.
-                let (cc, r) = cc_r.expect("quality candidates carry a circumcenter");
-                let changed = *attempts <= QUALITY_RETRY_LIMIT
-                    && points[new_since.min(points.len())..]
-                        .iter()
-                        .any(|q| dist2(cc, *q) < 4.0 * r * r);
-                if !changed {
-                    continue;
-                }
-            }
-            *attempts = attempts.saturating_add(1);
-        }
-        // Batch spacing scales with the LOCAL TARGET SIZE: an insertion
-        // fixes its whole neighborhood, so stale-DT candidates closer than
-        // about half the target are redundant and would over-refine.
-        let spacing = if h.is_finite() {
-            (0.5 * lmin2.sqrt()).max(0.5 * h)
-        } else {
-            0.5 * lmin2.sqrt()
-        };
-        candidates.push((cc_r, spacing, lmin2, *t, oversized.then_some(longest)));
-    }
-    if std::env::var_os("RAPIDMESH_CAND_TRACE").is_some() && !candidates.is_empty() {
-        let mut ls: Vec<f64> = candidates.iter().map(|c| c.1).collect();
-        ls.sort_by(f64::total_cmp);
-        eprintln!(
-            "  cands {}: spacing min {:.2e} med {:.2e} max {:.2e}",
-            ls.len(),
-            ls[0],
-            ls[ls.len() / 2],
-            ls[ls.len() - 1]
-        );
-    }
-    candidates.sort_by(|a, b| {
-        let ra = a.0.map_or(f64::INFINITY, |(_, r)| r);
-        let rb = b.0.map_or(f64::INFINITY, |(_, r)| r);
-        rb.total_cmp(&ra)
-    });
+        overlay
+            .iter()
+            .find(|(tc, tr, pi, f)| {
+                dist2(x, *tc) < tr * tr && tile_map.get(&sorted3(*f)) == Some(pi)
+            })
+            .map(|&(tc, _, pi, f)| (pi, tc, f))
+    };
+
     let cand_trace = std::env::var_os("RAPIDMESH_CAND_TRACE").is_some();
-    let t_cands = std::time::Instant::now();
-    let n_cands = candidates.len();
+    if cand_trace {
+        let mut counts: DMap<u32, usize> = DMap::default();
+        for &(slot, _) in slot_tets {
+            *counts.entry(region_by_slot[slot as usize]).or_default() += 1;
+        }
+        let mut cv: Vec<(u32, usize)> = counts.into_iter().collect();
+        cv.sort_unstable();
+        eprintln!("  queue seed regions: {cv:?}");
+    }
+    let mut n = 0usize;
     let mut guarded_ok = 0usize;
     let mut guarded_veto = 0usize;
-    let mut t_guarded = std::time::Duration::ZERO;
-    let mut t_encroach = std::time::Duration::ZERO;
-    let mut n = 0;
-    let mut placed: Vec<[f64; 3]> = Vec::new();
+    let mut n_crease_size = 0usize;
+    let mut n_crease_redirect = 0usize;
+    let mut n_tile = 0usize;
+    let mut n_midpoint = 0usize;
+    let mut n_cc_quality = 0usize;
+    let mut n_cc_oversized = 0usize;
+
+    // Applies one successful insert's cavity deltas to the bookkeeping.
+    macro_rules! absorb {
+        ($p:expr) => {
+            absorb_insert_deltas(
+                builder,
+                $p,
+                points,
+                on_patch,
+                patches,
+                patch_grids,
+                &mut region_by_slot,
+                &mut tile_map,
+                &mut tet_q,
+                &mut tile_q,
+                &mut tile_overlay,
+            )
+        };
+    }
+    // Splits a crease sub-edge, absorbing the insert (if the midpoint was
+    // not an existing vertex) and enqueueing the children.
+    macro_rules! split_crease {
+        ($key:expr) => {{
+            let pts_before = points.len();
+            let creases_before = creases.len();
+            let ok = split_crease_midpoint(
+                $key,
+                points,
+                point_h,
+                params.grading,
+                builder,
+                point_index,
+                on_patch,
+                creases,
+                crease_marks,
+            );
+            if points.len() > pts_before {
+                absorb!(points.len() - 1);
+            }
+            let _ = creases_before;
+            for ci in creases.len().saturating_sub(2)..creases.len() {
+                crease_q.push_back(creases[ci]);
+            }
+            ok
+        }};
+    }
     // Longest-edge midpoint fallback for oversized tets whose circumcenter
-    // is rejected (outside the domain, duplicate): crease edges split their
-    // chain, surface edges inherit the shared patch marks, interior edges
-    // insert plainly.
+    // is rejected: crease edges split their chain, surface edges inherit the
+    // shared patch marks, interior edges insert guarded (an unguarded
+    // midpoint near the boundary can eat tiles whose replacement faces then
+    // route off-plane through the new point, holing the patch tiling).
     macro_rules! split_longest_edge {
         ($a:expr, $b:expr) => {{
             let (a, b) = ($a, $b);
             let key = (a.min(b), a.max(b));
             if crease_marks.contains_key(&key) {
-                if split_crease_midpoint(
-                    key,
-                    points,
-                    point_h,
-                    params.grading,
-                    builder,
-                    point_index,
-                    on_patch,
-                    creases,
-                    crease_marks,
-                ) {
+                if split_crease!(key) {
                     n += 1;
                 }
             } else {
@@ -1945,19 +1777,25 @@ fn refine_step(
                     .intersection(&on_patch[b])
                     .copied()
                     .collect();
-                if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
-                    // Unmarked midpoints are guarded like circumcenters: an
-                    // unguarded insert near the boundary can eat tiles (see
-                    // the guarded insert below) whose replacement faces then
-                    // route off-plane through the new point, holing the
-                    // patch tiling. On-patch midpoints retile their own
-                    // patch and insert plainly.
+                // Crease-encroachment redirect: a midpoint inside a crease
+                // sub-edge's diametral ball (e.g. the chord of two points ON
+                // the crease line) must split that crease instead -- a plain
+                // insert there knocks the chain edge out of the DT behind
+                // the bookkeeping's back.
+                if let Some(ck) = encroached_crease(m, points, creases, crease_marks) {
+                    if split_crease!(ck) {
+                        n += 1;
+                        n_crease_redirect += 1;
+                    }
+                } else if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
                     let admitted = if marks.is_empty() {
                         builder
                             .insert_guarded(m, 0.0, |rem| match rem {
-                                crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
+                                crate::delaunay::Removal::Face(f) => {
+                                    !tile_map.contains_key(&f)
+                                }
                                 crate::delaunay::Removal::Edge(a, b) => {
-                                    !crease_set.contains(&(a, b))
+                                    !crease_marks.contains_key(&(a, b))
                                 }
                             })
                             .is_some()
@@ -1967,6 +1805,14 @@ fn refine_step(
                     };
                     if admitted {
                         let g = points.len();
+                        if std::env::var_os("RAPIDMESH_INS_TRACE").is_some() {
+                            let ma: Vec<usize> = on_patch[a].iter().copied().collect();
+                            let mb: Vec<usize> = on_patch[b].iter().copied().collect();
+                            eprintln!(
+                                "ins midpoint v{g} {m:?} of v{a} {:?} {ma:?} / v{b} {:?} {mb:?}",
+                                points[a], points[b]
+                            );
+                        }
                         points.push(m);
                         let cap = marks
                             .iter()
@@ -1982,133 +1828,277 @@ fn refine_step(
                         ));
                         point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(marks);
+                        absorb!(g);
                         n += 1;
-                        placed.push(m);
+                        n_midpoint += 1;
                     }
                 }
             }
         }};
     }
-    for (cc_r, spacing, lmin2, tverts, longest) in candidates {
-        if n >= 512 {
+
+    // ------------------------------------ the queue loop
+    //
+    // Insertion budget per call: on a COARSE mesh, cavities are huge, plain
+    // on-constraint splits legitimately eat foreign tiles (the caller's
+    // recovery rounds repair them), and region inheritance degrades with
+    // every such breach -- so coarse calls return early for a fresh global
+    // verification + classification, exactly like the old round-based
+    // refinement. Once the mesh is dense, cavities are local, bookkeeping
+    // stays sound, and one call refines to the fixpoint.
+    let batch_cap = (slot_tets.len() / 4).max(512);
+    loop {
+        if n >= batch_cap {
             break;
         }
-        let Some((cc, _r)) = cc_r else {
-            // Degenerate oversized tet: split its longest edge directly.
-            if let Some((a, b)) = longest {
-                split_longest_edge!(a, b);
+        if points.len() >= params.max_points {
+            break;
+        }
+        // Priority 1: oversized creases.
+        if let Some(key) = crease_q.pop_front() {
+            let Some(marks) = crease_marks.get(&key) else {
+                continue;
+            };
+            if !sized {
+                continue;
             }
-            continue;
-        };
-        if placed.iter().any(|q| dist2(*q, cc) < spacing * spacing) {
+            // Mean of the endpoint targets: an edge leaving a fine feature
+            // is allowed to GROW along the graded field; the min would clamp
+            // it to the fine size over its whole length.
+            let ch = marks
+                .iter()
+                .map(|&pi| patch_h[pi])
+                .fold(f64::INFINITY, f64::min);
+            let h = ch.min(0.5 * (point_h[key.0] + point_h[key.1]));
+            if !(h.is_finite()
+                && dist2(points[key.0], points[key.1])
+                    > (OVERSIZE_FACTOR * h) * (OVERSIZE_FACTOR * h))
+            {
+                continue;
+            }
+            if split_crease!(key) {
+                n += 1;
+                n_crease_size += 1;
+            }
             continue;
         }
-        let before = n;
-        let quality_only = longest.is_none();
-        'attempt: {
-            if quality_only {
-                // Pure Delaunay-refinement step: only insert circumcenters
-                // that encroach nothing (boundary slivers are the optimize
-                // pass's job, not insertion's).
-                let te = std::time::Instant::now();
-                let hit = encroached_crease(cc, points, creases, crease_marks).is_some();
-                t_encroach += te.elapsed();
-                if hit {
-                    break 'attempt;
+        // Priority 2: oversized patch tiles.
+        if let Some(key) = tile_q.pop_front() {
+            let Some(&pi) = tile_map.get(&key) else {
+                continue;
+            };
+            if !sized {
+                continue;
+            }
+            let h_t = patch_h[pi]
+                .min((point_h[key[0]] + point_h[key[1]] + point_h[key[2]]) / 3.0);
+            if !h_t.is_finite() {
+                continue;
+            }
+            let Some((cc, r)) =
+                tri_circumcenter(points[key[0]], points[key[1]], points[key[2]])
+            else {
+                continue;
+            };
+            if r <= 0.5 * OVERSIZE_FACTOR * h_t {
+                continue;
+            }
+            if let Some(ck) = encroached_crease(cc, points, creases, crease_marks) {
+                if split_crease!(ck) {
+                    n += 1;
+                }
+                continue;
+            }
+            if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
+                continue;
+            }
+            // A rim tile's circumcenter can land just OUTSIDE its patch
+            // (e.g. behind the neighboring barrel facet of a tessellated
+            // cylinder). Inserting it with this patch's mark poisons the
+            // neighbor's tiling bookkeeping, so off-patch centers are
+            // skipped; the size target is still reached through the
+            // longest-edge fallback.
+            if !patch_inside_closed(&patch_grids[pi], &patches[pi], points, cc) {
+                continue;
+            }
+            let g = points.len();
+            ins_trace("tile", g, cc);
+            builder.insert(cc);
+            points.push(cc);
+            point_h.push(child_h(
+                cc,
+                &[key[0], key[1], key[2]],
+                points,
+                point_h,
+                params.grading,
+                patch_h[pi],
+            ));
+            point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
+            let mut marks = DSet::default();
+            marks.insert(pi);
+            on_patch.push(marks);
+            absorb!(g);
+            n += 1;
+            n_tile += 1;
+            continue;
+        }
+        // Priority 3: tets, oversized or poor radius-edge quality.
+        let Some((slot, tverts)) = tet_q.pop_front() else {
+            break;
+        };
+        if builder.tet_at(slot) != Some(tverts) {
+            continue;
+        }
+        // Region first: it caps every edge target (inherited growth must
+        // not undercut the region's own h INSIDE a fine region).
+        let region = region_by_slot[slot as usize];
+        if region == 0 {
+            continue;
+        }
+        let h_region = h_of_region(region);
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| points[tverts[k]]);
+        let mut lmin2 = f64::MAX;
+        let mut lmax2 = 0.0_f64;
+        let mut longest = (tverts[0], tverts[1]);
+        // Worst sizing violation over the edges, each judged against the
+        // MEAN of its endpoint targets (edges leaving fine features may
+        // grow along the graded field; the min would clamp them fine).
+        let mut worst_ratio2 = 0.0_f64;
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d = dist2(p[i], p[j]);
+                lmin2 = lmin2.min(d);
+                lmax2 = lmax2.max(d);
+                let h_ij = h_region.min(0.5 * (point_h[tverts[i]] + point_h[tverts[j]]));
+                let ratio2 = if h_ij.is_finite() { d / (h_ij * h_ij) } else { 0.0 };
+                if ratio2 > worst_ratio2 {
+                    worst_ratio2 = ratio2;
+                    longest = (tverts[i], tverts[j]);
                 }
             }
-            if let Some(key) = encroached_crease(cc, points, creases, crease_marks) {
-                if split_crease_midpoint(
-                    key,
-                    points,
-                    point_h,
-                    params.grading,
-                    builder,
-                    point_index,
-                    on_patch,
-                    creases,
-                    crease_marks,
-                ) {
+        }
+        // Near-degenerate (sliver) tets have no usable circumcenter. Their
+        // QUALITY is the optimizer's job, but their oversized edges still
+        // violate sizing and must split: cc-less candidates skip straight
+        // to the longest-edge fallback.
+        let cc_r = tet_circumcenter(p);
+        let bad_quality = params.radius_edge_bound.is_finite()
+            && cc_r.is_some_and(|(_, r)| r > params.radius_edge_bound * lmin2.sqrt());
+        let maybe_oversized = sized && lmax2 > 0.0;
+        if !maybe_oversized && !bad_quality {
+            continue;
+        }
+        // Graded local target for the quality floor: the region cap
+        // tightened by the tet-mean of the per-point field.
+        let h = h_region
+            .min((point_h[tverts[0]]
+                + point_h[tverts[1]]
+                + point_h[tverts[2]]
+                + point_h[tverts[3]])
+                / 4.0);
+        let oversized = worst_ratio2 > OVERSIZE_FACTOR * OVERSIZE_FACTOR;
+        // Quality splits stop once the local mesh is at (or below) target
+        // size: boundary slivers have huge circumradii whose centers all
+        // land far away and are the optimizer's job, not insertion's.
+        let quality_allowed = bad_quality && (!h.is_finite() || lmin2.sqrt() > 0.2 * h);
+        if !oversized && !quality_allowed {
+            continue;
+        }
+        if !oversized && cc_r.is_none() {
+            continue;
+        }
+        // A vetoed quality candidate is not retried on this queue pass (a
+        // veto changes nothing); it re-enters with the caller's next
+        // verification round, capped by QUALITY_RETRY_LIMIT.
+        let quality_only = !oversized;
+        if quality_only {
+            let mut tk = tverts;
+            tk.sort_unstable();
+            let attempts = tried.entry(tk).or_insert(0);
+            if *attempts > QUALITY_RETRY_LIMIT {
+                continue;
+            }
+            *attempts = attempts.saturating_add(1);
+        }
+        let before = n;
+        'attempt: {
+            let Some((cc, _r)) = cc_r else {
+                break 'attempt;
+            };
+            if let Some(ck) = encroached_crease(cc, points, creases, crease_marks) {
+                // Pure Delaunay quality steps never touch the boundary.
+                if !quality_only && split_crease!(ck) {
                     n += 1;
-                    placed.push(cc);
+                    n_crease_redirect += 1;
                 }
                 break 'attempt;
             }
-            // Encroached patch tile: insert that tile's circumcenter instead.
-            let tile_hit: Option<(usize, [f64; 3], [usize; 3])> = tile_grid
-                .first_containing(cc, |_| true)
-                .map(|i| (tile_balls[i].1, tile_balls[i].0, tile_balls[i].2));
-            if let Some((pi, tc, tile_f)) = tile_hit {
+            if let Some((pi, tc, tf)) = encroached_tile(cc, &tile_map, &tile_overlay) {
                 if quality_only {
-                    break 'attempt; // no boundary interaction for quality steps
+                    break 'attempt;
                 }
-                if let Some(key) = encroached_crease(tc, points, creases, crease_marks) {
-                    if split_crease_midpoint(
-                        key,
-                        points,
-                        point_h,
-                        params.grading,
-                        builder,
-                        point_index,
-                        on_patch,
-                        creases,
-                        crease_marks,
-                    ) {
+                if let Some(ck) = encroached_crease(tc, points, creases, crease_marks) {
+                    if split_crease!(ck) {
                         n += 1;
-                        placed.push(tc);
+                        n_crease_redirect += 1;
                     }
                     break 'attempt;
                 }
                 if point_index.contains_key(&tc.map(|x| (x + 0.0).to_bits())) {
                     break 'attempt;
                 }
+                if !patch_inside_closed(&patch_grids[pi], &patches[pi], points, tc) {
+                    break 'attempt;
+                }
                 let g = points.len();
+                ins_trace("redirect", g, tc);
+                builder.insert(tc);
                 points.push(tc);
                 point_h.push(child_h(
                     tc,
-                    &tile_f,
+                    &tf,
                     points,
                     point_h,
                     params.grading,
                     patch_h[pi],
                 ));
-                builder.insert(tc);
                 point_index.insert(tc.map(|x| (x + 0.0).to_bits()), g);
                 let mut marks = DSet::default();
                 marks.insert(pi);
                 on_patch.push(marks);
+                absorb!(g);
                 n += 1;
-                placed.push(tc);
                 break 'attempt;
             }
-            // Free interior point. No inside-the-domain test needed: the
-            // boundary is tiled by Delaunay faces, so a circumcenter that
-            // left its tet's region would encroach the diametral ball of a
-            // tile it crossed (Shewchuk's containment argument) and was
-            // redirected above.
             if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
                 break 'attempt;
             }
             // Guarded for quality AND size splits: an interior point must
-            // never remove a constraint (see crease_set above) — an
-            // unguarded oversized-tet circumcenter near the boundary can eat
-            // tiles whose replacement faces then route off-plane through the
-            // new point, leaving an unreparable hole in the patch tiling.
-            // The min-dist floor additionally rejects numerically corrupted
-            // circumcenters of near-degenerate tets (an exact circumcenter
-            // lands at distance >= the shortest edge).
-            let tg = std::time::Instant::now();
-            let admitted = builder.insert_guarded(cc, lmin2, |rem| match rem {
-                crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
-                crate::delaunay::Removal::Edge(a, b) => !crease_set.contains(&(a, b)),
+            // never remove a constraint. The min-dist floor additionally
+            // rejects numerically corrupted circumcenters of near-degenerate
+            // tets: for QUALITY candidates an exact circumcenter lands at
+            // distance >= radius_edge_bound * lmin, so lmin is a safe floor;
+            // for well-shaped OVERSIZED tets the circumcenter sits at
+            // ~0.61 lmin (equilateral), so their floor must be lower or
+            // every healthy size split bails to the midpoint fallback,
+            // which over-refines by halving edges instead of centering.
+            let floor2 = if quality_only { lmin2 } else { 0.25 * lmin2 };
+            let admitted = builder.insert_guarded(cc, floor2, |rem| match rem {
+                crate::delaunay::Removal::Face(f) => !tile_map.contains_key(&f),
+                crate::delaunay::Removal::Edge(a, b) => !crease_marks.contains_key(&(a, b)),
             });
-            t_guarded += tg.elapsed();
             if admitted.is_none() {
                 guarded_veto += 1;
                 break 'attempt;
             }
             guarded_ok += 1;
+            if quality_only {
+                n_cc_quality += 1;
+            } else {
+                n_cc_oversized += 1;
+            }
             let g = points.len();
+            ins_trace("cc", g, cc);
             points.push(cc);
             point_h.push(child_h(
                 cc,
@@ -2120,30 +2110,168 @@ fn refine_step(
             ));
             point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
+            absorb!(g);
             n += 1;
-            placed.push(cc);
         }
         // No progress on an oversized tet via the circumcenter routes:
         // longest-edge midpoint fallback guarantees the size target.
-        if n == before {
-            if let Some((a, b)) = longest {
-                split_longest_edge!(a, b);
-            }
+        if oversized && n == before {
+            let (a, b) = longest;
+            split_longest_edge!(a, b);
         }
     }
-    if cand_trace && n_cands > 0 {
+    if cand_trace {
+        let mut counts: DMap<u32, usize> = DMap::default();
+        for (slot, &r) in region_by_slot.iter().enumerate() {
+            if builder.tet_at(slot as u32).is_some() {
+                *counts.entry(r).or_default() += 1;
+            }
+        }
+        let mut cv: Vec<(u32, usize)> = counts.into_iter().collect();
+        cv.sort_unstable();
+        eprintln!("  queue end regions: {cv:?}");
         use std::sync::atomic::Ordering;
         eprintln!(
-            "  phase3: {n_cands} cands, {guarded_ok} ok, {guarded_veto} veto (nn {}, keep {}), scans {}, insert loop {:.1?} (guarded {:.1?}, encroach {:.1?})",
+            "  queue: {n} inserts (crease {n_crease_size} + redirect {n_crease_redirect}, tile {n_tile}, cc {n_cc_oversized} size + {n_cc_quality} quality, midpoint {n_midpoint}), {guarded_veto} veto (nn {}, keep {}), scans {}, ok {guarded_ok}",
             crate::delaunay::GUARDED_NN_BAILS.swap(0, Ordering::Relaxed),
             crate::delaunay::GUARDED_KEEP_VETOES.swap(0, Ordering::Relaxed),
             crate::delaunay::LOCATE_SCANS.swap(0, Ordering::Relaxed),
-            t_cands.elapsed(),
-            t_guarded,
-            t_encroach
         );
     }
     n
+}
+
+/// Applies one successful insertion's cavity deltas to [`refine_queue`]'s
+/// incremental bookkeeping: created tets inherit the region of the removed
+/// tet behind their base face (the cone allocates before the cavity is
+/// retired, so parents stay readable; regions thereby split correctly across
+/// on-patch insertions), tiles swallowed by the cavity leave the live tile
+/// set, and the new local faces are (re)evaluated with the SAME
+/// marks+containment+side tile rule the global tiling scan uses.
+#[allow(clippy::too_many_arguments)]
+fn absorb_insert_deltas(
+    builder: &DelaunayBuilder,
+    p_idx: usize,
+    points: &[[f64; 3]],
+    on_patch: &[DSet<usize>],
+    patches: &[Patch],
+    patch_grids: &[Tri2Grid],
+    region_by_slot: &mut Vec<u32>,
+    tile_map: &mut DMap<[usize; 3], usize>,
+    tet_q: &mut std::collections::VecDeque<(u32, [usize; 4])>,
+    tile_q: &mut std::collections::VecDeque<[usize; 3]>,
+    tile_overlay: &mut Vec<([f64; 3], f64, usize, [usize; 3])>,
+) {
+    region_by_slot.resize(builder.slot_count(), 0);
+    let created: Vec<u32> = builder.last_created().to_vec();
+    let parents: Vec<u32> = builder.last_parents().collect();
+    for (i, &nt) in created.iter().enumerate() {
+        region_by_slot[nt as usize] = region_by_slot[parents[i] as usize];
+        if let Some(tv) = builder.tet_at(nt) {
+            tet_q.push_back((nt, tv));
+        }
+    }
+    // Faces that survived the cavity: the base faces of the cone.
+    let mut surviving: DSet<[usize; 3]> = DSet::default();
+    for &nt in &created {
+        if let Some(tv) = builder.tet_at(nt) {
+            let mut base = [0usize; 3];
+            let mut k = 0;
+            for &v in &tv {
+                if v != p_idx && k < 3 {
+                    base[k] = v;
+                    k += 1;
+                }
+            }
+            if k == 3 {
+                surviving.insert(sorted3(base));
+            }
+        }
+    }
+    // Tiles swallowed by the cavity (a removed super-corner tet still owns
+    // one all-real face, e.g. a hull tile).
+    for &rm in builder.last_removed() {
+        let vs = builder.verts_of_slot(rm);
+        for fi in TET_FACES {
+            let f = fi.map(|k| vs[k]);
+            let (Some(a), Some(b), Some(c)) = (f[0], f[1], f[2]) else {
+                continue;
+            };
+            let key = sorted3([a, b, c]);
+            if !surviving.contains(&key) {
+                tile_map.remove(&key);
+            }
+        }
+    }
+    // New and re-based local faces: evaluate tile candidacy.
+    let mut seen: DSet<[usize; 3]> = DSet::default();
+    for &nt in &created {
+        let Some(tv) = builder.tet_at(nt) else {
+            continue;
+        };
+        for (fi, fv) in TET_FACES.iter().enumerate() {
+            let f = fv.map(|k| tv[k]);
+            let key = sorted3(f);
+            if !seen.insert(key) {
+                continue;
+            }
+            let (s0, s1, s2) = (&on_patch[f[0]], &on_patch[f[1]], &on_patch[f[2]]);
+            let mut tiled: Option<usize> = None;
+            if !s0.is_empty() && !s1.is_empty() && !s2.is_empty() {
+                for &pi in s0 {
+                    if !s1.contains(&pi) || !s2.contains(&pi) {
+                        continue;
+                    }
+                    let patch = &patches[pi];
+                    let c: [f64; 3] = std::array::from_fn(|k| {
+                        (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
+                    });
+                    if !patch_inside_closed(&patch_grids[pi], patch, points, c) {
+                        continue;
+                    }
+                    // Side rule (see the global tiling scan): a true tile
+                    // separates the two sides of the patch.
+                    let s_a = tet_plane_side(patch, points, tv);
+                    let s_b = match builder.neighbor_at(nt, fi) {
+                        Some(nb) => match builder.tet_at(nb) {
+                            Some(tb) => tet_plane_side(patch, points, tb),
+                            None => match builder.super_corner(nb) {
+                                Some(sc) => plane_side(
+                                    patch,
+                                    points,
+                                    [points[f[0]], points[f[1]], points[f[2]], sc],
+                                ),
+                                None => s_a.flip(),
+                            },
+                        },
+                        None => s_a.flip(),
+                    };
+                    if s_a == s_b {
+                        continue;
+                    }
+                    tiled = Some(pi);
+                    break;
+                }
+            }
+            match (tiled, tile_map.get(&key).copied()) {
+                (Some(pi), prev) => {
+                    if prev != Some(pi) {
+                        tile_map.insert(key, pi);
+                    }
+                    tile_q.push_back(key);
+                    if let Some((tc, tr)) =
+                        tri_circumcenter(points[f[0]], points[f[1]], points[f[2]])
+                    {
+                        tile_overlay.push((tc, tr, pi, f));
+                    }
+                }
+                (None, Some(_)) => {
+                    tile_map.remove(&key);
+                }
+                (None, None) => {}
+            }
+        }
+    }
 }
 
 /// Quality summary of a tet mesh.

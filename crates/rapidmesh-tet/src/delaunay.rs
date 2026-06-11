@@ -485,6 +485,79 @@ impl DelaunayBuilder {
             .collect()
     }
 
+    /// Like [`DelaunayBuilder::tets`], but each tet paired with its stable
+    /// internal slot id (valid until the slot is freed by a later insert).
+    /// Slot-keyed bookkeeping lets callers track tets incrementally through
+    /// [`DelaunayBuilder::last_removed`] / [`DelaunayBuilder::last_created`].
+    pub fn tets_with_slots(&self) -> Vec<(u32, [usize; 4])> {
+        self.tets
+            .iter()
+            .enumerate()
+            .filter(|&(ti, t)| self.alive[ti] && t.iter().all(|&v| v >= 4))
+            .map(|(ti, t)| (ti as u32, std::array::from_fn(|k| (t[k] - 4) as usize)))
+            .collect()
+    }
+
+    /// Number of tet slots ever allocated (alive or free).
+    pub fn slot_count(&self) -> usize {
+        self.tets.len()
+    }
+
+    /// The tet in `slot` as public vertex indices, `None` if the slot is
+    /// dead or the tet touches a super corner.
+    pub fn tet_at(&self, slot: u32) -> Option<[usize; 4]> {
+        let t = self.tets[slot as usize];
+        if !self.alive[slot as usize] || t.iter().any(|&v| v < 4) {
+            return None;
+        }
+        Some(std::array::from_fn(|k| (t[k] - 4) as usize))
+    }
+
+    /// The tet slots the LAST successful insert removed (its cavity), valid
+    /// until the next insert. Vertex data of removed slots stays readable
+    /// via [`DelaunayBuilder::removed_verts`] until a later insert reuses
+    /// the slot.
+    pub fn last_removed(&self) -> &[u32] {
+        &self.cavity
+    }
+
+    /// The tet slots the LAST successful insert created, parallel to
+    /// [`DelaunayBuilder::last_parents`]: created tet i is the cone over
+    /// cavity-boundary face i and geometrically replaces (part of) that
+    /// face's removed owner.
+    pub fn last_created(&self) -> &[u32] {
+        &self.new_tets
+    }
+
+    /// For each created tet of the last insert, the REMOVED cavity slot it
+    /// was coned out of (the inside owner of its base face).
+    pub fn last_parents(&self) -> impl Iterator<Item = u32> + '_ {
+        self.boundary.iter().map(|&(ti, _)| ti)
+    }
+
+    /// Vertex indices of a (possibly dead) slot, `None` per vertex for super
+    /// corners. Used to identify constraint faces of removed tets (a removed
+    /// super-corner tet still owns one all-real face, e.g. a hull tile).
+    pub fn verts_of_slot(&self, slot: u32) -> [Option<usize>; 4] {
+        self.tets[slot as usize].map(|v| (v >= 4).then(|| (v - 4) as usize))
+    }
+
+    /// Position of the slot's single super corner, `None` for all-real tets
+    /// (tets with 2+ super corners never border an all-real face).
+    pub fn super_corner(&self, slot: u32) -> Option<[f64; 3]> {
+        let t = self.tets[slot as usize];
+        let supers: Vec<usize> = (0..4).filter(|&i| t[i] < 4).collect();
+        (supers.len() == 1).then(|| self.pts[t[supers[0]] as usize])
+    }
+
+    /// The neighbor slot across the face of `slot` opposite its vertex `i`
+    /// (`None` at the super-tet hull). Face vertices are the tet's other
+    /// three vertices.
+    pub fn neighbor_at(&self, slot: u32, i: usize) -> Option<u32> {
+        let nb = self.neighbors[slot as usize][i];
+        (nb != NONE).then_some(nb)
+    }
+
     /// The all-real faces of super-corner tets: the convex-hull boundary of
     /// the inserted points, each paired with the position of the super corner
     /// on its far side. A real face can border at most one super tet (the

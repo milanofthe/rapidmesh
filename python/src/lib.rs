@@ -383,6 +383,7 @@ impl PyMesh {
         d.set_item("min_dihedral_deg", self.min_dihedral_deg)?;
         d.set_item("max_radius_edge", self.max_radius_edge)?;
         d.set_item("max_edge", self.max_edge)?;
+        d.set_item("abandoned_patches", self.mesh.abandoned_patches.len())?;
         d.set_item("millis", self.millis)?;
         Ok(d)
     }

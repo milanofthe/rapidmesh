@@ -580,6 +580,85 @@ fn torus_meshes_exactly() {
     check_structure(&mesh);
 }
 
+/// Horn-antenna loft scene: a flat sliver tet landing ENTIRELY in a flank
+/// plane once double-counted the tiling (all four caps tile the same
+/// projected quad), the stagnation guard abandoned the patch and region
+/// classification leaked. Region volumes must match the PLC exactly.
+#[test]
+fn horn_loft_flat_tet_tiling() {
+    let mm = 1e-3;
+    let c0 = 299_792_458.0_f64;
+    let maxh = c0 / 11.0e9 / 8.0;
+    let maxh_air = c0 / 11.0e9 / 3.0;
+    let (wga, wgb) = (22.86 * mm, 10.16 * mm);
+    let (l_feed, l_horn) = (15.0 * mm, 50.0 * mm);
+    let (wh, hh) = (30.0 * mm, 22.0 * mm);
+    let (lpad_beam, lpad_side) = (88.0 * mm, 30.0 * mm);
+    let pml_t = 15.0 * mm;
+    let (x0, x1) = (-l_feed, l_horn + lpad_beam);
+    let (y0, y1) = (-wh / 2.0 - lpad_side, wh / 2.0 + lpad_side);
+    let (z0, z1) = (-hh / 2.0 - lpad_side, hh / 2.0 + lpad_side);
+    let mut scene = Scene::new();
+    let air = scene.add_solid(solid_box([x0, y0, z0], [x1, y1, z1]));
+    let pml = scene.add_solid(solid_box([x1, y0, z0], [x1 + pml_t, y1, z1]));
+    let feed = scene.add_solid(solid_box(
+        [-l_feed, -wga / 2.0, -wgb / 2.0],
+        [0.0, wga / 2.0, wgb / 2.0],
+    ));
+    let horn = scene.add_solid(rapidmesh_geom::loft(
+        &[
+            [0.0, -wga / 2.0, -wgb / 2.0],
+            [0.0, wga / 2.0, -wgb / 2.0],
+            [0.0, wga / 2.0, wgb / 2.0],
+            [0.0, -wga / 2.0, wgb / 2.0],
+        ],
+        &[
+            [l_horn, -wh / 2.0, -hh / 2.0],
+            [l_horn, wh / 2.0, -hh / 2.0],
+            [l_horn, wh / 2.0, hh / 2.0],
+            [l_horn, -wh / 2.0, hh / 2.0],
+        ],
+    ));
+    let plc = scene.assemble();
+    let params = MeshParams {
+        maxh: maxh_air,
+        region_maxh: vec![(pml.0, 2.0 * maxh), (feed.0, wgb / 3.0), (horn.0, maxh)],
+        ..MeshParams::default()
+    };
+    let mesh = mesh_plc_with(&plc, &params);
+    for r in [air, pml, feed, horn] {
+        let want = plc_region_volume6(&plc, r);
+        let have = mesh_region_volume6(&mesh, r);
+        let tol = want.clone() * rat(1e-9);
+        let diff = if have > want.clone() { have - want.clone() } else { want - have };
+        assert!(diff <= tol, "region {} volume off (patch abandoned?)", r.0);
+    }
+    // The double-counted complex exports BOTH cap layers as surface faces:
+    // a non-manifold edge inside one patch (3+ incident faces). Every patch
+    // must tile manifold (interior edges shared by exactly <= 2 faces).
+    let mut per_patch: std::collections::HashMap<(u32, usize, usize), usize> =
+        Default::default();
+    for f in &mesh.faces {
+        for k in 0..3 {
+            let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+            *per_patch.entry((f.patch, a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    let worst = per_patch.values().max().copied().unwrap_or(0);
+    assert!(
+        worst <= 2,
+        "non-manifold patch tiling: an edge carries {worst} faces of one patch (double-counted flat sliver)"
+    );
+    // The double-count once drove the stagnation guard into abandoning the
+    // two flank patches; a conforming run abandons nothing.
+    assert!(
+        mesh.abandoned_patches.is_empty(),
+        "abandoned patches: {:?}",
+        mesh.abandoned_patches
+    );
+    check_structure(&mesh);
+}
+
 /// Feature edges of a meshed box are exactly the 12 box edges: every
 /// reported edge lies ON one of them, and all 12 are present.
 #[test]

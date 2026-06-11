@@ -69,6 +69,11 @@ pub struct TetMesh {
     /// Per-surface owner solid index (scene insertion order, voids included);
     /// `u32::MAX` for sheet surfaces. Parallel to `surfaces`.
     pub surface_owners: Vec<u32>,
+    /// Patches the conformity loop gave up on (stagnant tiling deficit).
+    /// Empty for a fully conforming mesh; non-empty means the faces of
+    /// these patches may carry holes or double layers and the mesh needs
+    /// review before physics runs on it.
+    pub abandoned_patches: Vec<u32>,
     /// `points[..plc_points]` are the PLC's own vertices (the geometry);
     /// everything after is a Steiner point the mesher added. The optimizer's
     /// edge collapse may remove Steiner points but never PLC vertices.
@@ -826,24 +831,55 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                             .find(|v| !f.contains(v))
                             .is_some_and(|v| on_patch[*v].contains(&pi))
                     };
+                    // A tet with ALL FOUR vertices marked lies entirely in
+                    // the patch plane (marks imply on-patch): a flat sliver
+                    // tet whose two cap pairs are both valid triangulations
+                    // of the same projected quad. Counting all four caps
+                    // double-covers the projection (the horn-loft -2.6%
+                    // "uncovered" giveup). Faces interior to such a complex
+                    // never count; cap faces count only on the floor side
+                    // (outer neighbor on the Negative side of the plane), so
+                    // the complex tiles once and the separating terrain
+                    // stays watertight (its tets classify into the front
+                    // region, like the hover-sliver floor rule below).
+                    let all_marked = |owner: u32| -> bool {
+                        dt_tets[owner as usize]
+                            .iter()
+                            .all(|v| on_patch[*v].contains(&pi))
+                    };
                     let rejected = if owners.len() == 2 {
-                        opp_marked(owners[0])
-                            && opp_marked(owners[1])
-                            && tet_plane_side(patch, &points, dt_tets[owners[0] as usize])
-                                == tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                        let m0 = all_marked(owners[0]);
+                        let m1 = all_marked(owners[1]);
+                        if m0 && m1 {
+                            true
+                        } else if m0 || m1 {
+                            let outer = if m0 { owners[1] } else { owners[0] };
+                            tet_plane_side(patch, &points, dt_tets[outer as usize])
+                                == Sign::Positive
+                        } else {
+                            opp_marked(owners[0])
+                                && opp_marked(owners[1])
+                                && tet_plane_side(patch, &points, dt_tets[owners[0] as usize])
+                                    == tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                        }
                     } else {
                         match hull_super.get(f) {
                             Some(&sc) => {
-                                opp_marked(owners[0])
-                                    && tet_plane_side(
-                                        patch,
-                                        &points,
-                                        dt_tets[owners[0] as usize],
-                                    ) == plane_side(
-                                        patch,
-                                        &points,
-                                        [points[f[0]], points[f[1]], points[f[2]], sc],
-                                    )
+                                let super_side = plane_side(
+                                    patch,
+                                    &points,
+                                    [points[f[0]], points[f[1]], points[f[2]], sc],
+                                );
+                                if all_marked(owners[0]) {
+                                    super_side == Sign::Positive
+                                } else {
+                                    opp_marked(owners[0])
+                                        && tet_plane_side(
+                                            patch,
+                                            &points,
+                                            dt_tets[owners[0] as usize],
+                                        ) == super_side
+                                }
                             }
                             None => false,
                         }
@@ -929,6 +965,94 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         "rapidmesh: giving up on patch {pi} tiling ({:.1}% area uncovered); input likely needs mesh repair",
                         100.0 * (want - tile_area[pi]) / want
                     );
+                    if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() && tile_area[pi] > want {
+                        // OVERCOUNT: more projected area counted than the
+                        // patch owns. Dump every counted tile with its
+                        // distance to the patch plane and its side pattern.
+                        let patch = &patches[pi];
+                        let pl = patch.plane.map(|i| points[i]);
+                        let eu: [f64; 3] = std::array::from_fn(|k| pl[1][k] - pl[0][k]);
+                        let ev: [f64; 3] = std::array::from_fn(|k| pl[2][k] - pl[0][k]);
+                        let nrm = [
+                            eu[1] * ev[2] - eu[2] * ev[1],
+                            eu[2] * ev[0] - eu[0] * ev[2],
+                            eu[0] * ev[1] - eu[1] * ev[0],
+                        ];
+                        let nlen = nrm.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        eprintln!(
+                            "  patch {pi}: axis {:?} members {} want {want:.6e} counted {:.6e}",
+                            patch.axis,
+                            patch.members.len(),
+                            tile_area[pi]
+                        );
+                        for f in &all_tilings[pi] {
+                            let dmax = f
+                                .iter()
+                                .map(|&v| {
+                                    ((0..3)
+                                        .map(|k| nrm[k] * (points[v][k] - pl[0][k]))
+                                        .sum::<f64>()
+                                        / nlen)
+                                        .abs()
+                                })
+                                .fold(0.0_f64, f64::max);
+                            let c: [f64; 3] = std::array::from_fn(|k| {
+                                (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
+                            });
+                            eprintln!(
+                                "    tile {f:?} area {:.3e} plane-dist {dmax:.3e} c {c:?}",
+                                area2_f64(f, patch.axis)
+                            );
+                        }
+                        // Pairwise projected-overlap scan: which tiles double
+                        // up? (diagnosis only, f64 SAT on the projection)
+                        let (u, v) = match patch.axis {
+                            Axis::X => (1, 2),
+                            Axis::Y => (2, 0),
+                            Axis::Z => (0, 1),
+                        };
+                        let p2 = |i: usize| -> [f64; 2] { [points[i][u], points[i][v]] };
+                        let overlap2d = |a: &[usize; 3], b: &[usize; 3]| -> bool {
+                            let ta = a.map(p2);
+                            let tb = b.map(p2);
+                            let axes = |t: &[[f64; 2]; 3]| -> Vec<[f64; 2]> {
+                                (0..3)
+                                    .map(|i| {
+                                        let (p, q) = (t[i], t[(i + 1) % 3]);
+                                        [q[1] - p[1], p[0] - q[0]]
+                                    })
+                                    .collect()
+                            };
+                            for ax in axes(&ta).into_iter().chain(axes(&tb)) {
+                                let pr = |t: &[[f64; 2]; 3]| {
+                                    let d: Vec<f64> = t
+                                        .iter()
+                                        .map(|p| p[0] * ax[0] + p[1] * ax[1])
+                                        .collect();
+                                    (d.iter().cloned().fold(f64::MAX, f64::min),
+                                     d.iter().cloned().fold(f64::MIN, f64::max))
+                                };
+                                let (alo, ahi) = pr(&ta);
+                                let (blo2, bhi2) = pr(&tb);
+                                let eps = 1e-12 * (ahi - alo).abs().max((bhi2 - blo2).abs());
+                                if ahi <= blo2 + eps || bhi2 <= alo + eps {
+                                    return false;
+                                }
+                            }
+                            true
+                        };
+                        let tiles = &all_tilings[pi];
+                        for i in 0..tiles.len() {
+                            for j in i + 1..tiles.len() {
+                                if overlap2d(&tiles[i], &tiles[j]) {
+                                    eprintln!(
+                                        "    OVERLAP {:?} <-> {:?}",
+                                        tiles[i], tiles[j]
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
                         // Faces that would tile the patch geometrically but
                         // fail the marks test: the hole's roof.
@@ -1351,6 +1475,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
 
+    let mut abandoned_patches: Vec<u32> = abandoned.iter().map(|&pi| pi as u32).collect();
+    abandoned_patches.sort_unstable();
+
     TetMesh {
         points,
         tets: kept_tets,
@@ -1358,6 +1485,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         faces: out_faces,
         surfaces: plc.surfaces.clone(),
         surface_owners: plc.surface_owners.clone(),
+        abandoned_patches,
         plc_points: plc.vertices.len(),
     }
 }

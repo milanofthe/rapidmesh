@@ -400,6 +400,24 @@ impl DelaunayBuilder {
         false
     }
 
+    /// [`DelaunayBuilder::insert_guarded`] for an implicit exact point (a
+    /// surface Steiner point that must stay exactly on its constraint
+    /// plane): the guard logic is identical, predicates evaluate the exact
+    /// position, `pts` caches the approximation.
+    pub fn insert_exact_guarded(
+        &mut self,
+        point: Point3,
+        min_dist2: f64,
+        keep: impl FnMut(Removal) -> bool,
+    ) -> Option<usize> {
+        if let Some(c) = point.as_explicit() {
+            return self.insert_guarded(c, min_dist2, keep);
+        }
+        let approx = point.approx()?;
+        let exact = Some(point);
+        self.insert_guarded_inner(approx, exact, min_dist2, keep)
+    }
+
     /// Inserts a point unless `keep` rejects one of the faces or edges the
     /// insertion would REMOVE from the triangulation (public vertex indices;
     /// faces sorted ascending, edges as (min, max)). On rejection the
@@ -419,17 +437,32 @@ impl DelaunayBuilder {
         &mut self,
         point: [f64; 3],
         min_dist2: f64,
+        keep: impl FnMut(Removal) -> bool,
+    ) -> Option<usize> {
+        self.insert_guarded_inner(point, None, min_dist2, keep)
+    }
+
+    /// Shared guarded-insert core: `approx` is the walk-cache position,
+    /// `exact` the implicit position if any. Pushes and pops `pts` and
+    /// `exact` strictly together (a desync here misindexes every later
+    /// vertex's exact position).
+    fn insert_guarded_inner(
+        &mut self,
+        approx: [f64; 3],
+        exact: Option<Point3>,
+        min_dist2: f64,
         mut keep: impl FnMut(Removal) -> bool,
     ) -> Option<usize> {
         // Circumcenters of near-degenerate tets can land anywhere, including
         // outside the super-tet; a guarded insert simply declines those.
-        if (0..3).any(|k| point[k] <= self.domain.0[k])
-            || point[0] + point[1] + point[2] >= self.domain.1
+        if (0..3).any(|k| approx[k] <= self.domain.0[k])
+            || approx[0] + approx[1] + approx[2] >= self.domain.1
         {
             return None;
         }
         let p = self.pts.len() as u32;
-        self.pts.push(point);
+        self.pts.push(approx);
+        self.exact.push(exact);
         // Legitimate refinement cavities hold a few dozen tets; pathological
         // ones (corrupted circumcenters skimming the boundary) grow into the
         // hundreds and pay an exact insphere per tet. Capping rejects them

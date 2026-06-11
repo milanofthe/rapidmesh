@@ -64,6 +64,26 @@ pub enum Point3 {
         /// Position parameter, meaningful in (0, 1).
         t: f64,
     },
+    /// Planar affine combination on a triangle: `a + u (b - a) + v (c - a)`.
+    ///
+    /// The 2D analog of [`Point3::Lnc`]: a point constrained to lie EXACTLY
+    /// on the plane through `a`, `b`, `c` for any f64 parameters — rounding
+    /// `u`, `v` only slides the point within the plane, never off it. The
+    /// CDT facet-interior Steiner type (surface refinement points must stay
+    /// exactly on their constraint facet or face recovery would see the
+    /// facet pierced next round). Degree 1 in the inputs, w = 1.
+    Pac {
+        /// Triangle corner the parameters are anchored at.
+        a: [f64; 3],
+        /// Second corner (`u` direction).
+        b: [f64; 3],
+        /// Third corner (`v` direction).
+        c: [f64; 3],
+        /// Coordinate along `b - a`.
+        u: f64,
+        /// Coordinate along `c - a`.
+        v: f64,
+    },
 }
 
 impl Point3 {
@@ -146,6 +166,13 @@ impl Point3 {
         Point3::Lnc { a, b, t }
     }
 
+    /// A point in the plane of the triangle (a, b, c) at barycentric-style
+    /// parameters (u, v) (exact on the carrier plane for ANY f64 values;
+    /// inside the triangle for u, v > 0, u + v < 1).
+    pub fn pac(a: [f64; 3], b: [f64; 3], c: [f64; 3], u: f64, v: f64) -> Point3 {
+        Point3::Pac { a, b, c, u, v }
+    }
+
     /// The coordinates if this point is explicit.
     pub fn as_explicit(&self) -> Option<[f64; 3]> {
         match self {
@@ -189,6 +216,19 @@ impl Point3 {
                     let ai = T::from_f64(a[i]);
                     let bi = T::from_f64(b[i]);
                     ai.add(&tt.mul(&Ring::sub(&bi, &ai)))
+                };
+                [coord(0), coord(1), coord(2), T::from_f64(1.0)]
+            }
+            Point3::Pac { a, b, c, u, v } => {
+                // a + u (b - a) + v (c - a), w = 1: degree 1 in the inputs.
+                let uu = T::from_f64(*u);
+                let vv = T::from_f64(*v);
+                let coord = |i: usize| {
+                    let ai = T::from_f64(a[i]);
+                    let bi = T::from_f64(b[i]);
+                    let ci = T::from_f64(c[i]);
+                    ai.add(&uu.mul(&Ring::sub(&bi, &ai)))
+                        .add(&vv.mul(&Ring::sub(&ci, &ai)))
                 };
                 [coord(0), coord(1), coord(2), T::from_f64(1.0)]
             }
@@ -246,7 +286,7 @@ impl Point3 {
     /// invalid and must not be used in predicates).
     pub fn w_sign(&self) -> Sign {
         match self {
-            Point3::Explicit(_) | Point3::Lnc { .. } => Sign::Positive,
+            Point3::Explicit(_) | Point3::Lnc { .. } | Point3::Pac { .. } => Sign::Positive,
             _ => {
                 // Interval filter first, exact fallback.
                 if let Some(s) = self.hom::<Interval>()[3].sign() {

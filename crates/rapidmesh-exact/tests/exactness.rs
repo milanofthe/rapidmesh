@@ -556,6 +556,51 @@ fn lnc_lies_exactly_on_its_carrier_line() {
 }
 
 #[test]
+fn pac_lies_exactly_on_its_carrier_plane() {
+    let mut rng = Rng::new(0xC7);
+    let mut checked = 0;
+    for i in 0..400 {
+        let a = rng.point3(16);
+        let b = rng.point3(16);
+        let c = rng.point3(16);
+        if a == b || b == c || a == c {
+            continue;
+        }
+        let u = golden_t(i);
+        let v = golden_t(i + 13) * (1.0 - u);
+        let p = Point3::pac(a, b, c, u, v);
+        // Exactly coplanar with the carrier triangle, for crooked (u, v).
+        assert_eq!(
+            orient3d(
+                &Point3::Explicit(a),
+                &Point3::Explicit(b),
+                &Point3::Explicit(c),
+                &p,
+            ),
+            Some(Sign::Zero),
+        );
+        // And NOT on the carrier lines (generic parameters): a witness off
+        // the plane must see a nonzero volume with two corners and p.
+        let x = Point3::Explicit(rng.point3(16));
+        if orient3d(
+            &Point3::Explicit(a),
+            &Point3::Explicit(b),
+            &Point3::Explicit(c),
+            &x,
+        ) != Some(Sign::Zero)
+        {
+            assert_ne!(
+                orient3d(&Point3::Explicit(a), &Point3::Explicit(b), &x, &p),
+                Some(Sign::Zero),
+                "pac point degenerated onto a carrier edge",
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 300);
+}
+
+#[test]
 fn lnc_orient3d_matches_independent_rational() {
     let mut rng = Rng::new(0xC1);
     for i in 0..400 {

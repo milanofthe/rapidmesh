@@ -67,14 +67,11 @@ def dielectric_resonator() -> rm.Mesh:
     f = 3.0e9
     g = rm.Geometry(maxh=lambda_maxh(f_max=f))
     g.box(w, w, s, position=(-w / 2, -w / 2, 0))
-    # segments=28: the default tessellation of this size combination trips a
-    # known recovery-bookkeeping issue on curved patches (tracked upstream).
-    g.cylinder(radius=d_sup / 2, height=l_sup, segments=28, maxh=lambda_maxh(f, er_sup))
+    g.cylinder(radius=d_sup / 2, height=l_sup, maxh=lambda_maxh(f, er_sup))
     g.cylinder(
         radius=d_res / 2,
         height=l_res,
         position=(0, 0, l_sup),
-        segments=28,
         maxh=lambda_maxh(f, er_res),
     )
     return g.mesh()

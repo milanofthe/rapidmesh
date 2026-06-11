@@ -7,3 +7,5 @@ bench/models_hold
 bench/plc
 bench/results.json
 __pycache__/
+*.pdb
+python/python_src/rapidmesh/_native*

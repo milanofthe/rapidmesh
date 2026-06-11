@@ -305,3 +305,64 @@ fn single_box_meshes_exactly() {
     check_structure(&mesh);
     assert!(mesh.tets.iter().all(|t| t.iter().all(|&v| v < mesh.points.len())));
 }
+
+/// Regression for the cylinder-tessellation recovery lottery: stacked
+/// cylinders in a box (the dielectric-resonator example) with per-region
+/// sizing used to break for specific segment counts. Refinement points
+/// hovering an ulp off non-axis-aligned facet planes (or an ulp outside the
+/// hull) double-covered or holed the patch tilings, abandoning patches and
+/// leaking regions. The side-of-plane tile rule, guarded interior inserts,
+/// and uncovered-first repair keep every tessellation conforming; region
+/// volumes match the PLC polyhedra.
+#[test]
+fn resonator_cylinder_tessellations_stay_conforming() {
+    let close = |have: BigRational, want: BigRational| {
+        let tol = want.clone() * rat(1e-9);
+        let diff = if have > want {
+            have - want.clone()
+        } else {
+            want.clone() - have
+        };
+        assert!(diff <= tol, "volume off by more than 1e-9 relative");
+    };
+    let mm = 1e-3;
+    let inch = 25.4 * mm;
+    let w = 2.0 * inch;
+    let s = 2.03 * inch;
+    let (d_sup, l_sup) = (0.56 * inch, 0.80 * inch);
+    let (d_res, l_res) = (1.176 * inch, 0.481 * inch);
+    // 20 fanned hull faces below the box bottom, 24 holed a lateral facet
+    // through an unmarked chord midpoint, 28 through an unguarded insert.
+    for segments in [20, 24, 28] {
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([-w / 2.0, -w / 2.0, 0.0], [w / 2.0, w / 2.0, s]));
+        let sup = scene.add_solid(cylinder(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, l_sup],
+            d_sup / 2.0,
+            segments,
+        ));
+        let res = scene.add_solid(cylinder(
+            [0.0, 0.0, l_sup],
+            [0.0, 0.0, l_res],
+            d_res / 2.0,
+            segments,
+        ));
+        let plc = scene.assemble();
+        let params = MeshParams {
+            maxh: 9.993e-3,
+            region_maxh: vec![(sup.0, 3.160e-3), (res.0, 1.713e-3)],
+            ..MeshParams::default()
+        };
+        let mesh = mesh_plc_with(&plc, &params);
+        close(
+            mesh_region_volume6(&mesh, sup),
+            plc_region_volume6(&plc, sup),
+        );
+        close(
+            mesh_region_volume6(&mesh, res),
+            plc_region_volume6(&plc, res),
+        );
+        check_structure(&mesh);
+    }
+}

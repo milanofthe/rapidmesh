@@ -484,6 +484,31 @@ impl DelaunayBuilder {
             .map(|(_, t)| std::array::from_fn(|k| (t[k] - 4) as usize))
             .collect()
     }
+
+    /// The all-real faces of super-corner tets: the convex-hull boundary of
+    /// the inserted points, each paired with the position of the super corner
+    /// on its far side. A real face can border at most one super tet (the
+    /// neighbor's fourth vertex), so faces here have exactly one real owner
+    /// in [`DelaunayBuilder::tets`]; the super-corner position lets callers
+    /// resolve which side of a constraint plane the outside lies on.
+    pub fn hull_faces(&self) -> Vec<([usize; 3], [f64; 3])> {
+        let mut out = Vec::new();
+        for (ti, t) in self.tets.iter().enumerate() {
+            if !self.alive[ti] {
+                continue;
+            }
+            let supers: Vec<usize> = (0..4).filter(|&i| t[i] < 4).collect();
+            if supers.len() != 1 {
+                continue;
+            }
+            let f = face(*t, supers[0]);
+            out.push((
+                std::array::from_fn(|k| (f[k] - 4) as usize),
+                self.pts[t[supers[0]] as usize],
+            ));
+        }
+        out
+    }
 }
 
 /// Exact Delaunay tetrahedralization of `points` (duplicates not allowed;

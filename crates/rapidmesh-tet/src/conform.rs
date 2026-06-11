@@ -21,6 +21,7 @@
 use crate::delaunay::DelaunayBuilder;
 use rapidmesh_csg::classify::point_inside_solid;
 use rapidmesh_csg::Tri;
+use rapidmesh_exact::geom::det4;
 use rapidmesh_exact::{orient3d, Axis, Expansion, Point3, Sign};
 use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
@@ -132,6 +133,72 @@ fn push_crease_child(
 
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
+}
+
+/// Which side of a patch plane a tet lies on: the sign of the SUM of its four
+/// vertices' plane offsets (4x the centroid offset; the determinant is linear
+/// in the query point, so the sum needs no division and stays a polynomial in
+/// the inputs).
+///
+/// On-patch Steiner points are rounded f64 and may hover an ulp off the exact
+/// plane (non-axis-aligned patches only); the Delaunay triangulation can then
+/// contain a flat sliver tet WITHIN the patch whose floor and fan faces would
+/// both pass a marks+containment tile test, double-covering the projected
+/// area. The side sum is the disambiguator: a face is a true tile only when
+/// its two adjacent tets lie on opposite sides.
+///
+/// A fast f64 evaluation with a static error bound resolves every tet with a
+/// genuinely off-plane vertex; only near-plane slivers pay the exact
+/// expansion fallback. An exactly-zero sum (constructible from symmetric ulp
+/// offsets) deterministically counts as Positive.
+fn tet_plane_side(patch: &Patch, points: &[[f64; 3]], t: [usize; 4]) -> Sign {
+    plane_side(patch, points, t.map(|v| points[v]))
+}
+
+/// [`tet_plane_side`] over explicit positions (used for the pseudo-tet of a
+/// hull face and its super corner).
+fn plane_side(patch: &Patch, points: &[[f64; 3]], verts: [[f64; 3]; 4]) -> Sign {
+    let pl = patch.plane.map(|i| points[i]);
+    let sub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|k| a[k] - b[k]) };
+    let u = sub(pl[1], pl[0]);
+    let v = sub(pl[2], pl[0]);
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let inf_norm = |q: [f64; 3]| -> f64 { q.iter().fold(0.0_f64, |m, x| m.max(x.abs())) };
+    let mut sum = 0.0_f64;
+    let mut wmax = 0.0_f64;
+    for &vt in &verts {
+        let w = sub(vt, pl[0]);
+        sum += (0..3).map(|k| n[k] * w[k]).sum::<f64>();
+        wmax = wmax.max(inf_norm(w));
+    }
+    // Static filter: the f64 evaluation of each offset n.w errs by at most
+    // c * eps * max|u,v|^2 * max|w| with a small constant; 256 covers the
+    // cross product, dot product, and the 4-term sum with margin.
+    let m = inf_norm(u).max(inf_norm(v));
+    let err = 256.0 * f64::EPSILON * m * m * wmax;
+    if sum.abs() > err {
+        return Sign::of_f64(sum);
+    }
+    let hom = |p: [f64; 3]| Point3::Explicit(p).hom::<Expansion>();
+    let base = [hom(pl[0]), hom(pl[1]), hom(pl[2])];
+    let mut acc = Expansion::from_f64(0.0);
+    for &vt in &verts {
+        let rows = [
+            base[0].clone(),
+            base[1].clone(),
+            base[2].clone(),
+            hom(vt),
+        ];
+        acc = acc.add(&det4(&rows));
+    }
+    match acc.sign() {
+        Sign::Zero => Sign::Positive,
+        s => s,
+    }
 }
 
 /// The four vertex-index triples spanning a tet's faces (unoriented; users
@@ -496,6 +563,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
         let t_round = std::time::Instant::now();
         let dt_tets = builder.tets();
+        // Convex-hull faces with the super corner on their far side: a
+        // candidate tile with a single real owner compares against the
+        // outside via this corner (see the tiling rule below).
+        let hull_super: DMap<[usize; 3], [f64; 3]> = builder
+            .hull_faces()
+            .into_iter()
+            .map(|(f, s)| (sorted3(f), s))
+            .collect();
         // Edges are only ever queried between crease endpoints (the missing
         // check below); collecting all 6 edges of every tet would dominate
         // the round.
@@ -590,8 +665,6 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // ~1e-16-relative slivers no refinement can remove), and the f64
         // shoelace noise (~1e-15 relative) is far below the 1e-9 gate.
         // Structural conformity stays exact: tiles are actual tet faces.
-        let mut all_tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
-        let mut tile_area: Vec<f64> = vec![0.0; patches.len()];
         let area2_f64 = |f: &[usize; 3], axis: Axis| -> f64 {
             let (u, v) = match axis {
                 Axis::X => (1, 2),
@@ -601,24 +674,117 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let (a, b, c) = (points[f[0]], points[f[1]], points[f[2]]);
             ((b[u] - a[u]) * (c[v] - a[v]) - (b[v] - a[v]) * (c[u] - a[u])).abs()
         };
-        for f in dt_faces.keys() {
-            let (s0, s1, s2) = (&on_patch[f[0]], &on_patch[f[1]], &on_patch[f[2]]);
-            if s0.is_empty() || s1.is_empty() || s2.is_empty() {
-                continue;
+        let scale = (0..3).map(|k| bhi[k] - blo[k]).fold(1.0_f64, f64::max);
+        let mut all_tilings: Vec<Vec<[usize; 3]>>;
+        let mut tile_area: Vec<f64>;
+        // The tiling scan re-runs after adoptions (marks only grow, so this
+        // terminates; adoptions are rare one-offs).
+        loop {
+            all_tilings = vec![Vec::new(); patches.len()];
+            tile_area = vec![0.0; patches.len()];
+            // Stray vertices to adopt: a vertex without the patch mark whose
+            // faces nevertheless form the patch's separating terrain, sitting
+            // within rounding of the exact plane (an unguarded insertion that
+            // landed ulp-close). Without adoption its faces are uncountable
+            // and the patch reports a permanent unreparable deficit.
+            let mut adoptions: Vec<(usize, usize)> = Vec::new();
+            for (f, owners) in &dt_faces {
+                let sets = [&on_patch[f[0]], &on_patch[f[1]], &on_patch[f[2]]];
+                if sets.iter().filter(|s| !s.is_empty()).count() < 2 {
+                    continue;
+                }
+                let mut cand: Vec<usize> = Vec::new();
+                for s in sets {
+                    for &pi in s.iter() {
+                        if !cand.contains(&pi) {
+                            cand.push(pi);
+                        }
+                    }
+                }
+                for pi in cand {
+                    let have: [bool; 3] = std::array::from_fn(|i| sets[i].contains(&pi));
+                    let n_marked = have.iter().filter(|x| **x).count();
+                    if n_marked < 2 {
+                        continue;
+                    }
+                    let patch = &patches[pi];
+                    let c: [f64; 3] = std::array::from_fn(|k| {
+                        (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
+                    });
+                    if !inside_patch(pi, patch, &points, c) {
+                        continue;
+                    }
+                    // A true tile separates the two sides of the patch; a
+                    // face between two SAME-side tets is the floor or fan of
+                    // a flat sliver around a hovering Steiner point (see
+                    // [tet_plane_side]) and double-covers the projection.
+                    // Hull faces (one real owner) compare against the super
+                    // corner on their far side: a hover that dipped an ulp
+                    // OUTSIDE the hull fans same-side hull faces.
+                    let s0 = tet_plane_side(patch, &points, dt_tets[owners[0] as usize]);
+                    let s_other = if owners.len() == 2 {
+                        tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                    } else {
+                        match hull_super.get(f) {
+                            Some(&sc) => plane_side(
+                                patch,
+                                &points,
+                                [points[f[0]], points[f[1]], points[f[2]], sc],
+                            ),
+                            None => s0.flip(),
+                        }
+                    };
+                    if s0 == s_other {
+                        continue;
+                    }
+                    if n_marked == 3 {
+                        tile_area[pi] += area2_f64(f, patch.axis);
+                        all_tilings[pi].push(*f);
+                        continue;
+                    }
+                    // Two marked vertices and a separating face: adoption
+                    // candidate, gated on exact-plane proximity (ulp class
+                    // only; genuinely off-plane points must not bend the
+                    // patch).
+                    let miss = (0..3).find(|&i| !have[i]).expect("one unmarked");
+                    let v = f[miss];
+                    let pl = patch.plane.map(|i| points[i]);
+                    let eu: [f64; 3] = std::array::from_fn(|k| pl[1][k] - pl[0][k]);
+                    let ev: [f64; 3] = std::array::from_fn(|k| pl[2][k] - pl[0][k]);
+                    let nrm = [
+                        eu[1] * ev[2] - eu[2] * ev[1],
+                        eu[2] * ev[0] - eu[0] * ev[2],
+                        eu[0] * ev[1] - eu[1] * ev[0],
+                    ];
+                    let nn: f64 = nrm.iter().map(|x| x * x).sum();
+                    if nn == 0.0 {
+                        continue;
+                    }
+                    let d: f64 = (0..3).map(|k| nrm[k] * (points[v][k] - pl[0][k])).sum();
+                    let tol = 1e-12 * scale;
+                    if d * d > tol * tol * nn {
+                        continue;
+                    }
+                    if patch_inside_closed(&patch_grids[pi], patch, &points, points[v]) {
+                        adoptions.push((v, pi));
+                    }
+                }
             }
-            for &pi in s0 {
-                if !s1.contains(&pi) || !s2.contains(&pi) {
-                    continue;
+            if adoptions.is_empty() {
+                break;
+            }
+            if trace {
+                eprintln!("round {round}: adopting {} stray on-plane vertices", adoptions.len());
+                if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
+                    for &(v, pi) in adoptions.iter().take(12) {
+                        let mut marks: Vec<usize> = on_patch[v].iter().copied().collect();
+                        marks.sort_unstable();
+                        eprintln!("    adopt v{v} -> patch {pi} (had {marks:?}) at {:?}", points[v]);
+                    }
                 }
-                let patch = &patches[pi];
-                let c: [f64; 3] = std::array::from_fn(|k| {
-                    (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
-                });
-                if !inside_patch(pi, patch, &points, c) {
-                    continue;
-                }
-                tile_area[pi] += area2_f64(f, patch.axis);
-                all_tilings[pi].push(*f);
+            }
+            for (v, pi) in adoptions {
+                on_patch[v].insert(pi);
             }
         }
         let mut deficits: Vec<usize> = Vec::new();
@@ -649,6 +815,53 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         "rapidmesh: giving up on patch {pi} tiling ({:.1}% area uncovered); input likely needs mesh repair",
                         100.0 * (want - tile_area[pi]) / want
                     );
+                    if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
+                        // Faces that would tile the patch geometrically but
+                        // fail the marks test: the hole's roof.
+                        let patch = &patches[pi];
+                        for (f, owners) in &dt_faces {
+                            let c: [f64; 3] = std::array::from_fn(|k| {
+                                (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
+                            });
+                            if !inside_patch(pi, patch, &points, c) {
+                                continue;
+                            }
+                            if owners.len() == 2
+                                && tet_plane_side(patch, &points, dt_tets[owners[0] as usize])
+                                    == tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                            {
+                                continue;
+                            }
+                            if f.iter().all(|&v| on_patch[v].contains(&pi)) {
+                                continue;
+                            }
+                            eprintln!("  hole roof face {f:?}:");
+                            let pl = patch.plane.map(|i| points[i]);
+                            let eu: [f64; 3] =
+                                std::array::from_fn(|k| pl[1][k] - pl[0][k]);
+                            let ev: [f64; 3] =
+                                std::array::from_fn(|k| pl[2][k] - pl[0][k]);
+                            let nrm = [
+                                eu[1] * ev[2] - eu[2] * ev[1],
+                                eu[2] * ev[0] - eu[0] * ev[2],
+                                eu[0] * ev[1] - eu[1] * ev[0],
+                            ];
+                            let nlen = nrm.iter().map(|x| x * x).sum::<f64>().sqrt();
+                            for &v in f {
+                                let mut marks: Vec<usize> =
+                                    on_patch[v].iter().copied().collect();
+                                marks.sort_unstable();
+                                let d: f64 = (0..3)
+                                    .map(|k| nrm[k] * (points[v][k] - pl[0][k]))
+                                    .sum::<f64>()
+                                    / nlen;
+                                eprintln!(
+                                    "    v{v} marks {marks:?} at {:?} h={:.4} plane-dist {d:.3e}",
+                                    points[v], point_h[v]
+                                );
+                            }
+                        }
+                    }
                     abandoned.insert(pi);
                 }
             }
@@ -774,7 +987,26 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
         }
-        let scale = (0..3).map(|k| bhi[k] - blo[k]).fold(1.0_f64, f64::max);
+        // Piercings into UNCOVERED area first: an edge crossing the plane
+        // underneath a hovering terrain point pierces inside already-covered
+        // area; repairing it just re-splits covered tiles (and can spawn the
+        // next such edge), starving the actual hole under the
+        // one-insertion-per-patch policy.
+        let covered = |pi: usize, x: [f64; 3]| -> bool {
+            let (u, v) = Tri2Grid::axis_uv(patches[pi].axis);
+            let q = [x[u], x[v]];
+            all_tilings[pi].iter().any(|f| {
+                let p: [[f64; 2]; 3] =
+                    std::array::from_fn(|i| [points[f[i]][u], points[f[i]][v]]);
+                let s = |a: [f64; 2], b: [f64; 2]| -> f64 {
+                    (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0])
+                };
+                let (d0, d1, d2) = (s(p[0], p[1]), s(p[1], p[2]), s(p[2], p[0]));
+                (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0)
+                    || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+            })
+        };
+        new_pts.sort_by_key(|&(x, pi, _)| covered(pi, x));
         // One successful insertion per deficient patch per round: every
         // insertion changes the DT, so further candidates computed against
         // the stale DT would mostly land redundantly and feed encroachment
@@ -883,6 +1115,41 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 eprintln!(
                     "rapidmesh: giving up on patch {pi} tiling (no piercing edges); geometry near this patch needs review"
                 );
+                if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
+                    let patch = &patches[pi];
+                    let pl = patch.plane.map(|i| points[i]);
+                    let eu: [f64; 3] = std::array::from_fn(|k| pl[1][k] - pl[0][k]);
+                    let ev: [f64; 3] = std::array::from_fn(|k| pl[2][k] - pl[0][k]);
+                    let nrm = [
+                        eu[1] * ev[2] - eu[2] * ev[1],
+                        eu[2] * ev[0] - eu[0] * ev[2],
+                        eu[0] * ev[1] - eu[1] * ev[0],
+                    ];
+                    let nlen = nrm.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let dist = |v: usize| -> f64 {
+                        (0..3)
+                            .map(|k| nrm[k] * (points[v][k] - pl[0][k]))
+                            .sum::<f64>()
+                            / nlen
+                    };
+                    let want = patch.area2.approx().abs();
+                    eprintln!(
+                        "  patch {pi}: want {want:.6e} got {:.6e}, {} tiles",
+                        tile_area[pi],
+                        all_tilings[pi].len()
+                    );
+                    let (au, av) = Tri2Grid::axis_uv(patch.axis);
+                    for f in &all_tilings[pi] {
+                        let ds: Vec<f64> = f.iter().map(|&v| dist(v)).collect();
+                        if ds.iter().any(|d| d.abs() > 0.0) {
+                            let (a, b, c) = (points[f[0]], points[f[1]], points[f[2]]);
+                            let area = ((b[au] - a[au]) * (c[av] - a[av])
+                                - (b[av] - a[av]) * (c[au] - a[au]))
+                                .abs();
+                            eprintln!("  off-plane tile {f:?} dists {ds:?} area {area:.3e}");
+                        }
+                    }
+                }
                 abandoned.insert(pi);
             }
         }
@@ -1674,26 +1941,50 @@ fn refine_step(
             } else {
                 let m: [f64; 3] =
                     std::array::from_fn(|k| 0.5 * (points[a][k] + points[b][k]));
+                let marks: DSet<usize> = on_patch[a]
+                    .intersection(&on_patch[b])
+                    .copied()
+                    .collect();
                 if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
-                    let g = points.len();
-                    points.push(m);
-                    point_h.push(child_h(
-                        m,
-                        &[a, b],
-                        points,
-                        point_h,
-                        params.grading,
-                        f64::INFINITY,
-                    ));
-                    builder.insert(m);
-                    point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
-                    let marks: DSet<usize> = on_patch[a]
-                        .intersection(&on_patch[b])
-                        .copied()
-                        .collect();
-                    on_patch.push(marks);
-                    n += 1;
-                    placed.push(m);
+                    // Unmarked midpoints are guarded like circumcenters: an
+                    // unguarded insert near the boundary can eat tiles (see
+                    // the guarded insert below) whose replacement faces then
+                    // route off-plane through the new point, holing the
+                    // patch tiling. On-patch midpoints retile their own
+                    // patch and insert plainly.
+                    let admitted = if marks.is_empty() {
+                        builder
+                            .insert_guarded(m, 0.0, |rem| match rem {
+                                crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
+                                crate::delaunay::Removal::Edge(a, b) => {
+                                    !crease_set.contains(&(a, b))
+                                }
+                            })
+                            .is_some()
+                    } else {
+                        builder.insert(m);
+                        true
+                    };
+                    if admitted {
+                        let g = points.len();
+                        points.push(m);
+                        let cap = marks
+                            .iter()
+                            .map(|&pi| patch_h[pi])
+                            .fold(f64::INFINITY, f64::min);
+                        point_h.push(child_h(
+                            m,
+                            &[a, b],
+                            points,
+                            point_h,
+                            params.grading,
+                            cap,
+                        ));
+                        point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
+                        on_patch.push(marks);
+                        n += 1;
+                        placed.push(m);
+                    }
                 }
             }
         }};
@@ -1798,26 +2089,25 @@ fn refine_step(
             if point_index.contains_key(&cc.map(|x| (x + 0.0).to_bits())) {
                 break 'attempt;
             }
-            if quality_only {
-                // Guarded: never remove a constraint (see crease_set above),
-                // and never create an edge shorter than the candidate's own
-                // shortest edge (an exact circumcenter lands at distance
-                // >= 2x that; closer means the float circumcenter of a
-                // near-degenerate tet is numerically corrupted).
-                let tg = std::time::Instant::now();
-                let admitted = builder.insert_guarded(cc, lmin2, |rem| match rem {
-                    crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
-                    crate::delaunay::Removal::Edge(a, b) => !crease_set.contains(&(a, b)),
-                });
-                t_guarded += tg.elapsed();
-                if admitted.is_none() {
-                    guarded_veto += 1;
-                    break 'attempt;
-                }
-                guarded_ok += 1;
-            } else {
-                builder.insert(cc);
+            // Guarded for quality AND size splits: an interior point must
+            // never remove a constraint (see crease_set above) — an
+            // unguarded oversized-tet circumcenter near the boundary can eat
+            // tiles whose replacement faces then route off-plane through the
+            // new point, leaving an unreparable hole in the patch tiling.
+            // The min-dist floor additionally rejects numerically corrupted
+            // circumcenters of near-degenerate tets (an exact circumcenter
+            // lands at distance >= the shortest edge).
+            let tg = std::time::Instant::now();
+            let admitted = builder.insert_guarded(cc, lmin2, |rem| match rem {
+                crate::delaunay::Removal::Face(f) => !tile_set.contains(&f),
+                crate::delaunay::Removal::Edge(a, b) => !crease_set.contains(&(a, b)),
+            });
+            t_guarded += tg.elapsed();
+            if admitted.is_none() {
+                guarded_veto += 1;
+                break 'attempt;
             }
+            guarded_ok += 1;
             let g = points.len();
             points.push(cc);
             point_h.push(child_h(

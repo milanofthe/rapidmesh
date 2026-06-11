@@ -103,6 +103,17 @@ fn check_full_recovery_with(plc: &TaggedPlc, extra: &[[f64; 3]]) {
         }
     }
     assert_eq!(pierced, 0, "facets remain pierced after recovery");
+
+    // WP4: rounding the implicit Steiner points to f64 must keep every tet
+    // strictly positively oriented under plain float predicates.
+    b.round_implicit_points();
+    for t in b.tets() {
+        let p: Vec<[f64; 3]> = t.iter().map(|&v| b.approx_point(v)).collect();
+        assert!(
+            geometry_predicates::orient3d(p[0], p[1], p[2], p[3]) > 0.0,
+            "tet {t:?} inverted or flattened by rounding",
+        );
+    }
     eprintln!(
         "{} facets, {} segments, {} vertices, {} cavities / {} wrap tets so far",
         facets.len(),

@@ -878,6 +878,87 @@ impl DelaunayBuilder {
         self.last = *slots.first().expect("replacement must not be empty");
     }
 
+    /// Rounds every implicit (CDT Steiner) vertex to plain f64 coordinates,
+    /// so the triangulation can be exported and optimized as an ordinary
+    /// float mesh. A vertex is rounded only if all its incident tets stay
+    /// STRICTLY positively oriented with the candidate coordinates (checked
+    /// with exact predicates against the current mixed state); if the
+    /// cached approximation fails, nearby carrier positions (nudged Lnc
+    /// parameters) are tried. Rounding proceeds in passes, since rounding a
+    /// neighbor can unblock a vertex. Panics if a vertex cannot be rounded
+    /// (flattening that local swaps would have to resolve; loud until a
+    /// real input demands that fallback).
+    pub fn round_implicit_points(&mut self) {
+        let implicit: Vec<u32> = (0..self.pts.len() as u32)
+            .filter(|&v| is_implicit(&self.exact, v))
+            .collect();
+        let mut pending: Vec<u32> = implicit;
+        loop {
+            let mut progressed = false;
+            let mut still: Vec<u32> = Vec::new();
+            for &v in &pending {
+                if self.try_round_vertex(v) {
+                    progressed = true;
+                } else {
+                    still.push(v);
+                }
+            }
+            if still.is_empty() {
+                return;
+            }
+            assert!(
+                progressed,
+                "rounding stuck: {} implicit vertices cannot be flattened without inverting tets",
+                still.len(),
+            );
+            pending = still;
+        }
+    }
+
+    /// Tries to round one implicit vertex; true on success.
+    fn try_round_vertex(&mut self, v: u32) -> bool {
+        let star: Vec<u32> = self.star_slots((v - 4) as usize);
+        let ok = |b: &Self, candidate: [f64; 3]| -> bool {
+            // Check all star tets with the candidate as an explicit point,
+            // everything else in its current (possibly implicit) state.
+            star.iter().all(|&s| {
+                let t = b.tets[s as usize];
+                let pt = |i: u32| {
+                    if i == v {
+                        Point3::Explicit(candidate)
+                    } else {
+                        pt3(&b.pts, &b.exact, i)
+                    }
+                };
+                rapidmesh_exact::orient3d(&pt(t[0]), &pt(t[1]), &pt(t[2]), &pt(t[3]))
+                    == Some(Sign::Positive)
+            })
+        };
+        // Candidate positions: the cached approximation, then approximations
+        // of nudged carrier parameters (staying exactly on the f64 carrier
+        // expression keeps the point as close to the constraint as f64 can).
+        let mut candidates = vec![self.pts[v as usize]];
+        if let Some(Point3::Lnc { a, b: bb, t }) = self.exact[v as usize].clone() {
+            let mut up = t;
+            let mut down = t;
+            for _ in 0..4 {
+                up = f64::next_up(up);
+                down = f64::next_down(down);
+                for tc in [up, down] {
+                    candidates.push(std::array::from_fn(|k| a[k] + tc * (bb[k] - a[k])));
+                }
+            }
+        }
+        for c in candidates {
+            if ok(self, c) {
+                self.pts[v as usize] = c;
+                self.exact[v as usize] = None;
+                return true;
+            }
+        }
+        false
+    }
+
     /// The all-real faces of super-corner tets: the convex-hull boundary of
     /// the inserted points, each paired with the position of the super corner
     /// on its far side. A real face can border at most one super tet (the

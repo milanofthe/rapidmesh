@@ -137,6 +137,11 @@ pub struct DelaunayBuilder {
     /// Epoch marks (cavity membership) per tet slot.
     mark: Vec<u32>,
     epoch: u32,
+    /// Per vertex (internal index): some alive tet slot containing it,
+    /// refreshed on every refill. A vertex removed from a cavity always
+    /// reappears in that insert's new tets (otherwise it would vanish from
+    /// the triangulation), so hints never go stale.
+    vert_hint: Vec<u32>,
     // Scratch buffers (reused across inserts).
     cavity: Vec<u32>,
     /// Boundary faces as (cavity tet, face index).
@@ -182,6 +187,7 @@ impl DelaunayBuilder {
             last: 0,
             mark: vec![0],
             epoch: 0,
+            vert_hint: vec![0; 4],
             cavity: Vec::new(),
             boundary: Vec::new(),
             edge_map: rustc_hash::FxHashMap::default(),
@@ -304,6 +310,84 @@ impl DelaunayBuilder {
     /// point where one was inserted, the explicit f64 otherwise.
     pub fn exact_point(&self, i: usize) -> Point3 {
         pt3(&self.pts, &self.exact, (i + 4) as u32)
+    }
+
+    /// The f64 position of an inserted point (public index): the inserted
+    /// coordinates for explicit points, the cached approximation for
+    /// implicit ones.
+    pub fn approx_point(&self, i: usize) -> [f64; 3] {
+        self.pts[i + 4]
+    }
+
+    /// Some alive slot whose tet contains the internal vertex, from the
+    /// refill-maintained hint (with a linear rescue scan as backstop).
+    fn star_seed(&self, vi: u32) -> u32 {
+        let valid = |s: u32| {
+            s != NONE && self.alive[s as usize] && self.tets[s as usize].contains(&vi)
+        };
+        let hint = self.vert_hint[vi as usize];
+        if valid(hint) {
+            return hint;
+        }
+        debug_assert!(false, "stale vertex hint for {vi}");
+        (0..self.tets.len() as u32)
+            .find(|&s| valid(s))
+            .expect("inserted vertex must appear in some alive tet")
+    }
+
+    /// All alive tet slots containing the vertex (public index), super-corner
+    /// tets included. The star of any inserted vertex is face-connected, so a
+    /// BFS through the neighbors sharing the vertex enumerates it completely.
+    pub fn star_slots(&self, v: usize) -> Vec<u32> {
+        let vi = (v + 4) as u32;
+        let mut out = vec![self.star_seed(vi)];
+        let mut seen = rustc_hash::FxHashSet::default();
+        seen.insert(out[0]);
+        let mut head = 0;
+        while head < out.len() {
+            let s = out[head];
+            head += 1;
+            let t = self.tets[s as usize];
+            for (k, &tv) in t.iter().enumerate() {
+                if tv == vi {
+                    continue;
+                }
+                let nb = self.neighbors[s as usize][k];
+                if nb != NONE && seen.insert(nb) {
+                    debug_assert!(self.tets[nb as usize].contains(&vi));
+                    out.push(nb);
+                }
+            }
+        }
+        out
+    }
+
+    /// True if (i, j) is an edge of the current triangulation (public
+    /// indices): a BFS over the star of `i` looking for a tet containing `j`.
+    pub fn edge_exists(&self, i: usize, j: usize) -> bool {
+        let (vi, vj) = ((i + 4) as u32, (j + 4) as u32);
+        let mut queue = vec![self.star_seed(vi)];
+        let mut seen = rustc_hash::FxHashSet::default();
+        seen.insert(queue[0]);
+        let mut head = 0;
+        while head < queue.len() {
+            let s = queue[head];
+            head += 1;
+            let t = self.tets[s as usize];
+            if t.contains(&vj) {
+                return true;
+            }
+            for (k, &tv) in t.iter().enumerate() {
+                if tv == vi {
+                    continue;
+                }
+                let nb = self.neighbors[s as usize][k];
+                if nb != NONE && seen.insert(nb) {
+                    queue.push(nb);
+                }
+            }
+        }
+        false
     }
 
     /// Inserts a point unless `keep` rejects one of the faces or edges the
@@ -543,6 +627,14 @@ impl DelaunayBuilder {
             let ti = self.cavity[ci];
             self.alive[ti as usize] = false;
             self.free.push(ti);
+        }
+        // Refresh vertex hints: every vertex of a new tet (cavity-boundary
+        // vertices and p itself) points at a tet created this insert.
+        self.vert_hint.resize(self.pts.len(), NONE);
+        for &nt in &self.new_tets {
+            for &v in &self.tets[nt as usize] {
+                self.vert_hint[v as usize] = nt;
+            }
         }
         self.last = *self.new_tets.last().expect("cavity has boundary faces");
         (p - 4) as usize

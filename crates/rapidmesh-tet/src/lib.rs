@@ -13,10 +13,12 @@
 //!    PLC surface back-references (required for full Nédélec-2 convergence on
 //!    curved boundaries).
 
+pub mod cdt;
 pub mod conform;
 pub mod delaunay;
 pub mod optimize;
 
+pub use cdt::{acute_vertices, recover_segments, RecoveredSegment};
 pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, TetMesh};
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};

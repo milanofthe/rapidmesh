@@ -66,10 +66,57 @@ pub struct TetMesh {
     pub faces: Vec<SurfaceFace>,
     /// The analytic surfaces referenced by [SurfaceFace::surface].
     pub surfaces: Vec<SurfaceKind>,
+    /// Per-surface owner solid index (scene insertion order, voids included);
+    /// `u32::MAX` for sheet surfaces. Parallel to `surfaces`.
+    pub surface_owners: Vec<u32>,
     /// `points[..plc_points]` are the PLC's own vertices (the geometry);
     /// everything after is a Steiner point the mesher added. The optimizer's
     /// edge collapse may remove Steiner points but never PLC vertices.
     pub plc_points: usize,
+}
+
+impl TetMesh {
+    /// Feature (crease) edges of the final surface mesh, derived from the
+    /// faces so they stay valid through optimizer rewrites. An edge is a
+    /// feature edge iff it is not interior to one smooth surface group:
+    /// boundary/non-manifold incidence (face count != 2), or the two faces
+    /// differ in analytic surface, face tag, or region pair. Within ONE
+    /// `Plane` surface entry that collects several non-coplanar walls (loft
+    /// flanks, pipe segments), the planar patch id discriminates, so true
+    /// geometric creases survive while the facet seams of curved analytic
+    /// surfaces (cylinder barrel) stay smooth.
+    pub fn feature_edges(&self) -> Vec<[usize; 2]> {
+        // group key per face: planes split by patch, curved by surface
+        let face_key = |sf: &SurfaceFace| -> (u32, u32, u32, u32, u32) {
+            let smooth = match self.surfaces[sf.surface as usize] {
+                SurfaceKind::Plane => sf.patch,
+                _ => u32::MAX,
+            };
+            let (r0, r1) = (sf.regions[0].0.min(sf.regions[1].0), sf.regions[0].0.max(sf.regions[1].0));
+            (sf.surface, smooth, sf.face_tag.0, r0, r1)
+        };
+        let mut edges: DMap<(usize, usize), (u32, (u32, u32, u32, u32, u32), bool)> =
+            DMap::default();
+        for sf in &self.faces {
+            let key = face_key(sf);
+            for k in 0..3 {
+                let (a, b) = (sf.tri[k], sf.tri[(k + 1) % 3]);
+                let e = (a.min(b), a.max(b));
+                let entry = edges.entry(e).or_insert((0, key, false));
+                entry.0 += 1;
+                if entry.1 != key {
+                    entry.2 = true;
+                }
+            }
+        }
+        let mut out: Vec<[usize; 2]> = edges
+            .iter()
+            .filter(|(_, &(cnt, _, mixed))| cnt != 2 || mixed)
+            .map(|(&(a, b), _)| [a, b])
+            .collect();
+        out.sort_unstable();
+        out
+    }
 }
 
 /// A maximal coplanar group of equally tagged PLC facets.
@@ -1310,6 +1357,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         tet_regions,
         faces: out_faces,
         surfaces: plc.surfaces.clone(),
+        surface_owners: plc.surface_owners.clone(),
         plc_points: plc.vertices.len(),
     }
 }

@@ -37,9 +37,13 @@ from . import _native
 @dataclass(frozen=True)
 class Solid:
     """Handle to a solid added to a :class:`Geometry`: its ``region`` tag
-    identifies the solid's tets in :attr:`Mesh.tet_regions`."""
+    identifies the solid's tets in :attr:`Mesh.tet_regions`, its ``index``
+    (insertion order, voids included) identifies the solid's surfaces in
+    :attr:`Mesh.surface_owners`. Voids share ``region`` 0 but keep a unique
+    ``index``, so their walls stay addressable."""
 
     region: int
+    index: int
 
 
 class Mesh:
@@ -59,6 +63,15 @@ class Mesh:
         sheet tag per face (0 for untagged interfaces)
     face_regions : (n_faces, 2) uint32
         the regions on the two sides of each face (0 = outside)
+    face_surfaces : (n_faces,) uint32
+        analytic-surface id per face: faces of one input surface (a box
+        side, a cylinder barrel) share one id
+    surface_owners : (n_surfaces,) uint32
+        owner solid per surface id (:attr:`Solid.index`); the max uint32
+        marks embedded-sheet surfaces
+    edges : (n_edges, 2) uint64
+        feature (crease) edges of the surface mesh; facet seams of curved
+        analytic surfaces are not included
     stats : dict
         n_points, n_tets, n_faces, min_dihedral_deg, max_radius_edge,
         max_edge, millis
@@ -72,6 +85,9 @@ class Mesh:
         self.faces: np.ndarray = native.faces()
         self.face_tags: np.ndarray = native.face_tags()
         self.face_regions: np.ndarray = native.face_regions()
+        self.face_surfaces: np.ndarray = native.face_surfaces()
+        self.surface_owners: np.ndarray = native.surface_owners()
+        self.edges: np.ndarray = native.edges()
         self.stats: dict = native.stats()
 
     def __repr__(self) -> str:
@@ -103,6 +119,7 @@ class Mesh:
                     self.faces, self.face_tags, self.face_regions
                 )
             ],
+            "edges": self.edges.astype(int).tolist(),
             "stats": {
                 "n_points": int(self.stats["n_points"]),
                 "n_tets": int(self.stats["n_tets"]),
@@ -167,6 +184,12 @@ class Geometry:
         self._grading = grading
         self._face_maxh: dict[int, float] = {}
         self._size_points: list[tuple[tuple[float, float, float], float]] = []
+        self._n_solids = 0
+
+    def _solid(self, region: int) -> Solid:
+        idx = self._n_solids
+        self._n_solids += 1
+        return Solid(region, idx)
 
     # ------------------------------------------------------------ solids
 
@@ -188,7 +211,7 @@ class Geometry:
         region = self._builder.add_box(
             [x, y, z], [x + width, y + depth, z + height], maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def cylinder(
         self,
@@ -208,7 +231,7 @@ class Geometry:
         region = self._builder.add_cylinder(
             list(position), ax, radius, segments, maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def sphere(
         self,
@@ -225,7 +248,7 @@ class Geometry:
         region = self._builder.add_sphere(
             list(position), radius, segments, rings, maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def cone(
         self,
@@ -245,7 +268,7 @@ class Geometry:
         region = self._builder.add_frustum(
             list(position), ax, r1, r2, segments, maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def prism(
         self,
@@ -269,7 +292,7 @@ class Geometry:
             maxh,
             void,
         )
-        return Solid(region)
+        return self._solid(region)
 
     def torus(
         self,
@@ -295,7 +318,7 @@ class Geometry:
             maxh,
             void,
         )
-        return Solid(region)
+        return self._solid(region)
 
     def wedge(
         self,
@@ -314,7 +337,7 @@ class Geometry:
         region = self._builder.add_wedge(
             list(position), dx, dy, dz, top_x, maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def sweep(
         self,
@@ -332,7 +355,7 @@ class Geometry:
         region = self._builder.add_pipe(
             [list(p) for p in path], radius, segments, maxh, void
         )
-        return Solid(region)
+        return self._solid(region)
 
     def helix(
         self,
@@ -360,7 +383,7 @@ class Geometry:
             maxh,
             void,
         )
-        return Solid(region)
+        return self._solid(region)
 
     def loft(
         self,
@@ -379,7 +402,7 @@ class Geometry:
             maxh,
             void,
         )
-        return Solid(region)
+        return self._solid(region)
 
     # ------------------------------------------------------------ sheets
 

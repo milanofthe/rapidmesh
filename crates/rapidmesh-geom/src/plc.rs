@@ -40,4 +40,12 @@ pub struct TaggedPlc {
     pub region_tags: Vec<[RegionTag; 2]>,
     /// The analytic surfaces referenced by `surface_refs`.
     pub surfaces: Vec<SurfaceKind>,
+    /// Per-surface owner: the index of the scene solid (insertion order,
+    /// voids included) whose facets produced the surface, or
+    /// [SHEET_OWNER] for sheet surfaces. Parallel to `surfaces`.
+    pub surface_owners: Vec<u32>,
 }
+
+/// Owner value in [TaggedPlc::surface_owners] for surfaces that belong to an
+/// embedded sheet rather than a solid (sheets are addressed by face tag).
+pub const SHEET_OWNER: u32 = u32::MAX;

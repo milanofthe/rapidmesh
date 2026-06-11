@@ -579,3 +579,102 @@ fn torus_meshes_exactly() {
     assert!(diff <= tol, "torus volume off by more than 1e-9 relative");
     check_structure(&mesh);
 }
+
+/// Feature edges of a meshed box are exactly the 12 box edges: every
+/// reported edge lies ON one of them, and all 12 are present.
+#[test]
+fn box_feature_edges_are_the_box_edges() {
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]));
+    let mut mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.4, ..MeshParams::default() });
+    optimize(&mut mesh, &OptimizeParams { maxh: 0.4, ..OptimizeParams::default() });
+    let dims = [2.0, 1.0, 1.0];
+    // A point is on a box edge iff it lies on the surface of two axis slabs.
+    let on_edge_of = |p: [f64; 3]| -> Option<(usize, usize)> {
+        let ext: Vec<usize> = (0..3)
+            .filter(|&k| p[k].abs() < 1e-12 || (p[k] - dims[k]).abs() < 1e-12)
+            .collect();
+        match ext.len() {
+            2 => Some((ext[0], ext[1])),
+            3 => Some((ext[0], ext[1])), // corner: any incident edge
+            _ => None,
+        }
+    };
+    let edges = mesh.feature_edges();
+    assert!(!edges.is_empty());
+    let mut corners_seen: std::collections::HashSet<[i8; 3]> = Default::default();
+    for [a, b] in &edges {
+        let (pa, pb) = (mesh.points[*a], mesh.points[*b]);
+        assert!(
+            on_edge_of(pa).is_some() && on_edge_of(pb).is_some(),
+            "feature edge endpoint off the box frame: {pa:?} {pb:?}"
+        );
+        // Both endpoints on the SAME box edge: the segment must be axis
+        // aligned (exactly one coordinate varies).
+        let varying = (0..3).filter(|&k| (pa[k] - pb[k]).abs() > 1e-12).count();
+        assert_eq!(varying, 1, "feature edge not on a box edge: {pa:?} {pb:?}");
+        for p in [pa, pb] {
+            if (0..3).all(|k| p[k].abs() < 1e-12 || (p[k] - dims[k]).abs() < 1e-12) {
+                corners_seen.insert(std::array::from_fn(|k| (p[k] > 0.5) as i8));
+            }
+        }
+    }
+    assert_eq!(corners_seen.len(), 8, "not all box corners appear on feature edges");
+}
+
+/// Feature edges of a meshed cylinder are ONLY the two rim circles: the
+/// barrel facet seams are interior to one analytic surface and must not
+/// appear.
+#[test]
+fn cylinder_feature_edges_are_the_rims() {
+    let mut scene = Scene::new();
+    scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 24));
+    let mut mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.5, ..MeshParams::default() });
+    optimize(&mut mesh, &OptimizeParams { maxh: 0.5, ..OptimizeParams::default() });
+    let edges = mesh.feature_edges();
+    assert!(!edges.is_empty());
+    for [a, b] in &edges {
+        let (pa, pb) = (mesh.points[*a], mesh.points[*b]);
+        for p in [pa, pb] {
+            assert!(
+                p[2].abs() < 1e-9 || (p[2] - 2.0).abs() < 1e-9,
+                "feature edge off the rims (barrel seam leaked): {p:?}"
+            );
+        }
+        assert!(
+            (pa[2] - pb[2]).abs() < 1e-9,
+            "feature edge spans between the rims: {pa:?} {pb:?}"
+        );
+    }
+}
+
+/// Surface provenance: every face knows its analytic surface, every surface
+/// its owner solid (insertion order, voids included). The walls of a void
+/// bore are owned by the void, not by the solid it cuts.
+#[test]
+fn surface_owners_track_solids_and_voids() {
+    let mut scene = Scene::new();
+    let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
+    scene.add_void(cylinder([2.0, 2.0, 0.0], [0.0, 0.0, 2.0], 0.8, 24));
+    let mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.6, ..MeshParams::default() });
+    assert_eq!(mesh.surface_owners.len(), mesh.surfaces.len());
+    let mut bore_faces = 0usize;
+    for f in &mesh.faces {
+        let owner = mesh.surface_owners[f.surface as usize];
+        // Void bore walls: between the block region and outside, and curved.
+        let regions = [f.regions[0], f.regions[1]];
+        let is_bore = regions.contains(&block)
+            && regions.contains(&RegionTag(0))
+            && !matches!(
+                mesh.surfaces[f.surface as usize],
+                rapidmesh_geom::SurfaceKind::Plane
+            );
+        if is_bore {
+            assert_eq!(owner, 1, "bore wall not owned by the void solid");
+            bore_faces += 1;
+        } else {
+            assert_eq!(owner, 0, "outer box face not owned by the box");
+        }
+    }
+    assert!(bore_faces > 0, "no bore faces found");
+}

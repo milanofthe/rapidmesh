@@ -346,6 +346,33 @@ impl PyMesh {
             .into_pyarray_bound(py)
     }
 
+    /// Analytic-surface id per surface face, shape (n_faces,). Faces of one
+    /// input surface (a box side, a cylinder barrel, a loft flank set) share
+    /// one id; together with `surface_owners` this gives B-rep-style face
+    /// provenance without a B-rep.
+    fn face_surfaces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+        let v: Vec<u32> = self.mesh.faces.iter().map(|f| f.surface).collect();
+        v.into_pyarray_bound(py)
+    }
+
+    /// Owner solid index per analytic surface (scene insertion order, voids
+    /// included), shape (n_surfaces,); u32::MAX marks sheet surfaces.
+    fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+        self.mesh.surface_owners.clone().into_pyarray_bound(py)
+    }
+
+    /// Feature (crease) edges of the surface mesh, shape (n_edges, 2): PLC
+    /// creases, patch borders and sheet rims as they exist in the final mesh.
+    /// Facet seams of curved analytic surfaces are NOT feature edges.
+    fn edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
+        let e = self.mesh.feature_edges();
+        let n = e.len();
+        let flat: Vec<u64> = e.iter().flat_map(|p| p.map(|v| v as u64)).collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 2), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
     /// Quality and timing statistics.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use pyo3::types::PyDict;

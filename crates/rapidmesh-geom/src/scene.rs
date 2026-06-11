@@ -10,7 +10,7 @@
 //! facet with combined tags. Vertices are exact until the final snap to f64.
 
 use crate::faceted::{Faceted, SurfaceKind};
-use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
+use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc, SHEET_OWNER};
 use rapidmesh_csg::{arrange, classify, Placement, Tri, VertexPool};
 use rapidmesh_exact::Point3;
 use std::collections::HashMap;
@@ -73,9 +73,12 @@ impl Scene {
         let mut tris: Vec<Tri> = Vec::new();
         let mut src: Vec<Src> = Vec::new();
         let mut surfaces: Vec<SurfaceKind> = Vec::new();
+        let mut surface_owners: Vec<u32> = Vec::new();
         let mut flatten = |f: &Faceted, solid: Option<usize>, tag: FaceTag| {
             let base = surfaces.len() as u32;
             surfaces.extend(f.surfaces.iter().cloned());
+            let owner = solid.map_or(SHEET_OWNER, |k| k as u32);
+            surface_owners.extend(std::iter::repeat(owner).take(f.surfaces.len()));
             for (t, &fs) in f.tris.iter().zip(&f.face_surface) {
                 tris.push(*t);
                 src.push(Src {
@@ -318,6 +321,7 @@ impl Scene {
             surface_refs: out_surface_refs,
             region_tags: out_region_tags,
             surfaces,
+            surface_owners,
         }
     }
 }

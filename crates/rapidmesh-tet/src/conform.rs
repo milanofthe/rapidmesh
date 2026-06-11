@@ -66,6 +66,10 @@ pub struct TetMesh {
     pub faces: Vec<SurfaceFace>,
     /// The analytic surfaces referenced by [SurfaceFace::surface].
     pub surfaces: Vec<SurfaceKind>,
+    /// `points[..plc_points]` are the PLC's own vertices (the geometry);
+    /// everything after is a Steiner point the mesher added. The optimizer's
+    /// edge collapse may remove Steiner points but never PLC vertices.
+    pub plc_points: usize,
 }
 
 /// A maximal coplanar group of equally tagged PLC facets.
@@ -1203,6 +1207,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         tet_regions,
         faces: out_faces,
         surfaces: plc.surfaces.clone(),
+        plc_points: plc.vertices.len(),
     }
 }
 

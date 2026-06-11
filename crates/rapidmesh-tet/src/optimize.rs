@@ -394,6 +394,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &mut next_dirty,
         );
         let t_surf = t0.elapsed();
+        edge_watch("surf", mesh, &alive);
         let t1 = std::time::Instant::now();
 
         // ------------------------------------------------- smoothing
@@ -520,6 +521,50 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
 
         let t_smooth = t1.elapsed();
+        edge_watch("smooth", mesh, &alive);
+
+        // --------------------------------------------- edge collapse
+        // Before the flip owner maps are built: collapses rewrite tets in
+        // place, and the entry lists must reflect the result.
+        {
+            let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
+            let mut bad: Vec<(f64, u32)> = Vec::new();
+            for &ti in &map_tets {
+                if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
+                    continue;
+                }
+                let q = cached_q(&mesh.points, &mesh.tets, &mut tet_q, ti as usize);
+                if q < insert_below {
+                    bad.push((q, ti));
+                }
+            }
+            bad.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            for (_, ti) in bad {
+                let ti = ti as usize;
+                if !alive[ti] {
+                    continue;
+                }
+                if cached_q(&mesh.points, &mesh.tets, &mut tet_q, ti) >= insert_below {
+                    continue; // rewritten by an earlier collapse
+                }
+                if try_edge_collapse(
+                    mesh,
+                    &mut g_incident,
+                    &mut alive,
+                    &mut tet_q,
+                    &mut face_idx,
+                    &mut constrained_faces,
+                    &mut constrained_edges,
+                    &constrained_verts,
+                    &edge_budget2,
+                    &mut next_dirty,
+                    ti,
+                ) {
+                    ops += 1;
+                }
+            }
+        }
+        edge_watch("collapse", mesh, &alive);
         let t2 = std::time::Instant::now();
 
         // ------------------------------------------------------ flips
@@ -839,6 +884,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
 
         let t_eremove = t2.elapsed();
+        edge_watch("eremove", mesh, &alive);
         // --------------------------------------------- vertex insertion
         // (see INSERT_BELOW_DEG). The cavity is the bad tet plus its alive
         // same-region face neighbors (1-ring: the owner map is complete for
@@ -1277,6 +1323,29 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
 
         if trace {
+            let mut me2 = 0.0f64;
+            let mut who = [0usize; 4];
+            for (ti, t) in mesh.tets.iter().enumerate() {
+                if !alive[ti] {
+                    continue;
+                }
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        let d = dist2_pts(mesh.points[t[i]], mesh.points[t[j]]);
+                        if d > me2 {
+                            me2 = d;
+                            who = *t;
+                        }
+                    }
+                }
+            }
+            eprintln!("  max edge {:.6} in tet {who:?}", me2.sqrt());
+            use std::sync::atomic::Ordering;
+            let cr: Vec<usize> = COLLAPSE_REJECTS
+                .iter()
+                .map(|c| c.swap(0, Ordering::Relaxed))
+                .collect();
+            eprintln!("  collapse rejects [surface {}, link {}, valid {}, quality {}, fold {}]", cr[1], cr[2], cr[3], cr[4], cr[5]);
             eprintln!(
                 "opt pass {_pass}: surf {:?}, smooth {:?}, flips {:?} (entries {:?}, 2-3 {:?}, eremove {:?}, insert {:?}), ops {ops}, dirty {}",
                 t_surf,
@@ -1309,6 +1378,433 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         mesh.tet_regions = regions;
     }
     total_ops
+}
+
+/// Edge collapse b -> a around a bad tet: removes STEINER vertex b by
+/// merging it into its edge neighbor a; the (a, b) ring dies and the rest of
+/// b's star is rewritten in place. This is the operation for boundary caps
+/// and wedges whose every vertex is pinned to the surface: smoothing cannot
+/// move them, their near-coplanar rings defeat edge removal, and interior
+/// insertion has no room (their only roomy faces ARE surface faces).
+///
+/// PLC vertices are never removed (the input geometry is the contract). A
+/// surface Steiner vertex collapses only along a surface edge whose target
+/// holds EVERY patch b lies on, which keeps b's whole surface star inside
+/// its own constraint set exactly: one patch means in-plane retiling, two or
+/// more mean the collapse runs along the patches' intersection line, so
+/// region volumes are preserved exactly; bent corners are PLC vertices and
+/// already excluded. If b lies on feature edges (creases, sheet rims), the
+/// collapse edge must itself be one of them.
+#[allow(clippy::too_many_arguments)]
+fn try_edge_collapse(
+    mesh: &mut TetMesh,
+    g_incident: &mut [Vec<u32>],
+    alive: &mut [bool],
+    tet_q: &mut [f64],
+    face_idx: &mut DMap<[usize; 3], u32>,
+    constrained_faces: &mut DSet<[usize; 3]>,
+    constrained_edges: &mut DSet<(usize, usize)>,
+    constrained_verts: &DSet<usize>,
+    edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+    next_dirty: &mut DSet<usize>,
+    ti: usize,
+) -> bool {
+    let t = mesh.tets[ti];
+    let ctrace = std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some();
+    if ctrace {
+        eprintln!(
+            "collapse cand tet {ti} {t:?} q {:.4} (plc < {})",
+            quality(&mesh.points, t),
+            mesh.plc_points
+        );
+    }
+    for bi in 0..4 {
+        let b = t[bi];
+        if b < mesh.plc_points {
+            continue; // never remove PLC vertices
+        }
+        // b's alive star and surface faces.
+        let star_b: Vec<usize> = g_incident[b]
+            .iter()
+            .filter(|&&x| alive[x as usize])
+            .map(|&x| x as usize)
+            .collect();
+        let mut b_faces: Vec<(u32, [usize; 3])> = Vec::new();
+        for &tb in &star_b {
+            let tt = mesh.tets[tb];
+            for fi in TET_FACES_OPT {
+                let f = fi.map(|k| tt[k]);
+                if !f.contains(&b) {
+                    continue;
+                }
+                let key = sorted3(f);
+                if let Some(&idx) = face_idx.get(&key) {
+                    if !b_faces.iter().any(|&(i, _)| i == idx) {
+                        b_faces.push((idx, key));
+                    }
+                }
+            }
+        }
+        let b_patches: Vec<u32> = {
+            let mut ps: Vec<u32> = b_faces
+                .iter()
+                .map(|&(idx, _)| mesh.faces[idx as usize].patch)
+                .collect();
+            ps.sort_unstable();
+            ps.dedup();
+            ps
+        };
+        // Feature neighbors of b among its surface edges: a surface edge
+        // whose face count differs from 2 or whose two faces belong to
+        // different smooth groups (creases, sheet rims). Materialized up
+        // front: the gates below mutate mesh.points speculatively.
+        let feature_nbrs_of_b: Vec<usize> = {
+            let mut nb: Vec<usize> = b_faces
+                .iter()
+                .flat_map(|&(_, key)| key)
+                .filter(|&x| x != b)
+                .collect();
+            nb.sort_unstable();
+            nb.dedup();
+            nb.retain(|&x| {
+                if !constrained_edges.contains(&(x.min(b), x.max(b))) {
+                    return false;
+                }
+                let efs: Vec<u32> = b_faces
+                    .iter()
+                    .filter(|&&(_, key)| key.contains(&x))
+                    .map(|&(idx, _)| idx)
+                    .collect();
+                efs.len() != 2
+                    || face_group(mesh, efs[0] as usize) != face_group(mesh, efs[1] as usize)
+            });
+            nb
+        };
+        let b_has_features = !feature_nbrs_of_b.is_empty();
+
+        'targets: for (ai, &a) in t.iter().enumerate() {
+            if ai == bi {
+                continue;
+            }
+            if !b_faces.is_empty() {
+                // Surface b: only along a surface edge into its own
+                // constraint set.
+                if !constrained_edges.contains(&(a.min(b), a.max(b))) {
+                    creject(1);
+                    continue;
+                }
+                let mut a_patches: Vec<u32> = Vec::new();
+                for &ta in g_incident[a].iter().filter(|&&x| alive[x as usize]) {
+                    let tt = mesh.tets[ta as usize];
+                    for fi in TET_FACES_OPT {
+                        let f = fi.map(|k| tt[k]);
+                        if !f.contains(&a) {
+                            continue;
+                        }
+                        if let Some(&idx) = face_idx.get(&sorted3(f)) {
+                            a_patches.push(mesh.faces[idx as usize].patch);
+                        }
+                    }
+                }
+                a_patches.sort_unstable();
+                a_patches.dedup();
+                if !b_patches.iter().all(|p| a_patches.contains(p)) {
+                    creject(1);
+                    continue;
+                }
+                if b_has_features && !feature_nbrs_of_b.contains(&a) {
+                    creject(1);
+                    continue;
+                }
+            }
+
+            // The (a, b) ring dies; the rest of b's star is rewritten.
+            let mut dying: Vec<usize> = Vec::new();
+            let mut rewritten: Vec<usize> = Vec::new();
+            for &tb in &star_b {
+                if mesh.tets[tb].contains(&a) {
+                    dying.push(tb);
+                } else {
+                    rewritten.push(tb);
+                }
+            }
+            if dying.is_empty() || rewritten.is_empty() {
+                continue;
+            }
+            // Link condition: a rewritten tet must not duplicate an existing
+            // tet of a's star (a non-manifold pinch would silently overlap).
+            let a_star_keys: DSet<[usize; 4]> = g_incident[a]
+                .iter()
+                .filter(|&&x| alive[x as usize])
+                .map(|&x| {
+                    let mut k = mesh.tets[x as usize];
+                    k.sort_unstable();
+                    k
+                })
+                .collect();
+            for &tr in &rewritten {
+                let mut k = mesh.tets[tr].map(|v| if v == b { a } else { v });
+                k.sort_unstable();
+                if a_star_keys.contains(&k) {
+                    creject(2);
+                    continue 'targets;
+                }
+            }
+            // Surface link condition: a rewritten surface face must not
+            // collide with an existing one.
+            for &(_, key) in &b_faces {
+                if key.contains(&a) {
+                    continue; // dies
+                }
+                let nk = sorted3(key.map(|v| if v == b { a } else { v }));
+                if face_idx.contains_key(&nk) {
+                    creject(2);
+                    continue 'targets;
+                }
+            }
+
+            // Gates: validity, quality, sizing, surface fold-over. The
+            // merged vertex may itself MOVE (midpoint, or all the way to b)
+            // when both endpoints are interior Steiner points -- a pinned
+            // target often cannot see b's whole link, which was the dominant
+            // rejection; interior vertices are always Steiner (PLC vertices
+            // live on patches), so the merged position is free. A moving
+            // target adds a's surviving star to the checked complex.
+            let star_a: Vec<usize> = g_incident[a]
+                .iter()
+                .filter(|&&x| alive[x as usize])
+                .map(|&x| x as usize)
+                .collect();
+            let surviving_a: Vec<usize> = star_a
+                .iter()
+                .copied()
+                .filter(|ta| !mesh.tets[*ta].contains(&b))
+                .collect();
+            let a_free = b_faces.is_empty() && !constrained_verts.contains(&a);
+            let pa0 = mesh.points[a];
+            let pb0 = mesh.points[b];
+            let candidates: &[[f64; 3]] = if a_free {
+                &[
+                    pa0,
+                    [
+                        0.5 * (pa0[0] + pb0[0]),
+                        0.5 * (pa0[1] + pb0[1]),
+                        0.5 * (pa0[2] + pb0[2]),
+                    ],
+                    pb0,
+                ]
+            } else {
+                std::slice::from_ref(&pa0)
+            };
+            let mut old_q = f64::MAX;
+            for &tb in star_b.iter().chain(surviving_a.iter()) {
+                old_q = old_q.min(cached_q_free(&mesh.points, &mesh.tets, tet_q, tb));
+            }
+            let mut accepted_pos: Option<[f64; 3]> = None;
+            'positions: for &pos in candidates {
+                mesh.points[a] = pos;
+                let mut new_q = f64::MAX;
+                let moved = pos != pa0;
+                let checked: Vec<([usize; 4], rapidmesh_geom::RegionTag, bool)> = rewritten
+                    .iter()
+                    .map(|&tr| {
+                        (
+                            mesh.tets[tr].map(|v| if v == b { a } else { v }),
+                            mesh.tet_regions[tr],
+                            true,
+                        )
+                    })
+                    .chain(
+                        surviving_a
+                            .iter()
+                            .filter(|_| moved)
+                            .map(|&ta| (mesh.tets[ta], mesh.tet_regions[ta], false)),
+                    )
+                    .collect();
+                for (n, r, _from_b) in checked {
+                    // Sizing contract PER EDGE, HARD: every merged edge
+                    // stays within the region budget outright. Status-quo
+                    // clauses (grow up to a local predecessor) launder
+                    // oversized legacy edges from refinement into NEW edges;
+                    // a hard gate is airtight, and on surface models (maxh
+                    // infinite) it costs nothing.
+                    let budget2 = edge_budget2(r);
+                    for &v in &n {
+                        if v == a {
+                            continue;
+                        }
+                        if dist2_pts(mesh.points[v], pos) > budget2 {
+                            mesh.points[a] = pa0;
+                            continue 'positions;
+                        }
+                    }
+                    if !orient_positive(&mesh.points, n) {
+                        mesh.points[a] = pa0;
+                        continue 'positions;
+                    }
+                    match quality_above(&mesh.points, n, old_q) {
+                        Some(q) => new_q = new_q.min(q),
+                        None => {
+                            mesh.points[a] = pa0;
+                            continue 'positions;
+                        }
+                    }
+                }
+                if new_q <= old_q + QUALITY_EPS {
+                    mesh.points[a] = pa0;
+                    creject(4);
+                    if ctrace {
+                        eprintln!("  b {b} -> a {a} pos {moved}: quality {new_q:.4} <= {old_q:.4}");
+                    }
+                    continue 'positions;
+                }
+                accepted_pos = Some(pos);
+                break;
+            }
+            let Some(pos) = accepted_pos else {
+                creject(3);
+                if ctrace {
+                    eprintln!("  b {b} -> a {a}: no valid position (dying {}, rewritten {}, old_q {old_q:.4})", dying.len(), rewritten.len());
+                }
+                continue;
+            };
+            mesh.points[a] = pos;
+            // Surface fold-over: every rewritten surface face keeps its
+            // normal direction.
+            for &(idx, key) in &b_faces {
+                if key.contains(&a) {
+                    continue;
+                }
+                let tri = mesh.faces[idx as usize].tri;
+                let old_n = face_normal(&mesh.points, tri);
+                let new_tri = tri.map(|v| if v == b { a } else { v });
+                let new_n = face_normal(&mesh.points, new_tri);
+                if old_n[0] * new_n[0] + old_n[1] * new_n[1] + old_n[2] * new_n[2] <= 0.1 {
+                    creject(5);
+                    continue 'targets;
+                }
+            }
+
+            // ----------------------------------------------- commit
+            for &td in &dying {
+                alive[td] = false;
+            }
+            for &tr in &rewritten {
+                let o = mesh.tets[tr];
+                let n = o.map(|v| if v == b { a } else { v });
+                mesh.tets[tr] = n;
+                tet_q[tr] = f64::NAN;
+                update_incidence(g_incident, tr as u32, o, n);
+            }
+            for &ta in &surviving_a {
+                tet_q[ta] = f64::NAN;
+            }
+            // Surface bookkeeping: dying faces leave, the rest re-cones to a.
+            let mut dying_faces: Vec<u32> = Vec::new();
+            for &(idx, key) in &b_faces {
+                if key.contains(&a) {
+                    dying_faces.push(idx);
+                    face_idx.remove(&key);
+                    constrained_faces.remove(&key);
+                } else {
+                    let tri = mesh.faces[idx as usize].tri;
+                    let new_tri = tri.map(|v| if v == b { a } else { v });
+                    let nk = sorted3(new_tri);
+                    face_idx.remove(&key);
+                    face_idx.insert(nk, idx);
+                    constrained_faces.remove(&key);
+                    constrained_faces.insert(nk);
+                    mesh.faces[idx as usize].tri = new_tri;
+                    for e in 0..3 {
+                        let (x, y) = (new_tri[e], new_tri[(e + 1) % 3]);
+                        constrained_edges.insert((x.min(y), x.max(y)));
+                    }
+                }
+            }
+            // Drop every surface edge at b (b has no surface faces left).
+            {
+                let mut nb: Vec<usize> = b_faces
+                    .iter()
+                    .flat_map(|&(_, key)| key)
+                    .filter(|&x| x != b)
+                    .collect();
+                nb.sort_unstable();
+                nb.dedup();
+                for x in nb {
+                    constrained_edges.remove(&(x.min(b), x.max(b)));
+                }
+            }
+            // Remove dying face records (swap_remove, descending; fix the
+            // moved record's index entry).
+            dying_faces.sort_unstable_by(|x, y| y.cmp(x));
+            for idx in dying_faces {
+                let idx = idx as usize;
+                mesh.faces.swap_remove(idx);
+                if idx < mesh.faces.len() {
+                    let moved_key = sorted3(mesh.faces[idx].tri);
+                    face_idx.insert(moved_key, idx as u32);
+                }
+            }
+            for &tb in star_b.iter().chain(surviving_a.iter()) {
+                for &v in &mesh.tets[tb] {
+                    next_dirty.insert(v);
+                }
+            }
+            next_dirty.insert(a);
+            return true;
+        }
+    }
+    false
+}
+
+/// Stage watchdog (RAPIDMESH_EDGE_WATCH): max alive edge after a stage.
+fn edge_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
+    if std::env::var_os("RAPIDMESH_EDGE_WATCH").is_none() {
+        return;
+    }
+    let mut me2 = 0.0f64;
+    let mut who = [0usize; 4];
+    for (ti, t) in mesh.tets.iter().enumerate() {
+        if !alive[ti] {
+            continue;
+        }
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d = dist2_pts(mesh.points[t[i]], mesh.points[t[j]]);
+                if d > me2 {
+                    me2 = d;
+                    who = *t;
+                }
+            }
+        }
+    }
+    eprintln!("  [{label}] max edge {:.6} tet {who:?}", me2.sqrt());
+}
+
+/// [`optimize`]'s per-tet quality cache lookup as a free function (the
+/// nested `cached_q` lives inside the pass scope).
+fn cached_q_free(points: &[[f64; 3]], tets: &[[usize; 4]], tet_q: &mut [f64], ti: usize) -> f64 {
+    if tet_q[ti].is_nan() {
+        tet_q[ti] = quality(points, tets[ti]);
+    }
+    tet_q[ti]
+}
+
+/// The four vertex-index triples spanning a tet's faces (unoriented).
+const TET_FACES_OPT: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
+
+/// Collapse rejection diagnostics (RAPIDMESH_OPT_TRACE).
+pub static COLLAPSE_REJECTS: [std::sync::atomic::AtomicUsize; 6] = [
+    std::sync::atomic::AtomicUsize::new(0), // 0 no admissible (a, b) pair at all
+    std::sync::atomic::AtomicUsize::new(0), // 1 surface rules
+    std::sync::atomic::AtomicUsize::new(0), // 2 link condition
+    std::sync::atomic::AtomicUsize::new(0), // 3 validity/sizing
+    std::sync::atomic::AtomicUsize::new(0), // 4 quality gate
+    std::sync::atomic::AtomicUsize::new(0), // 5 fold-over
+];
+
+fn creject(i: usize) {
+    COLLAPSE_REJECTS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Maintains the vertex->tet incidence across an in-place rewrite of slot
@@ -1893,14 +2389,26 @@ fn surface_pass(
                     continue;
                 }
                 // Sizing contract (see the volume smoothing gate). Snaps
-                // are constraints and exempt.
+                // are constraints and exempt. The gate runs over ALL tet
+                // neighbors of v, not just its surface neighbors: an
+                // in-plane slide stretches the VOLUME edges behind the
+                // surface too, and gating only the surface ring let those
+                // creep past the budget.
                 let mut budget2 = f64::INFINITY;
+                let mut tet_nbrs: Vec<usize> = Vec::new();
                 for &ti in &inc_v {
                     budget2 = budget2.min(edge_budget2(mesh.tet_regions[ti]));
+                    for &w in &mesh.tets[ti] {
+                        if w != v {
+                            tet_nbrs.push(w);
+                        }
+                    }
                 }
+                tet_nbrs.sort_unstable();
+                tet_nbrs.dedup();
                 let mut old_lmax2 = 0.0f64;
                 let mut new_lmax2 = 0.0f64;
-                for &w in &nbrs {
+                for &w in &tet_nbrs {
                     let dw_old: f64 =
                         (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum();
                     let dw_new: f64 =

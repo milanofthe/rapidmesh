@@ -14,7 +14,7 @@
 //! point — which is what makes heavily cospherical / on-face grid geometry
 //! safe.
 
-use rapidmesh_exact::Sign;
+use rapidmesh_exact::{Point3, Sign};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Diagnostic counters (RAPIDMESH_CAND_TRACE): linear-scan point locations
@@ -44,23 +44,64 @@ pub enum Removal {
     Edge(usize, usize),
 }
 
-fn orient(pts: &[[f64; 3]], a: u32, b: u32, c: u32, d: u32) -> Sign {
-    Sign::of_f64(geometry_predicates::orient3d(
-        pts[a as usize],
-        pts[b as usize],
-        pts[c as usize],
-        pts[d as usize],
-    ))
+/// True if the vertex carries an implicit exact position (CDT Steiner
+/// points); explicit vertices keep the fast Shewchuk path.
+fn is_implicit(exact: &[Option<Point3>], i: u32) -> bool {
+    exact.get(i as usize).is_some_and(|e| e.is_some())
 }
 
-fn insphere(pts: &[[f64; 3]], t: [u32; 4], p: u32) -> Sign {
-    Sign::of_f64(geometry_predicates::insphere(
-        pts[t[0] as usize],
-        pts[t[1] as usize],
-        pts[t[2] as usize],
-        pts[t[3] as usize],
-        pts[p as usize],
-    ))
+fn pt3(pts: &[[f64; 3]], exact: &[Option<Point3>], i: u32) -> Point3 {
+    match exact.get(i as usize).and_then(|e| e.clone()) {
+        Some(p) => p,
+        None => Point3::Explicit(pts[i as usize]),
+    }
+}
+
+fn orient(pts: &[[f64; 3]], exact: &[Option<Point3>], a: u32, b: u32, c: u32, d: u32) -> Sign {
+    if !(is_implicit(exact, a)
+        || is_implicit(exact, b)
+        || is_implicit(exact, c)
+        || is_implicit(exact, d))
+    {
+        return Sign::of_f64(geometry_predicates::orient3d(
+            pts[a as usize],
+            pts[b as usize],
+            pts[c as usize],
+            pts[d as usize],
+        ));
+    }
+    rapidmesh_exact::orient3d(
+        &pt3(pts, exact, a),
+        &pt3(pts, exact, b),
+        &pt3(pts, exact, c),
+        &pt3(pts, exact, d),
+    )
+    .expect("implicit DT vertex must be a valid point")
+}
+
+fn insphere(pts: &[[f64; 3]], exact: &[Option<Point3>], t: [u32; 4], p: u32) -> Sign {
+    if !(is_implicit(exact, t[0])
+        || is_implicit(exact, t[1])
+        || is_implicit(exact, t[2])
+        || is_implicit(exact, t[3])
+        || is_implicit(exact, p))
+    {
+        return Sign::of_f64(geometry_predicates::insphere(
+            pts[t[0] as usize],
+            pts[t[1] as usize],
+            pts[t[2] as usize],
+            pts[t[3] as usize],
+            pts[p as usize],
+        ));
+    }
+    rapidmesh_exact::insphere3d(
+        &pt3(pts, exact, t[0]),
+        &pt3(pts, exact, t[1]),
+        &pt3(pts, exact, t[2]),
+        &pt3(pts, exact, t[3]),
+        &pt3(pts, exact, p),
+    )
+    .expect("implicit DT vertex must be a valid point")
 }
 
 /// Face of a positively oriented tet opposite vertex `i`, wound so the
@@ -81,6 +122,10 @@ pub struct DelaunayBuilder {
     /// the coordinate sum (the four face planes of the super-tet).
     domain: ([f64; 3], f64),
     pts: Vec<[f64; 3]>,
+    /// Exact implicit position per vertex (`None` = the f64 in `pts` IS the
+    /// point). Predicates touching a `Some` vertex take the staged-exact
+    /// path; `pts` then only caches `approx()` for walk heuristics.
+    exact: Vec<Option<Point3>>,
     tets: Vec<[u32; 4]>,
     /// neighbors[t][i] = tet across the face opposite vertex i (NONE at the
     /// super-tet hull).
@@ -119,16 +164,17 @@ impl DelaunayBuilder {
             [c[0] - big, c[1] - big, c[2] + 3.0 * big],
         ];
         let mut seed = [0u32, 1, 2, 3];
-        if orient(&pts, seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
+        if orient(&pts, &[], seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
             seed.swap(2, 3);
         }
-        debug_assert_eq!(orient(&pts, seed[0], seed[1], seed[2], seed[3]), Sign::Positive);
+        debug_assert_eq!(orient(&pts, &[], seed[0], seed[1], seed[2], seed[3]), Sign::Positive);
         DelaunayBuilder {
             domain: (
                 std::array::from_fn(|k| c[k] - big),
                 c[0] + c[1] + c[2] + big,
             ),
             pts,
+            exact: vec![None; 4],
             tets: vec![seed],
             neighbors: vec![[NONE; 4]],
             alive: vec![true],
@@ -163,7 +209,7 @@ impl DelaunayBuilder {
             }
             if (0..4).all(|i| {
                 let f = face(t, i);
-                orient(&self.pts, f[0], f[1], f[2], p) != Sign::Negative
+                orient(&self.pts, &self.exact, f[0], f[1], f[2], p) != Sign::Negative
             }) {
                 return ti as u32;
             }
@@ -190,7 +236,7 @@ impl DelaunayBuilder {
             for i in 0..4 {
                 let nb = self.neighbors[cur as usize][i];
                 let f = face(t, i);
-                if orient(&self.pts, f[0], f[1], f[2], p) == Sign::Negative {
+                if orient(&self.pts, &self.exact, f[0], f[1], f[2], p) == Sign::Negative {
                     if nb == NONE {
                         return self.locate_scan(p);
                     }
@@ -231,9 +277,33 @@ impl DelaunayBuilder {
     pub fn insert(&mut self, point: [f64; 3]) -> usize {
         let p = self.pts.len() as u32;
         self.pts.push(point);
+        self.exact.push(None);
         let ok = self.compute_cavity(p, -1.0, usize::MAX);
         debug_assert!(ok);
         self.refill(p)
+    }
+
+    /// Inserts an implicit exact point (a CDT Steiner point): every predicate
+    /// involving it evaluates the exact position, `pts` only caches the
+    /// rounded approximation for walk heuristics. The point must be valid
+    /// and its approximation must lie inside the builder's domain box.
+    pub fn insert_exact(&mut self, point: Point3) -> usize {
+        if let Some(c) = point.as_explicit() {
+            return self.insert(c);
+        }
+        let approx = point.approx().expect("implicit DT vertex must be valid");
+        let p = self.pts.len() as u32;
+        self.pts.push(approx);
+        self.exact.push(Some(point));
+        let ok = self.compute_cavity(p, -1.0, usize::MAX);
+        debug_assert!(ok);
+        self.refill(p)
+    }
+
+    /// The exact position of an inserted point (public index): the implicit
+    /// point where one was inserted, the explicit f64 otherwise.
+    pub fn exact_point(&self, i: usize) -> Point3 {
+        pt3(&self.pts, &self.exact, (i + 4) as u32)
     }
 
     /// Inserts a point unless `keep` rejects one of the faces or edges the
@@ -273,6 +343,7 @@ impl DelaunayBuilder {
         if !self.compute_cavity(p, min_dist2, 1024) {
             GUARDED_NN_BAILS.fetch_add(1, Ordering::Relaxed);
             self.pts.pop();
+            self.exact.pop();
             return None;
         }
 
@@ -306,6 +377,7 @@ impl DelaunayBuilder {
                 if !keep(Removal::Face(pf)) {
                     GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                     self.pts.pop();
+            self.exact.pop();
                     return None;
                 }
             }
@@ -321,6 +393,7 @@ impl DelaunayBuilder {
                     if !keep(Removal::Edge((a - 4) as usize, (b - 4) as usize)) {
                         GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                         self.pts.pop();
+            self.exact.pop();
                         return None;
                     }
                 }
@@ -366,7 +439,7 @@ impl DelaunayBuilder {
                 if nb == NONE || self.mark[nb as usize] == epoch {
                     continue;
                 }
-                if insphere(&self.pts, self.tets[nb as usize], p) == Sign::Positive {
+                if insphere(&self.pts, &self.exact, self.tets[nb as usize], p) == Sign::Positive {
                     if too_close(&self.pts, self.tets[nb as usize])
                         || self.cavity.len() >= max_cavity
                     {
@@ -392,7 +465,7 @@ impl DelaunayBuilder {
                         continue;
                     }
                     let f = face(t, i);
-                    if orient(&self.pts, f[0], f[1], f[2], p) != Sign::Positive {
+                    if orient(&self.pts, &self.exact, f[0], f[1], f[2], p) != Sign::Positive {
                         let nb = if nb == NONE {
                             panic!("cavity reached the super-tet hull")
                         } else {
@@ -434,7 +507,7 @@ impl DelaunayBuilder {
             let (ti, fi) = self.boundary[bi];
             let outside = self.neighbors[ti as usize][fi as usize];
             let f = face(self.tets[ti as usize], fi as usize);
-            debug_assert_eq!(orient(&self.pts, f[0], f[1], f[2], p), Sign::Positive);
+            debug_assert_eq!(orient(&self.pts, &self.exact, f[0], f[1], f[2], p), Sign::Positive);
             let nt = self.alloc([f[0], f[1], f[2], p]);
             self.new_tets.push(nt);
             // Across the boundary face (slot 3 = opposite p).

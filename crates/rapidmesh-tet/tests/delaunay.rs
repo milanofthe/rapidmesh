@@ -112,3 +112,64 @@ fn single_tet_and_degenerate_inputs() {
     ]);
     assert!(flat.tets.is_empty());
 }
+
+// ----------------------------------------------- implicit Steiner (CDT WP2)
+
+#[test]
+fn insert_exact_lnc_recovers_segment_pieces() {
+    use rapidmesh_exact::Point3;
+    use rapidmesh_tet::DelaunayBuilder;
+
+    // A box point cloud plus a segment (a, b) crossing it; insert LNC
+    // Steiner points ON the segment and require every sub-piece to be a
+    // DT edge afterwards (the primitive the segment-recovery loop rests on).
+    let lo = [0.0, 0.0, 0.0];
+    let hi = [1.0, 1.0, 1.0];
+    let mut b = DelaunayBuilder::enclosing(lo, hi);
+    let mut ids = Vec::new();
+    for p in box_corners(lo, hi) {
+        ids.push(b.insert(p));
+    }
+    let mut rng = Rng::new(0xD7);
+    for _ in 0..40 {
+        ids.push(b.insert(std::array::from_fn(|_| {
+            (rng.f64_wide().abs() % 0.8) + 0.1
+        })));
+    }
+    let a = [0.05, 0.05, 0.05];
+    let c = [0.95, 0.95, 0.95];
+    let ia = b.insert(a);
+    let ic = b.insert(c);
+    // Three uneven cuts as implicit LNC points.
+    let ts = [0.2137, 0.553, 0.829];
+    let mut chain = vec![ia];
+    for &t in &ts {
+        chain.push(b.insert_exact(Point3::lnc(a, c, t)));
+    }
+    chain.push(ic);
+    // exact_point round-trips the implicit position.
+    for (k, &t) in ts.iter().enumerate() {
+        let p = b.exact_point(chain[k + 1]);
+        assert!(p.coincides(&Point3::lnc(a, c, t)));
+    }
+    // Whether the chain pieces are DT edges is the segment-recovery loop's
+    // job (other points may encroach); the kernel owes the exact empty-
+    // circumsphere property evaluated at the IMPLICIT positions, not their
+    // f64 approximations.
+    let _ = chain;
+    let pts: Vec<Point3> = (0..b.len()).map(|i| b.exact_point(i)).collect();
+    for t in b.tets() {
+        for (vi, p) in pts.iter().enumerate() {
+            if t.contains(&vi) {
+                continue;
+            }
+            let s = rapidmesh_exact::insphere3d(&pts[t[0]], &pts[t[1]], &pts[t[2]], &pts[t[3]], p)
+                .expect("valid points");
+            assert_ne!(
+                s,
+                Sign::Positive,
+                "vertex {vi} strictly inside circumsphere of {t:?}"
+            );
+        }
+    }
+}

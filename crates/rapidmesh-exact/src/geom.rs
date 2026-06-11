@@ -68,8 +68,8 @@ pub fn det5<T: Ring>(m: &[[T; 5]; 5]) -> T {
         })
     };
     let mut acc = m[0][0].mul(&det4(&minor(0)));
-    for col in 1..5 {
-        let term = m[0][col].mul(&det4(&minor(col)));
+    for (col, entry) in m[0].iter().enumerate().skip(1) {
+        let term = entry.mul(&det4(&minor(col)));
         acc = if col % 2 == 1 {
             acc.sub(&term)
         } else {

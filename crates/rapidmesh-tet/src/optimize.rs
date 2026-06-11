@@ -1432,6 +1432,47 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         mesh.tets = tets;
         mesh.tet_regions = regions;
     }
+    // Drop points nothing references anymore: edge collapse removes Steiner
+    // VERTICES but left their point slots behind as orphans, which downstream
+    // consumers (array exports, FEM node tables) then carry around. Steiner
+    // points live behind the PLC prefix, so the remap keeps `plc_points`
+    // valid.
+    let mut used = vec![false; mesh.points.len()];
+    for t in &mesh.tets {
+        for &v in t {
+            used[v] = true;
+        }
+    }
+    for f in &mesh.faces {
+        for &v in &f.tri {
+            used[v] = true;
+        }
+    }
+    if used.iter().any(|&u| !u) {
+        debug_assert!(
+            used[..mesh.plc_points].iter().all(|&u| u),
+            "a PLC vertex lost all incidence"
+        );
+        let mut remap = vec![usize::MAX; mesh.points.len()];
+        let mut pts = Vec::with_capacity(mesh.points.len());
+        for (i, p) in mesh.points.iter().enumerate() {
+            if used[i] {
+                remap[i] = pts.len();
+                pts.push(*p);
+            }
+        }
+        for t in &mut mesh.tets {
+            for v in t {
+                *v = remap[*v];
+            }
+        }
+        for f in &mut mesh.faces {
+            for v in &mut f.tri {
+                *v = remap[*v];
+            }
+        }
+        mesh.points = pts;
+    }
     total_ops
 }
 

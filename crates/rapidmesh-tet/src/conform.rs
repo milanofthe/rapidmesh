@@ -1,4 +1,4 @@
-//! Boundary recovery and region tagging: TaggedPlc to a conforming tet mesh.
+﻿//! Boundary recovery and region tagging: TaggedPlc to a conforming tet mesh.
 //!
 //! The PLC's true constraints are planar tagged PATCHES (maximal connected
 //! coplanar groups of facets with equal tags) and their boundary CREASE
@@ -1797,10 +1797,13 @@ fn patch_inside_closed(
 
 /// Sizing splits trigger above this multiple of the local target h. Splits
 /// roughly halve lengths, so triggering exactly at h lands edges at h/2 and
-/// over-refines about twofold against meshers that treat h as a target
-/// (gmsh, tetgen); triggering at 1.2 h centers the result near h and leaves
-/// the optimizer headroom inside the documented 1.5 h max-edge contract.
-const OVERSIZE_FACTOR: f64 = 1.3;
+/// over-refines about twofold against meshers that treat h as a target.
+/// Calibrated on the bare WR-90 box (examples/measure_density.rs): 1.3 gave
+/// a 0.87 h mean edge (~50% extra tets); 1.45 centers the mean at 0.97 h,
+/// cuts tets by ~27% and IMPROVES quality (min dihedral 20 -> 26 deg, the
+/// optimizer breathes with fewer crowded vertices). The max edge is pinned
+/// by the optimizer's 1.5 h contract independently of this trigger.
+const OVERSIZE_FACTOR: f64 = 1.45;
 
 /// Uniform grid over balls for "which ball contains this point" queries:
 /// linear scans over all crease/tile balls per refinement candidate are

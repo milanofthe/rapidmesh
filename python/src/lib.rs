@@ -223,7 +223,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![]))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![]))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -233,6 +233,7 @@ impl SceneBuilder {
         grading: f64,
         face_maxh: Vec<(u32, f64)>,
         size_points: Vec<([f64; 3], f64)>,
+        surface_maxh: Vec<(u32, f64)>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         // The heavy pipeline runs without the GIL.
@@ -245,6 +246,7 @@ impl SceneBuilder {
                 max_points,
                 grading,
                 face_maxh,
+                surface_maxh,
                 size_points,
             };
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
@@ -252,6 +254,7 @@ impl SceneBuilder {
                 maxh: params.maxh,
                 region_maxh: params.region_maxh.clone(),
                 face_maxh: params.face_maxh.clone(),
+                surface_maxh: params.surface_maxh.clone(),
                 ..OptimizeParams::default()
             };
             optimize(&mut mesh, &opt);

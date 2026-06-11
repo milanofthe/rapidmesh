@@ -404,6 +404,12 @@ pub struct MeshParams {
     /// Per-face-tag target edge length, overriding the adjacent regions'
     /// targets on those patches (rapidfem's per-plate maxh).
     pub face_maxh: Vec<(u32, f64)>,
+    /// Per-solid SURFACE target edge length, keyed by the owner solid index
+    /// in [TaggedPlc::surface_owners] (scene insertion order, voids
+    /// included): refines the solid's boundary patches and grades into the
+    /// surrounding volume. The only sizing handle that reaches a void's
+    /// walls (a coax inner conductor has no region and no face tag).
+    pub surface_maxh: Vec<(u32, f64)>,
     /// Point size sources `(position, h)`: the target shrinks to `h` at the
     /// point and recovers along the Lipschitz grading away from it
     /// (rapidfem's refine_near_points; the hook for error-driven adaptive
@@ -420,6 +426,7 @@ impl Default for MeshParams {
             max_points: 100_000,
             grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
         }
     }
@@ -486,6 +493,7 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
             max_points: usize::MAX,
             grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
         },
     )
@@ -620,12 +628,26 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .map(|&(_, h)| h)
             .unwrap_or(f64::INFINITY)
     };
+    let h_of_surface = |surface: u32| -> f64 {
+        let owner = plc
+            .surface_owners
+            .get(surface as usize)
+            .copied()
+            .unwrap_or(u32::MAX);
+        params
+            .surface_maxh
+            .iter()
+            .find(|(s, _)| *s == owner)
+            .map(|&(_, h)| h)
+            .unwrap_or(f64::INFINITY)
+    };
     let patch_h_init: Vec<f64> = patches
         .iter()
         .map(|p| {
             h_of_region_init(p.regions[0].0)
                 .min(h_of_region_init(p.regions[1].0))
                 .min(h_of_face(p.face_tag))
+                .min(h_of_surface(p.surface))
         })
         .collect();
     let mut point_h: Vec<f64> = (0..points.len())
@@ -1141,6 +1163,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
             let inserted = refine_queue(
                 params,
+                &plc.surface_owners,
                 &patches,
                 &patch_grids,
                 &slot_tets,
@@ -1881,6 +1904,7 @@ fn ins_trace(path: &str, g: usize, pos: [f64; 3]) {
 #[allow(clippy::too_many_arguments)]
 fn refine_queue(
     params: &MeshParams,
+    surface_owners: &[u32],
     patches: &[Patch],
     patch_grids: &[Tri2Grid],
     slot_tets: &[(u32, [usize; 4])],
@@ -1896,7 +1920,11 @@ fn refine_queue(
     crease_marks: &mut DMap<(usize, usize), DSet<usize>>,
 ) -> usize {
     use std::collections::VecDeque;
-    let sized = params.maxh.is_finite() || !params.region_maxh.is_empty();
+    let sized = params.maxh.is_finite()
+        || !params.region_maxh.is_empty()
+        || !params.face_maxh.is_empty()
+        || !params.surface_maxh.is_empty()
+        || !params.size_points.is_empty();
     if !sized && params.radius_edge_bound.is_infinite() {
         return 0;
     }
@@ -1921,12 +1949,25 @@ fn refine_queue(
             .map(|&(_, h)| h)
             .unwrap_or(f64::INFINITY)
     };
+    let h_of_surface = |surface: u32| -> f64 {
+        let owner = surface_owners
+            .get(surface as usize)
+            .copied()
+            .unwrap_or(u32::MAX);
+        params
+            .surface_maxh
+            .iter()
+            .find(|(s, _)| *s == owner)
+            .map(|&(_, h)| h)
+            .unwrap_or(f64::INFINITY)
+    };
     let patch_h: Vec<f64> = patches
         .iter()
         .map(|p| {
             h_of_region(p.regions[0].0)
                 .min(h_of_region(p.regions[1].0))
                 .min(h_of_face(p.face_tag))
+                .min(h_of_surface(p.surface))
         })
         .collect();
     let dist2 = |a: [f64; 3], b: [f64; 3]| -> f64 {

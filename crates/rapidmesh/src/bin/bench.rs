@@ -1,4 +1,4 @@
-//! Benchmark harness: meshes the comparison scenes and any surface models in
+﻿//! Benchmark harness: meshes the comparison scenes and any surface models in
 //! bench/models/ (STL/OBJ, fetched by bench/fetch_models.py), with per-stage
 //! timing and quality statistics. Writes bench/results.json, viewer JSONs for
 //! the surface models, and PLC JSONs (bench/plc/) so the tetgen reference
@@ -113,6 +113,7 @@ fn main() {
             max_points: 200_000,
             grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
         };
         records.push(run_one(
@@ -185,6 +186,7 @@ fn main() {
             max_points: 500_000,
             grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
         };
         records.push(run_one(

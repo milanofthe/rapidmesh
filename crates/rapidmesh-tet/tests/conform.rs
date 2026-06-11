@@ -1,4 +1,4 @@
-//! End-to-end: scene -> TaggedPlc -> conforming region-tagged tet mesh.
+﻿//! End-to-end: scene -> TaggedPlc -> conforming region-tagged tet mesh.
 //! Gates: every constraint face is a tet face, per-region tet volumes match
 //! the PLC's polyhedral region volumes exactly, orientation and conformity.
 
@@ -165,6 +165,7 @@ fn sized_box_respects_maxh_and_quality() {
         max_points: 20_000,
         grading: 0.5,
         face_maxh: Vec::new(),
+        surface_maxh: Vec::new(),
         size_points: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
@@ -217,6 +218,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         max_points: 20_000,
         grading: 0.5,
         face_maxh: Vec::new(),
+        surface_maxh: Vec::new(),
         size_points: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
@@ -261,6 +263,7 @@ fn per_region_sizing_creates_density_transition() {
         max_points: 40_000,
         grading: 0.5,
         face_maxh: Vec::new(),
+        surface_maxh: Vec::new(),
         size_points: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
@@ -655,6 +658,68 @@ fn horn_loft_flat_tet_tiling() {
         mesh.abandoned_patches.is_empty(),
         "abandoned patches: {:?}",
         mesh.abandoned_patches
+    );
+    check_structure(&mesh);
+}
+
+/// surface_maxh reaches a VOID's walls (no region, no face tag): the bore
+/// surface meshes at the requested size while the outer box stays coarse.
+#[test]
+fn surface_maxh_refines_void_walls() {
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
+    scene.add_void(cylinder([2.0, 2.0, 0.0], [0.0, 0.0, 2.0], 0.8, 24));
+    let plc = scene.assemble();
+    let h_bore = 0.25;
+    let mut mesh = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 1.0,
+            surface_maxh: vec![(1, h_bore)], // void = solid index 1
+            ..MeshParams::default()
+        },
+    );
+    let edge_extremes = |mesh: &TetMesh| -> (f64, f64) {
+        let mut bore_lmax: f64 = 0.0;
+        let mut outer_lmax: f64 = 0.0;
+        for sf in &mesh.faces {
+            let curved = !matches!(
+                mesh.surfaces[sf.surface as usize],
+                rapidmesh_geom::SurfaceKind::Plane
+            );
+            for k in 0..3 {
+                let (a, b) = (mesh.points[sf.tri[k]], mesh.points[sf.tri[(k + 1) % 3]]);
+                let d = (0..3).map(|j| (a[j] - b[j]).powi(2)).sum::<f64>().sqrt();
+                if curved {
+                    bore_lmax = bore_lmax.max(d);
+                } else {
+                    outer_lmax = outer_lmax.max(d);
+                }
+            }
+        }
+        (bore_lmax, outer_lmax)
+    };
+    let (bore0, _) = edge_extremes(&mesh);
+    assert!(
+        bore0 <= 1.5 * h_bore,
+        "bore edge {bore0} exceeds the surface budget after MESHING"
+    );
+    optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: 1.0,
+            surface_maxh: vec![(1, h_bore)],
+            ..OptimizeParams::default()
+        },
+    );
+    let (bore_lmax, outer_lmax) = edge_extremes(&mesh);
+    assert!(
+        bore_lmax <= 1.5 * h_bore,
+        "bore edge {bore_lmax} exceeds the surface budget after OPTIMIZE"
+    );
+    assert!(
+        outer_lmax > 2.0 * h_bore,
+        "outer box should stay coarse (got {outer_lmax})"
     );
     check_structure(&mesh);
 }

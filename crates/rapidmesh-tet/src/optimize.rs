@@ -111,6 +111,9 @@ pub struct OptimizeParams {
     /// surface operations on tagged patches keep their edges within the
     /// face budget too.
     pub face_maxh: Vec<(u32, f64)>,
+    /// Per-solid SURFACE size targets keyed by owner solid index (see
+    /// [`crate::MeshParams::surface_maxh`]).
+    pub surface_maxh: Vec<(u32, f64)>,
 }
 
 impl Default for OptimizeParams {
@@ -120,6 +123,7 @@ impl Default for OptimizeParams {
             maxh: f64::INFINITY,
             region_maxh: Vec::new(),
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
         }
     }
 }
@@ -254,20 +258,44 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             f64::INFINITY
         }
     };
-    // Squared edge budget on a tagged surface patch (tighter than the
-    // adjacent regions' budgets where a face_maxh is set).
-    let face_budget2 = |tag: rapidmesh_geom::FaceTag| -> f64 {
+    // Squared edge budget on a surface face (tighter than the adjacent
+    // regions' budgets where a face_maxh or surface_maxh is set). The
+    // per-surface part is precomputed so the closure does not borrow mesh.
+    let surface_h2: Vec<f64> = mesh
+        .surface_owners
+        .iter()
+        .map(|&owner| {
+            let h = params
+                .surface_maxh
+                .iter()
+                .find(|(s, _)| *s == owner)
+                .map(|&(_, h)| h)
+                .unwrap_or(f64::INFINITY);
+            if h.is_finite() {
+                (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
+            } else {
+                f64::INFINITY
+            }
+        })
+        .collect();
+    let face_budget2 = move |tag: rapidmesh_geom::FaceTag, surface: u32| -> f64 {
         let h = params
             .face_maxh
             .iter()
             .find(|(t, _)| *t == tag.0)
             .map(|&(_, h)| h)
             .unwrap_or(f64::INFINITY);
-        if h.is_finite() {
+        let tag_b2 = if h.is_finite() {
             (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
         } else {
             f64::INFINITY
-        }
+        };
+        tag_b2.min(
+            surface_h2
+                .get(surface as usize)
+                .copied()
+                .unwrap_or(f64::INFINITY),
+        )
     };
     let mut total_ops = 0usize;
     // Vertices changed by the previous pass; `None` = everything (pass 0).
@@ -580,6 +608,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     &mut constrained_edges,
                     &constrained_verts,
                     &edge_budget2,
+                    &face_budget2,
                     &mut next_dirty,
                     ti,
                 ) {
@@ -1432,6 +1461,7 @@ fn try_edge_collapse(
     constrained_edges: &mut DSet<(usize, usize)>,
     constrained_verts: &DSet<usize>,
     edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+    face_budget2: &impl Fn(rapidmesh_geom::FaceTag, u32) -> f64,
     next_dirty: &mut DSet<usize>,
     ti: usize,
 ) -> bool {
@@ -1631,6 +1661,28 @@ fn try_edge_collapse(
                 mesh.points[a] = pos;
                 let mut new_q = f64::MAX;
                 let moved = pos != pa0;
+                // Surface sizing contract: every edge of a rewritten surface
+                // face stays within that face's face/surface budget (the
+                // region gate below does not see per-face targets, which let
+                // collapses on fine-budget surfaces re-coarsen them).
+                for &(idx, key) in &b_faces {
+                    let sf = &mesh.faces[idx as usize];
+                    let fb2 = face_budget2(sf.face_tag, sf.surface);
+                    if !fb2.is_finite() {
+                        continue;
+                    }
+                    let nk = key.map(|v| if v == b { a } else { v });
+                    for e in 0..3 {
+                        let (u, w) = (nk[e], nk[(e + 1) % 3]);
+                        if u == w {
+                            continue; // face degenerates away with the collapse
+                        }
+                        if dist2_pts(mesh.points[u], mesh.points[w]) > fb2 {
+                            mesh.points[a] = pa0;
+                            continue 'positions;
+                        }
+                    }
+                }
                 let checked: Vec<([usize; 4], rapidmesh_geom::RegionTag, bool)> = rewritten
                     .iter()
                     .map(|&tr| {
@@ -2031,7 +2083,7 @@ fn surface_pass(
     is_active: &impl Fn(&[usize]) -> bool,
     complex_changed: &impl Fn(&[usize]) -> bool,
     edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
-    face_budget2: &impl Fn(rapidmesh_geom::FaceTag) -> f64,
+    face_budget2: &impl Fn(rapidmesh_geom::FaceTag, u32) -> f64,
     next_dirty: &mut DSet<usize>,
 ) -> usize {
     let mut ops = 0usize;
@@ -2117,7 +2169,7 @@ fn surface_pass(
                 }
                 let budget2 = edge_budget2(sf1.regions[0])
                     .min(edge_budget2(sf1.regions[1]))
-                    .min(face_budget2(sf1.face_tag));
+                    .min(face_budget2(sf1.face_tag, sf1.surface));
                 let new2: f64 = (0..3)
                     .map(|k| (mesh.points[c][k] - mesh.points[d][k]).powi(2))
                     .sum();
@@ -2506,7 +2558,8 @@ fn surface_pass(
                     }
                 }
                 for &fi in &vfs {
-                    budget2 = budget2.min(face_budget2(mesh.faces[fi].face_tag));
+                    budget2 =
+                        budget2.min(face_budget2(mesh.faces[fi].face_tag, mesh.faces[fi].surface));
                 }
                 tet_nbrs.sort_unstable();
                 tet_nbrs.dedup();

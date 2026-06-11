@@ -1,4 +1,4 @@
-//! Classifies the worst tets of an optimized surface-model mesh: how many
+﻿//! Classifies the worst tets of an optimized surface-model mesh: how many
 //! vertices sit on the surface, where the short edge lies (interior, same
 //! patch, across patches), ring sizes. Drives the edge-collapse design.
 //!
@@ -25,6 +25,7 @@ fn main() {
         max_points: 500_000,
         grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);

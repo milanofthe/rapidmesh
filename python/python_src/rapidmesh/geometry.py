@@ -183,6 +183,7 @@ class Geometry:
         self._maxh = maxh
         self._grading = grading
         self._face_maxh: dict[int, float] = {}
+        self._surface_maxh: dict[int, float] = {}
         self._size_points: list[tuple[tuple[float, float, float], float]] = []
         self._n_solids = 0
 
@@ -519,6 +520,15 @@ class Geometry:
         cur = self._face_maxh.get(tag)
         self._face_maxh[tag] = maxh if cur is None else min(cur, maxh)
 
+    def refine_surface(self, solid: Solid, h: float) -> None:
+        """Per-solid surface sizing: the solid's boundary patches mesh at
+        ``h`` and the size recovers along the grading into the surrounding
+        volume. The only sizing handle that reaches a VOID's walls (a coax
+        inner conductor has no region and no face tag); for field
+        concentrations on conductor surfaces generally."""
+        cur = self._surface_maxh.get(solid.index)
+        self._surface_maxh[solid.index] = h if cur is None else min(cur, h)
+
     def refine_near_points(
         self,
         points: list[tuple[float, float, float]],
@@ -569,6 +579,7 @@ class Geometry:
             g,
             [(t, fh) for t, fh in sorted(self._face_maxh.items())],
             [(list(pt), ph) for pt, ph in self._size_points],
+            [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
         )
         return Mesh(native)
 

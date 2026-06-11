@@ -1,4 +1,4 @@
-//! Exports rapidmesh meshes of the comparison geometries as JSON for the
+﻿//! Exports rapidmesh meshes of the comparison geometries as JSON for the
 //! standalone viewer (viewer/public/meshes/), plus the assembled PLCs with
 //! region seeds (bench/plc/) for the tetgen reference script. The gmsh/tetgen
 //! reference exporters write the viewer schema with their own mesher prefix.
@@ -24,6 +24,7 @@ fn main() {
             max_points: 200_000,
             grading: 0.5,
             face_maxh: Vec::new(),
+            surface_maxh: Vec::new(),
             size_points: Vec::new(),
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);

@@ -672,6 +672,10 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut refine_round = 0;
     // Patches whose tiling repair stagnated (see the stagnation guard).
     let mut abandoned: DSet<usize> = DSet::default();
+    // Crease-recovery divergence brake state (strictly growing missing-set
+    // rounds in a row; see the brake below).
+    let mut crease_missing_prev: usize = 0;
+    let mut crease_growth_streak: usize = 0;
     let mut patch_progress: DMap<usize, (f64, usize)> = DMap::default();
     let mut tried: DMap<[usize; 4], u8> = DMap::default();
     #[allow(clippy::type_complexity)]
@@ -718,6 +722,41 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .copied()
             .filter(|key| !dt_edges.contains(key))
             .collect();
+        // Divergence brake: healthy recovery shrinks the missing set toward
+        // zero; an encroachment ping-pong DOUBLES it per round with halving
+        // lengths (collinear sheet rims inside an interface plane can race
+        // like this) and never terminates. After several strictly growing
+        // rounds, give the affected patches up (the partial tiling stays,
+        // `abandoned_patches` reports it) instead of flooding the mesh.
+        if missing.len() > crease_missing_prev && crease_missing_prev > 0 {
+            crease_growth_streak += 1;
+        } else {
+            crease_growth_streak = 0;
+        }
+        crease_missing_prev = missing.len();
+        if crease_growth_streak >= 6 {
+            let mut hit: Vec<usize> = Vec::new();
+            for key in &missing {
+                if let Some(marks) = crease_marks.remove(key) {
+                    hit.extend(marks.iter().copied());
+                    abandoned.extend(marks.iter().copied());
+                }
+            }
+            let dead: DSet<(usize, usize)> = missing.iter().copied().collect();
+            creases.retain(|e| !dead.contains(e));
+            hit.sort_unstable();
+            hit.dedup();
+            eprintln!(
+                "rapidmesh: crease recovery diverging ({} missing splits \
+                 after {} growing rounds); abandoning patches {:?}",
+                missing.len(),
+                crease_growth_streak,
+                hit
+            );
+            crease_growth_streak = 0;
+            crease_missing_prev = 0;
+            continue;
+        }
         if !missing.is_empty() {
             if trace {
                 let len = |&(a, b): &(usize, usize)| -> f64 {

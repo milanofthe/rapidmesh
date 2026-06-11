@@ -1,7 +1,7 @@
 //! Staged-exact orientation predicates over explicit and implicit points.
 
 use crate::expansion::Expansion;
-use crate::geom::{det3, det4};
+use crate::geom::{det3, det4, det5};
 use crate::interval::Interval;
 use crate::point::Point3;
 use crate::{Axis, Sign};
@@ -134,6 +134,75 @@ pub fn incircle2d(a: &Point3, b: &Point3, c: &Point3, d: &Point3, drop: Axis) ->
     let rows: [[Expansion; 4]; 4] =
         std::array::from_fn(|i| lifted_row(&pts[i].hom2::<Expansion>(drop)));
     Some(det4(&rows).sign())
+}
+
+/// Exact 3D in-sphere test, any point may be implicit.
+///
+/// Positive iff `e` lies strictly inside the circumsphere of the POSITIVELY
+/// ORIENTED tetrahedron (a, b, c, d) (Shewchuk's `insphere` convention; the
+/// sign flips for a negatively oriented tet). Returns `None` if any point is
+/// invalid (exact w == 0).
+///
+/// Homogeneous lifting: the classic row (x, y, z, x^2 + y^2 + z^2, 1) scaled
+/// by w^2 becomes (X W, Y W, Z W, X^2 + Y^2 + Z^2, W^2), polynomial in the
+/// homogeneous coordinates; the scaling factors w^2 are strictly positive
+/// for valid points, so the determinant sign needs no w correction.
+pub fn insphere3d(
+    a: &Point3,
+    b: &Point3,
+    c: &Point3,
+    d: &Point3,
+    e: &Point3,
+) -> Option<Sign> {
+    // Fast adaptive path: all points explicit.
+    if let (Some(pa), Some(pb), Some(pc), Some(pd), Some(pe)) = (
+        a.as_explicit(),
+        b.as_explicit(),
+        c.as_explicit(),
+        d.as_explicit(),
+        e.as_explicit(),
+    ) {
+        return Some(Sign::of_f64(geometry_predicates::insphere(
+            pa, pb, pc, pd, pe,
+        )));
+    }
+
+    fn lifted_row<T: crate::ring::Ring>(h: &[T; 4]) -> [T; 5] {
+        let (x, y, z, w) = (&h[0], &h[1], &h[2], &h[3]);
+        [
+            x.mul(w),
+            y.mul(w),
+            z.mul(w),
+            x.mul(x).add(&y.mul(y)).add(&z.mul(z)),
+            w.mul(w),
+        ]
+    }
+
+    let pts = [a, b, c, d, e];
+
+    // Interval filter.
+    {
+        let homs: [[Interval; 4]; 5] = std::array::from_fn(|i| pts[i].hom::<Interval>());
+        let ws_known = homs
+            .iter()
+            .all(|h| matches!(h[3].sign(), Some(s) if s != Sign::Zero));
+        if ws_known {
+            let rows: [[Interval; 5]; 5] = std::array::from_fn(|i| lifted_row(&homs[i]));
+            if let Some(sign) = det5(&rows).sign() {
+                return Some(sign);
+            }
+        }
+    }
+
+    // Exact stage.
+    let homs: [[Expansion; 4]; 5] = std::array::from_fn(|i| pts[i].hom::<Expansion>());
+    for h in &homs {
+        if h[3].sign() == Sign::Zero {
+            return None;
+        }
+    }
+    let rows: [[Expansion; 5]; 5] = std::array::from_fn(|i| lifted_row(&homs[i]));
+    Some(det5(&rows).sign())
 }
 
 /// Exact 2D orientation of three points in the axis-aligned projection that

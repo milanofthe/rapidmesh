@@ -57,6 +57,28 @@ pub fn det4<T: Ring>(m: &[[T; 4]; 4]) -> T {
     t0.sub(&t1).add(&t2).sub(&t3)
 }
 
+/// Determinant of a 5x5 matrix (rows), Laplace expansion along the first row
+/// (the homogeneous in-sphere lift needs it).
+pub fn det5<T: Ring>(m: &[[T; 5]; 5]) -> T {
+    let minor = |col: usize| -> [[T; 4]; 4] {
+        std::array::from_fn(|i| {
+            let row = &m[i + 1];
+            let mut it = (0..5).filter(|&j| j != col);
+            std::array::from_fn(|_| row[it.next().expect("4 columns remain")].clone())
+        })
+    };
+    let mut acc = m[0][0].mul(&det4(&minor(0)));
+    for col in 1..5 {
+        let term = m[0][col].mul(&det4(&minor(col)));
+        acc = if col % 2 == 1 {
+            acc.sub(&term)
+        } else {
+            acc.add(&term)
+        };
+    }
+    acc
+}
+
 /// Homogeneous coordinates (x, y, z, w) of the intersection of the line
 /// through `p`, `q` with the plane through `r`, `s`, `t`.
 ///

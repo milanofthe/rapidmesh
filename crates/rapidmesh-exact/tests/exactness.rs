@@ -503,3 +503,144 @@ fn approx_is_close_to_rational_intersection() {
     let a = lpi.approx().expect("valid point");
     assert!((a[0]).abs() < 1e-12 && (a[1]).abs() < 1e-12 && (a[2] - 0.25).abs() < 1e-12);
 }
+
+// ------------------------------------------------- lnc + insphere3d (CDT WP1)
+
+use rapidmesh_exact::insphere3d;
+
+/// Independent rational position of an LNC point: a + t (b - a) computed in
+/// exact rational arithmetic straight from the f64 inputs.
+fn lnc_affine_rat(a: [f64; 3], b: [f64; 3], t: f64) -> [BigRational; 3] {
+    std::array::from_fn(|i| rat(a[i]) + rat(t) * (rat(b[i]) - rat(a[i])))
+}
+
+/// Independent rational in-sphere oracle over AFFINE rational positions:
+/// classic 4x4 with rows (p_i - p_4, |p_i|^2 - |p_4|^2). Sign convention is
+/// calibrated against Shewchuk's `insphere` by the explicit randomized test.
+fn insphere_affine_oracle(p: [[BigRational; 3]; 5]) -> Sign {
+    let row = |i: usize| -> [Rat; 4] {
+        let d: [BigRational; 3] =
+            std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
+        let lift = d.iter().map(|v| v * v).fold(BigRational::zero(), |a, v| a + v);
+        [Rat(d[0].clone()), Rat(d[1].clone()), Rat(d[2].clone()), Rat(lift)]
+    };
+    let m: [[Rat; 4]; 4] = std::array::from_fn(row);
+    sign_of_rat(&det4(&m).0)
+}
+
+fn golden_t(i: usize) -> f64 {
+    (((i as f64) + 1.0) * 0.618_033_988_749_894_9).fract().clamp(0.05, 0.95)
+}
+
+#[test]
+fn lnc_lies_exactly_on_its_carrier_line() {
+    let mut rng = Rng::new(0xC0);
+    let mut checked = 0;
+    for i in 0..400 {
+        let a = rng.point3(16);
+        let b = rng.point3(16);
+        if a == b {
+            continue;
+        }
+        let l = Point3::lnc(a, b, golden_t(i));
+        let (pa, pb) = (Point3::Explicit(a), Point3::Explicit(b));
+        // Three collinear points make (a, b, x, l) exactly coplanar for
+        // EVERY x; two independent witnesses pin collinearity.
+        for _ in 0..2 {
+            let x = Point3::Explicit(rng.point3(16));
+            assert_eq!(orient3d(&pa, &pb, &x, &l), Some(Sign::Zero));
+        }
+        checked += 1;
+    }
+    assert!(checked > 300);
+}
+
+#[test]
+fn lnc_orient3d_matches_independent_rational() {
+    let mut rng = Rng::new(0xC1);
+    for i in 0..400 {
+        let a = rng.point3(16);
+        let b = rng.point3(16);
+        let c = rng.point3(16);
+        let d = rng.point3(16);
+        let t = golden_t(i);
+        let l = Point3::lnc(a, b, t);
+        let got = orient3d(&Point3::Explicit(c), &Point3::Explicit(d), &Point3::Explicit(a), &l);
+        // Independent affine-rational determinant.
+        let lp = lnc_affine_rat(a, b, t);
+        let rows: [[Rat; 3]; 3] = [
+            std::array::from_fn(|k| Rat(rat(c[k]) - lp[k].clone())),
+            std::array::from_fn(|k| Rat(rat(d[k]) - lp[k].clone())),
+            std::array::from_fn(|k| Rat(rat(a[k]) - lp[k].clone())),
+        ];
+        let want = sign_of_rat(&det3(&rows).0);
+        assert_eq!(got, Some(want));
+    }
+}
+
+#[test]
+fn insphere3d_explicit_matches_independent_rational() {
+    let mut rng = Rng::new(0xC2);
+    for i in 0..600 {
+        let p: [[f64; 3]; 5] = std::array::from_fn(|_| {
+            if i % 2 == 0 {
+                rng.point3(16)
+            } else {
+                rng.point3(4)
+            }
+        });
+        let e: [Point3; 5] = p.map(Point3::Explicit);
+        let got = insphere3d(&e[0], &e[1], &e[2], &e[3], &e[4]);
+        let want = insphere_affine_oracle(std::array::from_fn(|j| {
+            std::array::from_fn(|k| rat(p[j][k]))
+        }));
+        assert_eq!(got, Some(want), "points {p:?}");
+    }
+}
+
+#[test]
+fn insphere3d_staged_path_matches_fast_path() {
+    let mut rng = Rng::new(0xC3);
+    for _ in 0..300 {
+        let p: [[f64; 3]; 5] = std::array::from_fn(|_| rng.point3(16));
+        let e: [Point3; 5] = p.map(Point3::Explicit);
+        let fast = insphere3d(&e[0], &e[1], &e[2], &e[3], &e[4]);
+        // An exact-bary wrapper forces the homogeneous lift path.
+        let wrapped = Point3::bary(e[4].clone(), e[4].clone(), e[4].clone());
+        let staged = insphere3d(&e[0], &e[1], &e[2], &e[3], &wrapped);
+        assert_eq!(fast, staged);
+    }
+}
+
+#[test]
+fn insphere3d_cosphere_is_exactly_zero_on_staged_path() {
+    // Unit-cube corners: (1,1,0) lies ON the circumsphere of the tet
+    // (0,0,0),(1,0,0),(0,1,0),(0,0,1) (centre (.5,.5,.5), r^2 = 3/4).
+    let a = Point3::explicit(0.0, 0.0, 0.0);
+    let b = Point3::explicit(1.0, 0.0, 0.0);
+    let c = Point3::explicit(0.0, 1.0, 0.0);
+    let d = Point3::explicit(0.0, 0.0, 1.0);
+    let e = Point3::explicit(1.0, 1.0, 0.0);
+    assert_eq!(insphere3d(&a, &b, &c, &d, &e), Some(Sign::Zero));
+    let wrapped = Point3::bary(e.clone(), e.clone(), e.clone());
+    assert_eq!(insphere3d(&a, &b, &c, &d, &wrapped), Some(Sign::Zero));
+}
+
+#[test]
+fn insphere3d_with_lnc_matches_independent_rational() {
+    let mut rng = Rng::new(0xC4);
+    for i in 0..400 {
+        let p: [[f64; 3]; 4] = std::array::from_fn(|_| rng.point3(16));
+        let (sa, sb) = (rng.point3(16), rng.point3(16));
+        let t = golden_t(i);
+        let l = Point3::lnc(sa, sb, t);
+        let e: [Point3; 4] = p.map(Point3::Explicit);
+        let got = insphere3d(&e[0], &e[1], &e[2], &e[3], &l);
+        let mut affine: [[BigRational; 3]; 5] = std::array::from_fn(|j| {
+            std::array::from_fn(|k| rat(p[std::cmp::min(j, 3)][k]))
+        });
+        affine[4] = lnc_affine_rat(sa, sb, t);
+        let want = insphere_affine_oracle(affine);
+        assert_eq!(got, Some(want));
+    }
+}

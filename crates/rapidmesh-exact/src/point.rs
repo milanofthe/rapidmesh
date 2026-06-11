@@ -47,6 +47,23 @@ pub enum Point3 {
         /// The three points being averaged.
         pts: Box<[Point3; 3]>,
     },
+    /// Linear combination on a segment: `a + t * (b - a)`.
+    ///
+    /// The CDT Steiner-point type (Diazzi et al. 2023, Sec. 4.2): a point
+    /// constrained to lie EXACTLY on the segment through `a`, `b` for any
+    /// f64 parameter `t` — rounding `t` only slides the point along the
+    /// carrier line, never off it. Degree 1 in the inputs (w = 1), so every
+    /// staged predicate stays cheap. Splits of sub-segments fold back onto
+    /// the original carrier with a recomputed `t`, keeping the
+    /// representation closed under recovery.
+    Lnc {
+        /// Segment start.
+        a: [f64; 3],
+        /// Segment end.
+        b: [f64; 3],
+        /// Position parameter, meaningful in (0, 1).
+        t: f64,
+    },
 }
 
 impl Point3 {
@@ -122,6 +139,13 @@ impl Point3 {
         }
     }
 
+    /// A point on the segment from `a` to `b` at parameter `t` (exact on the
+    /// carrier line for ANY f64 `t`; meaningful as a Steiner point for
+    /// `t` in (0, 1)).
+    pub fn lnc(a: [f64; 3], b: [f64; 3], t: f64) -> Point3 {
+        Point3::Lnc { a, b, t }
+    }
+
     /// The coordinates if this point is explicit.
     pub fn as_explicit(&self) -> Option<[f64; 3]> {
         match self {
@@ -157,6 +181,16 @@ impl Point3 {
                 };
                 let w = T::from_f64(3.0).mul(&w01).mul(&h[2][3]);
                 [coord(0), coord(1), coord(2), w]
+            }
+            Point3::Lnc { a, b, t } => {
+                // a + t (b - a), w = 1: degree 1 in the f64 inputs.
+                let tt = T::from_f64(*t);
+                let coord = |i: usize| {
+                    let ai = T::from_f64(a[i]);
+                    let bi = T::from_f64(b[i]);
+                    ai.add(&tt.mul(&Ring::sub(&bi, &ai)))
+                };
+                [coord(0), coord(1), coord(2), T::from_f64(1.0)]
             }
         }
     }
@@ -212,7 +246,7 @@ impl Point3 {
     /// invalid and must not be used in predicates).
     pub fn w_sign(&self) -> Sign {
         match self {
-            Point3::Explicit(_) => Sign::Positive,
+            Point3::Explicit(_) | Point3::Lnc { .. } => Sign::Positive,
             _ => {
                 // Interval filter first, exact fallback.
                 if let Some(s) = self.hom::<Interval>()[3].sign() {

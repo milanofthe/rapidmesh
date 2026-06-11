@@ -112,6 +112,8 @@ fn main() {
             radius_edge_bound: 2.0,
             max_points: 200_000,
             grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
         };
         records.push(run_one(
             bs.name,
@@ -182,6 +184,8 @@ fn main() {
             radius_edge_bound: 2.0,
             max_points: 500_000,
             grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
         };
         records.push(run_one(
             &name,

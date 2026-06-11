@@ -19,6 +19,11 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct Scene {
     solids: Vec<Faceted>,
+    /// Region each solid resolves to (position = priority, value = tag;
+    /// 0 marks a VOID: the carved volume belongs to the background and is
+    /// not meshed, its walls survive as boundary patches).
+    solid_regions: Vec<u32>,
+    next_region: u32,
     sheets: Vec<(Faceted, FaceTag)>,
 }
 
@@ -41,8 +46,20 @@ impl Scene {
     /// Adds a closed, outward-oriented solid; returns its region tag.
     /// On overlap, the solid added later wins.
     pub fn add_solid(&mut self, f: Faceted) -> RegionTag {
+        self.next_region += 1;
         self.solids.push(f);
-        RegionTag(self.solids.len() as u32)
+        self.solid_regions.push(self.next_region);
+        RegionTag(self.next_region)
+    }
+
+    /// Adds a closed, outward-oriented VOID: the volume is carved out of
+    /// everything added before it (the cut boolean). A void resolves to the
+    /// background region, so its interior is not meshed; its walls survive
+    /// as boundary patches that face tags and boundary conditions can
+    /// target.
+    pub fn add_void(&mut self, f: Faceted) {
+        self.solids.push(f);
+        self.solid_regions.push(0);
     }
 
     /// Adds an embedded sheet with a face tag (use a nonzero tag).
@@ -122,7 +139,7 @@ impl Scene {
                     if front.is_some() && back.is_some() {
                         break;
                     }
-                    let region = j as u32 + 1;
+                    let region = self.solid_regions[j];
                     if s.solid == Some(j) {
                         // Own boundary: interior behind the outward normal.
                         back.get_or_insert(region);

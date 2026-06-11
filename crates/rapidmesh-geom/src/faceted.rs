@@ -35,6 +35,18 @@ pub enum SurfaceKind {
         /// Tangent of the half-opening angle.
         tan_half_angle: f64,
     },
+    /// A torus.
+    Torus {
+        /// Center of the major circle.
+        center: [f64; 3],
+        /// Axis direction normal to the major circle's plane (not
+        /// necessarily unit).
+        axis: [f64; 3],
+        /// Major radius (center to tube center).
+        major_radius: f64,
+        /// Minor radius (tube radius).
+        minor_radius: f64,
+    },
 }
 
 /// A tessellated shape: triangles plus, per triangle, the analytic surface
@@ -135,9 +147,99 @@ impl Faceted {
                         axis: map_dir(*axis),
                         tan_half_angle: *tan_half_angle,
                     },
+                    SurfaceKind::Torus {
+                        center,
+                        axis,
+                        major_radius,
+                        minor_radius,
+                    } => SurfaceKind::Torus {
+                        center: map(*center),
+                        axis: map_dir(*axis),
+                        major_radius: *major_radius,
+                        minor_radius: *minor_radius,
+                    },
                 })
                 .collect(),
         }
+    }
+
+    /// Copy reflected across the plane through `point` with normal `normal`
+    /// (Householder). Reflections invert orientation, so every triangle's
+    /// winding is flipped to keep solids outward-oriented; radii are
+    /// isometry-invariant, so the surface metadata stays valid.
+    pub fn mirrored(&self, normal: [f64; 3], point: [f64; 3]) -> Faceted {
+        let len2 = normal.iter().map(|x| x * x).sum::<f64>();
+        assert!(len2 > 0.0, "mirror normal must be nonzero");
+        let n: [f64; 3] = std::array::from_fn(|i| normal[i] / len2.sqrt());
+        let mut linear = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let kron = if i == j { 1.0 } else { 0.0 };
+                linear[i][j] = kron - 2.0 * n[i] * n[j];
+            }
+        }
+        // Reflect about the plane point: x -> H (x - p) + p.
+        let offset: [f64; 3] = std::array::from_fn(|i| {
+            point[i] - (linear[i][0] * point[0] + linear[i][1] * point[1] + linear[i][2] * point[2])
+        });
+        let mut out = self.transformed(linear, offset);
+        for t in &mut out.tris {
+            t.v.swap(1, 2);
+        }
+        out
+    }
+
+    /// Copy scaled per axis about `center`. Uniform scaling keeps the
+    /// analytic surface metadata (radii scale along); NON-uniform scaling
+    /// turns cylinders/spheres into quadrics this library does not model, so
+    /// curved back-references DEGRADE to [`SurfaceKind::Plane`] (each facet
+    /// becomes its own exact constraint; fidelity snapping is off for them).
+    /// Negative factors with a negative product invert orientation and flip
+    /// the winding accordingly.
+    pub fn scaled(&self, factors: [f64; 3], center: [f64; 3]) -> Faceted {
+        assert!(
+            factors.iter().all(|&f| f != 0.0),
+            "scale factors must be nonzero"
+        );
+        let linear = [
+            [factors[0], 0.0, 0.0],
+            [0.0, factors[1], 0.0],
+            [0.0, 0.0, factors[2]],
+        ];
+        let offset: [f64; 3] = std::array::from_fn(|i| center[i] * (1.0 - factors[i]));
+        let uniform = factors[0] == factors[1] && factors[1] == factors[2];
+        let mut out = self.transformed(linear, offset);
+        if uniform {
+            let s = factors[0].abs();
+            for kind in &mut out.surfaces {
+                match kind {
+                    SurfaceKind::Plane => {}
+                    SurfaceKind::Cylinder { radius, .. } => *radius *= s,
+                    SurfaceKind::Sphere { radius, .. } => *radius *= s,
+                    SurfaceKind::Cone { .. } => {}
+                    SurfaceKind::Torus {
+                        major_radius,
+                        minor_radius,
+                        ..
+                    } => {
+                        *major_radius *= s;
+                        *minor_radius *= s;
+                    }
+                }
+            }
+        } else {
+            for kind in &mut out.surfaces {
+                if !matches!(kind, SurfaceKind::Plane) {
+                    *kind = SurfaceKind::Plane;
+                }
+            }
+        }
+        if factors[0] * factors[1] * factors[2] < 0.0 {
+            for t in &mut out.tris {
+                t.v.swap(1, 2);
+            }
+        }
+        out
     }
 
     /// Translated copy.

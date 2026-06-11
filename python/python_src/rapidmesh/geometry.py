@@ -165,6 +165,8 @@ class Geometry:
         self._builder = _native.SceneBuilder()
         self._maxh = maxh
         self._grading = grading
+        self._face_maxh: dict[int, float] = {}
+        self._size_points: list[tuple[tuple[float, float, float], float]] = []
 
     # ------------------------------------------------------------ solids
 
@@ -176,12 +178,15 @@ class Geometry:
         position: tuple[float, float, float] = (0, 0, 0),
         *,
         maxh: float | None = None,
+        void: bool = False,
     ) -> Solid:
         """Axis-aligned box: extents along x, y, z; ``position`` is the
-        lower corner."""
+        lower corner. ``void=True`` carves the volume out of everything
+        added before it (the cut boolean; the region tag is then 0 and the
+        walls become boundary faces)."""
         x, y, z = position
         region = self._builder.add_box(
-            [x, y, z], [x + width, y + depth, z + height], maxh
+            [x, y, z], [x + width, y + depth, z + height], maxh, void
         )
         return Solid(region)
 
@@ -194,12 +199,15 @@ class Geometry:
         *,
         segments: int = 24,
         maxh: float | None = None,
+        void: bool = False,
     ) -> Solid:
         """Cylinder from the base centre ``position`` along ``axis``. The
         barrel is tessellated with ``segments`` chords but carries the exact
         analytic surface: mesh vertices snap onto the true cylinder."""
         ax = [a * height for a in _unit(axis)]
-        region = self._builder.add_cylinder(list(position), ax, radius, segments, maxh)
+        region = self._builder.add_cylinder(
+            list(position), ax, radius, segments, maxh, void
+        )
         return Solid(region)
 
     def sphere(
@@ -210,10 +218,13 @@ class Geometry:
         segments: int = 24,
         rings: int = 12,
         maxh: float | None = None,
+        void: bool = False,
     ) -> Solid:
         """Sphere centred at ``position`` (analytic surface, like
         :meth:`cylinder`)."""
-        region = self._builder.add_sphere(list(position), radius, segments, rings, maxh)
+        region = self._builder.add_sphere(
+            list(position), radius, segments, rings, maxh, void
+        )
         return Solid(region)
 
     def cone(
@@ -226,12 +237,13 @@ class Geometry:
         *,
         segments: int = 24,
         maxh: float | None = None,
+        void: bool = False,
     ) -> Solid:
         """Conical frustum: base radius ``r1`` at ``position``, top radius
         ``r2`` (0 for a full cone) at ``position + height * axis``."""
         ax = [a * height for a in _unit(axis)]
         region = self._builder.add_frustum(
-            list(position), ax, r1, r2, segments, maxh
+            list(position), ax, r1, r2, segments, maxh, void
         )
         return Solid(region)
 
@@ -243,6 +255,7 @@ class Geometry:
         *,
         holes: list[list[tuple[float, float]]] | None = None,
         maxh: float | None = None,
+        void: bool = False,
     ) -> Solid:
         """Right prism: the 2D polygon ``points`` (in the xy plane, offset by
         ``position``) extruded by ``height`` along z."""
@@ -254,6 +267,117 @@ class Geometry:
             [0.0, 1.0, 0.0],
             [0.0, 0.0, height],
             maxh,
+            void,
+        )
+        return Solid(region)
+
+    def torus(
+        self,
+        major_radius: float,
+        minor_radius: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        axis: tuple[float, float, float] = (0, 0, 1),
+        *,
+        segments: int = 32,
+        tube_segments: int = 16,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Torus centred at ``position`` with the donut plane normal to
+        ``axis`` (analytic surface: vertices snap onto the true torus)."""
+        region = self._builder.add_torus(
+            list(position),
+            list(_unit(axis)),
+            major_radius,
+            minor_radius,
+            segments,
+            tube_segments,
+            maxh,
+            void,
+        )
+        return Solid(region)
+
+    def wedge(
+        self,
+        dx: float,
+        dy: float,
+        dz: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        *,
+        top_x: float = 0.0,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Wedge: a ``dx x dy x dz`` box whose top edge is shortened to
+        ``top_x`` along x (0 gives a triangular prism); the taper runs in
+        the xz plane."""
+        region = self._builder.add_wedge(
+            list(position), dx, dy, dz, top_x, maxh, void
+        )
+        return Solid(region)
+
+    def sweep(
+        self,
+        path: list[tuple[float, float, float]],
+        radius: float,
+        *,
+        segments: int = 16,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Tube with a circular cross-section swept along the open
+        polyline ``path`` (rapidfem's ``sweep_along_path``). Sample curved
+        paths finely; the tube radius must stay below the local curvature
+        radius."""
+        region = self._builder.add_pipe(
+            [list(p) for p in path], radius, segments, maxh, void
+        )
+        return Solid(region)
+
+    def helix(
+        self,
+        radius: float,
+        pitch: float,
+        turns: float,
+        wire_radius: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        *,
+        points_per_turn: int = 24,
+        segments: int = 12,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Helical coil around +z through ``position``: helix ``radius``,
+        ``pitch`` advance per turn, round wire of ``wire_radius``."""
+        region = self._builder.add_helix(
+            list(position),
+            radius,
+            pitch,
+            turns,
+            wire_radius,
+            points_per_turn,
+            segments,
+            maxh,
+            void,
+        )
+        return Solid(region)
+
+    def loft(
+        self,
+        profile_a: list[tuple[float, float, float]],
+        profile_b: list[tuple[float, float, float]],
+        *,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Ruled loft between two planar profiles with the same vertex
+        count, corresponded by index (horn tapers). Profiles must be
+        star-shaped about their centroid (convex profiles always are)."""
+        region = self._builder.add_loft(
+            [list(p) for p in profile_a],
+            [list(p) for p in profile_b],
+            maxh,
+            void,
         )
         return Solid(region)
 
@@ -266,10 +390,12 @@ class Geometry:
         position: tuple[float, float, float] = (0, 0, 0),
         *,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """Zero-thickness rectangle in an xy plane (a PEC trace, a port
         marker): spans ``width`` along x and ``height`` along y from the
         corner ``position``; conformally embedded with face tag ``tag``."""
+        self._register_face_maxh(tag, maxh)
         self._builder.add_sheet_rect(
             list(position), [width, 0.0, 0.0], [0.0, height, 0.0], tag
         )
@@ -281,9 +407,11 @@ class Geometry:
         position: tuple[float, float, float] = (0, 0, 0),
         *,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """Like :meth:`xy_plate` in an xz plane (width along x, height
         along z)."""
+        self._register_face_maxh(tag, maxh)
         self._builder.add_sheet_rect(
             list(position), [width, 0.0, 0.0], [0.0, 0.0, height], tag
         )
@@ -295,9 +423,11 @@ class Geometry:
         position: tuple[float, float, float] = (0, 0, 0),
         *,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """Like :meth:`xy_plate` in a yz plane (width along y, height
         along z)."""
+        self._register_face_maxh(tag, maxh)
         self._builder.add_sheet_rect(
             list(position), [0.0, width, 0.0], [0.0, 0.0, height], tag
         )
@@ -309,9 +439,11 @@ class Geometry:
         dv: tuple[float, float, float],
         *,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """General parallelogram sheet from corner ``p0`` spanned by the
         edge vectors ``du`` and ``dv``."""
+        self._register_face_maxh(tag, maxh)
         self._builder.add_sheet_rect(list(p0), list(du), list(dv), tag)
 
     def disc(
@@ -322,8 +454,10 @@ class Geometry:
         *,
         segments: int = 24,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """Disc sheet centred at ``position``, normal to ``axis``."""
+        self._register_face_maxh(tag, maxh)
         e1, e2 = _disc_basis(axis)
         self._builder.add_sheet_disk(
             list(position),
@@ -340,9 +474,11 @@ class Geometry:
         *,
         holes: list[list[tuple[float, float]]] | None = None,
         tag: int = 1,
+        maxh: float | None = None,
     ) -> None:
         """Polygonal sheet in an xy plane at ``position`` (2D coordinates
         are offset by ``position``'s x, y)."""
+        self._register_face_maxh(tag, maxh)
         self._builder.add_sheet_polygon(
             [list(p) for p in points],
             [[list(q) for q in h] for h in (holes or [])],
@@ -351,6 +487,26 @@ class Geometry:
             [0.0, 1.0, 0.0],
             tag,
         )
+
+    # ------------------------------------------------------------ sizing
+
+    def _register_face_maxh(self, tag: int, maxh: float | None) -> None:
+        if maxh is None:
+            return
+        cur = self._face_maxh.get(tag)
+        self._face_maxh[tag] = maxh if cur is None else min(cur, maxh)
+
+    def refine_near_points(
+        self,
+        points: list[tuple[float, float, float]],
+        h: float,
+    ) -> None:
+        """Registers point size sources: the edge-length target shrinks to
+        ``h`` at each point and recovers along the grading away from it
+        (rapidfem's ``refine_near_points``; the hook for error-driven
+        adaptive refinement)."""
+        for pt in points:
+            self._size_points.append((tuple(float(c) for c in pt), float(h)))
 
     # ------------------------------------------------------------- mesh
 
@@ -384,7 +540,12 @@ class Geometry:
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
         native = self._builder.mesh(
-            h if h is not None else math.inf, radius_edge, max_points, g
+            h if h is not None else math.inf,
+            radius_edge,
+            max_points,
+            g,
+            [(t, fh) for t, fh in sorted(self._face_maxh.items())],
+            [(list(pt), ph) for pt, ph in self._size_points],
         )
         return Mesh(native)
 

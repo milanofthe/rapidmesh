@@ -20,5 +20,6 @@ pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};
 pub use prim::{
-    cylinder, extrude_polygon, frustum, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere,
+    cylinder, extrude_polygon, frustum, helix, loft, pipe, sheet_disk, sheet_polygon, sheet_rect,
+    solid_box, sphere, torus, wedge,
 };

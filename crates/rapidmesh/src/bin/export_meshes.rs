@@ -23,6 +23,8 @@ fn main() {
             radius_edge_bound: 2.0,
             max_points: 200_000,
             grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
         let opt = OptimizeParams {

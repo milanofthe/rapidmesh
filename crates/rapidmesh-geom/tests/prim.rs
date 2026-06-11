@@ -217,3 +217,154 @@ fn sheet_polygon_with_hole_in_plane() {
     assert_eq!(area2, rat(2.0 * 96.0));
     assert!(s.tris.iter().all(|t| t.v.iter().all(|v| v[2] == 1.0)));
 }
+
+#[test]
+fn torus_watertight_and_volume_sane() {
+    let f = rapidmesh_geom::torus([1.0, 2.0, 3.0], [0.0, 0.0, 2.0], 2.0, 0.5, 48, 24);
+    let v6 = solid_volume6(&f);
+    // Analytic 2 pi^2 R r^2 = 9.8696; the chordal tessellation underestimates.
+    let v = v6.to_string();
+    let _ = v;
+    let approx = {
+        let (verts, tris) = index_mesh(&f);
+        assert_watertight(&tris);
+        let _ = verts;
+        // f64 estimate of the rational volume via the builder triangles.
+        let mut acc = 0.0f64;
+        for t in &f.tris {
+            let (a, b, c) = (t.v[0], t.v[1], t.v[2]);
+            acc += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        }
+        acc / 6.0
+    };
+    let analytic = 2.0 * std::f64::consts::PI.powi(2) * 2.0 * 0.25;
+    assert!(v6 > BigRational::zero());
+    assert!(
+        (approx - analytic).abs() / analytic < 0.02,
+        "torus volume {approx} vs analytic {analytic}"
+    );
+}
+
+#[test]
+fn wedge_exact_volume() {
+    // Trapezoid profile: ((dx + top_x) / 2) * dz, extruded dy.
+    let f = rapidmesh_geom::wedge([1.0, 1.0, 1.0], 4.0, 2.0, 3.0, 1.0);
+    // ((4 + 1) / 2 * 3) * 2 = 15; times 6 = 90.
+    assert_eq!(solid_volume6(&f), rat(90.0));
+    // Triangular prism at top_x = 0.
+    let g = rapidmesh_geom::wedge([0.0, 0.0, 0.0], 4.0, 2.0, 3.0, 0.0);
+    // (4 * 3 / 2) * 2 = 12; times 6 = 72.
+    assert_eq!(solid_volume6(&g), rat(72.0));
+}
+
+#[test]
+fn pipe_straight_exact_prism_volume() {
+    // A straight pipe is an exact n-gon prism: V = n/2 r^2 sin(2 pi / n) * L.
+    let f = rapidmesh_geom::pipe(&[[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], 1.0, 8);
+    let v6 = solid_volume6(&f);
+    let analytic = 8.0 / 2.0 * (2.0 * std::f64::consts::PI / 8.0).sin() * 2.0;
+    let approx: f64 = {
+        let mut acc = 0.0f64;
+        for t in &f.tris {
+            let (a, b, c) = (t.v[0], t.v[1], t.v[2]);
+            acc += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        }
+        acc / 6.0
+    };
+    assert!(v6 > BigRational::zero());
+    assert!((approx - analytic).abs() < 1e-9, "{approx} vs {analytic}");
+}
+
+#[test]
+fn pipe_bent_watertight() {
+    let path = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [2.0, 0.5, 0.0],
+        [3.0, 1.5, 0.5],
+        [3.5, 2.5, 1.5],
+    ];
+    let f = rapidmesh_geom::pipe(&path, 0.2, 12);
+    let v6 = solid_volume6(&f);
+    assert!(v6 > BigRational::zero());
+}
+
+#[test]
+fn helix_watertight() {
+    let f = rapidmesh_geom::helix([0.0, 0.0, 0.0], 2.0, 1.0, 2.5, 0.15, 16, 8);
+    let v6 = solid_volume6(&f);
+    assert!(v6 > BigRational::zero());
+    // Wire volume ~ pi r^2 * path length; sanity within 20%.
+    let turns: f64 = 2.5;
+    let circumference = (2.0 * std::f64::consts::PI * 2.0f64).hypot(1.0);
+    let length = turns * circumference;
+    let analytic = std::f64::consts::PI * 0.15f64.powi(2) * length;
+    let approx: f64 = {
+        let mut acc = 0.0f64;
+        for t in &f.tris {
+            let (a, b, c) = (t.v[0], t.v[1], t.v[2]);
+            acc += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        }
+        acc / 6.0
+    };
+    assert!(
+        (approx - analytic).abs() / analytic < 0.2,
+        "helix volume {approx} vs analytic {analytic}"
+    );
+}
+
+#[test]
+fn loft_frustum_exact_volume() {
+    // Square 4x4 lofted to square 2x2 at height 3 (pyramidal frustum):
+    // V = h/3 (A1 + A2 + sqrt(A1 A2)) = 1 * (16 + 4 + 8) = 28; times 6 = 168.
+    let a = [
+        [-2.0, -2.0, 0.0],
+        [2.0, -2.0, 0.0],
+        [2.0, 2.0, 0.0],
+        [-2.0, 2.0, 0.0],
+    ];
+    let b = [
+        [-1.0, -1.0, 3.0],
+        [1.0, -1.0, 3.0],
+        [1.0, 1.0, 3.0],
+        [-1.0, 1.0, 3.0],
+    ];
+    let f = rapidmesh_geom::loft(&a, &b);
+    assert_eq!(solid_volume6(&f), rat(168.0));
+    // Orientation normalization: reversed input must give the same solid.
+    let g = rapidmesh_geom::loft(&b, &a);
+    assert_eq!(solid_volume6(&g), rat(168.0));
+}
+
+#[test]
+fn mirrored_preserves_volume_and_orientation() {
+    let f = rapidmesh_geom::wedge([1.0, 0.0, 0.0], 4.0, 2.0, 3.0, 1.0);
+    let m = f.mirrored([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    assert_eq!(solid_volume6(&m), rat(90.0));
+}
+
+#[test]
+fn scaled_volume_and_surface_degradation() {
+    let f = cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 12);
+    let v0 = solid_volume6(&f);
+    // Uniform: volume x 8, cylinder kind keeps a scaled radius.
+    let u = f.scaled([2.0, 2.0, 2.0], [0.0, 0.0, 0.0]);
+    assert_eq!(solid_volume6(&u), v0.clone() * rat(8.0));
+    assert!(u.surfaces.iter().any(|s| matches!(
+        s,
+        rapidmesh_geom::SurfaceKind::Cylinder { radius, .. } if (*radius - 2.0).abs() < 1e-12
+    )));
+    // Non-uniform: volume x fx fy fz, curved kinds degrade to Plane.
+    let n = f.scaled([2.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    assert_eq!(solid_volume6(&n), v0 * rat(2.0));
+    assert!(n
+        .surfaces
+        .iter()
+        .all(|s| matches!(s, rapidmesh_geom::SurfaceKind::Plane)));
+    // Negative single factor flips orientation; winding is corrected.
+    let r = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    assert!(solid_volume6(&r) > BigRational::zero());
+}

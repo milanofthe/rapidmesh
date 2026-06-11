@@ -101,6 +101,7 @@ fn child_h(
     point_h: &[f64],
     grading: f64,
     cap: f64,
+    size_points: &[([f64; 3], f64)],
 ) -> f64 {
     let mut h = cap;
     for &v in parents {
@@ -109,6 +110,16 @@ fn child_h(
             .sum::<f64>()
             .sqrt();
         h = h.min(point_h[v] + grading * d);
+    }
+    // Point sources act directly (the inherited field only carries them
+    // outward from existing vertices; a source far from any vertex would
+    // otherwise never bite).
+    for (sp, sh) in size_points {
+        let d = (0..3)
+            .map(|k| (pos[k] - sp[k]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        h = h.min(sh + grading * d);
     }
     h
 }
@@ -338,6 +349,14 @@ pub struct MeshParams {
     /// constant). 0.5 grows neighbor elements by roughly 1.5x; INFINITY
     /// disables grading (sizes jump at region interfaces).
     pub grading: f64,
+    /// Per-face-tag target edge length, overriding the adjacent regions'
+    /// targets on those patches (rapidfem's per-plate maxh).
+    pub face_maxh: Vec<(u32, f64)>,
+    /// Point size sources `(position, h)`: the target shrinks to `h` at the
+    /// point and recovers along the Lipschitz grading away from it
+    /// (rapidfem's refine_near_points; the hook for error-driven adaptive
+    /// refinement).
+    pub size_points: Vec<([f64; 3], f64)>,
 }
 
 impl Default for MeshParams {
@@ -348,6 +367,8 @@ impl Default for MeshParams {
             radius_edge_bound: 2.0,
             max_points: 100_000,
             grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
         }
     }
 }
@@ -412,6 +433,8 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
             radius_edge_bound: f64::INFINITY,
             max_points: usize::MAX,
             grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
         },
     )
 }
@@ -537,16 +560,36 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .map(|&(_, h)| h)
             .unwrap_or(params.maxh)
     };
+    let h_of_face = |tag: FaceTag| -> f64 {
+        params
+            .face_maxh
+            .iter()
+            .find(|(t, _)| *t == tag.0)
+            .map(|&(_, h)| h)
+            .unwrap_or(f64::INFINITY)
+    };
     let patch_h_init: Vec<f64> = patches
         .iter()
-        .map(|p| h_of_region_init(p.regions[0].0).min(h_of_region_init(p.regions[1].0)))
+        .map(|p| {
+            h_of_region_init(p.regions[0].0)
+                .min(h_of_region_init(p.regions[1].0))
+                .min(h_of_face(p.face_tag))
+        })
         .collect();
     let mut point_h: Vec<f64> = (0..points.len())
         .map(|v| {
-            on_patch[v]
+            let mut h = on_patch[v]
                 .iter()
                 .map(|&pi| patch_h_init[pi])
-                .fold(params.maxh, f64::min)
+                .fold(params.maxh, f64::min);
+            for (sp, sh) in &params.size_points {
+                let d = (0..3)
+                    .map(|k| (points[v][k] - sp[k]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                h = h.min(sh + params.grading * d);
+            }
+            h
         })
         .collect();
     let point_h = &mut point_h;
@@ -637,7 +680,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                             point_h,
                             params.grading,
                             f64::INFINITY,
-                        ));
+                    &params.size_points,
+                ));
                         builder.insert(m);
                         point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
@@ -720,23 +764,44 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     // face between two SAME-side tets is the floor or fan of
                     // a flat sliver around a hovering Steiner point (see
                     // [tet_plane_side]) and double-covers the projection.
-                    // Hull faces (one real owner) compare against the super
-                    // corner on their far side: a hover that dipped an ulp
-                    // OUTSIDE the hull fans same-side hull faces.
-                    let s0 = tet_plane_side(patch, &points, dt_tets[owners[0] as usize]);
-                    let s_other = if owners.len() == 2 {
-                        tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                    // The side test is meaningful ONLY for that flat
+                    // all-marked complex: distant tets are judged against
+                    // the INFINITE plane, which re-enters concave geometry
+                    // (a torus bore's big void tets can sit on either side
+                    // wholesale), so a face whose opposite vertices are not
+                    // both on the patch counts unconditionally. Hull faces
+                    // (one real owner) compare against the super corner on
+                    // their far side: a hover that dipped an ulp OUTSIDE
+                    // the hull fans same-side hull faces.
+                    let opp_marked = |owner: u32| -> bool {
+                        dt_tets[owner as usize]
+                            .iter()
+                            .find(|v| !f.contains(v))
+                            .is_some_and(|v| on_patch[*v].contains(&pi))
+                    };
+                    let rejected = if owners.len() == 2 {
+                        opp_marked(owners[0])
+                            && opp_marked(owners[1])
+                            && tet_plane_side(patch, &points, dt_tets[owners[0] as usize])
+                                == tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
                     } else {
                         match hull_super.get(f) {
-                            Some(&sc) => plane_side(
-                                patch,
-                                &points,
-                                [points[f[0]], points[f[1]], points[f[2]], sc],
-                            ),
-                            None => s0.flip(),
+                            Some(&sc) => {
+                                opp_marked(owners[0])
+                                    && tet_plane_side(
+                                        patch,
+                                        &points,
+                                        dt_tets[owners[0] as usize],
+                                    ) == plane_side(
+                                        patch,
+                                        &points,
+                                        [points[f[0]], points[f[1]], points[f[2]], sc],
+                                    )
+                            }
+                            None => false,
                         }
                     };
-                    if s0 == s_other {
+                    if rejected {
                         continue;
                     }
                     if n_marked == 3 {
@@ -1065,7 +1130,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                             point_h,
                             params.grading,
                             f64::INFINITY,
-                        ));
+                    &params.size_points,
+                ));
                         builder.insert(xs);
                         point_index.insert(xs.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(DSet::default());
@@ -1093,7 +1159,8 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 point_h,
                 params.grading,
                 patch_h_init[pi],
-            ));
+                    &params.size_points,
+                ));
             builder.insert(x);
             point_index.insert(x.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
@@ -1116,7 +1183,43 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     "rapidmesh: giving up on patch {pi} tiling (no piercing edges); geometry near this patch needs review"
                 );
                 if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
+                    // Which filter rejects the faces that geometrically
+                    // cover this patch?
                     let patch = &patches[pi];
+                    let mut diag: DMap<&'static str, usize> = DMap::default();
+                    for (f, owners) in &dt_faces {
+                        let c: [f64; 3] = std::array::from_fn(|k| {
+                            (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
+                        });
+                        if !inside_patch(pi, patch, &points, c) {
+                            continue;
+                        }
+                        let marked =
+                            f.iter().all(|&v| on_patch[v].contains(&pi));
+                        let s0 = tet_plane_side(patch, &points, dt_tets[owners[0] as usize]);
+                        let s_other = if owners.len() == 2 {
+                            tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
+                        } else {
+                            match hull_super.get(f) {
+                                Some(&sc) => plane_side(
+                                    patch,
+                                    &points,
+                                    [points[f[0]], points[f[1]], points[f[2]], sc],
+                                ),
+                                None => s0.flip(),
+                            }
+                        };
+                        let key = match (marked, s0 != s_other) {
+                            (true, true) => "counted",
+                            (true, false) => "side-reject",
+                            (false, true) => "marks-reject",
+                            (false, false) => "both-reject",
+                        };
+                        *diag.entry(key).or_default() += 1;
+                    }
+                    let mut dv: Vec<(&str, usize)> = diag.into_iter().collect();
+                    dv.sort_unstable();
+                    eprintln!("  patch {pi} containment-passing faces: {dv:?}");
                     let pl = patch.plane.map(|i| points[i]);
                     let eu: [f64; 3] = std::array::from_fn(|k| pl[1][k] - pl[0][k]);
                     let ev: [f64; 3] = std::array::from_fn(|k| pl[2][k] - pl[0][k]);
@@ -1303,6 +1406,7 @@ fn split_crease_midpoint(
     points: &mut Vec<[f64; 3]>,
     point_h: &mut Vec<f64>,
     grading: f64,
+    size_points: &[([f64; 3], f64)],
     builder: &mut DelaunayBuilder,
     point_index: &mut DMap<[u64; 3], usize>,
     on_patch: &mut Vec<DSet<usize>>,
@@ -1322,7 +1426,15 @@ fn split_crease_midpoint(
                 eprintln!("ins crease v{g} {m:?} (of {a},{b})");
             }
             points.push(m);
-            point_h.push(child_h(m, &[a, b], points, point_h, grading, f64::INFINITY));
+            point_h.push(child_h(
+                m,
+                &[a, b],
+                points,
+                point_h,
+                grading,
+                f64::INFINITY,
+                size_points,
+            ));
             builder.insert(m);
             point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
@@ -1595,9 +1707,21 @@ fn refine_queue(
             .map(|&(_, h)| h)
             .unwrap_or(params.maxh)
     };
+    let h_of_face = |tag: FaceTag| -> f64 {
+        params
+            .face_maxh
+            .iter()
+            .find(|(t, _)| *t == tag.0)
+            .map(|&(_, h)| h)
+            .unwrap_or(f64::INFINITY)
+    };
     let patch_h: Vec<f64> = patches
         .iter()
-        .map(|p| h_of_region(p.regions[0].0).min(h_of_region(p.regions[1].0)))
+        .map(|p| {
+            h_of_region(p.regions[0].0)
+                .min(h_of_region(p.regions[1].0))
+                .min(h_of_face(p.face_tag))
+        })
         .collect();
     let dist2 = |a: [f64; 3], b: [f64; 3]| -> f64 {
         (0..3).map(|k| (a[k] - b[k]).powi(2)).sum()
@@ -1746,6 +1870,7 @@ fn refine_queue(
                 points,
                 point_h,
                 params.grading,
+                &params.size_points,
                 builder,
                 point_index,
                 on_patch,
@@ -1830,7 +1955,8 @@ fn refine_queue(
                             point_h,
                             params.grading,
                             cap,
-                        ));
+                    &params.size_points,
+                ));
                         point_index.insert(m.map(|x| (x + 0.0).to_bits()), g);
                         on_patch.push(marks);
                         absorb!(g);
@@ -1937,7 +2063,8 @@ fn refine_queue(
                 point_h,
                 params.grading,
                 patch_h[pi],
-            ));
+                    &params.size_points,
+                ));
             point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             let mut marks = DSet::default();
             marks.insert(pi);
@@ -2066,6 +2193,7 @@ fn refine_queue(
                     point_h,
                     params.grading,
                     patch_h[pi],
+                    &params.size_points,
                 ));
                 point_index.insert(tc.map(|x| (x + 0.0).to_bits()), g);
                 let mut marks = DSet::default();
@@ -2112,7 +2240,8 @@ fn refine_queue(
                 point_h,
                 params.grading,
                 f64::INFINITY,
-            ));
+                    &params.size_points,
+                ));
             point_index.insert(cc.map(|x| (x + 0.0).to_bits()), g);
             on_patch.push(DSet::default());
             absorb!(g);
@@ -2234,24 +2363,44 @@ fn absorb_insert_deltas(
                     if !patch_inside_closed(&patch_grids[pi], patch, points, c) {
                         continue;
                     }
-                    // Side rule (see the global tiling scan): a true tile
-                    // separates the two sides of the patch.
-                    let s_a = tet_plane_side(patch, points, tv);
-                    let s_b = match builder.neighbor_at(nt, fi) {
+                    // Side rule (see the global tiling scan): the
+                    // same-side reject applies only to the flat all-marked
+                    // sliver complex; faces against distant tets count.
+                    let opp_of = |tt: [usize; 4]| -> Option<usize> {
+                        tt.iter().copied().find(|v| !f.contains(v))
+                    };
+                    let marked = |v: Option<usize>| -> bool {
+                        v.is_some_and(|v| on_patch[v].contains(&pi))
+                    };
+                    let rejected = match builder.neighbor_at(nt, fi) {
                         Some(nb) => match builder.tet_at(nb) {
-                            Some(tb) => tet_plane_side(patch, points, tb),
+                            Some(tb) => {
+                                marked(opp_of(tv))
+                                    && marked(opp_of(tb))
+                                    && tet_plane_side(patch, points, tv)
+                                        == tet_plane_side(patch, points, tb)
+                            }
                             None => match builder.super_corner(nb) {
-                                Some(sc) => plane_side(
-                                    patch,
-                                    points,
-                                    [points[f[0]], points[f[1]], points[f[2]], sc],
-                                ),
-                                None => s_a.flip(),
+                                Some(sc) => {
+                                    marked(opp_of(tv))
+                                        && tet_plane_side(patch, points, tv)
+                                            == plane_side(
+                                                patch,
+                                                points,
+                                                [
+                                                    points[f[0]],
+                                                    points[f[1]],
+                                                    points[f[2]],
+                                                    sc,
+                                                ],
+                                            )
+                                }
+                                None => false,
                             },
                         },
-                        None => s_a.flip(),
+                        None => false,
                     };
-                    if s_a == s_b {
+                    if rejected {
                         continue;
                     }
                     tiled = Some(pi);

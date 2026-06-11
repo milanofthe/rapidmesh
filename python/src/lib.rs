@@ -7,8 +7,8 @@
 use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 use rapidmesh_geom::{
-    cylinder, extrude_polygon, frustum, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere,
-    FaceTag, Scene,
+    cylinder, extrude_polygon, frustum, helix, loft, pipe, sheet_disk, sheet_polygon, sheet_rect,
+    solid_box, sphere, torus, wedge, FaceTag, Scene,
 };
 use rapidmesh_tet::{
     mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, TetMesh,
@@ -22,6 +22,22 @@ struct SceneBuilder {
     region_maxh: Vec<(u32, f64)>,
 }
 
+impl SceneBuilder {
+    /// Registers a built shape as a material solid or (void = true) a carved
+    /// hole; returns the region tag (0 for voids).
+    fn put(&mut self, f: rapidmesh_geom::Faceted, maxh: Option<f64>, void: bool) -> u32 {
+        if void {
+            self.scene.add_void(f);
+            return 0;
+        }
+        let r = self.scene.add_solid(f);
+        if let Some(h) = maxh {
+            self.region_maxh.push((r.0, h));
+        }
+        r.0
+    }
+}
+
 #[pymethods]
 impl SceneBuilder {
     #[new]
@@ -32,15 +48,13 @@ impl SceneBuilder {
         }
     }
 
-    fn add_box(&mut self, min: [f64; 3], max: [f64; 3], maxh: Option<f64>) -> u32 {
-        let r = self.scene.add_solid(solid_box(min, max));
-        if let Some(h) = maxh {
-            self.region_maxh.push((r.0, h));
-        }
-        r.0
+    #[pyo3(signature = (min, max, maxh=None, void=false))]
+    fn add_box(&mut self, min: [f64; 3], max: [f64; 3], maxh: Option<f64>, void: bool) -> u32 {
+        self.put(solid_box(min, max), maxh, void)
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (base, axis, radius, segments, maxh=None, void=false))]
     fn add_cylinder(
         &mut self,
         base: [f64; 3],
@@ -48,14 +62,13 @@ impl SceneBuilder {
         radius: f64,
         segments: usize,
         maxh: Option<f64>,
+        void: bool,
     ) -> u32 {
-        let r = self.scene.add_solid(cylinder(base, axis, radius, segments));
-        if let Some(h) = maxh {
-            self.region_maxh.push((r.0, h));
-        }
-        r.0
+        self.put(cylinder(base, axis, radius, segments), maxh, void)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (center, radius, segments, rings, maxh=None, void=false))]
     fn add_sphere(
         &mut self,
         center: [f64; 3],
@@ -63,15 +76,13 @@ impl SceneBuilder {
         segments: usize,
         rings: usize,
         maxh: Option<f64>,
+        void: bool,
     ) -> u32 {
-        let r = self.scene.add_solid(sphere(center, radius, segments, rings));
-        if let Some(h) = maxh {
-            self.region_maxh.push((r.0, h));
-        }
-        r.0
+        self.put(sphere(center, radius, segments, rings), maxh, void)
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (base, axis, r_base, r_top, segments, maxh=None, void=false))]
     fn add_frustum(
         &mut self,
         base: [f64; 3],
@@ -80,17 +91,13 @@ impl SceneBuilder {
         r_top: f64,
         segments: usize,
         maxh: Option<f64>,
+        void: bool,
     ) -> u32 {
-        let r = self
-            .scene
-            .add_solid(frustum(base, axis, r_base, r_top, segments));
-        if let Some(h) = maxh {
-            self.region_maxh.push((r.0, h));
-        }
-        r.0
+        self.put(frustum(base, axis, r_base, r_top, segments), maxh, void)
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (outer, holes, base, u, v, h, maxh=None, void=false))]
     fn add_prism(
         &mut self,
         outer: Vec<[f64; 2]>,
@@ -100,14 +107,89 @@ impl SceneBuilder {
         v: [f64; 3],
         h: [f64; 3],
         maxh: Option<f64>,
+        void: bool,
     ) -> u32 {
-        let r = self
-            .scene
-            .add_solid(extrude_polygon(&outer, &holes, base, u, v, h));
-        if let Some(hh) = maxh {
-            self.region_maxh.push((r.0, hh));
-        }
-        r.0
+        self.put(extrude_polygon(&outer, &holes, base, u, v, h), maxh, void)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (center, axis, major_radius, minor_radius, segments_major, segments_minor, maxh=None, void=false))]
+    fn add_torus(
+        &mut self,
+        center: [f64; 3],
+        axis: [f64; 3],
+        major_radius: f64,
+        minor_radius: f64,
+        segments_major: usize,
+        segments_minor: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(
+            torus(center, axis, major_radius, minor_radius, segments_major, segments_minor),
+            maxh,
+            void,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (position, dx, dy, dz, top_x, maxh=None, void=false))]
+    fn add_wedge(
+        &mut self,
+        position: [f64; 3],
+        dx: f64,
+        dy: f64,
+        dz: f64,
+        top_x: f64,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(wedge(position, dx, dy, dz, top_x), maxh, void)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (path, radius, segments, maxh=None, void=false))]
+    fn add_pipe(
+        &mut self,
+        path: Vec<[f64; 3]>,
+        radius: f64,
+        segments: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(pipe(&path, radius, segments), maxh, void)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (base, radius, pitch, turns, wire_radius, points_per_turn, segments, maxh=None, void=false))]
+    fn add_helix(
+        &mut self,
+        base: [f64; 3],
+        radius: f64,
+        pitch: f64,
+        turns: f64,
+        wire_radius: f64,
+        points_per_turn: usize,
+        segments: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(
+            helix(base, radius, pitch, turns, wire_radius, points_per_turn, segments),
+            maxh,
+            void,
+        )
+    }
+
+    #[pyo3(signature = (profile_a, profile_b, maxh=None, void=false))]
+    fn add_loft(
+        &mut self,
+        profile_a: Vec<[f64; 3]>,
+        profile_b: Vec<[f64; 3]>,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(loft(&profile_a, &profile_b), maxh, void)
     }
 
     fn add_sheet_rect(&mut self, corner: [f64; 3], u: [f64; 3], v: [f64; 3], tag: u32) {
@@ -140,6 +222,8 @@ impl SceneBuilder {
     }
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![]))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -147,6 +231,8 @@ impl SceneBuilder {
         radius_edge: f64,
         max_points: usize,
         grading: f64,
+        face_maxh: Vec<(u32, f64)>,
+        size_points: Vec<([f64; 3], f64)>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         // The heavy pipeline runs without the GIL.
@@ -158,11 +244,14 @@ impl SceneBuilder {
                 radius_edge_bound: radius_edge,
                 max_points,
                 grading,
+                face_maxh,
+                size_points,
             };
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
             let opt = OptimizeParams {
                 maxh: params.maxh,
                 region_maxh: params.region_maxh.clone(),
+                face_maxh: params.face_maxh.clone(),
                 ..OptimizeParams::default()
             };
             optimize(&mut mesh, &opt);

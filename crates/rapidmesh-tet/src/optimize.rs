@@ -107,6 +107,10 @@ pub struct OptimizeParams {
     pub maxh: f64,
     /// Per-region size targets (see [`crate::MeshParams::region_maxh`]).
     pub region_maxh: Vec<(u32, f64)>,
+    /// Per-face-tag size targets (see [`crate::MeshParams::face_maxh`]):
+    /// surface operations on tagged patches keep their edges within the
+    /// face budget too.
+    pub face_maxh: Vec<(u32, f64)>,
 }
 
 impl Default for OptimizeParams {
@@ -115,6 +119,7 @@ impl Default for OptimizeParams {
             passes: 50,
             maxh: f64::INFINITY,
             region_maxh: Vec::new(),
+            face_maxh: Vec::new(),
         }
     }
 }
@@ -243,6 +248,21 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             .find(|(r, _)| *r == region.0)
             .map(|&(_, h)| h)
             .unwrap_or(params.maxh);
+        if h.is_finite() {
+            (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
+        } else {
+            f64::INFINITY
+        }
+    };
+    // Squared edge budget on a tagged surface patch (tighter than the
+    // adjacent regions' budgets where a face_maxh is set).
+    let face_budget2 = |tag: rapidmesh_geom::FaceTag| -> f64 {
+        let h = params
+            .face_maxh
+            .iter()
+            .find(|(t, _)| *t == tag.0)
+            .map(|&(_, h)| h)
+            .unwrap_or(f64::INFINITY);
         if h.is_finite() {
             (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
         } else {
@@ -391,10 +411,12 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &is_active,
             &complex_changed,
             &edge_budget2,
+            &face_budget2,
             &mut next_dirty,
         );
         let t_surf = t0.elapsed();
         edge_watch("surf", mesh, &alive);
+        volume_watch("surf", mesh, &alive);
         let t1 = std::time::Instant::now();
 
         // ------------------------------------------------- smoothing
@@ -522,6 +544,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
 
         let t_smooth = t1.elapsed();
         edge_watch("smooth", mesh, &alive);
+        volume_watch("smooth", mesh, &alive);
 
         // --------------------------------------------- edge collapse
         // Before the flip owner maps are built: collapses rewrite tets in
@@ -565,6 +588,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
         }
         edge_watch("collapse", mesh, &alive);
+        volume_watch("collapse", mesh, &alive);
         let t2 = std::time::Instant::now();
 
         // ------------------------------------------------------ flips
@@ -1308,6 +1332,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
         }
 
+        volume_watch("flips+insert(pre-apply)", mesh, &alive);
         // Apply: append the pass's new tets; retired slots stay dead until
         // the single final compaction (stable ids keep the caches valid).
         g_incident.resize(mesh.points.len(), Vec::new());
@@ -1358,6 +1383,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 next_dirty.len()
             );
         }
+        volume_watch("apply", mesh, &alive);
         total_ops += ops;
         if ops == 0 {
             break;
@@ -1757,6 +1783,29 @@ fn try_edge_collapse(
     false
 }
 
+/// Stage watchdog (RAPIDMESH_VOLUME_WATCH): total alive volume after a
+/// stage (f64; catches operations that break the region-covering
+/// invariant).
+fn volume_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
+    if std::env::var_os("RAPIDMESH_VOLUME_WATCH").is_none() {
+        return;
+    }
+    let mut v6 = 0.0f64;
+    for (ti, t) in mesh.tets.iter().enumerate() {
+        if !alive[ti] {
+            continue;
+        }
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| mesh.points[t[k]]);
+        let r: [[f64; 3]; 3] = std::array::from_fn(|i| {
+            std::array::from_fn(|k| p[i][k] - p[3][k])
+        });
+        v6 += r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+            - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+    }
+    eprintln!("  [vol {label}] {:.9}", v6 / 6.0);
+}
+
 /// Stage watchdog (RAPIDMESH_EDGE_WATCH): max alive edge after a stage.
 fn edge_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
     if std::env::var_os("RAPIDMESH_EDGE_WATCH").is_none() {
@@ -1890,6 +1939,30 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
             let r_target = t * tan_half_angle;
             std::array::from_fn(|k| apex[k] + t * a[k] + r_target * radial[k] / rl)
         }
+        SurfaceKind::Torus {
+            center,
+            axis,
+            major_radius,
+            minor_radius,
+        } => {
+            let al = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+            let a: [f64; 3] = std::array::from_fn(|k| axis[k] / al);
+            let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
+            let t: f64 = (0..3).map(|k| w[k] * a[k]).sum();
+            let radial: [f64; 3] = std::array::from_fn(|k| w[k] - t * a[k]);
+            let rl = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if rl < f64::MIN_POSITIVE {
+                return p;
+            }
+            // Nearest point on the major circle, then push out to the tube.
+            let m: [f64; 3] = std::array::from_fn(|k| center[k] + major_radius * radial[k] / rl);
+            let d: [f64; 3] = std::array::from_fn(|k| p[k] - m[k]);
+            let dl = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if dl < f64::MIN_POSITIVE {
+                return p;
+            }
+            std::array::from_fn(|k| m[k] + minor_radius * d[k] / dl)
+        }
     }
 }
 
@@ -1958,6 +2031,7 @@ fn surface_pass(
     is_active: &impl Fn(&[usize]) -> bool,
     complex_changed: &impl Fn(&[usize]) -> bool,
     edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+    face_budget2: &impl Fn(rapidmesh_geom::FaceTag) -> f64,
     next_dirty: &mut DSet<usize>,
 ) -> usize {
     let mut ops = 0usize;
@@ -2041,7 +2115,9 @@ fn surface_pass(
                         );
                     }
                 }
-                let budget2 = edge_budget2(sf1.regions[0]).min(edge_budget2(sf1.regions[1]));
+                let budget2 = edge_budget2(sf1.regions[0])
+                    .min(edge_budget2(sf1.regions[1]))
+                    .min(face_budget2(sf1.face_tag));
                 let new2: f64 = (0..3)
                     .map(|k| (mesh.points[c][k] - mesh.points[d][k]).powi(2))
                     .sum();
@@ -2059,6 +2135,31 @@ fn surface_pass(
                     .all(|e| !complex_changed(&mesh.tets[e.1 as usize]));
             if unchanged {
                 continue;
+            }
+            // CURVED groups: the flip replaces the diagonal (a, b) with
+            // (c, d), trading the wedge tet (a, b, c, d) from one side of
+            // the surface to the other. Admit it only when the new diagonal
+            // hugs the analytic surface at least as well as the old one:
+            // quality-driven flips across facet creases otherwise shave the
+            // curved boundary by one wedge per pass -- a volume RATCHET
+            // that never converges (fidelity snapping restores the
+            // vertices onto the surface, the next pass shaves again).
+            if face_group(mesh, fi1).0 == 1 {
+                let kind = mesh.surfaces[mesh.faces[fi1].surface as usize].clone();
+                let residual = |u: usize, w: usize| -> f64 {
+                    let m: [f64; 3] = std::array::from_fn(|k| {
+                        0.5 * (mesh.points[u][k] + mesh.points[w][k])
+                    });
+                    let pr = project_to_surface(&kind, m);
+                    (0..3).map(|k| (pr[k] - m[k]).powi(2)).sum::<f64>().sqrt()
+                };
+                let scale = (0..3)
+                    .map(|k| (mesh.points[c][k] - mesh.points[d][k]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                if residual(c, d) > residual(a, b) + 1e-9 * scale {
+                    continue;
+                }
             }
             // Quad convexity, exactly, in the dominant projection.
             let axis = dominant_axis(face_normal(&mesh.points, sf1.tri));
@@ -2403,6 +2504,9 @@ fn surface_pass(
                             tet_nbrs.push(w);
                         }
                     }
+                }
+                for &fi in &vfs {
+                    budget2 = budget2.min(face_budget2(mesh.faces[fi].face_tag));
                 }
                 tet_nbrs.sort_unstable();
                 tet_nbrs.dedup();

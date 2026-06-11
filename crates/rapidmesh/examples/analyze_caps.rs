@@ -24,6 +24,8 @@ fn main() {
         radius_edge_bound: 2.0,
         max_points: 500_000,
         grading: 0.5,
+            face_maxh: Vec::new(),
+            size_points: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let degree_stats = |mesh: &rapidmesh_tet::TetMesh, label: &str| {

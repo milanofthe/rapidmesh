@@ -113,6 +113,106 @@ fn single_tet_and_degenerate_inputs() {
     assert!(flat.tets.is_empty());
 }
 
+// ------------------------------------------- cavity replacement (CDT WP3a)
+
+/// Wiring consistency over the public API: every neighbor pointer is
+/// mutual and the shared face has the same vertex set on both sides.
+fn check_wiring(b: &rapidmesh_tet::DelaunayBuilder) {
+    for slot in 0..b.slot_count() as u32 {
+        let Some(t) = b.tet_at(slot) else { continue };
+        for i in 0..4 {
+            let Some(nb) = b.neighbor_at(slot, i) else {
+                continue;
+            };
+            let mut shared: Vec<usize> = (0..4).filter(|&k| k != i).map(|k| t[k]).collect();
+            shared.sort_unstable();
+            let back = (0..4)
+                .find(|&k| b.neighbor_at(nb, k) == Some(slot))
+                .expect("neighbor pointer must be mutual");
+            let nverts = b.verts_of_slot(nb);
+            let mut nshared: Vec<usize> = (0..4)
+                .filter(|&k| k != back)
+                .map(|k| nverts[k].expect("real shared face"))
+                .collect();
+            nshared.sort_unstable();
+            assert_eq!(shared, nshared, "shared face mismatch across neighbors");
+        }
+    }
+}
+
+/// Five points whose DT is the 3-tet configuration around the central edge;
+/// returns a builder holding it.
+fn three_tet_fixture() -> rapidmesh_tet::DelaunayBuilder {
+    use rapidmesh_tet::DelaunayBuilder;
+    let pts = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.3, 0.3, 0.2],
+        [0.3, 0.3, -0.2],
+    ];
+    let mut b = DelaunayBuilder::enclosing([-0.1, -0.1, -0.3], [1.1, 1.1, 0.3]);
+    for p in pts {
+        b.insert(p);
+    }
+    assert_eq!(b.tets().len(), 3, "fixture must triangulate around edge 3-4");
+    assert!(b.edge_exists(3, 4));
+    b
+}
+
+#[test]
+fn replace_cavity_flips_three_tets_to_two() {
+    let mut b = three_tet_fixture();
+    let slots: Vec<u32> = b.tets_with_slots().iter().map(|&(s, _)| s).collect();
+    // The 2-tet configuration of the same bipyramid, positively oriented.
+    let oriented = |t: [usize; 4]| -> [usize; 4] {
+        let p: Vec<[f64; 3]> = t.iter().map(|&v| b.approx_point(v)).collect();
+        if geometry_predicates::orient3d(p[0], p[1], p[2], p[3]) > 0.0 {
+            t
+        } else {
+            [t[1], t[0], t[2], t[3]]
+        }
+    };
+    let new_tets = [oriented([0, 1, 2, 3]), oriented([0, 1, 2, 4])];
+    b.replace_cavity(&slots, &new_tets);
+    assert_eq!(b.tets().len(), 2);
+    assert!(!b.edge_exists(3, 4), "central edge must be gone");
+    assert!(b.edge_exists(0, 1));
+    check_wiring(&b);
+    // The builder keeps functioning after surgery.
+    let n = b.insert([0.5, 0.4, 0.05]);
+    assert_eq!(n, 5);
+    check_wiring(&b);
+}
+
+#[test]
+#[should_panic(expected = "not positively oriented")]
+fn replace_cavity_rejects_misoriented_tets() {
+    let mut b = three_tet_fixture();
+    let slots: Vec<u32> = b.tets_with_slots().iter().map(|&(s, _)| s).collect();
+    b.replace_cavity(&slots, &[[0, 1, 2, 3], [1, 0, 2, 4]]);
+}
+
+#[test]
+#[should_panic(expected = "boundary face")]
+fn replace_cavity_rejects_nontiling_complex() {
+    let mut b = three_tet_fixture();
+    let slots: Vec<u32> = b.tets_with_slots().iter().map(|&(s, _)| s).collect();
+    // Only half of the bipyramid: the lower boundary does not match.
+    let t = if geometry_predicates::orient3d(
+        b.approx_point(0),
+        b.approx_point(1),
+        b.approx_point(2),
+        b.approx_point(3),
+    ) > 0.0
+    {
+        [0, 1, 2, 3]
+    } else {
+        [1, 0, 2, 3]
+    };
+    b.replace_cavity(&slots, &[t]);
+}
+
 // ----------------------------------------------- implicit Steiner (CDT WP2)
 
 #[test]

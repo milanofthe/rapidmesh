@@ -104,6 +104,16 @@ fn insphere(pts: &[[f64; 3]], exact: &[Option<Point3>], t: [u32; 4], p: u32) -> 
     .expect("implicit DT vertex must be a valid point")
 }
 
+/// True if `g` is an even rotation of `f` (same oriented triangle).
+fn is_same_cycle(f: [u32; 3], g: [u32; 3]) -> bool {
+    g == f || g == [f[1], f[2], f[0]] || g == [f[2], f[0], f[1]]
+}
+
+/// True if `g` is the reversal of `f` (same triangle, opposite orientation).
+fn is_reversed(f: [u32; 3], g: [u32; 3]) -> bool {
+    is_same_cycle([f[0], f[2], f[1]], g)
+}
+
 /// Face of a positively oriented tet opposite vertex `i`, wound so the
 /// opposite vertex lies on its positive side.
 fn face(t: [u32; 4], i: usize) -> [u32; 3] {
@@ -721,6 +731,151 @@ impl DelaunayBuilder {
     pub fn neighbor_at(&self, slot: u32, i: usize) -> Option<u32> {
         let nb = self.neighbors[slot as usize][i];
         (nb != NONE).then_some(nb)
+    }
+
+    /// Replaces a set of alive tets with an explicit retetrahedrization of
+    /// the same region (CDT face recovery: cavity removal + gift wrapping).
+    /// `removed` are alive slots; `new_tets` are PUBLIC vertex indices.
+    ///
+    /// The replacement is verified before it is applied, by the 3-chain
+    /// degree argument: if every new tet is exactly positively oriented and
+    /// the oriented boundary of the new complex equals the oriented boundary
+    /// of the removed region (internal faces cancel in opposite pairs,
+    /// boundary faces match exactly once), then the covering degree of the
+    /// new chain is 1 inside the cavity and 0 outside — an exact tiling,
+    /// with no interpenetration possible. Violations panic; the builder is
+    /// left untouched in that case only up to this validation (no partial
+    /// state is written before it passes).
+    pub fn replace_cavity(&mut self, removed: &[u32], new_tets: &[[usize; 4]]) {
+        let removed_set: rustc_hash::FxHashSet<u32> = removed.iter().copied().collect();
+        assert_eq!(removed_set.len(), removed.len(), "duplicate removed slot");
+        for &s in removed {
+            assert!(self.alive[s as usize], "removed slot {s} is not alive");
+        }
+
+        // Oriented boundary of the removed region, keyed by sorted vertex
+        // triple, valued with the oriented face (as seen from inside the
+        // region) and the outside neighbor.
+        let mut boundary: rustc_hash::FxHashMap<[u32; 3], ([u32; 3], u32)> =
+            rustc_hash::FxHashMap::default();
+        for &s in removed {
+            let t = self.tets[s as usize];
+            for i in 0..4 {
+                let nb = self.neighbors[s as usize][i];
+                if nb != NONE && removed_set.contains(&nb) {
+                    continue;
+                }
+                let f = face(t, i);
+                let mut key = f;
+                key.sort_unstable();
+                let prev = boundary.insert(key, (f, nb));
+                assert!(prev.is_none(), "removed region has a pinched boundary face");
+            }
+        }
+
+        // Validate the new complex: positive orientation and oriented face
+        // balance (internal faces appear once per orientation; boundary
+        // faces appear once, oriented as from inside).
+        let mut open: rustc_hash::FxHashMap<[u32; 3], [u32; 3]> = rustc_hash::FxHashMap::default();
+        for t in new_tets {
+            let ti: [u32; 4] = std::array::from_fn(|k| (t[k] + 4) as u32);
+            assert_eq!(
+                orient(&self.pts, &self.exact, ti[0], ti[1], ti[2], ti[3]),
+                Sign::Positive,
+                "replacement tet {t:?} is not positively oriented",
+            );
+            for i in 0..4 {
+                let f = face(ti, i);
+                let mut key = f;
+                key.sort_unstable();
+                match open.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(o) => {
+                        // Two new tets share this face: orientations must be
+                        // opposite (an even permutation of the reversal).
+                        let g = *o.get();
+                        assert!(
+                            is_reversed(f, g),
+                            "replacement tets agree on face orientation {f:?}",
+                        );
+                        o.remove();
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(f);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            open.len(),
+            boundary.len(),
+            "replacement boundary face count mismatch",
+        );
+        for (key, f) in &open {
+            let (bf, _) = boundary
+                .get(key)
+                .unwrap_or_else(|| panic!("replacement face {f:?} not on the cavity boundary"));
+            assert!(
+                is_same_cycle(*f, *bf),
+                "replacement boundary face {f:?} has wrong orientation",
+            );
+        }
+
+        // Apply: retire removed slots, allocate the new tets, wire neighbors.
+        for &s in removed {
+            self.alive[s as usize] = false;
+            self.free.push(s);
+        }
+        let slots: Vec<u32> = new_tets
+            .iter()
+            .map(|t| self.alloc(std::array::from_fn(|k| (t[k] + 4) as u32)))
+            .collect();
+        let mut face_map: rustc_hash::FxHashMap<[u32; 3], (u32, u8)> =
+            rustc_hash::FxHashMap::default();
+        for &nt in &slots {
+            let t = self.tets[nt as usize];
+            for i in 0..4 {
+                let f = face(t, i);
+                let mut key = f;
+                key.sort_unstable();
+                match face_map.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(o) => {
+                        let (ot, oi) = *o.get();
+                        self.neighbors[nt as usize][i] = ot;
+                        self.neighbors[ot as usize][oi as usize] = nt;
+                        o.remove();
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert((nt, i as u8));
+                    }
+                }
+            }
+        }
+        // Remaining unmatched faces are the region boundary: wire to the
+        // surviving outside tets (matching by face, not by stale pointer:
+        // an outside tet can border the region on several faces).
+        for (key, (nt, i)) in face_map {
+            let (_, outside) = boundary[&key];
+            self.neighbors[nt as usize][i as usize] = outside;
+            if outside != NONE {
+                let ot = self.tets[outside as usize];
+                let slot = (0..4)
+                    .find(|&k| {
+                        let mut f = face(ot, k);
+                        f.sort_unstable();
+                        f == key
+                    })
+                    .expect("outside tet must own the boundary face");
+                self.neighbors[outside as usize][slot] = nt;
+            }
+        }
+        // Refresh hints and the walk start.
+        self.vert_hint.resize(self.pts.len(), NONE);
+        for &nt in &slots {
+            for &v in &self.tets[nt as usize] {
+                self.vert_hint[v as usize] = nt;
+            }
+        }
+        self.last = *slots.first().expect("replacement must not be empty");
     }
 
     /// The all-real faces of super-corner tets: the convex-hull boundary of

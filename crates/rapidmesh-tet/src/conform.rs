@@ -1054,9 +1054,25 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         }
                     }
                     if std::env::var_os("RAPIDMESH_HOLE_TRACE").is_some() {
-                        // Faces that would tile the patch geometrically but
-                        // fail the marks test: the hole's roof.
+                        // IN-PLANE faces inside the patch that do not count:
+                        // the hole's roof, categorized by which filter
+                        // rejects them.
                         let patch = &patches[pi];
+                        let pl = patch.plane.map(|i| points[i]);
+                        let eu: [f64; 3] = std::array::from_fn(|k| pl[1][k] - pl[0][k]);
+                        let ev: [f64; 3] = std::array::from_fn(|k| pl[2][k] - pl[0][k]);
+                        let nrm = [
+                            eu[1] * ev[2] - eu[2] * ev[1],
+                            eu[2] * ev[0] - eu[0] * ev[2],
+                            eu[0] * ev[1] - eu[1] * ev[0],
+                        ];
+                        let nlen = nrm.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let pdist = |v: usize| -> f64 {
+                            (0..3)
+                                .map(|k| nrm[k] * (points[v][k] - pl[0][k]))
+                                .sum::<f64>()
+                                / nlen
+                        };
                         for (f, owners) in &dt_faces {
                             let c: [f64; 3] = std::array::from_fn(|k| {
                                 (points[f[0]][k] + points[f[1]][k] + points[f[2]][k]) / 3.0
@@ -1064,37 +1080,30 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                             if !inside_patch(pi, patch, &points, c) {
                                 continue;
                             }
-                            if owners.len() == 2
-                                && tet_plane_side(patch, &points, dt_tets[owners[0] as usize])
-                                    == tet_plane_side(patch, &points, dt_tets[owners[1] as usize])
-                            {
+                            // Only the actual plane: skip the projection noise.
+                            if f.iter().any(|&v| pdist(v).abs() > 1e-9 * scale) {
                                 continue;
                             }
                             if f.iter().all(|&v| on_patch[v].contains(&pi)) {
-                                continue;
+                                continue; // counted (or rejected as sliver cap)
                             }
-                            eprintln!("  hole roof face {f:?}:");
-                            let pl = patch.plane.map(|i| points[i]);
-                            let eu: [f64; 3] =
-                                std::array::from_fn(|k| pl[1][k] - pl[0][k]);
-                            let ev: [f64; 3] =
-                                std::array::from_fn(|k| pl[2][k] - pl[0][k]);
-                            let nrm = [
-                                eu[1] * ev[2] - eu[2] * ev[1],
-                                eu[2] * ev[0] - eu[0] * ev[2],
-                                eu[0] * ev[1] - eu[1] * ev[0],
-                            ];
-                            let nlen = nrm.iter().map(|x| x * x).sum::<f64>().sqrt();
+                            let side_info = if owners.len() == 2 {
+                                let s0 = tet_plane_side(patch, &points, dt_tets[owners[0] as usize]);
+                                let s1 = tet_plane_side(patch, &points, dt_tets[owners[1] as usize]);
+                                format!("sides {s0:?}/{s1:?}")
+                            } else {
+                                "hull".into()
+                            };
+                            eprintln!(
+                                "  roof {f:?} area {:.3e} {side_info}",
+                                area2_f64(f, patch.axis)
+                            );
                             for &v in f {
                                 let mut marks: Vec<usize> =
                                     on_patch[v].iter().copied().collect();
                                 marks.sort_unstable();
-                                let d: f64 = (0..3)
-                                    .map(|k| nrm[k] * (points[v][k] - pl[0][k]))
-                                    .sum::<f64>()
-                                    / nlen;
                                 eprintln!(
-                                    "    v{v} marks {marks:?} at {:?} h={:.4} plane-dist {d:.3e}",
+                                    "    v{v} marks {marks:?} at {:?} h={:.4}",
                                     points[v], point_h[v]
                                 );
                             }
@@ -1243,13 +1252,34 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             })
         };
         new_pts.sort_by_key(|&(x, pi, _)| covered(pi, x));
-        // One successful insertion per deficient patch per round: every
-        // insertion changes the DT, so further candidates computed against
-        // the stale DT would mostly land redundantly and feed encroachment
-        // cascades. Candidates are tried in order until one inserts.
-        let mut patch_done: DSet<usize> = DSet::default();
+        // Batch repair with a spatial gate: candidates are computed against
+        // the same (stale) DT, so two nearby candidates would land
+        // redundantly and feed encroachment cascades. But candidates far
+        // apart repair independent spots; gating on the local target size
+        // admits them all in ONE round. The old one-per-patch-per-round trickle
+        // lost the race against sizing refinement re-piercing a coarse patch
+        // squeezed between fine volume clouds (trace face_maxh starved the
+        // substrate-top tiling into the stagnation guard).
+        let mut placed: Vec<[f64; 3]> = Vec::new();
+        let gate_ok = |placed: &[[f64; 3]], x: [f64; 3], r: f64| -> bool {
+            placed.iter().all(|p| {
+                (0..3).map(|k| (p[k] - x[k]).powi(2)).sum::<f64>() > r * r
+            })
+        };
         for (x, pi, (a, b)) in new_pts {
-            if patch_done.contains(&pi) {
+            if placed.len() >= 1024 {
+                break;
+            }
+            let r_gate = 0.4 * child_h(
+                x,
+                &[a, b],
+                &points,
+                point_h,
+                params.grading,
+                patch_h_init[pi],
+                &params.size_points,
+            );
+            if !gate_ok(&placed, x, r_gate) {
                 continue;
             }
             // A piercing point may coincide with (or sit within rounding of)
@@ -1317,7 +1347,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     push_crease_child(&mut creases, &mut crease_marks, sorted2(a, g), &marks);
                     push_crease_child(&mut creases, &mut crease_marks, sorted2(g, b), &marks);
                     inserted += 1;
-                    patch_done.insert(pi);
+                    placed.push(xs);
                 }
                 continue;
             }
@@ -1338,7 +1368,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             marks.insert(pi);
             on_patch.push(marks);
             inserted += 1;
-            patch_done.insert(pi);
+            placed.push(x);
         }
         if trace {
             eprintln!("round {round}: inserted {inserted} repair points, {} total", points.len());

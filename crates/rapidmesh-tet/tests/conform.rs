@@ -659,6 +659,61 @@ fn horn_loft_flat_tet_tiling() {
     check_structure(&mesh);
 }
 
+/// Stepped-impedance microstrip with fine face_maxh on the trace sheets:
+/// the coarse substrate-top patch squeezed between fine volume clouds gets
+/// re-pierced by sizing refinement faster than the old one-point-per-round
+/// repair could tile it (stagnation guard abandoned it at 19% uncovered).
+/// Batch repair with a spatial gate must close it: nothing abandoned.
+#[test]
+fn trace_face_maxh_does_not_starve_interface_tiling() {
+    let mm = 1e-3;
+    let mil = 0.0254 * mm;
+    let lengths: Vec<f64> = [400.0, 660.0, 660.0, 660.0, 660.0, 660.0, 400.0]
+        .iter()
+        .map(|x| x * mil)
+        .collect();
+    let widths: Vec<f64> = [50.0, 128.0, 8.0, 224.0, 8.0, 128.0, 50.0]
+        .iter()
+        .map(|x| x * mil)
+        .collect();
+    let (sub_h, air_h, pad_y) = (62.0 * mil, 15.0 * mm, 12.0 * mm);
+    let maxh = 299_792_458.0 / 8.0e9 / 12.0;
+    let total_l: f64 = lengths.iter().sum();
+    let sub_w = widths.iter().cloned().fold(0.0, f64::max) + 2.0 * pad_y;
+    let x_lo = -total_l / 2.0;
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box(
+        [x_lo, -sub_w / 2.0, 0.0],
+        [total_l / 2.0, sub_w / 2.0, air_h + sub_h],
+    ));
+    scene.add_solid(solid_box(
+        [x_lo, -sub_w / 2.0, 0.0],
+        [total_l / 2.0, sub_w / 2.0, sub_h],
+    ));
+    let mut x = x_lo;
+    for (l, w) in lengths.iter().zip(&widths) {
+        scene.add_sheet(
+            sheet_rect([x, -w / 2.0, sub_h], [*l, 0.0, 0.0], [0.0, *w, 0.0]),
+            FaceTag(10),
+        );
+        x += l;
+    }
+    let plc = scene.assemble();
+    let params = MeshParams {
+        maxh,
+        face_maxh: vec![(10, 0.4 * mm)],
+        max_points: 500_000,
+        ..MeshParams::default()
+    };
+    let mesh = mesh_plc_with(&plc, &params);
+    assert!(
+        mesh.abandoned_patches.is_empty(),
+        "abandoned patches: {:?}",
+        mesh.abandoned_patches
+    );
+    check_structure(&mesh);
+}
+
 /// Feature edges of a meshed box are exactly the 12 box edges: every
 /// reported edge lies ON one of them, and all 12 are present.
 #[test]

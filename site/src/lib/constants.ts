@@ -7,8 +7,9 @@
 // ── Cycle / transition timing (ms) ──────────────────────────────────────
 /** How long each model is shown before auto-advancing. */
 export const CYCLE_MS = 8000;
-/** Fade-to-black duration for one half of a model transition. */
-export const FADE_MS = 650;
+/** Model swap: fly-out of the old model, fly-in of the new one. */
+export const FLY_OUT_MS = 200;
+export const FLY_IN_MS = 320;
 /** Auto-cycling resumes this long after the last manual interaction. */
 export const RESUME_MS = 30000;
 

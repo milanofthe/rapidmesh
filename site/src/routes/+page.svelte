@@ -3,7 +3,7 @@
 	import { base } from '$app/paths';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import { adaptMesh } from '$lib/mesh_adapter';
-	import { CYCLE_MS, FADE_MS, RESUME_MS } from '$lib/constants';
+	import { CYCLE_MS, FLY_IN_MS, FLY_OUT_MS, RESUME_MS } from '$lib/constants';
 	import type { MeshJson } from '$lib/mesh_types';
 
 	interface ModelStats {
@@ -23,8 +23,9 @@
 	// $state.raw: mesh payloads are large (10^5 faces); deep proxying would
 	// stall the main thread for seconds on every model swap.
 	let currentData: MeshJson | null = $state.raw(null);
-	let covered = $state(true);
 	let paused = $state(false);
+	let viewer: { fly_out: (ms?: number) => void; fly_in: (ms?: number) => void } | undefined =
+		$state();
 
 	let busy = false;
 	let cycleTimer: ReturnType<typeof setInterval> | null = null;
@@ -37,21 +38,22 @@
 		return (await resp.json()) as MeshJson;
 	}
 
-	// Fade to black, swap the model under cover, fade back in.
+	// Fly the old model out, swap, fly the new one in from afar.
 	async function transitionTo(i: number) {
 		if (busy || models.length === 0) return;
 		busy = true;
-		covered = true;
-		await delay(FADE_MS);
+		viewer?.fly_out(FLY_OUT_MS);
+		const fetched = fetchMesh(models[i].file);
+		await delay(FLY_OUT_MS);
 		activeIndex = i;
 		try {
-			currentData = await fetchMesh(models[i].file);
+			currentData = await fetched;
 		} catch {
 			currentData = null;
 		}
-		// Brief hold so the first frame builds while still covered.
-		await delay(80);
-		covered = false;
+		// One frame so the mesh prop lands before the fly-in reads it.
+		await delay(30);
+		viewer?.fly_in(FLY_IN_MS);
 		busy = false;
 	}
 
@@ -87,13 +89,16 @@
 	});
 </script>
 
-<main class="stage" style="--fade: {FADE_MS}ms">
+<main class="stage">
 
 	<!-- Any interaction pauses BOTH the auto-cycle and the idle orbit; the
 	     paused flag resumes them together after the inactivity window. -->
-	<MeshViewer mesh={currentData ? adaptMesh(currentData) : null} oninteract={pauseCycle} orbit={!paused} />
-
-	<div class="overlay" class:visible={covered}></div>
+	<MeshViewer
+		bind:this={viewer}
+		mesh={currentData ? adaptMesh(currentData) : null}
+		oninteract={pauseCycle}
+		orbit={!paused}
+	/>
 
 	<header class="brand">
 		<span class="wordmark">
@@ -118,20 +123,6 @@
 		inset: 0;
 		overflow: hidden;
 		background: var(--bg);
-	}
-
-	/* Fade-through-black transition cover. */
-	.overlay {
-		position: absolute;
-		inset: 0;
-		background: var(--bg);
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity var(--fade);
-		z-index: 5;
-	}
-	.overlay.visible {
-		opacity: 1;
 	}
 
 	/* Top LEFT; the viewer's legend is pushed down below this block (see the

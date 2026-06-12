@@ -187,6 +187,24 @@
 		if (!mesh) return;
 		animate_camera(fitCamera(mesh.bbox.min, mesh.bbox.max), 350);
 	}
+	// SHOWCASE SEAM: fly-out / fly-in model transition for the showcase
+	// shell (the shell flies the old model out, swaps the mesh, then flies
+	// the new one in from afar).
+	export function fly_out(durationMs = 220) {
+		const base = effective_camera();
+		animate_camera(
+			{ ...base, target: [...base.target] as [number, number, number], distance: base.distance * 3.5 },
+			durationMs
+		);
+	}
+	export function fly_in(durationMs = 320) {
+		if (!mesh) return;
+		const fit = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		camera = { ...fit, target: [...fit.target] as [number, number, number], distance: fit.distance * 3.5 };
+		schedule_render();
+		animate_camera(fit, durationMs);
+	}
+
 	export function rotate_90() {
 		const base = effective_camera();
 		animate_camera({ ...base, target: [...base.target] as [number, number, number], theta: base.theta + Math.PI / 2 }, 400);

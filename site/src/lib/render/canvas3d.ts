@@ -141,7 +141,10 @@ void main() {
 	if (uClipEnable > 0.5) {
 		if (dot(vWorld, uClipPlane.xyz) > uClipPlane.w) discard;
 	}
-	float diff = max(dot(normalize(vNormal), uLightDir), 0.0);
+	// Two-sided shading: tet fills draw every interior face twice (once per
+	// adjacent tet, opposite normals); abs() shades both copies identically,
+	// so their z-fight is invisible (no dappled dimples on flat sheets).
+	float diff = abs(dot(normalize(vNormal), uLightDir));
 	vec3 base = mix(uColor, inferno(vScalar), uColormap);
 	vec3 lit = base * (uAmbient + (1.0 - uAmbient) * diff);
 	fragColor = vec4(lit, 1.0);

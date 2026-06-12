@@ -5,6 +5,7 @@
 	import { adaptMesh } from '$lib/mesh_adapter';
 	import { CYCLE_MS, FLY_IN_MS, FLY_OUT_MS, RESUME_MS } from '$lib/constants';
 	import type { MeshJson } from '$lib/mesh_types';
+	import type { MeshData } from '$lib/msh';
 
 	interface ModelStats {
 		n_tets: number;
@@ -22,10 +23,18 @@
 	let activeIndex = $state(0);
 	// $state.raw: mesh payloads are large (10^5 faces); deep proxying would
 	// stall the main thread for seconds on every model swap.
-	let currentData: MeshJson | null = $state.raw(null);
+	let currentData: MeshData | null = $state.raw(null);
 	let paused = $state(false);
-	let viewer: { fly_out: (ms?: number) => void; fly_in: (ms?: number) => void } | undefined =
-		$state();
+	let viewer:
+		| {
+				fly_out: (ms?: number) => void;
+				fly_in: (ms?: number) => void;
+				prepare_fly_in: (
+					min: [number, number, number],
+					max: [number, number, number]
+				) => void;
+		  }
+		| undefined = $state();
 
 	let busy = false;
 	let cycleTimer: ReturnType<typeof setInterval> | null = null;
@@ -33,12 +42,15 @@
 
 	const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-	async function fetchMesh(file: string): Promise<MeshJson> {
+	async function fetchMesh(file: string): Promise<MeshData> {
 		const resp = await fetch(`${base}/${file}`);
-		return (await resp.json()) as MeshJson;
+		return adaptMesh((await resp.json()) as MeshJson);
 	}
 
-	// Fly the old model out, swap, fly the new one in from afar.
+	// Lateral swap: the old model flies out to the right, the new one comes
+	// in from the left. prepare_fly_in positions the camera for the NEW
+	// model's bbox before the mesh prop changes, so no frame renders the
+	// incoming model at the outgoing model's scale (that visibly jumped).
 	async function transitionTo(i: number) {
 		if (busy || models.length === 0) return;
 		busy = true;
@@ -46,11 +58,14 @@
 		const fetched = fetchMesh(models[i].file);
 		await delay(FLY_OUT_MS);
 		activeIndex = i;
+		let data: MeshData | null = null;
 		try {
-			currentData = await fetched;
+			data = await fetched;
 		} catch {
-			currentData = null;
+			data = null;
 		}
+		if (data) viewer?.prepare_fly_in(data.bbox.min, data.bbox.max);
+		currentData = data;
 		// One frame so the mesh prop lands before the fly-in reads it.
 		await delay(30);
 		viewer?.fly_in(FLY_IN_MS);
@@ -93,12 +108,7 @@
 
 	<!-- Any interaction pauses BOTH the auto-cycle and the idle orbit; the
 	     paused flag resumes them together after the inactivity window. -->
-	<MeshViewer
-		bind:this={viewer}
-		mesh={currentData ? adaptMesh(currentData) : null}
-		oninteract={pauseCycle}
-		orbit={!paused}
-	/>
+	<MeshViewer bind:this={viewer} mesh={currentData} oninteract={pauseCycle} orbit={!paused} />
 
 	<header class="brand">
 		<span class="wordmark">

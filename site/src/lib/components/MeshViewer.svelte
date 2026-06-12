@@ -102,15 +102,18 @@
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
 	// ── Inspection layer toggles (internal toolbar state) ───────────────
+	// SHOWCASE CHANGE: wire and tet edges on by default (with the clip at
+	// 60% along y, the default view shows the interior mesh structure).
 	let layer_surface = $state(true);
-	let layer_wire    = $state(false);
+	let layer_wire    = $state(true);
 	let layer_edges   = $state(false);
-	let layer_tets    = $state(false);
+	let layer_tets    = $state(true);
 
 	// ── Crinkle clip (prefix-sort trick from rapidmesh MeshPanel) ───────
-	let clip_enable = $state(false);
-	let clip_axis   = $state<0 | 1 | 2>(0);
-	let clip_t      = $state(1.0);
+	// SHOWCASE CHANGE: crinkle clip on by default, y axis at 60%.
+	let clip_enable = $state(true);
+	let clip_axis   = $state<0 | 1 | 2>(1);
+	let clip_t      = $state(0.6);
 
 	// Each entry tracks one mesh/lineMesh in the GL state. Sorted by
 	// centroid along the active clip axis so the slider only needs a
@@ -123,6 +126,11 @@
 		full_count: number;        // total vertex count when clip is disabled
 	}
 	let prefix_meshes: PrefixMesh[] = [];
+	// SHOWCASE CHANGE: wire and tet-edge lines are built per group, so a
+	// legend toggle hides a group's lines along with its fills. Maps the
+	// lineMesh index to its owning group tag, per line layer.
+	let wire_line_groups = new Map<number, number>();
+	let tet_line_groups = new Map<number, number>();
 	let built_axis  = -1;
 	// Non-null when the sorted geometry is already uploaded for a given mesh+axis.
 	let last_built_for: { mesh: MeshData; axis: number } | null = null;
@@ -132,8 +140,10 @@
 		const next = new Set(hidden_tags);
 		if (next.has(tag)) next.delete(tag); else next.add(tag);
 		hidden_tags = next;
-		// In inspection mode, layer_surface gates all surface fills.
-		setTagVisible(gl_state, tag, layer_surface && !next.has(tag));
+		// SHOWCASE CHANGE: full visibility pass instead of the single
+		// setTagVisible quick path, so the group's wire and tet-edge line
+		// meshes follow the legend toggle too.
+		apply_layer_visibility(gl_state);
 		schedule_render();
 	}
 	let is_dragging = false;
@@ -141,10 +151,12 @@
 	let last_mouse = { x: 0, y: 0 };
 
 	// ── Camera animation (ease-out cubic) ──────────────────────────────
+	// SHOWCASE SEAM: optional easing — 'in' for departures (accelerate away),
+	// 'out' (default, the rapidfem behavior) for arrivals.
 	let anim_id = 0;
 	let anim_target: Camera | null = null;
 	function effective_camera(): Camera { return anim_target ?? camera; }
-	function animate_camera(target: Camera, durationMs = 300) {
+	function animate_camera(target: Camera, durationMs = 300, ease: 'out' | 'in' = 'out') {
 		anim_target = target;
 		const start = { ...camera, target: [...camera.target] as [number, number, number] };
 		const t0 = performance.now();
@@ -152,7 +164,7 @@
 		function tick() {
 			if (!mounted || id !== anim_id) return;
 			const t = Math.min(1, (performance.now() - t0) / durationMs);
-			const e = 1 - Math.pow(1 - t, 3);
+			const e = ease === 'in' ? t * t * t : 1 - Math.pow(1 - t, 3);
 			camera = {
 				theta: start.theta + (target.theta - start.theta) * e,
 				phi: start.phi + (target.phi - start.phi) * e,
@@ -187,21 +199,74 @@
 		if (!mesh) return;
 		animate_camera(fitCamera(mesh.bbox.min, mesh.bbox.max), 350);
 	}
-	// SHOWCASE SEAM: fly-out / fly-in model transition for the showcase
-	// shell (the shell flies the old model out, swaps the mesh, then flies
-	// the new one in from afar).
+	// SHOWCASE SEAM: lateral fly-out / fly-in model transition for the
+	// showcase shell: the old model exits screen-right, the new one enters
+	// from screen-left. Implemented as a camera pan along the screen-right
+	// axis (eye = target + distance*(cosφ sinθ, cosφ cosθ, sinφ), up = world
+	// z, so screen-right is (-cosθ, sinθ, 0)).
+	const FLY_PAN = 1.6; // lateral pan in multiples of the camera distance
+	// While a fly transition is in progress the auto-refit on mesh change
+	// must not touch the camera (it would flash the new model centered for
+	// a frame before fly_in repositions it).
+	let fly_pending = false;
+	function screen_right(cam: Camera): [number, number, number] {
+		return [-Math.cos(cam.theta), Math.sin(cam.theta), 0];
+	}
+	function off_left_camera(fit: Camera): Camera {
+		// camera panned right of the fit → the model sits off-screen left
+		const r = screen_right(fit);
+		const d = fit.distance * FLY_PAN;
+		return {
+			...fit,
+			target: [
+				fit.target[0] + r[0] * d,
+				fit.target[1] + r[1] * d,
+				fit.target[2] + r[2] * d
+			]
+		};
+	}
 	export function fly_out(durationMs = 220) {
+		fly_pending = true;
 		const base = effective_camera();
+		const r = screen_right(base);
+		const d = base.distance * FLY_PAN;
+		// pan the view left so the model exits to the right, accelerating
 		animate_camera(
-			{ ...base, target: [...base.target] as [number, number, number], distance: base.distance * 3.5 },
-			durationMs
+			{
+				...base,
+				target: [
+					base.target[0] - r[0] * d,
+					base.target[1] - r[1] * d,
+					base.target[2] - r[2] * d
+				]
+			},
+			durationMs,
+			'in'
 		);
+	}
+	/** Position the camera off-left for the UPCOMING model (by its bbox)
+	 *  BEFORE the mesh prop is swapped, so no frame ever shows the new
+	 *  model at the old model's camera (scales differ wildly between
+	 *  models; without this the swap visibly jumps). */
+	export function prepare_fly_in(
+		min: [number, number, number],
+		max: [number, number, number]
+	) {
+		fly_pending = true;
+		anim_target = null;
+		anim_id++; // cancel a still-running fly_out tween
+		camera = off_left_camera(fitCamera(min, max));
+		schedule_render();
 	}
 	export function fly_in(durationMs = 320) {
 		if (!mesh) return;
 		const fit = fitCamera(mesh.bbox.min, mesh.bbox.max);
-		camera = { ...fit, target: [...fit.target] as [number, number, number], distance: fit.distance * 3.5 };
-		schedule_render();
+		if (!fly_pending) {
+			// direct call without prepare_fly_in: snap off-left first
+			camera = off_left_camera(fit);
+			schedule_render();
+		}
+		fly_pending = false;
 		animate_camera(fit, durationMs);
 	}
 
@@ -350,7 +415,8 @@
 			lumpedelement: 'Lumped Element',
 		};
 		const d = display[b];
-		if (!d) return name;
+		// SHOWCASE CHANGE: label names are free-form; just capitalize them.
+		if (!d) return name.charAt(0).toUpperCase() + name.slice(1);
 		// Repeatable kinds keep their index; conceptually-unique ones drop it.
 		const repeatable = b === 'port' || b === 'dielectric' || b === 'anisotropic' || b === 'pml';
 		return repeatable && idx > 0 ? `${d} ${idx}` : d;
@@ -381,7 +447,29 @@
 	// distinguishable. Keep air on its own neutral gray channel.
 	const DIELECTRIC_CYCLE = ['#4a9ec2', '#6bbf8a', '#7b5e8a', '#a78bd9', '#c4c46b'];
 
+	// SHOWCASE CHANGE: showcase groups carry plain label names (from the
+	// exporter's solid/tag labels); every group of the current mesh gets the
+	// next color of the standard cycle, in tag order (regions first, then
+	// sheets and cavity walls). This map covers all adapter-emitted names,
+	// so the rapidfem material color rules below only catch legacy names.
+	const group_colors = $derived.by(() => {
+		const map = new Map<string, [number, number, number]>();
+		if (!mesh) return map;
+		const tags = [...mesh.phys_names.keys()].sort((a, b) => a - b);
+		let i = 0;
+		for (const t of tags) {
+			const name = mesh.phys_names.get(t)!;
+			if (!map.has(name)) {
+				map.set(name, hex(plotColors.cycle[i++ % plotColors.cycle.length]));
+			}
+		}
+		return map;
+	});
+
 	function color_for(kind: Kind, name: string): [number, number, number] {
+		// SHOWCASE CHANGE: per-group cycle colors take precedence.
+		const gc = group_colors.get(name);
+		if (gc) return gc;
 		const b = base(name);
 		// SHOWCASE CHANGE: regions use the rapidmesh standard color cycle
 		// (the dev viewer's plotColors), one hue per region.
@@ -605,6 +693,17 @@
 		setTagVisible(state, TAG_WIRE_SURF,  layer_wire);
 		setTagVisible(state, TAG_FEAT_EDGES, layer_edges);
 		setTagVisible(state, TAG_TET_WIRE,   layer_tets);
+		// SHOWCASE CHANGE: per-group lines additionally follow their group's
+		// legend toggle (the tag check guards against stale indices outside
+		// inspection mode, where the line meshes are rebuilt differently).
+		for (const [li, g] of wire_line_groups) {
+			const lm = state.lineMeshes[li];
+			if (lm && lm.tag === TAG_WIRE_SURF) lm.visible = layer_wire && !eff.has(g);
+		}
+		for (const [li, g] of tet_line_groups) {
+			const lm = state.lineMeshes[li];
+			if (lm && lm.tag === TAG_TET_WIRE) lm.visible = layer_tets && !eff.has(g);
+		}
 	}
 
 	/** Upload sorted geometry for the given clip axis. Called once per axis change
@@ -657,7 +756,9 @@
 		// ---- Volume hulls (implicit surfaces from tet connectivity) ----
 		// Hull triangles also feed the surface-wireframe layer below, so
 		// "Wire" covers volume-only meshes too (not just named tris).
-		const hull_wire_tris: number[] = [];
+		// SHOWCASE CHANGE: collected per 3D group (not as one flat soup), so
+		// the wire lines can follow their group's legend toggle.
+		const hull_wire_groups: { tag: number; tris: number[] }[] = [];
 		const vol_b = build_volume_boundaries(m);
 		for (const [vtag, idx] of vol_b.entries()) {
 			const name = m.phys_names.get(vtag) ?? '';
@@ -672,18 +773,15 @@
 				return ca - cb;
 			});
 			const sorted_idx: number[] = new Array(ntri * 3);
-			const vals = new Float64Array(ntri);
 			for (let i = 0; i < ntri; i++) {
 				const t = order[i];
 				sorted_idx[i*3]   = idx[t*3];
 				sorted_idx[i*3+1] = idx[t*3+1];
 				sorted_idx[i*3+2] = idx[t*3+2];
-				vals[i] = (np[idx[t*3]*3+axis] + np[idx[t*3+1]*3+axis] + np[idx[t*3+2]*3+axis]) / 3;
 			}
 			// SHOWCASE CHANGE: hulls feed only the surface wireframe; the
 			// fills come from the per-tet pass below (dev-viewer look).
-			void vals;
-			for (const v of sorted_idx) hull_wire_tris.push(v);
+			hull_wire_groups.push({ tag: vtag, tris: sorted_idx });
 		}
 
 		// SHOWCASE CHANGE: "Tets" renders the individual tetrahedra (all four
@@ -716,36 +814,50 @@
 		}
 
 		// ---- Surface wireframe: edges from explicit surface tris, sorted by min face centroid ----
-		const surf_edge_val = new Map<bigint, { a: number; b: number; val: number }>();
+		// SHOWCASE CHANGE: one dedup map and one line mesh PER GROUP, so a
+		// legend toggle hides the group's wire lines with its fills. Edges
+		// shared between two groups exist in both meshes (same color, no
+		// visible overdraw): the shared outline survives hiding either side.
+		type EdgeMap = Map<bigint, { a: number; b: number; val: number }>;
+		const surf_edge_groups = new Map<number, EdgeMap>();
+		const group_edge_map = (g: number): EdgeMap => {
+			let em = surf_edge_groups.get(g);
+			if (!em) { em = new Map(); surf_edge_groups.set(g, em); }
+			return em;
+		};
+		const add_group_edge = (em: EdgeMap, u: number, w: number, fv: number) => {
+			const lo = u < w ? u : w, hi = u < w ? w : u;
+			const k = (BigInt(lo) << 32n) | BigInt(hi);
+			const cur = em.get(k);
+			if (!cur) em.set(k, { a: u, b: w, val: fv });
+			else if (fv < cur.val) cur.val = fv;
+		};
 		for (let f = 0; f < nf; f++) {
 			if (!m.tri_phys[f]) continue;
+			const em = group_edge_map(m.tri_phys[f]);
 			const fv = face_cv(f);
 			const ea = m.tris[f*3], eb = m.tris[f*3+1], ec = m.tris[f*3+2];
-			const add_se = (u: number, w: number) => {
-				const lo = u < w ? u : w, hi = u < w ? w : u;
-				const k = (BigInt(lo) << 32n) | BigInt(hi);
-				const cur = surf_edge_val.get(k);
-				if (!cur) surf_edge_val.set(k, { a: u, b: w, val: fv });
-				else if (fv < cur.val) cur.val = fv;
-			};
-			add_se(ea, eb); add_se(eb, ec); add_se(ec, ea);
+			add_group_edge(em, ea, eb, fv);
+			add_group_edge(em, eb, ec, fv);
+			add_group_edge(em, ec, ea, fv);
 		}
-		// Volume-hull faces wireframe alongside the named tris (same dedup
-		// map, centroid clip value computed from the node coords directly).
-		for (let h = 0; h + 2 < hull_wire_tris.length; h += 3) {
-			const ea = hull_wire_tris[h], eb = hull_wire_tris[h + 1], ec = hull_wire_tris[h + 2];
-			const fv = (np[ea*3+axis] + np[eb*3+axis] + np[ec*3+axis]) / 3;
-			const add_he = (u: number, w: number) => {
-				const lo = u < w ? u : w, hi = u < w ? w : u;
-				const k = (BigInt(lo) << 32n) | BigInt(hi);
-				const cur = surf_edge_val.get(k);
-				if (!cur) surf_edge_val.set(k, { a: u, b: w, val: fv });
-				else if (fv < cur.val) cur.val = fv;
-			};
-			add_he(ea, eb); add_he(eb, ec); add_he(ec, ea);
+		// Volume-hull faces wireframe alongside the named tris (centroid clip
+		// value computed from the node coords directly).
+		for (const hw of hull_wire_groups) {
+			const em = group_edge_map(hw.tag);
+			for (let h = 0; h + 2 < hw.tris.length; h += 3) {
+				const ea = hw.tris[h], eb = hw.tris[h + 1], ec = hw.tris[h + 2];
+				const fv = (np[ea*3+axis] + np[eb*3+axis] + np[ec*3+axis]) / 3;
+				add_group_edge(em, ea, eb, fv);
+				add_group_edge(em, eb, ec, fv);
+				add_group_edge(em, ec, ea, fv);
+			}
 		}
-		const surf_edges = [...surf_edge_val.values()].sort((x, y) => x.val - y.val);
-		{
+		wire_line_groups = new Map();
+		const surf_edge_set = new Set<bigint>();
+		for (const [gtag, em] of surf_edge_groups) {
+			for (const k of em.keys()) surf_edge_set.add(k);
+			const surf_edges = [...em.values()].sort((x, y) => x.val - y.val);
 			const pos = new Float32Array(surf_edges.length * 6);
 			for (let i = 0; i < surf_edges.length; i++) {
 				const e = surf_edges[i];
@@ -756,12 +868,16 @@
 			const vals = Float64Array.from(surf_edges, e => e.val);
 			prefix_meshes.push({ idx: pm_idx, line: true, vals, vpu: 2, full_count: surf_edges.length * 2 });
 			addLineMesh(state, pos, WIRE_SURF_COLOR, TAG_WIRE_SURF);
+			wire_line_groups.set(pm_idx, gtag);
 		}
 
 		// ---- Interior tet wireframe: tet edges NOT on surface, sorted by min tet centroid ----
-		const surf_edge_set = new Set<bigint>(surf_edge_val.keys());
-		const int_edge_val = new Map<bigint, { a: number; b: number; val: number }>();
+		// SHOWCASE CHANGE: per 3D group as well (see the surface wireframe).
+		const int_edge_groups = new Map<number, EdgeMap>();
 		for (let ti = 0; ti < nt; ti++) {
+			const g = m.tet_phys[ti];
+			let em = int_edge_groups.get(g);
+			if (!em) { em = new Map(); int_edge_groups.set(g, em); }
 			const tv = tet_cv(ti);
 			const v0 = m.tets[ti*4], v1 = m.tets[ti*4+1], v2 = m.tets[ti*4+2], v3 = m.tets[ti*4+3];
 			const tet_verts = [v0, v1, v2, v3];
@@ -771,14 +887,15 @@
 					const lo = u < w ? u : w, hi = u < w ? w : u;
 					const k = (BigInt(lo) << 32n) | BigInt(hi);
 					if (surf_edge_set.has(k)) continue;
-					const cur = int_edge_val.get(k);
-					if (!cur) int_edge_val.set(k, { a: u, b: w, val: tv });
+					const cur = em.get(k);
+					if (!cur) em.set(k, { a: u, b: w, val: tv });
 					else if (tv < cur.val) cur.val = tv;
 				}
 			}
 		}
-		const int_edges = [...int_edge_val.values()].sort((x, y) => x.val - y.val);
-		{
+		tet_line_groups = new Map();
+		for (const [gtag, em] of int_edge_groups) {
+			const int_edges = [...em.values()].sort((x, y) => x.val - y.val);
 			const pos = new Float32Array(int_edges.length * 6);
 			for (let i = 0; i < int_edges.length; i++) {
 				const e = int_edges[i];
@@ -789,6 +906,7 @@
 			const vals = Float64Array.from(int_edges, e => e.val);
 			prefix_meshes.push({ idx: pm_idx, line: true, vals, vpu: 2, full_count: int_edges.length * 2 });
 			addLineMesh(state, pos, WIRE_INT_COLOR, TAG_TET_WIRE);
+			tet_line_groups.set(pm_idx, gtag);
 		}
 
 		// ---- Feature edges from payload (not clipped, always full draw) ----
@@ -1165,11 +1283,14 @@
 
 	// Refit camera when the visible payload changes (mesh, wireframe or
 	// a time-domain field trajectory).
+	// SHOWCASE CHANGE: not during a fly transition; prepare_fly_in has
+	// already positioned the camera for the incoming model.
 	$effect(() => {
 		if (!mounted) return;
 		if (td_trajectory) camera = fitCamera(td_trajectory.bbox.min, td_trajectory.bbox.max);
-		else if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
-		else if (wireframe) camera = fitCamera(wireframe.bbox.min, wireframe.bbox.max);
+		else if (mesh) {
+			if (!fly_pending) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		} else if (wireframe) camera = fitCamera(wireframe.bbox.min, wireframe.bbox.max);
 	});
 
 	// Upload the active mode's mesh to the viz cache once per change. The
@@ -1889,23 +2010,69 @@
 	/* Crinkle clip slider row: full-width so it wraps to its own line in the
 	   flex-wrap toolbar. The range input fills the available width. */
 	/* SHOWCASE CHANGE: the showcase toolbar spans the viewport top, so the
-	   slider gets a fixed compact width and sits inline with the buttons
-	   (squared, token-styled track) instead of stretching to 100%. */
+	   slider gets a fixed compact width and sits inline with the buttons.
+	   The input itself carries rapidfem's canonical flat slider style (the
+	   notebook frequency slider): 2px border track, rectangular accent
+	   thumb, no native chrome. */
 	.clip-row {
 		width: 160px;
 		display: flex;
 		align-items: center;
 		height: 28px;
-		padding: 0 8px;
-		border: 1px solid var(--border);
-		background: var(--bg-surface);
 	}
 	.clip-slider {
+		-webkit-appearance: none;
+		appearance: none;
 		width: 100%;
-		height: 4px;
-		accent-color: var(--accent);
+		height: 18px;
+		background: transparent;
 		cursor: pointer;
-		appearance: auto;
+		padding: 0;
+		margin: 0;
+	}
+	.clip-slider:focus {
+		outline: none;
+	}
+	.clip-slider::-webkit-slider-runnable-track {
+		height: 2px;
+		background: var(--border);
+		border: 0;
+	}
+	.clip-slider::-moz-range-track {
+		height: 2px;
+		background: var(--border);
+		border: 0;
+	}
+	.clip-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 10px;
+		height: 14px;
+		margin-top: -6px;
+		background: var(--accent);
+		border: 0;
+		border-radius: 0;
+		cursor: grab;
+	}
+	.clip-slider::-moz-range-thumb {
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		border: 0;
+		border-radius: 0;
+		cursor: grab;
+	}
+	.clip-slider:hover::-webkit-slider-thumb {
+		background: var(--accent-hover);
+	}
+	.clip-slider:hover::-moz-range-thumb {
+		background: var(--accent-hover);
+	}
+	.clip-slider:active::-webkit-slider-thumb {
+		cursor: grabbing;
+	}
+	.clip-slider:active::-moz-range-thumb {
+		cursor: grabbing;
 	}
 
 </style>

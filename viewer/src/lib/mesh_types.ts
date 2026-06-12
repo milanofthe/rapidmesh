@@ -11,7 +11,25 @@ export interface MeshJson {
 	points: [number, number, number][];
 	tets: [number, number, number, number][];
 	tet_regions: number[];
-	faces: { tri: [number, number, number]; tag: number; regions: [number, number] }[];
+	faces: {
+		tri: [number, number, number];
+		tag: number;
+		regions: [number, number];
+		/** Analytic-surface id (provenance): faces of one input surface
+		 *  share one id. Absent in exports older than the surface field. */
+		surface?: number;
+	}[];
+	/** Owner solid per analytic-surface id (insertion order index);
+	 *  -1 marks embedded sheets. */
+	surface_owners?: number[];
+	/** Input solids in insertion order: region tag (0 for voids) and an
+	 *  optional display label for the solid's surface group. */
+	solids?: { region: number; label: string | null }[];
+	/** Display labels per sheet tag. */
+	tag_labels?: Record<string, string>;
+	/** Feature edges (geometric creases) as vertex-index pairs. May be absent
+	 *  or empty for meshes without exported feature edges. */
+	edges?: [number, number][];
 	stats: {
 		n_points: number;
 		n_tets: number;

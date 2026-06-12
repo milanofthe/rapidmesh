@@ -145,7 +145,9 @@ void main() {
 	if (uClipEnable > 0.5) {
 		if (dot(vWorld, uClipPlane.xyz) > uClipPlane.w) discard;
 	}
-	float diff = max(dot(normalize(vNormal), uLightDir), 0.0);
+	// Two-sided diffuse: tet fills draw interior faces twice with opposing
+	// normals; one-sided lighting z-fights visibly on coincident pairs.
+	float diff = abs(dot(normalize(vNormal), uLightDir));
 	vec3 base = mix(uColor, inferno(vScalar), uColormap);
 	vec3 lit = base * (uAmbient + (1.0 - uAmbient) * diff);
 	fragColor = vec4(lit, 1.0);

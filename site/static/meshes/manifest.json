@@ -1,34 +1,74 @@
 {
-  "models": [
-    {
-      "id": "wr90",
-      "name": "WR-90 Waveguide",
-      "file": "meshes/wr90.json",
-      "stats": { "n_tets": 8219, "n_points": 1857, "min_dihedral_deg": 25.1 }
-    },
-    {
-      "id": "coax",
-      "name": "Coaxial Line",
-      "file": "meshes/coax.json",
-      "stats": { "n_tets": 5673, "n_points": 1807, "min_dihedral_deg": 7.3 }
-    },
-    {
-      "id": "iris",
-      "name": "Iris Filter",
-      "file": "meshes/iris.json",
-      "stats": { "n_tets": 20382, "n_points": 4418, "min_dihedral_deg": 16.1 }
-    },
-    {
-      "id": "microstrip",
-      "name": "Microstrip Line",
-      "file": "meshes/microstrip.json",
-      "stats": { "n_tets": 9134, "n_points": 2101, "min_dihedral_deg": 17.4 }
-    },
-    {
-      "id": "stepped",
-      "name": "Stepped Impedance LPF",
-      "file": "meshes/stepped.json",
-      "stats": { "n_tets": 107971, "n_points": 21452, "min_dihedral_deg": 9.4 }
-    }
-  ]
+ "models": [
+  {
+   "id": "gear",
+   "name": "Spur Gear",
+   "file": "meshes/gear.json",
+   "stats": {
+    "n_tets": 9833,
+    "n_points": 2903,
+    "min_dihedral_deg": 9.0
+   }
+  },
+  {
+   "id": "dice",
+   "name": "Dice",
+   "file": "meshes/dice.json",
+   "stats": {
+    "n_tets": 25170,
+    "n_points": 8912,
+    "min_dihedral_deg": 5.7
+   }
+  },
+  {
+   "id": "bearing",
+   "name": "Ball Bearing",
+   "file": "meshes/bearing.json",
+   "stats": {
+    "n_tets": 20637,
+    "n_points": 5952,
+    "min_dihedral_deg": 12.1
+   }
+  },
+  {
+   "id": "chain",
+   "name": "Chain Links",
+   "file": "meshes/chain.json",
+   "stats": {
+    "n_tets": 14854,
+    "n_points": 4373,
+    "min_dihedral_deg": 8.4
+   }
+  },
+  {
+   "id": "spring",
+   "name": "Coil Spring",
+   "file": "meshes/spring.json",
+   "stats": {
+    "n_tets": 26009,
+    "n_points": 8092,
+    "min_dihedral_deg": 14.4
+   }
+  },
+  {
+   "id": "serpentine",
+   "name": "Serpentine Pipe",
+   "file": "meshes/serpentine.json",
+   "stats": {
+    "n_tets": 11305,
+    "n_points": 3685,
+    "min_dihedral_deg": 0.0
+   }
+  },
+  {
+   "id": "microstrip",
+   "name": "Microstrip",
+   "file": "meshes/microstrip.json",
+   "stats": {
+    "n_tets": 9134,
+    "n_points": 2101,
+    "min_dihedral_deg": 17.4
+   }
+  }
+ ]
 }

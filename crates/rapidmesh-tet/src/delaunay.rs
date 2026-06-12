@@ -338,7 +338,12 @@ impl DelaunayBuilder {
         self.pts.push(point);
         self.exact.push(None);
         let ok = self.compute_cavity(p, -1.0, usize::MAX);
-        debug_assert!(ok);
+        // Unguarded inserts have no distance floor and no cavity cap; a
+        // rejection here can only be the swallowed-star guard.
+        assert!(
+            ok,
+            "insert at {point:?} would swallow the star of an existing vertex (near-duplicate point)",
+        );
         self.refill(p)
     }
 
@@ -355,7 +360,10 @@ impl DelaunayBuilder {
         self.pts.push(approx);
         self.exact.push(Some(point));
         let ok = self.compute_cavity(p, -1.0, usize::MAX);
-        debug_assert!(ok);
+        assert!(
+            ok,
+            "insert_exact at {approx:?} would swallow the star of an existing vertex (near-duplicate point)",
+        );
         self.refill(p)
     }
 
@@ -666,6 +674,27 @@ impl DelaunayBuilder {
                 }
             }
         }
+
+        // Swallowed-star guard: every vertex of a cavity tet must appear on
+        // some boundary face. A vertex strictly interior to the cavity
+        // (p is a near-duplicate of it) would lose its entire star in the
+        // refill and silently detach from the triangulation; the corruption
+        // would only surface much later as a stale-hint panic. Reject the
+        // insert instead; guarded callers skip the point, mandatory callers
+        // turn the rejection into an immediate, attributable failure.
+        let mut bverts: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+        for &(ti, i) in &self.boundary {
+            for &w in &face(self.tets[ti as usize], i as usize) {
+                bverts.insert(w);
+            }
+        }
+        for &ti in &self.cavity {
+            for &w in &self.tets[ti as usize] {
+                if !bverts.contains(&w) {
+                    return false;
+                }
+            }
+        }
         true
     }
 
@@ -969,11 +998,12 @@ impl DelaunayBuilder {
             .filter(|&v| is_implicit(&self.exact, v))
             .collect();
         let mut pending: Vec<u32> = implicit;
+        let mut rescue = false;
         loop {
             let mut progressed = false;
             let mut still: Vec<u32> = Vec::new();
             for &v in &pending {
-                if self.try_round_vertex(v) {
+                if self.try_round_vertex(v, rescue) {
                     progressed = true;
                 } else {
                     still.push(v);
@@ -982,17 +1012,24 @@ impl DelaunayBuilder {
             if still.is_empty() {
                 return;
             }
-            assert!(
-                progressed,
-                "rounding stuck: {} implicit vertices cannot be flattened without inverting tets",
-                still.len(),
-            );
+            if !progressed {
+                // Strict candidates (carrier positions) are exhausted across
+                // all passes: enable the rescue blends toward the star
+                // centroid (exactly verified, so validity is untouched; only
+                // boundary fidelity drifts by the accepted blend factor).
+                assert!(
+                    !rescue,
+                    "rounding stuck: {} implicit vertices cannot be flattened without inverting tets",
+                    still.len(),
+                );
+                rescue = true;
+            }
             pending = still;
         }
     }
 
     /// Tries to round one implicit vertex; true on success.
-    fn try_round_vertex(&mut self, v: u32) -> bool {
+    fn try_round_vertex(&mut self, v: u32, rescue: bool) -> bool {
         let star: Vec<u32> = self.star_slots((v - 4) as usize);
         let ok = |b: &Self, candidate: [f64; 3]| -> bool {
             // Check all star tets with the candidate as an explicit point,
@@ -1014,20 +1051,76 @@ impl DelaunayBuilder {
         // of nudged carrier parameters (staying exactly on the f64 carrier
         // expression keeps the point as close to the constraint as f64 can).
         let mut candidates = vec![self.pts[v as usize]];
-        if let Some(Point3::Lnc { a, b: bb, t }) = self.exact[v as usize].clone() {
-            let mut up = t;
-            let mut down = t;
-            for _ in 0..4 {
-                up = f64::next_up(up);
-                down = f64::next_down(down);
-                for tc in [up, down] {
-                    candidates.push(std::array::from_fn(|k| a[k] + tc * (bb[k] - a[k])));
+        match self.exact[v as usize].clone() {
+            Some(Point3::Lnc { a, b: bb, t }) => {
+                let mut up = t;
+                let mut down = t;
+                for _ in 0..4 {
+                    up = f64::next_up(up);
+                    down = f64::next_down(down);
+                    for tc in [up, down] {
+                        candidates.push(std::array::from_fn(|k| a[k] + tc * (bb[k] - a[k])));
+                    }
+                }
+            }
+            Some(Point3::Pac { a, b: bb, c, u, v: vv }) => {
+                let pac = |uc: f64, vc: f64| -> [f64; 3] {
+                    std::array::from_fn(|k| {
+                        a[k] + uc * (bb[k] - a[k]) + vc * (c[k] - a[k])
+                    })
+                };
+                for du in [0i32, 1, -1, 2, -2] {
+                    for dv in [0i32, 1, -1, 2, -2] {
+                        if du == 0 && dv == 0 {
+                            continue;
+                        }
+                        let step = |x: f64, d: i32| -> f64 {
+                            let mut y = x;
+                            for _ in 0..d.abs() {
+                                y = if d > 0 { f64::next_up(y) } else { f64::next_down(y) };
+                            }
+                            y
+                        };
+                        candidates.push(pac(step(u, du), step(vv, dv)));
+                    }
+                }
+            }
+            _ => {}
+        }
+        if rescue {
+            // Last resort before declaring the rounding stuck: blend the
+            // approximation toward the centroid of the star's other
+            // vertices, with growing weight. Every candidate is verified
+            // exactly, so the triangulation stays valid; the vertex merely
+            // drifts off its carrier by the accepted blend.
+            let mut centroid = [0.0_f64; 3];
+            let mut cnt = 0.0;
+            let mut seen: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+            for &s in &star {
+                for &w in &self.tets[s as usize] {
+                    if w != v && seen.insert(w) {
+                        for k in 0..3 {
+                            centroid[k] += self.pts[w as usize][k];
+                        }
+                        cnt += 1.0;
+                    }
+                }
+            }
+            if cnt > 0.0 {
+                for k in 0..3 {
+                    centroid[k] /= cnt;
+                }
+                let base = self.pts[v as usize];
+                for lambda in [1e-9, 1e-7, 1e-5, 1e-3, 1e-2, 0.05, 0.1, 0.25] {
+                    candidates.push(std::array::from_fn(|k| {
+                        base[k] + lambda * (centroid[k] - base[k])
+                    }));
                 }
             }
         }
-        for c in candidates {
-            if ok(self, c) {
-                self.pts[v as usize] = c;
+        for cd in candidates {
+            if ok(self, cd) {
+                self.pts[v as usize] = cd;
                 self.exact[v as usize] = None;
                 return true;
             }

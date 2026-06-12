@@ -109,6 +109,118 @@ def dice() -> rm.Geometry:
     return g
 
 
+def pipe_cross() -> rm.Geometry:
+    """Three-way pipe cross: three full orthogonal pipes through one
+    junction with a triple bore intersection at the center (the
+    configuration the tee dodged before the CSG classification got its
+    bbox pruning)."""
+    g = rm.Geometry(maxh=0.2)
+    L, ro, ri, fr, fh = 3.2, 0.5, 0.3, 0.72, 0.18
+    inset = 0.02
+    axes = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    for ax in axes:
+        p0 = tuple(-L / 2 * a for a in ax)
+        g.label(g.cylinder(ro, L, position=p0, axis=ax, segments=20), "pipes")
+        pf0 = tuple((-L / 2 + inset) * a for a in ax)
+        g.label(g.cylinder(fr, fh, position=pf0, axis=ax, segments=20),
+                "flanges")
+        pf1 = tuple((L / 2 - fh - inset) * a for a in ax)
+        g.label(g.cylinder(fr, fh, position=pf1, axis=ax, segments=20),
+                "flanges")
+    for ax in axes:
+        p0 = tuple(-L / 2 * a for a in ax)
+        g.label(
+            g.cylinder(ri, L, position=p0, axis=ax, segments=20, void=True),
+            "bores",
+        )
+    return g
+
+
+def bracket() -> rm.Geometry:
+    """Corner bracket: base plate and wall joined by overlap-union, a
+    triangular gusset rib (wedge flush against the wall), bolt holes
+    through both plates."""
+    g = rm.Geometry(maxh=0.13)
+    g.label(g.box(2.4, 1.6, 0.25, position=(-1.2, -0.8, 0)), "base")
+    g.label(g.box(0.25, 1.6, 1.6, position=(-1.2, -0.8, 0)), "wall")
+    # gusset: vertical face flush with the wall, sloping down onto the base
+    g.label(g.wedge(1.0, 0.18, 1.1, position=(-0.95, -0.09, 0.25), top_x=0.0),
+            "rib")
+    for x in (0.15, 0.8):
+        for y in (-0.45, 0.45):
+            hole = g.cylinder(0.11, 0.35, position=(x, y, -0.05), segments=14,
+                              void=True)
+            g.label(hole, "bolt holes")
+    for y in (-0.45, 0.45):
+        hole = g.cylinder(0.11, 0.35, position=(-1.25, y, 1.15),
+                          axis=(1, 0, 0), segments=14, void=True)
+        g.label(hole, "bolt holes")
+    return g
+
+
+def counterbore_plate() -> rm.Geometry:
+    """Counterbored plate: four stacked-cut fixtures (a wide shallow recess
+    over a narrow through bore) and a rectangular pocket, all carved from
+    one plate."""
+    g = rm.Geometry(maxh=0.15)
+    g.label(g.box(3.0, 2.0, 0.5, position=(-1.5, -1.0, 0)), "plate")
+    for x in (-1.0, 1.0):
+        for y in (-0.55, 0.55):
+            g.label(g.cylinder(0.26, 0.3, position=(x, y, 0.28), segments=18,
+                               void=True), "counterbores")
+            g.label(g.cylinder(0.13, 0.6, position=(x, y, -0.05), segments=14,
+                               void=True), "bores")
+    g.label(g.box(0.9, 0.7, 0.32, position=(-0.45, -0.35, 0.18), void=True),
+            "pocket")
+    return g
+
+
+def orbs() -> rm.Geometry:
+    """Molecule: a core sphere with four tetrahedrally arranged atoms fused
+    on by overlap-union (sphere-sphere intersection curves)."""
+    g = rm.Geometry(maxh=0.14)
+    g.label(g.sphere(0.62, segments=24, rings=12), "core")
+    d = 0.82
+    dirs = [(1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)]
+    for v in dirs:
+        n = math.sqrt(3.0)
+        p = tuple(d * c / n for c in v)
+        g.label(g.sphere(0.4, position=p, segments=18, rings=9), "atoms")
+    return g
+
+
+def lattice_cube() -> rm.Geometry:
+    """Drilled cube: one large through bore per axis, mutually offset so no
+    two bores intersect (mutually piercing bores are the pipe-cross stress
+    case; this one shows clean multi-directional cuts)."""
+    g = rm.Geometry(maxh=0.19)
+    s = 2.4
+    g.label(g.box(s, s, s, position=(-s / 2, -s / 2, -s / 2)), "cube")
+    o = 0.45
+    for ax, pos in (
+        ((1, 0, 0), (-s / 2 - 0.05, -o, -o)),
+        ((0, 1, 0), (o, -s / 2 - 0.05, o)),
+        ((0, 0, 1), (-o, o, -s / 2 - 0.05)),
+    ):
+        bore = g.cylinder(0.34, s + 0.1, position=pos, axis=ax, segments=20,
+                          void=True)
+        g.label(bore, "bores")
+    return g
+
+
+def nested_shells() -> rm.Geometry:
+    """Nested shells: three concentric spherical shells and a solid core,
+    nothing touching (disjoint regions; the cut boolean hollows each
+    shell)."""
+    g = rm.Geometry(maxh=0.16)
+    g.label(g.sphere(1.2, segments=28, rings=14), "outer shell")
+    g.label(g.sphere(1.02, segments=28, rings=14, void=True), "gaps")
+    g.label(g.sphere(0.78, segments=24, rings=12), "mid shell")
+    g.label(g.sphere(0.6, segments=24, rings=12, void=True), "gaps")
+    g.label(g.sphere(0.36, segments=18, rings=9), "core")
+    return g
+
+
 def gear() -> rm.Geometry:
     """Spur gear blank from a single polygon prism: trapezoid teeth, keyway
     bore and a ring of lightening holes, all via polygon holes."""
@@ -429,9 +541,15 @@ class Model:
 
 MODELS: list[Model] = [
     Model("pipe_junction", "Pipe Tee", pipe_junction),
+    Model("pipe_cross", "Pipe Cross", pipe_cross),
     Model("gear", "Spur Gear", gear),
     Model("dice", "Dice", dice),
     Model("bearing", "Ball Bearing", bearing),
+    Model("bracket", "Corner Bracket", bracket),
+    Model("counterbore_plate", "Counterbore Plate", counterbore_plate),
+    Model("lattice_cube", "Lattice Cube", lattice_cube),
+    Model("orbs", "Molecule", orbs),
+    Model("nested_shells", "Nested Shells", nested_shells),
     Model("rocket", "Rocket", rocket),
     Model("house", "House", house),
     Model("chain", "Chain Links", chain),

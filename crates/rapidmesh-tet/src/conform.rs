@@ -710,6 +710,10 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             "timing: segments {:?}, faces {:?}, tiles {:?}, classify {:?}, refine {:?}, rounding {:?} ({} rounds, {} points)",
             t_segments, t_faces, t_tiles, t_classify, t_refine, tro.elapsed(), round, points.len(),
         );
+        let [oc, oi, oe, ic, ii, ie] = rapidmesh_exact::stats::take();
+        eprintln!(
+            "predicates: orient3d {oc} ({oi} implicit, {oe} exact), insphere {ic} ({ii} implicit, {ie} exact)",
+        );
     }
 
     if std::env::var_os("RAPIDMESH_EDGE_DUMP").is_some() {

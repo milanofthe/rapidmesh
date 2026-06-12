@@ -729,8 +729,12 @@ fn recover_one_facet(
         }
 
         // Piercing tets: any of the 6 edges strictly crosses the facet.
-        // Edges are shared by ~5-6 tets in the sweep; cache the exact
-        // pierce test per undirected edge so each runs once.
+        // The plane side of each VERTEX is cached (each vertex is shared by
+        // many edges, and "both endpoints on one side" rejects almost every
+        // edge with two lookups); the remaining straddling edges run the
+        // three crossing tests once each (cached per undirected edge).
+        let mut side_cache: rustc_hash::FxHashMap<usize, Sign> =
+            rustc_hash::FxHashMap::default();
         let mut edge_cache: rustc_hash::FxHashMap<(usize, usize), bool> =
             rustc_hash::FxHashMap::default();
         let mut piercing: FxHashSet<u32> = FxHashSet::default();
@@ -739,9 +743,18 @@ fn recover_one_facet(
             'edges: for i in 0..4 {
                 for j in i + 1..4 {
                     let key = (t[i].min(t[j]), t[i].max(t[j]));
+                    let mut side = |v: usize| -> Sign {
+                        *side_cache
+                            .entry(v)
+                            .or_insert_with(|| exact_orient(&pa, &pb, &pc, &b.exact_point(v)))
+                    };
+                    let (su, sv) = (side(key.0), side(key.1));
+                    if su == Sign::Zero || sv == Sign::Zero || su == sv {
+                        continue;
+                    }
                     let hit = *edge_cache
                         .entry(key)
-                        .or_insert_with(|| edge_pierces_facet(b, key.0, key.1, &pa, &pb, &pc));
+                        .or_insert_with(|| edge_crossing_inside(b, key.0, key.1, &pa, &pb, &pc));
                     if hit {
                         piercing.insert(s);
                         break 'edges;
@@ -784,12 +797,13 @@ fn recover_one_facet(
     }
 }
 
-/// True if the open edge (u, v) strictly crosses the open facet region:
-/// endpoints strictly on opposite sides of the plane and the crossing
-/// strictly inside the triangle (a crossing exactly on the facet boundary
-/// would cross a constrained chain edge, which a simplicial complex cannot;
-/// a Zero sign therefore means the crossing is outside the facet).
-fn edge_pierces_facet(
+/// Crossing-inside half of the pierce test: given that the endpoints of the
+/// open edge (u, v) lie STRICTLY on opposite sides of the facet plane (the
+/// caller checks the sides), true iff the crossing is strictly inside the
+/// facet triangle (a crossing exactly on the facet boundary would cross a
+/// constrained chain edge, which a simplicial complex cannot; a Zero sign
+/// therefore means the crossing is outside the facet).
+fn edge_crossing_inside(
     b: &DelaunayBuilder,
     u: usize,
     v: usize,
@@ -799,11 +813,6 @@ fn edge_pierces_facet(
 ) -> bool {
     let pu = b.exact_point(u);
     let pv = b.exact_point(v);
-    let su = exact_orient(pa, pb, pc, &pu);
-    let sv = exact_orient(pa, pb, pc, &pv);
-    if su == Sign::Zero || sv == Sign::Zero || su == sv {
-        return false;
-    }
     let s1 = exact_orient(&pu, &pv, pa, pb);
     let s2 = exact_orient(&pu, &pv, pb, pc);
     let s3 = exact_orient(&pu, &pv, pc, pa);
@@ -851,11 +860,18 @@ fn retet_cavity(b: &mut DelaunayBuilder, comp: &[u32], pa: &Point3, pb: &Point3,
                 let nb = b.neighbor_at(s, i);
                 let nb_state = nb.map(|n| {
                     let nt = b.tet_at(n);
-                    let nb_pierces = nt.is_some_and(|t| {
-                        (0..4).any(|x| {
-                            (x + 1..4).any(|y| edge_pierces_facet(b, t[x], t[y], pa, pb, pc))
-                        })
-                    });
+                    let pierces = |u: usize, v: usize| {
+                        let su = exact_orient(pa, pb, pc, &b.exact_point(u));
+                        let sv = exact_orient(pa, pb, pc, &b.exact_point(v));
+                        su != Sign::Zero
+                            && sv != Sign::Zero
+                            && su != sv
+                            && edge_crossing_inside(b, u, v, pa, pb, pc)
+                    };
+                    let nb_pierces = nt
+                        .is_some_and(|t| {
+                            (0..4).any(|x| (x + 1..4).any(|y| pierces(t[x], t[y])))
+                        });
                     (n, nt, nb_pierces)
                 });
                 panic!(

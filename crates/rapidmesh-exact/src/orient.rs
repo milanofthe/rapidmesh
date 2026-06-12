@@ -19,7 +19,26 @@ use crate::{Axis, Sign};
 /// Evaluation is staged: fast adaptive path for all-explicit inputs
 /// (`geometry-predicates`), conservative interval filter for implicit inputs,
 /// exact expansion arithmetic as the final word.
+/// Affine interval coordinates for points whose homogeneous w is exactly 1
+/// (explicit, Lnc, Pac); `None` for the projective kinds (Lpi, Tpi, Bary).
+/// Lets the filters of [`orient3d`] and [`insphere3d`] use the plain affine
+/// difference determinants instead of the homogeneous lifts: w-sign folding
+/// disappears and the determinant shrinks by one dimension, several times
+/// fewer interval operations on the dominant Lnc/Pac meshing path.
+#[inline]
+fn affine_interval(p: &Point3) -> Option<[Interval; 3]> {
+    match p {
+        Point3::Explicit(c) => Some(c.map(Interval::point)),
+        Point3::Lnc { .. } | Point3::Pac { .. } => {
+            let h = p.hom::<Interval>();
+            Some([h[0], h[1], h[2]])
+        }
+        _ => None,
+    }
+}
+
 pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> {
+    crate::stats::bump(&crate::stats::ORIENT3D_CALLS);
     // Fast adaptive path: all points explicit.
     if let (Some(pa), Some(pb), Some(pc), Some(pd)) = (
         a.as_explicit(),
@@ -29,33 +48,53 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
     ) {
         return Some(Sign::of_f64(geometry_predicates::orient3d(pa, pb, pc, pd)));
     }
+    crate::stats::bump(&crate::stats::ORIENT3D_IMPLICIT);
 
     let pts = [a, b, c, d];
 
-    // The 4x4 homogeneous determinant relates to the affine orientation by
-    // det4 = (prod of w_i) * det3[[a-d],[b-d],[c-d]], so the orientation sign
-    // is the det4 sign combined with each w sign.
-
-    // Interval filter.
-    'filter: {
-        let homs: [[Interval; 4]; 4] = std::array::from_fn(|i| pts[i].hom::<Interval>());
-        let Some(mut sign) = det4(&homs).sign() else {
-            break 'filter;
+    // Affine interval filter (all w exactly 1: explicit, Lnc, Pac — the
+    // dominant meshing path): the homogeneous det4 equals det3 of the rows
+    // a-d, b-d, c-d, with no w corrections. When indecisive, the exact
+    // stage decides directly (the projective filter sees the same widths).
+    if let (Some(pa), Some(pb), Some(pc), Some(pd)) = (
+        affine_interval(a),
+        affine_interval(b),
+        affine_interval(c),
+        affine_interval(d),
+    ) {
+        let row = |p: &[Interval; 3]| -> [Interval; 3] {
+            std::array::from_fn(|k| p[k].sub(pd[k]))
         };
-        for h in &homs {
-            match h[3].sign() {
-                // Strictly signed w: fold into the result.
-                Some(Sign::Positive) => {}
-                Some(Sign::Negative) => sign = sign.flip(),
-                // w == 0 exactly or uncertain: let the exact stage decide
-                // validity.
-                _ => break 'filter,
-            }
+        if let Some(sign) = det3(&[row(&pa), row(&pb), row(&pc)]).sign() {
+            return Some(sign);
         }
-        return Some(sign);
+    } else {
+        // The 4x4 homogeneous determinant relates to the affine orientation
+        // by det4 = (prod of w_i) * det3[[a-d],[b-d],[c-d]], so the
+        // orientation sign is the det4 sign combined with each w sign.
+
+        // Projective interval filter (some w != 1).
+        'filter: {
+            let homs: [[Interval; 4]; 4] = std::array::from_fn(|i| pts[i].hom::<Interval>());
+            let Some(mut sign) = det4(&homs).sign() else {
+                break 'filter;
+            };
+            for h in &homs {
+                match h[3].sign() {
+                    // Strictly signed w: fold into the result.
+                    Some(Sign::Positive) => {}
+                    Some(Sign::Negative) => sign = sign.flip(),
+                    // w == 0 exactly or uncertain: let the exact stage decide
+                    // validity.
+                    _ => break 'filter,
+                }
+            }
+            return Some(sign);
+        }
     }
 
     // Exact stage.
+    crate::stats::bump(&crate::stats::ORIENT3D_EXACT);
     let homs: [[Expansion; 4]; 4] = std::array::from_fn(|i| pts[i].hom::<Expansion>());
     let mut sign = det4(&homs).sign();
     for h in &homs {
@@ -154,6 +193,7 @@ pub fn insphere3d(
     d: &Point3,
     e: &Point3,
 ) -> Option<Sign> {
+    crate::stats::bump(&crate::stats::INSPHERE_CALLS);
     // Fast adaptive path: all points explicit.
     if let (Some(pa), Some(pb), Some(pc), Some(pd), Some(pe)) = (
         a.as_explicit(),
@@ -166,6 +206,7 @@ pub fn insphere3d(
             pa, pb, pc, pd, pe,
         )));
     }
+    crate::stats::bump(&crate::stats::INSPHERE_IMPLICIT);
 
     fn lifted_row<T: crate::ring::Ring>(h: &[T; 4]) -> [T; 5] {
         let (x, y, z, w) = (&h[0], &h[1], &h[2], &h[3]);
@@ -180,8 +221,29 @@ pub fn insphere3d(
 
     let pts = [a, b, c, d, e];
 
-    // Interval filter.
-    {
+    // Affine interval filter (all w exactly 1): column operations reduce the
+    // homogeneous 5x5 lift to Shewchuk's difference form, det4 of rows
+    // (p - e, |p - e|^2) — several times fewer interval operations than the
+    // projective det5. This is the dominant meshing path (explicit, Lnc and
+    // Pac points all have w = 1); when indecisive it falls through to the
+    // exact stage directly (the projective filter sees the same widths).
+    if let (Some(pa), Some(pb), Some(pc), Some(pd), Some(pe)) = (
+        affine_interval(a),
+        affine_interval(b),
+        affine_interval(c),
+        affine_interval(d),
+        affine_interval(e),
+    ) {
+        let row = |p: &[Interval; 3]| -> [Interval; 4] {
+            let d: [Interval; 3] = std::array::from_fn(|k| p[k].sub(pe[k]));
+            let lift = d[0].mul(d[0]).add(d[1].mul(d[1])).add(d[2].mul(d[2]));
+            [d[0], d[1], d[2], lift]
+        };
+        if let Some(sign) = det4(&[row(&pa), row(&pb), row(&pc), row(&pd)]).sign() {
+            return Some(sign);
+        }
+    } else {
+        // Projective interval filter (some w != 1).
         let homs: [[Interval; 4]; 5] = std::array::from_fn(|i| pts[i].hom::<Interval>());
         let ws_known = homs
             .iter()
@@ -195,6 +257,7 @@ pub fn insphere3d(
     }
 
     // Exact stage.
+    crate::stats::bump(&crate::stats::INSPHERE_EXACT);
     let homs: [[Expansion; 4]; 5] = std::array::from_fn(|i| pts[i].hom::<Expansion>());
     for h in &homs {
         if h[3].sign() == Sign::Zero {

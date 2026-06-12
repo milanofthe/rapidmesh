@@ -340,6 +340,8 @@
 
 	function classify(name: string): Kind | null {
 		const b = base(name);
+		// SHOWCASE CHANGE: general-purpose meshes carry plain region groups.
+		if (b === 'region') return 'dielectric';
 		// Object-API material names — emitted by geometry.py as
 		// "<class_lower>_<idx>" (air, dielectric, conductor, anisotropic).
 		if (b === 'air' || b === 'dielectric' || b === 'anisotropic') return 'dielectric';
@@ -363,6 +365,12 @@
 
 	function color_for(kind: Kind, name: string): [number, number, number] {
 		const b = base(name);
+		// SHOWCASE CHANGE: distinct hue per region (general-purpose meshes).
+		if (b === 'region') {
+			const m = name.match(/_(\d+)$/);
+			const idx = m ? Math.max(0, parseInt(m[1], 10) - 1) : 0;
+			return hex(DIELECTRIC_CYCLE[idx % DIELECTRIC_CYCLE.length]);
+		}
 		// Materials get type-specific colors regardless of kind classification.
 		if (b === 'air') return hex('#5a5a62');                   // neutral gray
 		if (b === 'conductor') return hex(palette.accentSecondary); // bulk metal → signature yellow
@@ -628,6 +636,9 @@
 		}
 
 		// ---- Volume hulls (implicit surfaces from tet connectivity) ----
+		// Hull triangles also feed the surface-wireframe layer below, so
+		// "Wire" covers volume-only meshes too (not just named tris).
+		const hull_wire_tris: number[] = [];
 		const vol_b = build_volume_boundaries(m);
 		for (const [vtag, idx] of vol_b.entries()) {
 			const name = m.phys_names.get(vtag) ?? '';
@@ -655,6 +666,7 @@
 			prefix_meshes.push({ idx: pm_idx, line: false, vals, vpu: 3, full_count: ntri * 3 });
 			const { positions, normals } = buildTriSoupF64(np, sorted_idx);
 			addMesh(state, positions, normals, color_for(kind, name), vtag, kind_offset);
+			for (const v of sorted_idx) hull_wire_tris.push(v);
 		}
 
 		// ---- Surface wireframe: edges from explicit surface tris, sorted by min face centroid ----
@@ -671,6 +683,20 @@
 				else if (fv < cur.val) cur.val = fv;
 			};
 			add_se(ea, eb); add_se(eb, ec); add_se(ec, ea);
+		}
+		// Volume-hull faces wireframe alongside the named tris (same dedup
+		// map, centroid clip value computed from the node coords directly).
+		for (let h = 0; h + 2 < hull_wire_tris.length; h += 3) {
+			const ea = hull_wire_tris[h], eb = hull_wire_tris[h + 1], ec = hull_wire_tris[h + 2];
+			const fv = (np[ea*3+axis] + np[eb*3+axis] + np[ec*3+axis]) / 3;
+			const add_he = (u: number, w: number) => {
+				const lo = u < w ? u : w, hi = u < w ? w : u;
+				const k = (BigInt(lo) << 32n) | BigInt(hi);
+				const cur = surf_edge_val.get(k);
+				if (!cur) surf_edge_val.set(k, { a: u, b: w, val: fv });
+				else if (fv < cur.val) cur.val = fv;
+			};
+			add_he(ea, eb); add_he(eb, ec); add_he(ec, ea);
 		}
 		const surf_edges = [...surf_edge_val.values()].sort((x, y) => x.val - y.val);
 		{
@@ -1548,19 +1574,15 @@
 			<span class="tb-sep" aria-hidden="true"></span>
 			<button class="tb tb-label" class:active={layer_surface}
 				onclick={() => { layer_surface = !layer_surface; }}>
-				<span class="tip">Toggle filled surface</span>Surf
+				<span class="tip">Toggle filled tet volumes</span>Tets
 			</button>
 			<button class="tb tb-label" class:active={layer_wire}
 				onclick={() => { layer_wire = !layer_wire; }}>
 				<span class="tip">Toggle surface wireframe</span>Wire
 			</button>
-			<button class="tb tb-label" class:active={layer_edges}
-				onclick={() => { layer_edges = !layer_edges; }}>
-				<span class="tip">Toggle feature edges</span>Edge
-			</button>
 			<button class="tb tb-label" class:active={layer_tets}
 				onclick={() => { layer_tets = !layer_tets; }}>
-				<span class="tip">Toggle interior tet wireframe</span>Tets
+				<span class="tip">Toggle interior tet edges</span>Edge
 			</button>
 			<span class="tb-sep" aria-hidden="true"></span>
 			<button class="tb tb-label" class:active={clip_enable}

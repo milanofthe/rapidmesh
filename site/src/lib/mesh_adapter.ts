@@ -59,7 +59,7 @@ export function adaptMesh(j: MeshJson): MeshData {
 		const r = j.tet_regions?.[t] ?? 1;
 		tet_phys[t] = r;
 		if (!phys_names.has(r)) {
-			phys_names.set(r, `dielectric_${r}`);
+			phys_names.set(r, `region_${r}`);
 			phys_dim.set(r, 3);
 		}
 	}

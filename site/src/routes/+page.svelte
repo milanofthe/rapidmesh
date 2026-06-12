@@ -91,7 +91,9 @@
 
 <main class="stage" style="--fade: {FADE_MS}ms">
 
-	<MeshViewer mesh={currentData ? adaptMesh(currentData) : null} oninteract={pauseCycle} orbit />
+	<!-- Any interaction pauses BOTH the auto-cycle and the idle orbit; the
+	     paused flag resumes them together after the inactivity window. -->
+	<MeshViewer mesh={currentData ? adaptMesh(currentData) : null} oninteract={pauseCycle} orbit={!paused} />
 
 	<div class="overlay" class:visible={covered}></div>
 
@@ -140,19 +142,17 @@
 		opacity: 1;
 	}
 
-	/* Top RIGHT: the viewer's legend owns the top-left corner (rapidfem
-	   layout); the brand block must never clip it. */
+	/* Top LEFT; the viewer's legend is pushed down below this block (see the
+	   SHOWCASE CHANGE in MeshViewer) so the two never clip. */
 	.brand {
 		position: absolute;
 		top: var(--space-xl);
-		right: var(--space-xl);
+		left: var(--space-xl);
 		z-index: 10;
 		display: flex;
 		flex-direction: column;
-		align-items: flex-end;
 		gap: var(--space-xs);
 		pointer-events: none;
-		text-align: right;
 	}
 	/* Mirror rapidfem's brand lockup: logo mark + monospace, letter-spaced
 	   accent title (rapidfem renders its hero title in JetBrains Mono / 700 /

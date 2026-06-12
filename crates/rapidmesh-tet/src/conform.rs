@@ -567,15 +567,28 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let point_h = &mut point_h;
 
     // ------------------------------------------------- recovery + refinement
+    // RAPIDMESH_TIMING: coarse wall-clock split of the meshing phases
+    // (segment recovery, the per-round face recovery / tile derivation /
+    // refinement, implicit rounding), printed once at the end.
+    let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
+    let mut t_faces = std::time::Duration::ZERO;
+    let mut t_tiles = std::time::Duration::ZERO;
+    let mut t_classify = std::time::Duration::ZERO;
+    let mut t_refine = std::time::Duration::ZERO;
+    let t0 = std::time::Instant::now();
     let mut chains = cdt::recover_segments(&mut builder, &segments, &acute);
     sync_chains(
         &builder, &chains, &segments, &seg_facets, params.grading, &params.size_points,
         &mut points, point_h, &mut on_facet, &mut point_index,
     );
+    let t_segments = t0.elapsed();
 
     let mut tried: DMap<[usize; 4], u8> = DMap::default();
     let mut round = 0usize;
     let mut refine_round = 0usize;
+    // Per facet: creation-log position at its last clean recovery sweep
+    // (0 = never swept; see recover_one_facet).
+    let mut facet_clean: Vec<usize> = vec![0; facets.len()];
     #[allow(clippy::type_complexity)]
     let (tets, patch_faces, tet_region): (Vec<[usize; 4]>, Vec<Vec<[usize; 3]>>, Vec<u32>) = 'outer: loop {
         round += 1;
@@ -584,8 +597,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // CDT face recovery until clean: one facet's cavity surgery can unmake
         // another facet or a chain edge, so alternate face and segment
         // recovery until a face pass finds nothing.
+        let tf = std::time::Instant::now();
         loop {
-            let any = cdt::recover_faces(&mut builder, &facets, &chains);
+            let any = cdt::recover_faces(&mut builder, &facets, &chains, &mut facet_clean);
             cdt::resume_segments(&mut builder, &mut chains);
             sync_chains(
                 &builder, &chains, &segments, &seg_facets, params.grading, &params.size_points,
@@ -595,9 +609,11 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 break;
             }
         }
+        t_faces += tf.elapsed();
 
         // Derive tiles (combinatorial provenance), face owners, and tets for
         // this round.
+        let tt = std::time::Instant::now();
         let slot_tets = builder.tets_with_slots();
         let dt_tets: Vec<[usize; 4]> = slot_tets.iter().map(|&(_, t)| t).collect();
         let mut all_tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
@@ -618,8 +634,12 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
 
+        t_tiles += tt.elapsed();
+
+        let tc = std::time::Instant::now();
         let tet_region =
             classify_tet_regions(&points, &dt_tets, &patches, &all_tilings, &dt_faces, (blo, bhi));
+        t_classify += tc.elapsed();
 
         if points.len() >= params.max_points {
             if trace {
@@ -647,6 +667,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
 
+        let tr = std::time::Instant::now();
         let inserted = refine_queue(
             params,
             &plc.surface_owners,
@@ -668,6 +689,7 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             &mut chains,
             &mut live_pieces,
         );
+        t_refine += tr.elapsed();
         if trace && inserted > 0 {
             eprintln!("round {round}: inserted {inserted}, {} points", points.len());
         }
@@ -678,9 +700,16 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // Round the implicit Steiner points to plain f64 and refresh the cached
     // positions (rounding may nudge implicit points along their carriers).
+    let tro = std::time::Instant::now();
     builder.round_implicit_points();
     for (i, p) in points.iter_mut().enumerate() {
         *p = builder.approx_point(i);
+    }
+    if timing {
+        eprintln!(
+            "timing: segments {:?}, faces {:?}, tiles {:?}, classify {:?}, refine {:?}, rounding {:?} ({} rounds, {} points)",
+            t_segments, t_faces, t_tiles, t_classify, t_refine, tro.elapsed(), round, points.len(),
+        );
     }
 
     if std::env::var_os("RAPIDMESH_EDGE_DUMP").is_some() {

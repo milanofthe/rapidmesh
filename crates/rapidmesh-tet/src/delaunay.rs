@@ -163,6 +163,11 @@ pub struct DelaunayBuilder {
     scratch_edges: rustc_hash::FxHashSet<(u32, u32)>,
     /// Guarded-insert scratch: cavity-boundary faces as (tet, face slot).
     scratch_bfaces: rustc_hash::FxHashSet<(u32, u8)>,
+    /// Append-only creation log: the slot of every alloc, in order. Lets
+    /// incremental consumers (CDT face recovery) ask "which tets appeared
+    /// since position X" and skip regions where nothing changed; any change
+    /// to the triangulation creates tets, so the log misses nothing.
+    clog: Vec<u32>,
 }
 
 impl DelaunayBuilder {
@@ -204,6 +209,7 @@ impl DelaunayBuilder {
             new_tets: Vec::new(),
             scratch_edges: rustc_hash::FxHashSet::default(),
             scratch_bfaces: rustc_hash::FxHashSet::default(),
+            clog: vec![0],
         }
     }
 
@@ -274,7 +280,7 @@ impl DelaunayBuilder {
     }
 
     fn alloc(&mut self, t: [u32; 4]) -> u32 {
-        if let Some(slot) = self.free.pop() {
+        let slot = if let Some(slot) = self.free.pop() {
             self.tets[slot as usize] = t;
             self.neighbors[slot as usize] = [NONE; 4];
             self.alive[slot as usize] = true;
@@ -286,7 +292,16 @@ impl DelaunayBuilder {
             self.alive.push(true);
             self.mark.push(0);
             (self.tets.len() - 1) as u32
-        }
+        };
+        self.clog.push(slot);
+        slot
+    }
+
+    /// The append-only creation log (slot per alloc, in order). A consumer
+    /// remembers a log position and later inspects only the suffix to learn
+    /// where the triangulation changed.
+    pub fn creation_log(&self) -> &[u32] {
+        &self.clog
     }
 
     /// Inserts a point and returns its public index.

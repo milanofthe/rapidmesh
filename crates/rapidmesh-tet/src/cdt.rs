@@ -26,9 +26,18 @@
 //! collinearity with the input segment is exact by construction and every
 //! predicate involving them evaluates the implicit position.
 //!
-//! Input vertices that happen to lie ON a segment interior (f64 welding can
-//! produce such T-junctions) violate Si's input model; they are adopted as
-//! chain vertices instead of split positions, which would duplicate them.
+//! Input vertices that lie EXACTLY ON a segment interior (a collinear
+//! overlapping segment's chain Steiner point, or a T-junction made explicit by
+//! the geometry stage's post-weld repair) violate Si's input model; they are
+//! adopted as chain vertices instead of split positions, which would duplicate
+//! them. Adoption is gated by an EXACT collinearity predicate (the candidate
+//! must be exactly on the carrier line): a merely near-collinear vertex would
+//! kink the chain in-plane while the facet region stays the exact straight
+//! triangle, breaking face recovery's straddle-impossibility lemma. Approximate
+//! (f64-welded) T-junctions are therefore not adopted here; they are resolved
+//! upstream by the geometry stage's T-junction repair, which splits the
+//! straddled facet so the corner becomes an exact vertex of both incident
+//! triangles before the PLC ever reaches recovery.
 //!
 //! Implemented from the papers only (provenance: see crate docs).
 
@@ -47,10 +56,6 @@ pub static WRAP_TETS: AtomicU64 = AtomicU64::new(0);
 /// split parameter must keep from the sub-segment ends; rule results outside
 /// the margin fall back to the sub-segment midpoint.
 const SPLIT_MARGIN_REL: f64 = 1e-6;
-
-/// Maximum distance from the carrier line, relative to the carrier length,
-/// for an encroaching vertex to be adopted as an on-segment T-junction.
-const ON_SEGMENT_REL: f64 = 1e-9;
 
 /// Splits per original segment beyond which recovery declares divergence.
 /// The protecting-sphere theory guarantees termination; this is a loud
@@ -386,6 +391,12 @@ fn find_encroacher(
     let (ca, cb) = carrier;
     let cdir = vsub(cb, ca);
     let cl2 = dot(cdir, cdir);
+    // Exact carrier line as explicit endpoints plus two off-line witnesses:
+    // a point is exactly on the carrier iff it is coplanar with both
+    // (ca, cb, witness) planes (same construction as the gate test).
+    let (w1, w2) = line_witnesses(ca, cb);
+    let (pca, pcb) = (Point3::Explicit(ca), Point3::Explicit(cb));
+    let (pw1, pw2) = (Point3::Explicit(w1), Point3::Explicit(w2));
 
     let mut queue: Vec<u32> = Vec::new();
     let mut seen: FxHashSet<u32> = FxHashSet::default();
@@ -400,7 +411,7 @@ fn find_encroacher(
     }
 
     let mut best: Option<([f64; 3], f64)> = None;
-    let mut adopt: Option<(usize, f64, f64)> = None; // (vertex, t, line dist)
+    let mut adopt: Option<(usize, f64)> = None; // (vertex, carrier parameter)
     let mut head = 0;
     while head < queue.len() {
         let slot = queue[head];
@@ -414,14 +425,26 @@ fn find_encroacher(
             if v == sub.va || v == sub.vb || dist(p, center) >= rad {
                 continue;
             }
-            // On-carrier T-junction: adopt instead of splitting next to it.
+            // On-carrier T-junction: adopt instead of splitting next to it,
+            // but ONLY when the vertex is EXACTLY on the carrier line (a near
+            // miss must be split around, not adopted, or the chain kinks while
+            // the facet stays straight). The f64 parameter places it on the
+            // sub-segment; the exact orient3d pair confirms collinearity.
             let t = dot(vsub(p, ca), cdir) / cl2;
-            let line_d = dist(p, std::array::from_fn(|k| ca[k] + t * cdir[k]));
-            if line_d < ON_SEGMENT_REL * cl2.sqrt() && t > sub.ta && t < sub.tb {
-                if adopt.is_none_or(|(_, _, d)| line_d < d) {
-                    adopt = Some((v, t, line_d));
+            if t > sub.ta && t < sub.tb {
+                let pe = b.exact_point(v);
+                let on_line = rapidmesh_exact::orient3d(&pca, &pcb, &pw1, &pe)
+                    == Some(Sign::Zero)
+                    && rapidmesh_exact::orient3d(&pca, &pcb, &pw2, &pe) == Some(Sign::Zero);
+                if on_line {
+                    // Deterministic pick: smallest vertex index among the
+                    // exactly-collinear encroachers (the rest are handled on
+                    // the resulting sub-pieces by the recovery loop).
+                    if adopt.is_none_or(|(av, _)| v < av) {
+                        adopt = Some((v, t));
+                    }
+                    continue;
                 }
-                continue;
             }
             let r = circumradius(xa, xb, p);
             if best.is_none_or(|(_, br)| r > br) {
@@ -447,13 +470,33 @@ fn find_encroacher(
             }
         }
     }
-    if let Some((v, t, _)) = adopt {
+    if let Some((v, t)) = adopt {
         return Some(Encroacher {
             pos: b.approx_point(v),
             adopt: Some((v, t)),
         });
     }
     best.map(|(pos, _)| Encroacher { pos, adopt: None })
+}
+
+/// Two explicit points spanning independent planes through the carrier line
+/// (ca, cb): a point is exactly on the line iff it is coplanar with each
+/// (mirrors `line_witnesses` in tests/segment_recovery.rs).
+fn line_witnesses(ca: [f64; 3], cb: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let d = vsub(cb, ca);
+    let axis = if d[0].abs() <= d[1].abs() && d[0].abs() <= d[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if d[1].abs() <= d[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let u = cross(d, axis);
+    let w = cross(d, u);
+    (
+        std::array::from_fn(|k| ca[k] + u[k]),
+        std::array::from_fn(|k| ca[k] + w[k]),
+    )
 }
 
 /// Circumradius of the triangle (a, b, c); f64, collinear inputs yield a
@@ -515,8 +558,9 @@ pub fn recover_plc(
     acute: &[bool],
 ) -> SegmentChains {
     let mut chains = recover_segments(b, segments, acute);
+    let mut facet_clean: Vec<usize> = vec![0; facets.len()];
     for _round in 0..MAX_RECOVERY_ROUNDS {
-        let any_face_missing = recover_faces(b, facets, &chains);
+        let any_face_missing = recover_faces(b, facets, &chains, &mut facet_clean);
         if !any_face_missing {
             return chains;
         }
@@ -533,35 +577,55 @@ pub fn recover_faces(
     b: &mut DelaunayBuilder,
     facets: &[FacetRef],
     chains: &SegmentChains,
+    facet_clean: &mut [usize],
 ) -> bool {
+    // Shared snapshot of the creation-log suffix from the oldest clean
+    // position: (log position, tet bbox) per still-alive slot. Each facet's
+    // incremental check then sweeps plain bboxes from its own position
+    // instead of resolving slots through the builder again. Slots allocated
+    // DURING this pass (cavity surgeries of earlier facets) are after the
+    // snapshot; recover_one_facet checks that live tail via the builder.
+    let from = facet_clean.iter().copied().min().unwrap_or(0);
+    let log = b.creation_log();
+    let snapshot_end = log.len();
+    let mut news: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
+    for (pos, &s) in log.iter().enumerate().skip(from) {
+        let Some(t) = b.tet_at(s) else { continue };
+        let mut lo = [f64::MAX; 3];
+        let mut hi = [f64::MIN; 3];
+        for v in t {
+            let p = b.approx_point(v);
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        news.push((pos, lo, hi));
+    }
     let mut any = false;
-    for f in facets {
-        any |= recover_one_facet(b, f, chains);
+    for (fi, f) in facets.iter().enumerate() {
+        any |= recover_one_facet(b, f, chains, &mut facet_clean[fi], &news, snapshot_end);
     }
     any
 }
 
 /// Detects piercing edges of one facet and retetrahedrizes their cavities.
-fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChains) -> bool {
-    // Precondition of the straddle-impossibility argument: the facet's OWN
-    // boundary chains must currently be DT edges (the cross-section proof
-    // rests on the boundary not passing through tet interiors). Surgery for
-    // an earlier facet may have knocked a piece out; defer this facet to
-    // the next pass (the caller alternates with resume_segments).
-    let boundary_intact = |b_: &DelaunayBuilder| -> bool {
-        f.edges.iter().all(|&e| {
-            chains
-                .chain(e)
-                .windows(2)
-                .all(|w| b_.edge_exists(w[0], w[1]))
-        })
-    };
-    if !boundary_intact(b) {
-        return true; // work remains: chains first, then this facet
-    }
-
-    let [pa, pb, pc] = f.corners.map(|v| b.exact_point(v));
-
+///
+/// `clean_pos` is the facet's position in the builder's creation log at its
+/// last clean sweep: if no tet created since then overlaps the facet's bbox,
+/// the facet cannot have gained a piercing edge (every change to the
+/// triangulation creates tets in the changed region) and the whole sweep is
+/// skipped. This turns the repeated full-facet passes of the recovery /
+/// refinement rounds from "every facet, every round" into "only facets near
+/// actual changes".
+fn recover_one_facet(
+    b: &mut DelaunayBuilder,
+    f: &FacetRef,
+    chains: &SegmentChains,
+    clean_pos: &mut usize,
+    news: &[(usize, [f64; 3], [f64; 3])],
+    snapshot_end: usize,
+) -> bool {
     // Fixed sweep bbox from the facet's boundary vertices (their positions
     // never change during recovery).
     let mut bb_lo = [f64::MAX; 3];
@@ -592,6 +656,45 @@ fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChai
         }
         (0..3).all(|k| lo[k] <= bb_hi[k] + pad && hi[k] >= bb_lo[k] - pad)
     };
+
+    // Incremental skip: nothing new near the facet since its last clean
+    // sweep means nothing to recover (cheap f64 bbox tests only). The
+    // shared snapshot covers the pass start; the live tail covers slots
+    // allocated by earlier facets' surgeries within this pass.
+    let bbox_hit = |lo: &[f64; 3], hi: &[f64; 3]| -> bool {
+        (0..3).all(|k| lo[k] <= bb_hi[k] + pad && hi[k] >= bb_lo[k] - pad)
+    };
+    let start = news.partition_point(|&(pos, _, _)| pos < *clean_pos);
+    let snap_clean = news[start..].iter().all(|(_, lo, hi)| !bbox_hit(lo, hi));
+    let tail_from = (*clean_pos).max(snapshot_end);
+    if snap_clean
+        && b.creation_log()[tail_from..]
+            .iter()
+            .all(|&s| !overlaps(b, s))
+    {
+        *clean_pos = b.creation_log().len();
+        return false;
+    }
+
+    // Precondition of the straddle-impossibility argument: the facet's OWN
+    // boundary chains must currently be DT edges (the cross-section proof
+    // rests on the boundary not passing through tet interiors). Surgery for
+    // an earlier facet may have knocked a piece out; defer this facet to
+    // the next pass (the caller alternates with resume_segments). The facet
+    // stays dirty (clean_pos untouched).
+    let boundary_intact = |b_: &DelaunayBuilder| -> bool {
+        f.edges.iter().all(|&e| {
+            chains
+                .chain(e)
+                .windows(2)
+                .all(|w| b_.edge_exists(w[0], w[1]))
+        })
+    };
+    if !boundary_intact(b) {
+        return true; // work remains: chains first, then this facet
+    }
+
+    let [pa, pb, pc] = f.corners.map(|v| b.exact_point(v));
 
     // One cavity per detection sweep: a surgery invalidates the sweep
     // snapshot (slot reuse, new tets may pierce, components may merge), so
@@ -626,12 +729,20 @@ fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChai
         }
 
         // Piercing tets: any of the 6 edges strictly crosses the facet.
+        // Edges are shared by ~5-6 tets in the sweep; cache the exact
+        // pierce test per undirected edge so each runs once.
+        let mut edge_cache: rustc_hash::FxHashMap<(usize, usize), bool> =
+            rustc_hash::FxHashMap::default();
         let mut piercing: FxHashSet<u32> = FxHashSet::default();
         for &s in &queue {
             let Some(t) = b.tet_at(s) else { continue };
             'edges: for i in 0..4 {
                 for j in i + 1..4 {
-                    if edge_pierces_facet(b, t[i], t[j], &pa, &pb, &pc) {
+                    let key = (t[i].min(t[j]), t[i].max(t[j]));
+                    let hit = *edge_cache
+                        .entry(key)
+                        .or_insert_with(|| edge_pierces_facet(b, key.0, key.1, &pa, &pb, &pc));
+                    if hit {
                         piercing.insert(s);
                         break 'edges;
                     }
@@ -639,6 +750,9 @@ fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChai
             }
         }
         let Some(&start) = piercing.iter().min() else {
+            // Clean: remember the log position so the facet is skipped
+            // until the triangulation changes near it again.
+            *clean_pos = b.creation_log().len();
             return any;
         };
 

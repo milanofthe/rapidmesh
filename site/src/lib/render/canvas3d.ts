@@ -1,8 +1,9 @@
 /* SHARED RENDERING MODULE — DUPLICATED COPY.
- * Source of truth: rapidmesh/viewer/src/lib/render/canvas3d.ts
+ * Source of truth: rapidfem/python/python_src/rapidfem/ui/frontend-src/src/lib/render/canvas3d.ts
  * This file is copied verbatim into the mesh.rapidpassives.org showcase
- * (rapidmesh/site). The dev viewer at rapidmesh/viewer is canonical; keep
- * the two in sync if the renderer changes. Plain ES module, no SvelteKit deps.
+ * (rapidmesh/site). The rapidfem mesh-preview viewer is canonical; keep the
+ * two in sync if the renderer changes. Plain ES module, no SvelteKit deps.
+ * (Byte-identical to the rapidmesh/viewer copy — same renderer lineage.)
  */
 /**
  * Lightweight raw-WebGL2 3D renderer for FEM tetrahedral / triangulated meshes.

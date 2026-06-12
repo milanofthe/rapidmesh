@@ -1,9 +1,13 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
 
 /*
- * Global design tokens — copied verbatim from rapidmesh/viewer/src/app.css
- * (source of truth) and kept in sync with src/lib/theme.ts. Component <style>
- * blocks reference these vars; no one-off colors / sizes live in components.
+ * Global design tokens for the rapidmesh showcase. Values are the shared
+ * "rapid" family branding (rapidfem / rapidpassives): warm dark surfaces, the
+ * #d9513c lava accent, JetBrains Mono + Inter, sharp corners. Kept in sync with
+ * src/lib/theme.ts (the canvas renderer imports colors from there). Base control
+ * styles below mirror rapidfem's app.css so every control is on-brand and
+ * token-driven; component <style> blocks reference these vars only, no one-off
+ * colors / sizes / fonts live in components.
  */
 :root {
 	--bg: #131316;
@@ -56,6 +60,61 @@ body {
 	font-size: var(--fs-sm);
 	-webkit-font-smoothing: antialiased;
 	overflow: hidden;
+}
+
+/* Base controls (rapid style: sharp corners, uppercase accent buttons,
+ * inset mono inputs, muted labels). Mirrors rapidfem/app.css. */
+button {
+	background: var(--accent);
+	color: var(--bg);
+	border: none;
+	padding: 6px 14px;
+	border-radius: 0;
+	cursor: pointer;
+	font-size: var(--fs-sm);
+	font-weight: 600;
+	font-family: var(--font-body);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	transition: background var(--transition);
+}
+
+button:hover {
+	background: var(--accent-hover);
+}
+
+input[type='number'],
+input[type='text'],
+select {
+	background: var(--input-bg);
+	border: 1px solid var(--input-border);
+	color: var(--text);
+	padding: 5px 8px;
+	border-radius: 0;
+	font-size: var(--fs-sm);
+	font-family: var(--font-mono);
+	transition: border-color var(--transition);
+}
+
+input[type='number']:hover,
+input[type='text']:hover,
+select:hover {
+	border-color: var(--input-hover);
+}
+
+input[type='number']:focus,
+input[type='text']:focus,
+select:focus {
+	outline: none;
+	border-color: var(--input-focus);
+}
+
+label {
+	font-size: var(--fs-xs);
+	color: var(--text-muted);
+	display: block;
+	font-weight: 500;
+	letter-spacing: 0.2px;
 }
 
 ::-webkit-scrollbar {

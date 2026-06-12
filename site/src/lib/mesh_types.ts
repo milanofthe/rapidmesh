@@ -14,6 +14,9 @@ export interface MeshJson {
 	tets: [number, number, number, number][];
 	tet_regions: number[];
 	faces: { tri: [number, number, number]; tag: number; regions: [number, number] }[];
+	/** Feature edges (geometric creases) as vertex-index pairs. May be absent
+	 *  or empty for meshes without exported feature edges. */
+	edges?: [number, number][];
 	stats: {
 		n_points: number;
 		n_tets: number;

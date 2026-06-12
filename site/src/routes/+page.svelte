@@ -19,7 +19,9 @@
 
 	let models: ModelEntry[] = $state([]);
 	let activeIndex = $state(0);
-	let currentData: MeshJson | null = $state(null);
+	// $state.raw: mesh payloads are large (10^5 faces); deep proxying would
+	// stall the main thread for seconds on every model swap.
+	let currentData: MeshJson | null = $state.raw(null);
 	let covered = $state(true);
 	let paused = $state(false);
 
@@ -93,7 +95,10 @@
 	<div class="overlay" class:visible={covered}></div>
 
 	<header class="brand">
-		<span class="wordmark">rapidmesh</span>
+		<span class="wordmark">
+			<img class="logo" src="{base}/favicon.svg" alt="" />
+			<span class="name">rapidmesh</span>
+		</span>
 		<span class="tagline">pure-rust tet mesher</span>
 		{#if activeStats}
 			<span class="stats">
@@ -144,11 +149,25 @@
 		gap: var(--space-xs);
 		pointer-events: none;
 	}
+	/* Mirror rapidfem's brand lockup: logo mark + monospace, letter-spaced
+	   accent title (rapidfem renders its hero title in JetBrains Mono / 700 /
+	   accent with wide tracking). The name stays "rapidmesh". */
 	.wordmark {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+	}
+	.logo {
+		height: 22px;
+		width: auto;
+		display: block;
+	}
+	.name {
+		font-family: var(--font-mono);
 		font-size: var(--fs-lg);
 		font-weight: 700;
 		color: var(--accent);
-		letter-spacing: 0.3px;
+		letter-spacing: 2px;
 	}
 	.tagline {
 		font-family: var(--font-mono);

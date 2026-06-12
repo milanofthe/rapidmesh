@@ -1248,6 +1248,11 @@ fn refine_queue(
                 }
                 let cap: f64 = $cap;
                 let md2 = if cap.is_finite() { (0.2 * cap) * (0.2 * cap) } else { 0.0 };
+                // The on-facet point lands near its parent entity: start the
+                // locate walk there instead of at the previous insert.
+                if let Some(&p0) = ($parents as &[usize]).first() {
+                    builder.walk_hint_vertex(p0);
+                }
                 let admitted = builder.insert_exact_guarded(
                     Point3::pac(aa, bb, cc3, u, v),
                     md2,
@@ -1310,6 +1315,7 @@ fn refine_queue(
                         .fold(f64::INFINITY, f64::min);
                     insert_facet_point!(facet, m, &[a, b], cap);
                 } else if !point_index.contains_key(&m.map(|x| (x + 0.0).to_bits())) {
+                    builder.walk_hint_vertex(a); // midpoint lands next to a
                     let admitted = builder.insert_guarded(m, 0.0, |rem| match rem {
                         crate::delaunay::Removal::Face(f) => !tile_map.contains_key(&f),
                         crate::delaunay::Removal::Edge(a, b) => !live_pieces.contains_key(&(a, b)),
@@ -1534,12 +1540,27 @@ fn refine_queue(
             // ~0.61 lmin (equilateral), so their floor must be lower or every
             // healthy size split bails to the midpoint fallback.
             let floor2 = if quality_only { lmin2 } else { 0.25 * lmin2 };
+            // The circumcenter is near the tet being refined (oversized) or
+            // at most a few tets away (quality): walk from its slot.
+            builder.walk_hint_slot(slot);
             let admitted = builder.insert_guarded(cc, floor2, |rem| match rem {
                 crate::delaunay::Removal::Face(f) => !tile_map.contains_key(&f),
                 crate::delaunay::Removal::Edge(a, b) => !live_pieces.contains_key(&(a, b)),
             });
             if admitted.is_none() {
                 guarded_veto += 1;
+                if quality_only {
+                    // A vetoed quality candidate stays vetoed: its
+                    // circumcenter is fixed, and any neighborhood change
+                    // that could alter the verdict replaces the tet (a new
+                    // key restarts the budget). Re-attempting the same key
+                    // every round re-pays the full insertion cavity for
+                    // nothing (measured: whole refinement rounds of pure
+                    // vetos on sliver-heavy surface meshes).
+                    let mut tk = tverts;
+                    tk.sort_unstable();
+                    tried.insert(tk, QUALITY_RETRY_LIMIT + 1);
+                }
                 break 'attempt;
             }
             guarded_ok += 1;

@@ -239,6 +239,34 @@ impl DelaunayBuilder {
         panic!("point must lie inside the super-tet");
     }
 
+    /// True if the triangle (a, b, c) is currently a face of some alive tet
+    /// (public indices). Walks the star of `a`.
+    pub fn face_exists(&self, a: usize, b: usize, c: usize) -> bool {
+        let (bi, ci) = ((b + 4) as u32, (c + 4) as u32);
+        self.star_slots(a).into_iter().any(|s| {
+            let t = self.tets[s as usize];
+            t.contains(&bi) && t.contains(&ci)
+        })
+    }
+
+    /// Sets the visibility-walk start of the next [`locate`] to the given
+    /// slot (ignored if dead). Callers inserting near a known tet avoid the
+    /// long walk from wherever the previous insert happened to land.
+    pub fn walk_hint_slot(&mut self, slot: u32) {
+        if (slot as usize) < self.tets.len() && self.alive[slot as usize] {
+            self.last = slot;
+        }
+    }
+
+    /// Like [`DelaunayBuilder::walk_hint_slot`], starting near an existing
+    /// vertex (public index).
+    pub fn walk_hint_vertex(&mut self, v: usize) {
+        let s = self.vert_hint[v + 4];
+        if s != NONE && self.alive[s as usize] {
+            self.last = s;
+        }
+    }
+
     /// Visibility walk from the last touched tet, with scan fallback for
     /// degenerate walks.
     fn locate(&self, p: u32) -> u32 {

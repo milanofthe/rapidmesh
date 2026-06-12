@@ -122,6 +122,8 @@ impl SegmentChains {
         let tb = self.nodes[seg][i + 1].1;
         let tm = 0.5 * (ta + tb);
         let carrier = self.carriers[seg];
+        // The midpoint lands next to va: start the locate walk there.
+        b.walk_hint_vertex(va);
         let vm = b.insert_exact(Point3::lnc(carrier.0, carrier.1, tm));
         let (left_cat, right_cat) = child_categories(self.cats[seg][i]);
         self.nodes[seg].insert(i + 1, (vm, tm));
@@ -671,6 +673,17 @@ fn recover_one_facet(
         && b.creation_log()[tail_from..]
             .iter()
             .all(|&s| !overlaps(b, s))
+    {
+        *clean_pos = b.creation_log().len();
+        return false;
+    }
+
+    // Unsplit facet that IS a DT face: a simplicial complex admits no edge
+    // through one of its own faces, so nothing can pierce — skip the sweep.
+    // This short-circuits the dominant first-pass case (a fine input surface
+    // where most facets are already Delaunay).
+    if f.edges.iter().all(|&e| chains.chain(e).len() == 2)
+        && b.face_exists(f.corners[0], f.corners[1], f.corners[2])
     {
         *clean_pos = b.creation_log().len();
         return false;

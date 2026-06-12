@@ -7,7 +7,7 @@
 //! separate downstream decision.
 
 use crate::arrange::arrange;
-use crate::classify::{classify, Placement};
+use crate::classify::{classify, Placement, TriBoxes};
 use crate::pool::VertexPool;
 use crate::tri::Tri;
 use rapidmesh_exact::Point3;
@@ -86,12 +86,19 @@ pub fn boolean(a: &Solid, b: &Solid, op: BoolOp) -> BooleanResult {
         }
     }
 
+    // Padded per-triangle boxes (see TriBoxes; the pad absorbs the
+    // representative's approximation error).
+    let margin = 1e-6 * (0..3).map(|k| hi[k] - lo[k]).fold(1.0_f64, f64::max);
+    let a_boxes = TriBoxes::build(&a.tris, margin);
+    let b_boxes = TriBoxes::build(&b.tris, margin);
+
     let mut pool = VertexPool::default();
     let mut triangles: Vec<[usize; 3]> = Vec::new();
     let mut source_facet: Vec<usize> = Vec::new();
     for (fi, ft) in arr.facets.iter().enumerate() {
         let from_a = fi < na;
         let other: &[Tri] = if from_a { &b.tris } else { &a.tris };
+        let other_boxes = if from_a { &b_boxes } else { &a_boxes };
         for sub in &ft.triangles {
             let (p0, p1, p2) = (
                 &ft.vertices[sub[0]],
@@ -99,7 +106,10 @@ pub fn boolean(a: &Solid, b: &Solid, op: BoolOp) -> BooleanResult {
                 &ft.vertices[sub[2]],
             );
             let bary = Point3::bary(p0.clone(), p1.clone(), p2.clone());
-            let placement = classify(&bary, &all[fi], other, (lo, hi));
+            let rep = bary
+                .approx()
+                .expect("facet representative must be a valid point");
+            let placement = classify(&bary, rep, &all[fi], other, other_boxes, (lo, hi));
             let Some(flip) = keep(op, from_a, placement) else {
                 continue;
             };

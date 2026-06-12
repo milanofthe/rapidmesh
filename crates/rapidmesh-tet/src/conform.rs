@@ -802,6 +802,14 @@ fn classify_tet_regions(
     }
     let mut region_ids: Vec<u32> = region_bounds.keys().copied().collect();
     region_ids.sort_unstable();
+    // Padded per-triangle boxes per region boundary (see TriBoxes; the
+    // centroid representatives here are exact f64, the pad only guards the
+    // segment prefilter inside the parity test).
+    let margin = 1e-6 * (0..3).map(|k| bbox.1[k] - bbox.0[k]).fold(1.0_f64, f64::max);
+    let region_boxes: DMap<u32, rapidmesh_csg::TriBoxes> = region_bounds
+        .iter()
+        .map(|(&r, tris)| (r, rapidmesh_csg::TriBoxes::build(tris, margin)))
+        .collect();
 
     let mut region_of: Vec<Option<u32>> = vec![None; tets.len()];
     let mut stack: Vec<usize> = Vec::new();
@@ -818,7 +826,9 @@ fn classify_tet_regions(
         let seed_region = region_ids
             .iter()
             .copied()
-            .find(|r| point_inside_solid(&rep, &region_bounds[r], bbox))
+            .find(|r| {
+                point_inside_solid(&rep, c, &region_bounds[r], &region_boxes[r], bbox)
+            })
             .unwrap_or(0);
         region_of[seed] = Some(seed_region);
         stack.push(seed);

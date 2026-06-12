@@ -11,7 +11,7 @@
 
 use crate::faceted::{Faceted, SurfaceKind};
 use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc, SHEET_OWNER};
-use rapidmesh_csg::{arrange, classify, Placement, Tri, VertexPool};
+use rapidmesh_csg::{arrange, classify, Placement, Tri, TriBoxes, VertexPool};
 use rapidmesh_exact::Point3;
 use std::collections::{HashMap, HashSet};
 
@@ -138,6 +138,38 @@ impl Scene {
         // coincident survivors.
         let mut emitted: HashMap<[u32; 3], usize> = HashMap::new();
 
+        // Per-solid bounding boxes (exact: the input tessellations are
+        // explicit f64), padded by a fat safety margin against the
+        // representative point's approximation error (relative error
+        // ~1e-15; the margin is a million times that). A representative
+        // clearly outside a solid's padded box is outside the solid, so the
+        // ray-parity classification of most (fragment, solid) pairs
+        // collapses to three float comparisons.
+        let margin = 1e-6 * (0..3).map(|k| hi[k] - lo[k]).fold(1.0_f64, f64::max);
+        let solid_bbox: Vec<([f64; 3], [f64; 3])> = self
+            .solids
+            .iter()
+            .map(|f| {
+                let mut slo = [f64::MAX; 3];
+                let mut shi = [f64::MIN; 3];
+                for t in &f.tris {
+                    for v in &t.v {
+                        for k in 0..3 {
+                            slo[k] = slo[k].min(v[k] - margin);
+                            shi[k] = shi[k].max(v[k] + margin);
+                        }
+                    }
+                }
+                (slo, shi)
+            })
+            .collect();
+        // Padded per-triangle boxes, once per solid (see TriBoxes).
+        let solid_boxes: Vec<TriBoxes> = self
+            .solids
+            .iter()
+            .map(|f| TriBoxes::build(&f.tris, margin))
+            .collect();
+
         for (fi, ft) in arr.facets.iter().enumerate() {
             let s = &src[fi];
             for sub in &ft.triangles {
@@ -147,6 +179,9 @@ impl Scene {
                     &ft.vertices[sub[2]],
                 );
                 let bary = Point3::bary(p0.clone(), p1.clone(), p2.clone());
+                let rep = bary
+                    .approx()
+                    .expect("facet representative must be a valid point");
 
                 // Per-side region resolution, highest-priority solid first.
                 let mut front: Option<u32> = None;
@@ -161,8 +196,18 @@ impl Scene {
                         back.get_or_insert(region);
                         continue;
                     }
-                    let (in_front, in_back) =
-                        match classify(&bary, &tris[fi], &self.solids[j].tris, (lo, hi)) {
+                    let (blo, bhi) = solid_bbox[j];
+                    if (0..3).any(|k| rep[k] < blo[k] || rep[k] > bhi[k]) {
+                        continue; // clearly outside solid j
+                    }
+                    let (in_front, in_back) = match classify(
+                        &bary,
+                        rep,
+                        &tris[fi],
+                        &self.solids[j].tris,
+                        &solid_boxes[j],
+                        (lo, hi),
+                    ) {
                             Placement::Inside => (true, true),
                             Placement::Outside => (false, false),
                             // Coincident facets: j's interior lies behind j's

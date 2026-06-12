@@ -236,9 +236,12 @@ impl SceneBuilder {
         surface_maxh: Vec<(u32, f64)>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
+        let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
         // The heavy pipeline runs without the GIL.
         let (mesh, params) = py.allow_threads(|| {
+            let ta = std::time::Instant::now();
             let plc = self.scene.assemble();
+            let t_assemble = ta.elapsed();
             let params = MeshParams {
                 maxh,
                 region_maxh: self.region_maxh.clone(),
@@ -249,7 +252,9 @@ impl SceneBuilder {
                 surface_maxh,
                 size_points,
             };
+            let tm = std::time::Instant::now();
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
+            let t_mesh = tm.elapsed();
             let opt = OptimizeParams {
                 maxh: params.maxh,
                 region_maxh: params.region_maxh.clone(),
@@ -257,7 +262,17 @@ impl SceneBuilder {
                 surface_maxh: params.surface_maxh.clone(),
                 ..OptimizeParams::default()
             };
+            let to = std::time::Instant::now();
             optimize(&mut mesh, &opt);
+            if timing {
+                eprintln!(
+                    "stages: assemble {:?} ({} plc facets), mesh {:?}, optimize {:?}",
+                    t_assemble,
+                    plc.triangles.len(),
+                    t_mesh,
+                    to.elapsed(),
+                );
+            }
             (mesh, params)
         });
         let _ = params;

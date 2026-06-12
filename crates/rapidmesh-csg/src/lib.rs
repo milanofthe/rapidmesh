@@ -22,7 +22,7 @@ pub mod triangulate;
 
 pub use arrange::{arrange, Arrangement};
 pub use boolean::{boolean, BoolOp, BooleanResult, Solid};
-pub use classify::{classify, Placement};
+pub use classify::{classify, Placement, TriBoxes};
 pub use constraint::{Constraint, ConstraintLine};
 pub use pool::VertexPool;
 pub use tri::Tri;

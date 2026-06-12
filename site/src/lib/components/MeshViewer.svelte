@@ -1772,8 +1772,8 @@
 	</div>
 
 	<div class="hud">
-		<span class="coord">x {(cursor_world.x * 1e6).toFixed(1)} µm</span>
-		<span class="coord">y {(cursor_world.y * 1e6).toFixed(1)} µm</span>
+		<!-- SHOWCASE CHANGE: no cursor x/y readout (rapidfem's µm coordinates
+		     are meaningless for the unitless showcase models). -->
 		{#if mesh}
 			<span class="coord stats">{(mesh.nodes.length / 3) | 0}n · {(mesh.tris.length / 3) | 0}t · {(mesh.tets.length / 4) | 0}T</span>
 		{/if}

@@ -5,8 +5,8 @@
    "name": "Spur Gear",
    "file": "meshes/gear.json",
    "stats": {
-    "n_tets": 9833,
-    "n_points": 2903,
+    "n_tets": 9926,
+    "n_points": 2912,
     "min_dihedral_deg": 9.0
    }
   },
@@ -15,9 +15,9 @@
    "name": "Dice",
    "file": "meshes/dice.json",
    "stats": {
-    "n_tets": 25170,
-    "n_points": 8912,
-    "min_dihedral_deg": 5.7
+    "n_tets": 25227,
+    "n_points": 8954,
+    "min_dihedral_deg": 4.8
    }
   },
   {
@@ -25,9 +25,59 @@
    "name": "Ball Bearing",
    "file": "meshes/bearing.json",
    "stats": {
-    "n_tets": 20637,
-    "n_points": 5952,
-    "min_dihedral_deg": 12.1
+    "n_tets": 20654,
+    "n_points": 5933,
+    "min_dihedral_deg": 7.1
+   }
+  },
+  {
+   "id": "bracket",
+   "name": "Corner Bracket",
+   "file": "meshes/bracket.json",
+   "stats": {
+    "n_tets": 21976,
+    "n_points": 7343,
+    "min_dihedral_deg": 2.1
+   }
+  },
+  {
+   "id": "counterbore_plate",
+   "name": "Counterbore Plate",
+   "file": "meshes/counterbore_plate.json",
+   "stats": {
+    "n_tets": 19691,
+    "n_points": 6168,
+    "min_dihedral_deg": 0.6
+   }
+  },
+  {
+   "id": "lattice_cube",
+   "name": "Lattice Cube",
+   "file": "meshes/lattice_cube.json",
+   "stats": {
+    "n_tets": 38811,
+    "n_points": 11282,
+    "min_dihedral_deg": 0.2
+   }
+  },
+  {
+   "id": "orbs",
+   "name": "Molecule",
+   "file": "meshes/orbs.json",
+   "stats": {
+    "n_tets": 15515,
+    "n_points": 4196,
+    "min_dihedral_deg": 0.2
+   }
+  },
+  {
+   "id": "rocket",
+   "name": "Rocket",
+   "file": "meshes/rocket.json",
+   "stats": {
+    "n_tets": 15734,
+    "n_points": 4129,
+    "min_dihedral_deg": 0.6
    }
   },
   {
@@ -36,8 +86,8 @@
    "file": "meshes/chain.json",
    "stats": {
     "n_tets": 14854,
-    "n_points": 4373,
-    "min_dihedral_deg": 8.4
+    "n_points": 4374,
+    "min_dihedral_deg": 8.8
    }
   },
   {
@@ -45,8 +95,8 @@
    "name": "Coil Spring",
    "file": "meshes/spring.json",
    "stats": {
-    "n_tets": 26009,
-    "n_points": 8092,
+    "n_tets": 26005,
+    "n_points": 8091,
     "min_dihedral_deg": 14.4
    }
   },
@@ -55,9 +105,69 @@
    "name": "Serpentine Pipe",
    "file": "meshes/serpentine.json",
    "stats": {
-    "n_tets": 11305,
-    "n_points": 3685,
+    "n_tets": 11351,
+    "n_points": 3686,
     "min_dihedral_deg": 0.0
+   }
+  },
+  {
+   "id": "perforated_plate",
+   "name": "Perforated Plate",
+   "file": "meshes/perforated_plate.json",
+   "stats": {
+    "n_tets": 47288,
+    "n_points": 18452,
+    "min_dihedral_deg": 3.7
+   }
+  },
+  {
+   "id": "mold_block",
+   "name": "Cavity Sampler",
+   "file": "meshes/mold_block.json",
+   "stats": {
+    "n_tets": 31852,
+    "n_points": 7907,
+    "min_dihedral_deg": 0.6
+   }
+  },
+  {
+   "id": "sizing_field",
+   "name": "Sizing Field",
+   "file": "meshes/sizing_field.json",
+   "stats": {
+    "n_tets": 2815,
+    "n_points": 678,
+    "min_dihedral_deg": 18.9
+   }
+  },
+  {
+   "id": "baffled_tank",
+   "name": "Baffled Tank",
+   "file": "meshes/baffled_tank.json",
+   "stats": {
+    "n_tets": 8426,
+    "n_points": 1839,
+    "min_dihedral_deg": 19.5
+   }
+  },
+  {
+   "id": "laminate",
+   "name": "Graded Laminate",
+   "file": "meshes/laminate.json",
+   "stats": {
+    "n_tets": 32216,
+    "n_points": 6636,
+    "min_dihedral_deg": 0.0
+   }
+  },
+  {
+   "id": "coax_step",
+   "name": "Coax Step",
+   "file": "meshes/coax_step.json",
+   "stats": {
+    "n_tets": 2930,
+    "n_points": 847,
+    "min_dihedral_deg": 6.3
    }
   },
   {
@@ -65,9 +175,9 @@
    "name": "Microstrip",
    "file": "meshes/microstrip.json",
    "stats": {
-    "n_tets": 9134,
-    "n_points": 2101,
-    "min_dihedral_deg": 17.4
+    "n_tets": 2330,
+    "n_points": 587,
+    "min_dihedral_deg": 4.5
    }
   }
  ]

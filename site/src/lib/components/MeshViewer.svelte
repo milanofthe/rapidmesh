@@ -9,7 +9,7 @@
 	import { buildTriSoupF64 } from '$lib/render/mesh_scene';
 	import type { MeshData } from '$lib/msh';
 	import type { TdTrajectoryPayload } from '$lib/api';
-	import { palette, canvas as canvasTheme } from '$lib/theme';
+	import { palette, canvas as canvasTheme, plotColors } from '$lib/theme';
 	import { viz_load_mesh, viz_sample, viz_sample_static, viz_eval_static } from '$lib/api';
 	// SHOWCASE SEAM: orbit speed constant of the showcase shell.
 	import { ORBIT_SPEED } from '$lib/constants';
@@ -365,11 +365,12 @@
 
 	function color_for(kind: Kind, name: string): [number, number, number] {
 		const b = base(name);
-		// SHOWCASE CHANGE: distinct hue per region (general-purpose meshes).
+		// SHOWCASE CHANGE: regions use the rapidmesh standard color cycle
+		// (the dev viewer's plotColors), one hue per region.
 		if (b === 'region') {
 			const m = name.match(/_(\d+)$/);
-			const idx = m ? Math.max(0, parseInt(m[1], 10) - 1) : 0;
-			return hex(DIELECTRIC_CYCLE[idx % DIELECTRIC_CYCLE.length]);
+			const idx = m ? Math.max(0, parseInt(m[1], 10)) : 0;
+			return hex(plotColors.cycle[idx % plotColors.cycle.length]);
 		}
 		// Materials get type-specific colors regardless of kind classification.
 		if (b === 'air') return hex('#5a5a62');                   // neutral gray
@@ -661,12 +662,39 @@
 				sorted_idx[i*3+2] = idx[t*3+2];
 				vals[i] = (np[idx[t*3]*3+axis] + np[idx[t*3+1]*3+axis] + np[idx[t*3+2]*3+axis]) / 3;
 			}
-			const kind_offset: [number, number] | undefined = kind === 'dielectric' ? [2, 2] : undefined;
-			const pm_idx = state.meshes.length;
-			prefix_meshes.push({ idx: pm_idx, line: false, vals, vpu: 3, full_count: ntri * 3 });
-			const { positions, normals } = buildTriSoupF64(np, sorted_idx);
-			addMesh(state, positions, normals, color_for(kind, name), vtag, kind_offset);
+			// SHOWCASE CHANGE: hulls feed only the surface wireframe; the
+			// fills come from the per-tet pass below (dev-viewer look).
+			void vals;
 			for (const v of sorted_idx) hull_wire_tris.push(v);
+		}
+
+		// SHOWCASE CHANGE: "Tets" renders the individual tetrahedra (all four
+		// faces of every tet, grouped per region and clip-sorted by tet
+		// centroid), exactly like the rapidmesh standalone dev viewer.
+		{
+			const by_region = new Map<number, number[]>();
+			for (let ti = 0; ti < nt; ti++) {
+				const r = m.tet_phys[ti];
+				let arr = by_region.get(r);
+				if (!arr) { arr = []; by_region.set(r, arr); }
+				arr.push(ti);
+			}
+			for (const [r, tis] of by_region) {
+				const name = m.phys_names.get(r) ?? '';
+				const kind = classify(name);
+				if (!kind) continue;
+				tis.sort((a, b) => tet_cv(a) - tet_cv(b));
+				const flat: number[] = [];
+				for (const ti of tis) {
+					const t0 = m.tets[ti*4], t1 = m.tets[ti*4+1], t2 = m.tets[ti*4+2], t3 = m.tets[ti*4+3];
+					flat.push(t1, t3, t2,  t0, t2, t3,  t0, t3, t1,  t0, t1, t2);
+				}
+				const pm_idx = state.meshes.length;
+				const vals = Float64Array.from(tis, (ti) => tet_cv(ti));
+				prefix_meshes.push({ idx: pm_idx, line: false, vals, vpu: 12, full_count: tis.length * 12 });
+				const { positions, normals } = buildTriSoupF64(np, flat);
+				addMesh(state, positions, normals, color_for(kind, name), r);
+			}
 		}
 
 		// ---- Surface wireframe: edges from explicit surface tris, sorted by min face centroid ----
@@ -1639,12 +1667,14 @@
 
 	.overlay-stack {
 		position: absolute;
-		top: 10px;
+		/* SHOWCASE CHANGE: pushed below the shell's brand block (top-left
+		   wordmark + stats), which occupies roughly the first 100px. */
+		top: 110px;
 		left: 10px;
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		max-height: calc(100% - 20px);
+		max-height: calc(100% - 120px);
 	}
 	.overlay-panel {
 		background: var(--bg-surface);
@@ -1716,6 +1746,11 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
+		/* SHOWCASE CHANGE: label buttons size to their content instead of
+		   the square 28px icon width (labels were getting clipped). */
+		width: auto;
+		min-width: 28px;
+		padding: 0 10px;
 	}
 	.tb.tb-label.active {
 		color: var(--accent);
@@ -1835,11 +1870,17 @@
 
 	/* Crinkle clip slider row: full-width so it wraps to its own line in the
 	   flex-wrap toolbar. The range input fills the available width. */
+	/* SHOWCASE CHANGE: the showcase toolbar spans the viewport top, so the
+	   slider gets a fixed compact width and sits inline with the buttons
+	   (squared, token-styled track) instead of stretching to 100%. */
 	.clip-row {
-		width: 100%;
+		width: 160px;
 		display: flex;
 		align-items: center;
-		padding: 2px 0 0;
+		height: 28px;
+		padding: 0 8px;
+		border: 1px solid var(--border);
+		background: var(--bg-surface);
 	}
 	.clip-slider {
 		width: 100%;

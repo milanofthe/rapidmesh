@@ -66,8 +66,6 @@
 		if (i !== activeIndex) void transitionTo(i);
 	}
 
-	const activeStats = $derived(models[activeIndex]?.stats);
-
 	onMount(() => {
 		void (async () => {
 			const resp = await fetch(`${base}/meshes/manifest.json`);
@@ -103,12 +101,6 @@
 			<span class="name">rapidmesh</span>
 		</span>
 		<span class="tagline">pure-rust tet mesher</span>
-		{#if activeStats}
-			<span class="stats">
-				{activeStats.n_tets.toLocaleString()} tets · {activeStats.n_points.toLocaleString()} points ·
-				{activeStats.min_dihedral_deg.toFixed(1)}° min dihedral
-			</span>
-		{/if}
 	</header>
 
 	<nav class="tabs">
@@ -181,13 +173,6 @@
 		letter-spacing: 1.5px;
 		color: var(--text-dim);
 	}
-	.stats {
-		margin-top: var(--space-md);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-	}
-
 	.tabs {
 		position: absolute;
 		bottom: 0;
@@ -199,7 +184,6 @@
 		gap: 1px;
 		padding: var(--space-md);
 		justify-content: center;
-		background: linear-gradient(to top, var(--bg), transparent);
 	}
 	.tab {
 		background: var(--bg-surface);

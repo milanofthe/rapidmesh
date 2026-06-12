@@ -543,12 +543,27 @@ pub fn recover_faces(
 
 /// Detects piercing edges of one facet and retetrahedrizes their cavities.
 fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChains) -> bool {
+    // Precondition of the straddle-impossibility argument: the facet's OWN
+    // boundary chains must currently be DT edges (the cross-section proof
+    // rests on the boundary not passing through tet interiors). Surgery for
+    // an earlier facet may have knocked a piece out; defer this facet to
+    // the next pass (the caller alternates with resume_segments).
+    let boundary_intact = |b_: &DelaunayBuilder| -> bool {
+        f.edges.iter().all(|&e| {
+            chains
+                .chain(e)
+                .windows(2)
+                .all(|w| b_.edge_exists(w[0], w[1]))
+        })
+    };
+    if !boundary_intact(b) {
+        return true; // work remains: chains first, then this facet
+    }
+
     let [pa, pb, pc] = f.corners.map(|v| b.exact_point(v));
 
-    // Candidate sweep: BFS over real tets from the stars of the facet's
-    // boundary vertices, bounded by a conservative bbox overlap (the tets
-    // intersecting the convex facet region are face-connected and all pass
-    // the bbox test, so none is missed).
+    // Fixed sweep bbox from the facet's boundary vertices (their positions
+    // never change during recovery).
     let mut bb_lo = [f64::MAX; 3];
     let mut bb_hi = [f64::MIN; 3];
     let mut seeds: Vec<usize> = f.corners.to_vec();
@@ -578,66 +593,81 @@ fn recover_one_facet(b: &mut DelaunayBuilder, f: &FacetRef, chains: &SegmentChai
         (0..3).all(|k| lo[k] <= bb_hi[k] + pad && hi[k] >= bb_lo[k] - pad)
     };
 
-    let mut seen: FxHashSet<u32> = FxHashSet::default();
-    let mut queue: Vec<u32> = Vec::new();
-    for &v in &seeds {
-        for s in b.star_slots(v) {
-            if b.tet_at(s).is_some() && seen.insert(s) {
-                queue.push(s);
-            }
-        }
-    }
-    let mut head = 0;
-    while head < queue.len() {
-        let s = queue[head];
-        head += 1;
-        for k in 0..4 {
-            if let Some(nb) = b.neighbor_at(s, k) {
-                if !seen.contains(&nb) && overlaps(b, nb) {
-                    seen.insert(nb);
-                    queue.push(nb);
+    // One cavity per detection sweep: a surgery invalidates the sweep
+    // snapshot (slot reuse, new tets may pierce, components may merge), so
+    // re-scan from scratch before every cavity.
+    let mut any = false;
+    loop {
+        // Candidate sweep: BFS over real tets from the stars of the facet's
+        // boundary vertices, bounded by a conservative bbox overlap (the
+        // tets intersecting the convex facet region are face-connected and
+        // all pass the bbox test, so none is missed).
+        let mut seen: FxHashSet<u32> = FxHashSet::default();
+        let mut queue: Vec<u32> = Vec::new();
+        for &v in &seeds {
+            for s in b.star_slots(v) {
+                if b.tet_at(s).is_some() && seen.insert(s) {
+                    queue.push(s);
                 }
             }
         }
-    }
-
-    // Piercing tets: any of the 6 edges strictly crosses the facet region.
-    let mut piercing: FxHashSet<u32> = FxHashSet::default();
-    for &s in &queue {
-        let Some(t) = b.tet_at(s) else { continue };
-        'edges: for i in 0..4 {
-            for j in i + 1..4 {
-                if edge_pierces_facet(b, t[i], t[j], &pa, &pb, &pc) {
-                    piercing.insert(s);
-                    break 'edges;
+        let mut head = 0;
+        while head < queue.len() {
+            let s = queue[head];
+            head += 1;
+            for k in 0..4 {
+                if let Some(nb) = b.neighbor_at(s, k) {
+                    if !seen.contains(&nb) && overlaps(b, nb) {
+                        seen.insert(nb);
+                        queue.push(nb);
+                    }
                 }
             }
         }
-    }
-    if piercing.is_empty() {
-        return false;
-    }
 
-    // Face-connected components of the piercing set; retetrahedrize each.
-    let mut remaining: FxHashSet<u32> = piercing.clone();
-    while let Some(&start) = remaining.iter().next() {
+        // Piercing tets: any of the 6 edges strictly crosses the facet.
+        let mut piercing: FxHashSet<u32> = FxHashSet::default();
+        for &s in &queue {
+            let Some(t) = b.tet_at(s) else { continue };
+            'edges: for i in 0..4 {
+                for j in i + 1..4 {
+                    if edge_pierces_facet(b, t[i], t[j], &pa, &pb, &pc) {
+                        piercing.insert(s);
+                        break 'edges;
+                    }
+                }
+            }
+        }
+        let Some(&start) = piercing.iter().min() else {
+            return any;
+        };
+
+        // The face-connected component of the smallest piercing slot
+        // (deterministic pick; the rest re-detects next iteration).
         let mut comp = vec![start];
-        remaining.remove(&start);
+        let mut in_comp: FxHashSet<u32> = FxHashSet::default();
+        in_comp.insert(start);
         let mut h = 0;
         while h < comp.len() {
             let s = comp[h];
             h += 1;
             for k in 0..4 {
                 if let Some(nb) = b.neighbor_at(s, k) {
-                    if remaining.remove(&nb) {
+                    if piercing.contains(&nb) && in_comp.insert(nb) {
                         comp.push(nb);
                     }
                 }
             }
         }
         retet_cavity(b, &comp, &pa, &pb, &pc);
+        any = true;
+
+        // The surgery itself can knock out a piece of this facet's own
+        // boundary; restore the precondition before scanning again.
+        if !boundary_intact(b) {
+            return true;
+        }
     }
-    true
 }
 
 /// True if the open edge (u, v) strictly crosses the open facet region:
@@ -701,10 +731,25 @@ fn retet_cavity(b: &mut DelaunayBuilder, comp: &[u32], pa: &Point3, pb: &Point3,
             let f = oriented_face(t, i);
             let has_pos = f.iter().any(|v| side[v] == Sign::Positive);
             let has_neg = f.iter().any(|v| side[v] == Sign::Negative);
-            assert!(
-                !(has_pos && has_neg),
-                "cavity boundary face straddles the facet plane",
-            );
+            if has_pos && has_neg {
+                // Diagnose before dying: is the outside neighbor secretly a
+                // piercing tet the sweep failed to collect?
+                let nb = b.neighbor_at(s, i);
+                let nb_state = nb.map(|n| {
+                    let nt = b.tet_at(n);
+                    let nb_pierces = nt.is_some_and(|t| {
+                        (0..4).any(|x| {
+                            (x + 1..4).any(|y| edge_pierces_facet(b, t[x], t[y], pa, pb, pc))
+                        })
+                    });
+                    (n, nt, nb_pierces)
+                });
+                panic!(
+                    "cavity boundary face straddles the facet plane: face {f:?} \
+                     signs {:?} of tet {t:?}, outside neighbor {nb_state:?}",
+                    f.map(|v| side[&v]),
+                );
+            }
             assert!(
                 has_pos || has_neg,
                 "cavity tet has a face entirely on the facet plane",

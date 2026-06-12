@@ -92,6 +92,39 @@ impl SegmentChains {
     pub fn chain(&self, seg: usize) -> Vec<usize> {
         self.nodes[seg].iter().map(|&(v, _)| v).collect()
     }
+
+    /// Splits the chain piece between the consecutive vertices `va` and `vb`
+    /// of segment `seg` at its carrier-parameter midpoint, inserting an exact
+    /// on-carrier Steiner point. The insert is UNGUARDED (like the recovery
+    /// midpoint split): a refinement-era split may knock another constraint
+    /// out of the DT, which the caller's next recovery pass re-establishes.
+    /// Returns the new builder vertex, or `None` if `va`/`vb` are no longer a
+    /// consecutive pair (the piece was already split). Mirrors the child
+    /// category inheritance of [`resume_segments`].
+    pub(crate) fn split_piece_mid(
+        &mut self,
+        b: &mut DelaunayBuilder,
+        seg: usize,
+        va: usize,
+        vb: usize,
+    ) -> Option<usize> {
+        let i = (0..self.nodes[seg].len().saturating_sub(1)).find(|&i| {
+            let x = self.nodes[seg][i].0;
+            let y = self.nodes[seg][i + 1].0;
+            (x == va && y == vb) || (x == vb && y == va)
+        })?;
+        let ta = self.nodes[seg][i].1;
+        let tb = self.nodes[seg][i + 1].1;
+        let tm = 0.5 * (ta + tb);
+        let carrier = self.carriers[seg];
+        let vm = b.insert_exact(Point3::lnc(carrier.0, carrier.1, tm));
+        let (left_cat, right_cat) = child_categories(self.cats[seg][i]);
+        self.nodes[seg].insert(i + 1, (vm, tm));
+        self.cats[seg][i] = left_cat;
+        self.cats[seg].insert(i + 1, right_cat);
+        self.splits[seg] += 1;
+        Some(vm)
+    }
 }
 
 /// Acute-vertex classification: a vertex is acute when two incident segments

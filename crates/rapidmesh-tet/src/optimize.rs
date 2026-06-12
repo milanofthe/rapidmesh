@@ -520,19 +520,36 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             // the local budget (unless it already was longer): smoothing
             // was the one operation without the edge gate, and chains of
             // moves walked edges past the documented 1.5 h bound.
+            //
+            // The gate is PER EDGE and PER REGION, not a global cavity max:
+            // a vertex on a region interface is incident to tets of several
+            // regions, and edge (v, w) must respect the TIGHTEST budget of
+            // the tets that share it (the finer region). A global new/old
+            // cavity max launders a long coarse-region edge (e.g. a 2 h air
+            // edge) into the bar for a fine-region edge (a 0.5 h dielectric
+            // edge), walking it past its 1.5 h bound. This mirrors the
+            // collapse path's airtight per-edge gate and the documented
+            // "interfaces follow the finer region" contract.
             {
-                let budget2 = edge_budget2(mesh.tet_regions[inc[0] as usize]);
-                let mut old_lmax2 = 0.0f64;
-                let mut new_lmax2 = 0.0f64;
+                let mut blocked = false;
                 for &w in &nbrs {
+                    let mut budget2 = f64::INFINITY;
+                    for &ti in &inc {
+                        if mesh.tets[ti as usize].contains(&w) {
+                            budget2 =
+                                budget2.min(edge_budget2(mesh.tet_regions[ti as usize]));
+                        }
+                    }
                     let dw_old: f64 =
                         (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
                     let dw_new: f64 =
                         (0..3).map(|k| (mesh.points[w][k] - avg[k]).powi(2)).sum();
-                    old_lmax2 = old_lmax2.max(dw_old);
-                    new_lmax2 = new_lmax2.max(dw_new);
+                    if dw_new > dw_old.max(budget2) {
+                        blocked = true;
+                        break;
+                    }
                 }
-                if new_lmax2 > old_lmax2.max(budget2) {
+                if blocked {
                     continue;
                 }
             }
@@ -2588,33 +2605,50 @@ fn surface_pass(
                 // in-plane slide stretches the VOLUME edges behind the
                 // surface too, and gating only the surface ring let those
                 // creep past the budget.
-                let mut budget2 = f64::INFINITY;
+                //
+                // PER EDGE and PER REGION (not a global cavity max): a vertex
+                // on a region interface neighbors tets of several regions, and
+                // edge (v, w) must respect the TIGHTEST budget of the tets and
+                // faces that share it. A global new/old max launders a long
+                // coarse-region edge (e.g. a 2 h air edge) into the bar for a
+                // fine-region edge (a 0.5 h dielectric edge), letting a chain
+                // of in-plane slides walk it past its 1.5 h bound.
                 let mut tet_nbrs: Vec<usize> = Vec::new();
                 for &ti in &inc_v {
-                    budget2 = budget2.min(edge_budget2(mesh.tet_regions[ti]));
                     for &w in &mesh.tets[ti] {
                         if w != v {
                             tet_nbrs.push(w);
                         }
                     }
                 }
-                for &fi in &vfs {
-                    budget2 =
-                        budget2.min(face_budget2(mesh.faces[fi].face_tag, mesh.faces[fi].surface));
-                }
                 tet_nbrs.sort_unstable();
                 tet_nbrs.dedup();
-                let mut old_lmax2 = 0.0f64;
-                let mut new_lmax2 = 0.0f64;
+                let mut blocked = false;
                 for &w in &tet_nbrs {
+                    let mut budget2 = f64::INFINITY;
+                    for &ti in &inc_v {
+                        if mesh.tets[ti].contains(&w) {
+                            budget2 = budget2.min(edge_budget2(mesh.tet_regions[ti]));
+                        }
+                    }
+                    for &fi in &vfs {
+                        if mesh.faces[fi].tri.contains(&w) {
+                            budget2 = budget2.min(face_budget2(
+                                mesh.faces[fi].face_tag,
+                                mesh.faces[fi].surface,
+                            ));
+                        }
+                    }
                     let dw_old: f64 =
                         (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum();
                     let dw_new: f64 =
                         (0..3).map(|k| (mesh.points[w][k] - target[k]).powi(2)).sum();
-                    old_lmax2 = old_lmax2.max(dw_old);
-                    new_lmax2 = new_lmax2.max(dw_new);
+                    if dw_new > dw_old.max(budget2) {
+                        blocked = true;
+                        break;
+                    }
                 }
-                if new_lmax2 > old_lmax2.max(budget2) {
+                if blocked {
                     continue;
                 }
             }

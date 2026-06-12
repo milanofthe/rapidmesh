@@ -13,7 +13,20 @@ use crate::faceted::{Faceted, SurfaceKind};
 use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc, SHEET_OWNER};
 use rapidmesh_csg::{arrange, classify, Placement, Tri, VertexPool};
 use rapidmesh_exact::Point3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Relative (to the scene bounding-box diagonal) tolerance for welding f64
+/// twins during scene assembly: exact constructions land within an ulp or two
+/// of the input vertices they conceptually equal, and sub-tolerance twins
+/// create crease chains the Delaunay can never hold apart. The same epsilon
+/// gates the post-weld T-junction repair (so the two stages agree on what
+/// "coincident" means).
+const WELD_REL_TOL: f64 = 1e-12;
+
+/// T-junction repair rounds (each round splits every edge that currently has
+/// an off-corner vertex on it) before the pass declares divergence. A handful
+/// suffices for real geometry; this is a loud backstop, not a silent abandon.
+const MAX_REPAIR_ROUNDS: usize = 64;
 
 /// A scene of material solids and embedded sheets.
 #[derive(Default)]
@@ -226,7 +239,7 @@ impl Scene {
         fn bhi_w(raw: &[[f64; 3]], k: usize) -> f64 {
             raw.iter().map(|q| q[k]).fold(f64::MIN, f64::max)
         }
-        let tol = 1e-12 * diag.max(f64::MIN_POSITIVE);
+        let tol = WELD_REL_TOL * diag.max(f64::MIN_POSITIVE);
         let cell = 2.0 * tol;
         let cell_of = |q: &[f64; 3]| -> [i64; 3] {
             std::array::from_fn(|k| (q[k] / cell).floor() as i64)
@@ -314,6 +327,28 @@ impl Scene {
             out_surface_refs.push(surface_refs[i]);
             out_region_tags.push(region_tags[i]);
         }
+
+        // ------------------------------------------- T-junction repair
+        // Welding rounds DISTINCT exact crossings onto the same f64 vertex,
+        // which can leave a vertex sitting in the interior of another facet's
+        // boundary edge (an approximate T-junction): exactly coplanar with the
+        // facet, but ~1e-9 off the edge's carrier LINE. The CDT recovery
+        // downstream needs a combinatorially valid PLC (no vertex inside a
+        // segment or facet), and adopts only EXACTLY collinear vertices. So we
+        // make every such corner explicit here: split the straddled facet at
+        // the vertex, turning the micro-kink into two exact straight segments
+        // that meet at the (now shared) vertex. After this pass every
+        // near-on-edge vertex is a genuine triangle corner of both incident
+        // triangles, the input model the CDT assumes.
+        repair_t_junctions(
+            &vertices,
+            &mut out_triangles,
+            &mut out_face_tags,
+            &mut out_surface_refs,
+            &mut out_region_tags,
+            tol,
+        );
+
         TaggedPlc {
             vertices,
             triangles: out_triangles,
@@ -323,5 +358,315 @@ impl Scene {
             surfaces,
             surface_owners,
         }
+    }
+}
+
+/// Makes approximate T-junctions explicit on the welded triangle soup: every
+/// vertex sitting in the interior of a triangle edge (within the weld
+/// tolerance of the OPEN segment) becomes a shared corner of both incident
+/// triangles by splitting that edge across every triangle that carries it.
+///
+/// Why this exists: the CDT boundary recovery downstream assumes a
+/// combinatorially valid PLC (no vertex in a segment or facet interior).
+/// Welding distinct exact crossings onto one f64 vertex can violate that: a
+/// vertex ends up exactly coplanar with a facet yet a hair off its boundary
+/// edge's carrier line. Recovery cannot fuzzily adopt such a vertex without
+/// kinking the boundary chain in-plane while the facet region stays the exact
+/// straight triangle (which breaks face recovery's straddle-impossibility
+/// argument). Splitting the facet here turns the micro-kink into two exact
+/// straight segments meeting at the now shared vertex, so recovery only ever
+/// sees exactly-collinear chain vertices.
+///
+/// Per-triangle attributes are duplicated onto the split children. The pass
+/// iterates to a fixpoint (a split makes a new edge other vertices may sit
+/// on) and is deterministic (candidates are sorted before they are applied).
+fn repair_t_junctions(
+    vertices: &[[f64; 3]],
+    triangles: &mut Vec<[u32; 3]>,
+    face_tags: &mut Vec<FaceTag>,
+    surface_refs: &mut Vec<SurfaceRef>,
+    region_tags: &mut Vec<[RegionTag; 2]>,
+    tol: f64,
+) {
+    for round in 0.. {
+        assert!(
+            round < MAX_REPAIR_ROUNDS,
+            "T-junction repair did not converge in {MAX_REPAIR_ROUNDS} rounds",
+        );
+
+        // Unique undirected edges of the current soup, in a spatial grid for
+        // the vertex-near-edge search (so it is not O(V*E) on big scenes).
+        let mut edge_set: HashSet<(u32, u32)> = HashSet::default();
+        for t in triangles.iter() {
+            for e in 0..3 {
+                let (x, y) = (t[e], t[(e + 1) % 3]);
+                edge_set.insert((x.min(y), x.max(y)));
+            }
+        }
+        let mut edges: Vec<(u32, u32)> = edge_set.into_iter().collect();
+        edges.sort_unstable();
+        let grid = EdgeGrid::build(vertices, edges);
+
+        // Candidate vertices per canonical edge `(a, b)` with `a < b`: every
+        // vertex on the open segment that is not an endpoint. An edge can
+        // carry many collinear vertices (a long edge crossed by a fence of
+        // T-junctions); they are ALL subdivided in this one round, ordered
+        // along the edge, so convergence does not depend on how many sit on a
+        // single edge.
+        let mut edge_verts: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        let mut buf: Vec<u32> = Vec::new();
+        for v in 0..vertices.len() as u32 {
+            grid.edges_near(vertices[v as usize], &mut buf);
+            for &ei in &buf {
+                let (a, b) = grid.edges[ei as usize];
+                if v == a || v == b {
+                    continue;
+                }
+                if on_open_segment(
+                    vertices[a as usize],
+                    vertices[b as usize],
+                    vertices[v as usize],
+                    tol,
+                ) {
+                    edge_verts.entry((a, b)).or_default().push(v);
+                }
+            }
+        }
+        if edge_verts.is_empty() {
+            break;
+        }
+        // Order each edge's vertices along a -> b (parameter, then index for
+        // determinism) so the subdivided chain is monotone.
+        for (&(a, b), vs) in edge_verts.iter_mut() {
+            let (pa, pb) = (vertices[a as usize], vertices[b as usize]);
+            let d: [f64; 3] = std::array::from_fn(|k| pb[k] - pa[k]);
+            let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            let param = |w: u32| -> f64 {
+                let p = vertices[w as usize];
+                (0..3).map(|k| (p[k] - pa[k]) * d[k]).sum::<f64>() / len2
+            };
+            vs.sort_by(|&x, &y| param(x).total_cmp(&param(y)).then(x.cmp(&y)));
+            vs.dedup();
+        }
+
+        // Build edge -> incident triangle indices for application.
+        let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (ti, t) in triangles.iter().enumerate() {
+            for e in 0..3 {
+                let (x, y) = (t[e], t[(e + 1) % 3]);
+                edge_tris.entry((x.min(y), x.max(y))).or_default().push(ti);
+            }
+        }
+
+        // Apply edges in deterministic order. A triangle is split at most once
+        // per round (its three edges may all be loaded, but a fan split bakes
+        // in one edge at a time); an edge whose triangles are already consumed
+        // is deferred to the next round, where its edge survives in a child
+        // and is re-found. The first edge in order never conflicts, so every
+        // round makes progress.
+        //
+        // A loaded edge can also cap a degenerate sliver: an incident triangle
+        // (a, b, x) whose apex x is itself one of the on-edge vertices (the
+        // three corners are then collinear within the tolerance, a near
+        // zero-area sliver that survived the exact-zero cull by a last-ulp
+        // wobble off the line). Such a sliver cannot be fanned (the fan would
+        // be degenerate); it is DROPPED instead. The other (non-degenerate)
+        // incident triangle's fan reproduces the sliver's two base edges, so
+        // the surface stays watertight, provided the cap vertex is the sole
+        // subdivision point of the edge (then a-x and x-b are exactly the two
+        // chain edges). A multi-vertex cap is an unhandled degenerate cluster.
+        let mut edges_sorted: Vec<(u32, u32)> = edge_verts.keys().copied().collect();
+        edges_sorted.sort_unstable();
+        let mut consumed: HashSet<usize> = HashSet::default();
+        let mut children: HashMap<usize, Vec<[u32; 3]>> = HashMap::new();
+        for e in &edges_sorted {
+            let vs = &edge_verts[e];
+            let Some(tlist) = edge_tris.get(e) else {
+                continue;
+            };
+            if tlist.iter().any(|&ti| consumed.contains(&ti)) {
+                continue; // a child carries this edge into the next round
+            }
+            let is_sliver = |ti: usize| vs.iter().any(|w| triangles[ti].contains(w));
+            if tlist.iter().any(|&ti| is_sliver(ti)) {
+                assert!(
+                    vs.len() == 1,
+                    "cap sliver on edge {e:?} with multiple subdivision vertices {vs:?}",
+                );
+                assert!(
+                    tlist.iter().any(|&ti| !is_sliver(ti)),
+                    "edge {e:?} caps only slivers; no triangle reproduces its base edges",
+                );
+            }
+            for &ti in tlist {
+                consumed.insert(ti);
+                if is_sliver(ti) {
+                    children.insert(ti, Vec::new()); // drop the degenerate cap
+                } else {
+                    children.insert(ti, split_tri_chain(triangles[ti], e.0, e.1, vs));
+                }
+            }
+        }
+
+        // Rebuild the parallel arrays, replacing each consumed triangle by its
+        // children (attributes duplicated), in deterministic index order.
+        let mut nt: Vec<[u32; 3]> = Vec::with_capacity(triangles.len());
+        let mut nf: Vec<FaceTag> = Vec::with_capacity(triangles.len());
+        let mut ns: Vec<SurfaceRef> = Vec::with_capacity(triangles.len());
+        let mut nr: Vec<[RegionTag; 2]> = Vec::with_capacity(triangles.len());
+        for ti in 0..triangles.len() {
+            match children.get(&ti) {
+                Some(kids) => {
+                    for &k in kids {
+                        nt.push(k);
+                        nf.push(face_tags[ti]);
+                        ns.push(surface_refs[ti]);
+                        nr.push(region_tags[ti]);
+                    }
+                }
+                None => {
+                    nt.push(triangles[ti]);
+                    nf.push(face_tags[ti]);
+                    ns.push(surface_refs[ti]);
+                    nr.push(region_tags[ti]);
+                }
+            }
+        }
+        *triangles = nt;
+        *face_tags = nf;
+        *surface_refs = ns;
+        *region_tags = nr;
+    }
+}
+
+/// Subdivides triangle `tri` along its edge `{a, b}` by the vertices `vs`
+/// (ordered from `a` to `b`), preserving winding: with the edge running
+/// `e0 -> e1` in the triangle's cyclic order and opposite corner `o`, the
+/// chain `[e0, vs.., e1]` (reversed when the edge runs `b -> a`) fans out from
+/// `o` into the triangles `(o, chain[i], chain[i + 1])`.
+fn split_tri_chain(tri: [u32; 3], a: u32, b: u32, vs: &[u32]) -> Vec<[u32; 3]> {
+    for i in 0..3 {
+        let e0 = tri[i];
+        let e1 = tri[(i + 1) % 3];
+        let o = tri[(i + 2) % 3];
+        let fwd = e0 == a && e1 == b;
+        let rev = e0 == b && e1 == a;
+        if fwd || rev {
+            let mut chain = Vec::with_capacity(vs.len() + 2);
+            chain.push(e0);
+            if fwd {
+                chain.extend_from_slice(vs);
+            } else {
+                chain.extend(vs.iter().rev().copied());
+            }
+            chain.push(e1);
+            return chain.windows(2).map(|w| [o, w[0], w[1]]).collect();
+        }
+    }
+    unreachable!("split edge {a},{b} not found in triangle {tri:?}");
+}
+
+/// True if `p` lies within `tol` of the OPEN segment `(a, b)`: its projection
+/// parameter is strictly interior with a `tol/len` margin (so `p` is more than
+/// `tol` from either endpoint, which is the welding's job, not ours) and its
+/// perpendicular distance to the carrier line is at most `tol`.
+fn on_open_segment(a: [f64; 3], b: [f64; 3], p: [f64; 3], tol: f64) -> bool {
+    let d: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if len2 <= 0.0 {
+        return false;
+    }
+    let pa: [f64; 3] = std::array::from_fn(|k| p[k] - a[k]);
+    let t = (pa[0] * d[0] + pa[1] * d[1] + pa[2] * d[2]) / len2;
+    let margin = tol / len2.sqrt();
+    if !(t > margin && t < 1.0 - margin) {
+        return false;
+    }
+    let cr = [
+        pa[1] * d[2] - pa[2] * d[1],
+        pa[2] * d[0] - pa[0] * d[2],
+        pa[0] * d[1] - pa[1] * d[0],
+    ];
+    let perp2 = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) / len2;
+    perp2 <= tol * tol
+}
+
+/// Spatial grid over triangle edges for the vertex-near-edge search (mirrors
+/// the `BallGrid` overflow pattern in rapidmesh-tet): an edge is registered in
+/// every cell its bounding box covers, unless it spans too many cells, in
+/// which case it goes to a linearly scanned overflow list. Cell size is the
+/// median edge length, so typical edges occupy O(1) cells.
+struct EdgeGrid {
+    cell: f64,
+    origin: [f64; 3],
+    map: HashMap<[i64; 3], Vec<u32>>,
+    large: Vec<u32>,
+    edges: Vec<(u32, u32)>,
+}
+
+impl EdgeGrid {
+    const MAX_SPAN: i64 = 4;
+
+    fn cell_of(&self, p: [f64; 3]) -> [i64; 3] {
+        std::array::from_fn(|k| ((p[k] - self.origin[k]) / self.cell).floor() as i64)
+    }
+
+    fn build(verts: &[[f64; 3]], edges: Vec<(u32, u32)>) -> EdgeGrid {
+        let mut lens: Vec<f64> = edges
+            .iter()
+            .map(|&(a, b)| {
+                let (pa, pb) = (verts[a as usize], verts[b as usize]);
+                (0..3).map(|k| (pa[k] - pb[k]).powi(2)).sum::<f64>().sqrt()
+            })
+            .collect();
+        lens.sort_by(f64::total_cmp);
+        let median = lens.get(lens.len() / 2).copied().unwrap_or(1.0);
+        let cell = if median > 0.0 { median } else { 1.0 };
+        let origin = verts.first().copied().unwrap_or([0.0; 3]);
+        let mut g = EdgeGrid {
+            cell,
+            origin,
+            map: HashMap::new(),
+            large: Vec::new(),
+            edges,
+        };
+        for ei in 0..g.edges.len() {
+            let (a, b) = g.edges[ei];
+            let (pa, pb) = (verts[a as usize], verts[b as usize]);
+            let lo = g.cell_of(std::array::from_fn(|k| pa[k].min(pb[k])));
+            let hi = g.cell_of(std::array::from_fn(|k| pa[k].max(pb[k])));
+            if (0..3).any(|k| hi[k] - lo[k] >= EdgeGrid::MAX_SPAN) {
+                g.large.push(ei as u32);
+                continue;
+            }
+            for x in lo[0]..=hi[0] {
+                for y in lo[1]..=hi[1] {
+                    for z in lo[2]..=hi[2] {
+                        g.map.entry([x, y, z]).or_default().push(ei as u32);
+                    }
+                }
+            }
+        }
+        g
+    }
+
+    /// Edges that might pass within the weld tolerance of `p` (the 27-cell
+    /// neighborhood of `p`'s cell plus the overflow list; the tolerance is far
+    /// below one cell, so a neighbor scan is conservative). Deduplicated.
+    fn edges_near(&self, p: [f64; 3], out: &mut Vec<u32>) {
+        out.clear();
+        let base = self.cell_of(p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(v) = self.map.get(&[base[0] + dx, base[1] + dy, base[2] + dz]) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.extend_from_slice(&self.large);
+        out.sort_unstable();
+        out.dedup();
     }
 }

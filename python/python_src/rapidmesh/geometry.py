@@ -77,8 +77,17 @@ class Mesh:
         max_edge, millis
     """
 
-    def __init__(self, native) -> None:
+    def __init__(
+        self,
+        native,
+        solids: list[dict] | None = None,
+        tag_labels: dict[int, str] | None = None,
+    ) -> None:
         self._native = native
+        #: per input solid (insertion order): {"region": int, "label": str|None}
+        self.solids: list[dict] = solids or []
+        #: display label per sheet tag
+        self.tag_labels: dict[int, str] = tag_labels or {}
         self.points: np.ndarray = native.points()
         self.tets: np.ndarray = native.tets()
         self.tet_regions: np.ndarray = native.tet_regions()
@@ -98,12 +107,10 @@ class Mesh:
             f"{s['millis']} ms)"
         )
 
-    def save_viewer_json(self, name: str, directory: str | Path) -> Path:
-        """Writes ``rapidmesh_<name>.json`` in the comparison-viewer schema
-        and refreshes the viewer manifest. Returns the written path."""
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        data = {
+    def to_viewer_dict(self, name: str) -> dict:
+        """The mesh in the viewer JSON schema (shared by the comparison
+        viewer and the showcase site)."""
+        return {
             "name": name,
             "mesher": "rapidmesh",
             "points": self.points.tolist(),
@@ -114,11 +121,21 @@ class Mesh:
                     "tri": [int(a), int(b), int(c)],
                     "tag": int(t),
                     "regions": [int(r0), int(r1)],
+                    "surface": int(s),
                 }
-                for (a, b, c), t, (r0, r1) in zip(
-                    self.faces, self.face_tags, self.face_regions
+                for (a, b, c), t, (r0, r1), s in zip(
+                    self.faces, self.face_tags, self.face_regions,
+                    self.face_surfaces,
                 )
             ],
+            # owner solid per analytic surface id; -1 marks embedded sheets
+            "surface_owners": [
+                -1 if int(o) == 0xFFFFFFFF else int(o)
+                for o in self.surface_owners
+            ],
+            # input solids in insertion order with optional display labels
+            "solids": self.solids,
+            "tag_labels": {str(t): n for t, n in self.tag_labels.items()},
             "edges": self.edges.astype(int).tolist(),
             "stats": {
                 "n_points": int(self.stats["n_points"]),
@@ -129,8 +146,14 @@ class Mesh:
                 "millis": int(self.stats["millis"]),
             },
         }
+
+    def save_viewer_json(self, name: str, directory: str | Path) -> Path:
+        """Writes ``rapidmesh_<name>.json`` in the comparison-viewer schema
+        and refreshes the viewer manifest. Returns the written path."""
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"rapidmesh_{name}.json"
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(self.to_viewer_dict(name)))
         _refresh_manifest(directory)
         return path
 
@@ -186,11 +209,24 @@ class Geometry:
         self._surface_maxh: dict[int, float] = {}
         self._size_points: list[tuple[tuple[float, float, float], float]] = []
         self._n_solids = 0
+        self._solid_regions: list[int] = []
+        self._solid_labels: dict[int, str] = {}
+        self._tag_labels: dict[int, str] = {}
 
     def _solid(self, region: int) -> Solid:
         idx = self._n_solids
         self._n_solids += 1
+        self._solid_regions.append(region)
         return Solid(region, idx)
+
+    def label(self, target: Solid | int, name: str) -> None:
+        """Display name for viewer exports: for a :class:`Solid`, the name
+        of its surface group (voids without a label merge into a generic
+        cavity group); for an int sheet tag, the name of that sheet group."""
+        if isinstance(target, Solid):
+            self._solid_labels[target.index] = name
+        else:
+            self._tag_labels[int(target)] = name
 
     # ------------------------------------------------------------ solids
 
@@ -581,7 +617,11 @@ class Geometry:
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
         )
-        return Mesh(native)
+        solids = [
+            {"region": r, "label": self._solid_labels.get(i)}
+            for i, r in enumerate(self._solid_regions)
+        ]
+        return Mesh(native, solids=solids, tag_labels=dict(self._tag_labels))
 
 
 def _unit(v: tuple[float, float, float]) -> list[float]:

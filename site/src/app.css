@@ -1,0 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+
+/*
+ * Global design tokens — copied verbatim from rapidmesh/viewer/src/app.css
+ * (source of truth) and kept in sync with src/lib/theme.ts. Component <style>
+ * blocks reference these vars; no one-off colors / sizes live in components.
+ */
+:root {
+	--bg: #131316;
+	--bg-mid: #1a1a1f;
+	--bg-surface: #232329;
+	--bg-panel: #2a2a31;
+	--bg-inset: #131316;
+	--text: #e2ddd5;
+	--text-muted: #9a96a0;
+	--text-dim: #8a8790;
+	--accent: #d9513c;
+	--accent-hover: #e5634f;
+	--accent-secondary: #e8944a;
+	--accent-dim: #d9513c33;
+	--border: #35353d;
+	--border-subtle: #2d2d34;
+	--input-bg: #131316;
+	--input-border: #3a3a42;
+	--input-hover: #4a4a52;
+	--input-focus: #d9513c;
+	--canvas-bg: #131316;
+	--font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+	--font-mono: 'JetBrains Mono', monospace;
+	--fs-xs: 11px;
+	--fs-sm: 13px;
+	--fs-md: 15px;
+	--fs-lg: 21px;
+	--space-xs: 2px;
+	--space-sm: 4px;
+	--space-md: 8px;
+	--space-lg: 10px;
+	--space-xl: 16px;
+	--space-2xl: 24px;
+	--space-3xl: 40px;
+	--transition: 0.15s;
+}
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	font-family: var(--font-body);
+	background: var(--bg);
+	color: var(--text);
+	font-size: var(--fs-sm);
+	-webkit-font-smoothing: antialiased;
+	overflow: hidden;
+}
+
+::-webkit-scrollbar {
+	width: 6px;
+}
+::-webkit-scrollbar-track {
+	background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+	background: var(--border);
+}

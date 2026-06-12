@@ -1,0 +1,118 @@
+/* SHARED RENDERING MODULE — DUPLICATED COPY.
+ * Source of truth: rapidmesh/viewer/src/lib/theme.ts
+ * This file is copied verbatim into the mesh.rapidpassives.org showcase
+ * (rapidmesh/site). The dev viewer at rapidmesh/viewer is canonical; keep
+ * the two in sync if the renderer changes. Plain ES module, no SvelteKit deps.
+ */
+/**
+ * Unified color and style definitions.
+ * All UI elements — CSS, canvas renderer, components — reference this file.
+ *
+ * CSS custom properties in app.css are generated from these values.
+ * Canvas code imports colors directly.
+ */
+
+// --- Palette ---
+
+export const palette = {
+	bg:           '#131316',
+	bgMid:        '#1a1a1f',
+	bgSurface:    '#232329',
+	bgPanel:      '#2a2a31',
+	bgInset:      '#131316',
+
+	text:         '#e2ddd5',
+	textMuted:    '#9a96a0',
+	textDim:      '#8a8790',
+
+	accent:       '#d9513c',
+	accentHover:  '#e5634f',
+	accentSecondary: '#e8944a',
+	accentDim:    '#d9513c33',
+	accentPurple: '#a78bd9',
+
+	border:       '#35353d',
+	borderSubtle: '#2d2d34',
+
+	inputBg:      '#131316',
+	inputBorder:  '#3a3a42',
+	inputHover:   '#4a4a52',
+	inputFocus:   '#d9513c',
+
+	white:        '#ffffff',
+} as const;
+
+// --- Canvas ---
+
+export const canvas = {
+	bg:           '#131316',
+	grid:         '#2a2a32',
+	gridWeight:   0.5,
+	crosshair:    '#3a3a44',
+	crosshairWeight: 1,
+	crosshairDash: [4, 4] as number[],
+	highlightOutline: '#ffffff',
+	highlightOutlineWeight: 1.5,
+	highlightBrighten: 0.4,
+} as const;
+
+// --- Plot colors ---
+
+export const plotColors = {
+	/** Trace color cycle for simulation plots */
+	cycle: ['#d9513c', '#e8944a', '#6bbf8a', '#7b5e8a', '#4a9ec2', '#c4c46b'] as string[],
+	/** Plot area background */
+	bg: '#131316',
+	/** Grid lines */
+	grid: '#2a2a32',
+	/** Axis lines */
+	axis: '#35353d',
+	/** Text color */
+	text: '#7d7a85',
+} as const;
+
+// --- Fonts ---
+
+export const fonts = {
+	body: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+	mono: "'JetBrains Mono', monospace",
+} as const;
+
+// --- Type scale ---
+// 4 sizes only: xs (detail), sm (body), md (emphasis), lg (headings)
+
+export const typeScale = {
+	xs: '11px',
+	sm: '13px',
+	md: '15px',
+	lg: '21px',
+} as const;
+
+// --- Helpers ---
+
+/** Generate CSS custom property declarations from palette */
+export function toCSSVars(): string {
+	return `
+		--bg: ${palette.bg};
+		--bg-mid: ${palette.bgMid};
+		--bg-surface: ${palette.bgSurface};
+		--bg-panel: ${palette.bgPanel};
+		--bg-inset: ${palette.bgInset};
+		--text: ${palette.text};
+		--text-muted: ${palette.textMuted};
+		--text-dim: ${palette.textDim};
+		--accent: ${palette.accent};
+		--accent-hover: ${palette.accentHover};
+		--accent-secondary: ${palette.accentSecondary};
+		--accent-dim: ${palette.accentDim};
+		--border: ${palette.border};
+		--border-subtle: ${palette.borderSubtle};
+		--input-bg: ${palette.inputBg};
+		--input-border: ${palette.inputBorder};
+		--input-hover: ${palette.inputHover};
+		--input-focus: ${palette.inputFocus};
+		--canvas-bg: ${canvas.bg};
+		--font-body: ${fonts.body};
+		--font-mono: ${fonts.mono};
+	`;
+}

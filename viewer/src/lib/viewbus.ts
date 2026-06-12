@@ -1,4 +1,7 @@
-/** Shared camera, camera animation and render coalescing across panels.
+/** SOURCE OF TRUTH. A verbatim copy lives in rapidmesh/site/src/lib/viewbus.ts
+ *  (the mesh.rapidpassives.org showcase). Keep the two in sync if this changes.
+ *
+ *  Shared camera, camera animation and render coalescing across panels.
  *
  * All panels orbit the same camera; any interaction schedules one render of
  * every registered panel on the next animation frame (the same coalescing

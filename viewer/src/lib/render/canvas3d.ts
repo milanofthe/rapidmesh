@@ -1,4 +1,8 @@
 /**
+ * SOURCE OF TRUTH for the WebGL renderer. A verbatim copy lives in
+ * rapidmesh/site/src/lib/render/canvas3d.ts (the mesh.rapidpassives.org
+ * showcase). Keep the two in sync if this changes.
+ *
  * Lightweight raw-WebGL2 3D renderer for FEM tetrahedral / triangulated meshes.
  *
  * Adapted from rapidpassives/web/src/lib/render/canvas3d.ts — same shader,

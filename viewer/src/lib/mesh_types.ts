@@ -1,5 +1,9 @@
 /** Mesh JSON schema shared by all mesher exporters, and the viewer's
- *  display settings. */
+ *  display settings.
+ *
+ *  SOURCE OF TRUTH. A verbatim copy lives in
+ *  rapidmesh/site/src/lib/mesh_types.ts (the mesh.rapidpassives.org showcase).
+ *  Keep the two in sync if this changes. */
 
 export interface MeshJson {
 	name: string;

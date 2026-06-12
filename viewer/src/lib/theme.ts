@@ -1,4 +1,8 @@
 /**
+ * SOURCE OF TRUTH for design tokens. A verbatim copy lives in
+ * rapidmesh/site/src/lib/theme.ts (the mesh.rapidpassives.org showcase).
+ * Keep the two in sync if this changes.
+ *
  * Unified color and style definitions.
  * All UI elements — CSS, canvas renderer, components — reference this file.
  *

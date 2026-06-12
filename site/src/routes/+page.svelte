@@ -2,6 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
+	import { adaptMesh } from '$lib/mesh_adapter';
 	import { CYCLE_MS, FADE_MS, RESUME_MS } from '$lib/constants';
 	import type { MeshJson } from '$lib/mesh_types';
 
@@ -90,7 +91,7 @@
 
 <main class="stage" style="--fade: {FADE_MS}ms">
 
-	<MeshViewer data={currentData} oninteract={pauseCycle} />
+	<MeshViewer mesh={currentData ? adaptMesh(currentData) : null} oninteract={pauseCycle} orbit />
 
 	<div class="overlay" class:visible={covered}></div>
 
@@ -139,15 +140,19 @@
 		opacity: 1;
 	}
 
+	/* Top RIGHT: the viewer's legend owns the top-left corner (rapidfem
+	   layout); the brand block must never clip it. */
 	.brand {
 		position: absolute;
 		top: var(--space-xl);
-		left: var(--space-xl);
+		right: var(--space-xl);
 		z-index: 10;
 		display: flex;
 		flex-direction: column;
+		align-items: flex-end;
 		gap: var(--space-xs);
 		pointer-events: none;
+		text-align: right;
 	}
 	/* Mirror rapidfem's brand lockup: logo mark + monospace, letter-spaced
 	   accent title (rapidfem renders its hero title in JetBrains Mono / 700 /

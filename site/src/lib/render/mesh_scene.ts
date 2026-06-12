@@ -1,9 +1,3 @@
-/* SHARED RENDERING MODULE — DUPLICATED COPY.
- * Source of truth: rapidfem/python/python_src/rapidfem/ui/frontend-src/src/lib/render/mesh_scene.ts
- * This file is copied verbatim into the mesh.rapidpassives.org showcase
- * (rapidmesh/site). The rapidfem mesh-preview viewer is canonical; keep the
- * two in sync if the renderer changes. Plain ES module, no SvelteKit deps.
- */
 /**
  * Shared mesh-to-render helpers. Used by both the in-app MeshViewer
  * component and the standalone <fem-viewer> web-component embed so the

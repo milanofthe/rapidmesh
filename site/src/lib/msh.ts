@@ -1,14 +1,3 @@
-/* SHARED RENDERING MODULE — DUPLICATED COPY.
- * Source of truth: rapidfem/python/python_src/rapidfem/ui/frontend-src/src/lib/msh.ts
- * This file is copied verbatim into the mesh.rapidpassives.org showcase
- * (rapidmesh/site). The rapidfem mesh-preview viewer is canonical; keep the
- * two in sync if the renderer changes. Plain ES module, no SvelteKit deps.
- *
- * `MeshData` is the flat-typed-array shape the rapidfem MeshViewer consumes.
- * The showcase meshes are exported by rapidmesh in the `MeshJson` schema
- * (see $lib/mesh_types); $lib/mesh_adapter converts MeshJson → MeshData.
- */
-
 /** Common mesh-data shape consumed by the 3D viewer. Built directly from
  *  the WASM mesher's output (`mesh_from_spec`). */
 

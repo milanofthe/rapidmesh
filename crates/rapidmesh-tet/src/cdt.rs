@@ -124,7 +124,7 @@ impl SegmentChains {
         let carrier = self.carriers[seg];
         // The midpoint lands next to va: start the locate walk there.
         b.walk_hint_vertex(va);
-        let vm = b.insert_exact(Point3::lnc(carrier.0, carrier.1, tm));
+        let (vm, tm) = insert_chain_point(b, carrier, tm, ta.min(tb), ta.max(tb));
         let (left_cat, right_cat) = child_categories(self.cats[seg][i]);
         self.nodes[seg].insert(i + 1, (vm, tm));
         self.cats[seg][i] = left_cat;
@@ -257,8 +257,7 @@ pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
                 let (vm, tm) = match plan_split(b, &sub, carrier) {
                     Action::Adopt(v, t) => (v, t),
                     Action::Split(t) => {
-                        let p = Point3::lnc(carrier.0, carrier.1, t);
-                        (b.insert_exact(p), t)
+                        insert_chain_point(b, carrier, t, ta.min(tb), ta.max(tb))
                     }
                 };
                 let (left_cat, right_cat) = child_categories(sub.cat);
@@ -272,6 +271,56 @@ pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
             break;
         }
     }
+}
+
+/// Inserts a chain Steiner point at parameter `t` on the carrier line. A
+/// point that lands in the degenerate zone around an existing vertex (a
+/// near-duplicate whose sliver star the cavity would swallow) is dodged by
+/// shifting `t` in escalating steps RELATIVE TO THE PIECE, strictly inside
+/// `(lo, hi)` — the swallow zone scales with the local geometry, not with
+/// ulps. Every candidate stays exactly on the carrier, so the chain remains
+/// exactly straight; the protection-ball categories tolerate the shift
+/// (small steps are tried first, the large ones are a last resort before
+/// the loud failure).
+fn insert_chain_point(
+    b: &mut DelaunayBuilder,
+    carrier: ([f64; 3], [f64; 3]),
+    t: f64,
+    lo: f64,
+    hi: f64,
+) -> (usize, f64) {
+    let span = hi - lo;
+    let mut candidates = vec![t];
+    for f in [1e-12, 1e-9, 1e-6, 1e-4, 1e-3, 1e-2, 0.05, 0.125, 0.2] {
+        candidates.push(t + f * span);
+        candidates.push(t - f * span);
+    }
+    let mut blockers: Vec<(f64, usize)> = Vec::new();
+    for tc in candidates {
+        if !(tc > lo && tc < hi) {
+            continue;
+        }
+        match b.insert_exact_checked(Point3::lnc(carrier.0, carrier.1, tc)) {
+            Ok(v) => return (v, tc),
+            Err(w) => blockers.push((tc, w)),
+        }
+    }
+    let detail: String = blockers
+        .iter()
+        .take(6)
+        .map(|&(tc, w)| {
+            format!(
+                "\n  t {tc}: blocked by v{w} at {:?} ({})",
+                b.approx_point(w),
+                if b.exact_point(w).as_explicit().is_some() { "explicit" } else { "implicit" },
+            )
+        })
+        .collect();
+    panic!(
+        "chain split at t = {t} in ({lo}, {hi}) on carrier {:?} -> {:?} blocked: \
+         every dodged parameter would swallow an existing vertex star{detail}",
+        carrier.0, carrier.1,
+    );
 }
 
 fn child_categories(cat: Category) -> (Category, Category) {

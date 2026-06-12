@@ -168,6 +168,9 @@ pub struct DelaunayBuilder {
     /// since position X" and skip regions where nothing changed; any change
     /// to the triangulation creates tets, so the log misses nothing.
     clog: Vec<u32>,
+    /// The vertex (internal index) whose star the last rejected cavity
+    /// would have swallowed (see the guard in `compute_cavity`).
+    swallowed: Option<u32>,
 }
 
 impl DelaunayBuilder {
@@ -210,6 +213,7 @@ impl DelaunayBuilder {
             scratch_edges: rustc_hash::FxHashSet::default(),
             scratch_bfaces: rustc_hash::FxHashSet::default(),
             clog: vec![0],
+            swallowed: None,
         }
     }
 
@@ -337,9 +341,11 @@ impl DelaunayBuilder {
         let p = self.pts.len() as u32;
         self.pts.push(point);
         self.exact.push(None);
-        let ok = self.compute_cavity(p, -1.0, usize::MAX);
         // Unguarded inserts have no distance floor and no cavity cap; a
-        // rejection here can only be the swallowed-star guard.
+        // rejection can only be the swallowed-star guard, which the minimal
+        // cavity resolves unless the point truly duplicates a vertex.
+        let ok = self.compute_cavity(p, -1.0, usize::MAX)
+            || self.compute_cavity_from(p, -1.0, usize::MAX, true);
         assert!(
             ok,
             "insert at {point:?} would swallow the star of an existing vertex (near-duplicate point)",
@@ -359,12 +365,39 @@ impl DelaunayBuilder {
         let p = self.pts.len() as u32;
         self.pts.push(approx);
         self.exact.push(Some(point));
-        let ok = self.compute_cavity(p, -1.0, usize::MAX);
+        let ok = self.compute_cavity(p, -1.0, usize::MAX)
+            || self.compute_cavity_from(p, -1.0, usize::MAX, true);
         assert!(
             ok,
             "insert_exact at {approx:?} would swallow the star of an existing vertex (near-duplicate point)",
         );
         self.refill(p)
+    }
+
+    /// Like [`DelaunayBuilder::insert_exact`], but when the Delaunay cavity
+    /// would swallow an existing vertex's star (possible on the locally
+    /// non-Delaunay triangulation after recovery surgery), the insert
+    /// retries with the MINIMAL cavity (containing tet + visibility
+    /// repair). Only if even that swallows does it return the threatened
+    /// vertex (public index), so the caller can dodge.
+    pub fn insert_exact_checked(&mut self, point: Point3) -> Result<usize, usize> {
+        let approx = point.approx().expect("implicit DT vertex must be valid");
+        let p = self.pts.len() as u32;
+        self.pts.push(approx);
+        self.exact.push(Some(point));
+        self.swallowed = None;
+        if !self.compute_cavity(p, -1.0, usize::MAX)
+            && !self.compute_cavity_from(p, -1.0, usize::MAX, true)
+        {
+            self.pts.pop();
+            self.exact.pop();
+            let w = self
+                .swallowed
+                .expect("unguarded cavity rejection must record the swallowed vertex");
+            assert!(w >= 4, "swallowed vertex must be a real point");
+            return Err((w - 4) as usize);
+        }
+        Ok(self.refill(p))
     }
 
     /// The exact position of an inserted point (public index): the implicit
@@ -588,6 +621,16 @@ impl DelaunayBuilder {
     /// is always among the cavity vertices, so the bail is exact, and it
     /// fires before most of the exact insphere work for rejected points.
     fn compute_cavity(&mut self, p: u32, min_dist2: f64, max_cavity: usize) -> bool {
+        self.compute_cavity_from(p, min_dist2, max_cavity, false)
+    }
+
+    fn compute_cavity_from(
+        &mut self,
+        p: u32,
+        min_dist2: f64,
+        max_cavity: usize,
+        minimal: bool,
+    ) -> bool {
         let start = self.locate(p);
         let too_close = |pts: &[[f64; 3]], t: [u32; 4]| -> bool {
             t.iter().any(|&v| {
@@ -603,13 +646,20 @@ impl DelaunayBuilder {
         }
 
         // Cavity: strict circumsphere violations, grown through neighbors.
+        // In MINIMAL mode the circumsphere growth is skipped (the cavity is
+        // just the containing tet plus the star-shape repair below): after
+        // CDT recovery surgery the triangulation is locally non-Delaunay,
+        // and near-flat tets have enormous circumspheres through which the
+        // Delaunay cavity can swallow a distant vertex's entire star. The
+        // minimal cavity sacrifices local Delaunayness (the optimizer
+        // cleans that up) but keeps every existing vertex.
         self.epoch += 1;
         let epoch = self.epoch;
         self.cavity.clear();
         self.cavity.push(start);
         self.mark[start as usize] = epoch;
         let mut head = 0;
-        while head < self.cavity.len() {
+        while !minimal && head < self.cavity.len() {
             let ti = self.cavity[head];
             head += 1;
             for i in 0..4 {
@@ -680,8 +730,8 @@ impl DelaunayBuilder {
         // (p is a near-duplicate of it) would lose its entire star in the
         // refill and silently detach from the triangulation; the corruption
         // would only surface much later as a stale-hint panic. Reject the
-        // insert instead; guarded callers skip the point, mandatory callers
-        // turn the rejection into an immediate, attributable failure.
+        // insert instead (recording the vertex, so mandatory callers can
+        // adopt or dodge it); guarded callers simply skip the point.
         let mut bverts: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
         for &(ti, i) in &self.boundary {
             for &w in &face(self.tets[ti as usize], i as usize) {
@@ -691,6 +741,7 @@ impl DelaunayBuilder {
         for &ti in &self.cavity {
             for &w in &self.tets[ti as usize] {
                 if !bverts.contains(&w) {
+                    self.swallowed = Some(w);
                     return false;
                 }
             }
@@ -1017,11 +1068,28 @@ impl DelaunayBuilder {
                 // all passes: enable the rescue blends toward the star
                 // centroid (exactly verified, so validity is untouched; only
                 // boundary fidelity drifts by the accepted blend factor).
-                assert!(
-                    !rescue,
-                    "rounding stuck: {} implicit vertices cannot be flattened without inverting tets",
-                    still.len(),
-                );
+                if rescue {
+                    let mut diag = String::new();
+                    for &v in still.iter().take(8) {
+                        let kind = match &self.exact[v as usize] {
+                            Some(Point3::Lnc { .. }) => "Lnc",
+                            Some(Point3::Pac { .. }) => "Pac",
+                            Some(_) => "other",
+                            None => "explicit?",
+                        };
+                        let star = self.star_slots((v - 4) as usize);
+                        diag.push_str(&format!(
+                            "\n  v{} {kind} at {:?}, star {} tets",
+                            v - 4,
+                            self.pts[v as usize],
+                            star.len(),
+                        ));
+                    }
+                    panic!(
+                        "rounding stuck: {} implicit vertices cannot be flattened without inverting tets{diag}",
+                        still.len(),
+                    );
+                }
                 rescue = true;
             }
             pending = still;

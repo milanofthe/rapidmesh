@@ -488,13 +488,24 @@ fn box_flats_tile_six_faces() {
 
 #[test]
 fn frustum_caps_are_flats_barrel_is_not() {
+    // At least the two caps; axis-aligned cone barrel quads may also be
+    // exactly coplanar and get grouped (correct).
     let f = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.5, 16);
-    assert_eq!(f.flats.len(), 2, "top and bottom caps");
+    assert!(f.flats.len() >= 2, "at least top and bottom caps");
     assert_flats_consistent(&f, true);
-    // A cone has only the bottom cap.
+    // A cone (r_top = 0) has only the bottom cap; its apex barrel is triangles.
     let cone = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.0, 16);
     assert_eq!(cone.flats.len(), 1);
     assert_flats_consistent(&cone, true);
+}
+
+#[test]
+fn cylinder_barrel_quads_are_flats() {
+    // Each axis-aligned cylinder barrel quad is an exact planar rectangle, so
+    // the barrel is segments flats plus the two caps.
+    let c = cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 12);
+    assert_eq!(c.flats.len(), 12 + 2, "12 barrel quads + 2 caps");
+    assert_flats_consistent(&c, true);
 }
 
 #[test]

@@ -8,7 +8,18 @@
 use crate::faceted::{Faceted, SurfaceKind};
 use crate::polygon::{polygon_orientation, triangulate_polygon};
 use rapidmesh_csg::{PlanarFacet, Tri};
-use rapidmesh_exact::Sign;
+use rapidmesh_exact::{orient3d, Point3, Sign};
+
+/// Exact coplanarity of four points (for grouping a quad into one planar
+/// facet only when it is exactly flat).
+fn coplanar4(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> bool {
+    orient3d(
+        &Point3::Explicit(a),
+        &Point3::Explicit(b),
+        &Point3::Explicit(c),
+        &Point3::Explicit(d),
+    ) == Some(Sign::Zero)
+}
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -146,11 +157,33 @@ pub fn frustum(
             f.push_tri(Tri::new(bottom[i], bottom[j], top_center), barrel);
         }
     } else {
-        let top = ring(top_center, r_top);
+        // A cylinder barrel quad is an exact planar parallelogram when the top
+        // ring is the bottom ring shifted by the axis; emitting it as one flat
+        // facet lets the conformal arrangement merge away the quad-diagonal
+        // crossings a piercing flat face would otherwise pick up (the bore-hole
+        // slivers). A cone quad is only planar when its rulings are coplanar in
+        // f64, checked exactly; otherwise it falls back to two triangles.
+        let top: Vec<[f64; 3]> = if r_top == r_base {
+            bottom.iter().map(|&b| add(b, axis)).collect()
+        } else {
+            ring(top_center, r_top)
+        };
         for i in 0..segments {
             let j = (i + 1) % segments;
-            f.push_tri(Tri::new(bottom[i], bottom[j], top[j]), barrel);
-            f.push_tri(Tri::new(bottom[i], top[j], top[i]), barrel);
+            let tris = [
+                Tri::new(bottom[i], bottom[j], top[j]),
+                Tri::new(bottom[i], top[j], top[i]),
+            ];
+            if coplanar4(bottom[i], bottom[j], top[j], top[i]) {
+                f.push_flat(
+                    PlanarFacet::new(vec![bottom[i], bottom[j], top[j], top[i]]),
+                    &tris,
+                    barrel,
+                );
+            } else {
+                f.push_tri(tris[0], barrel);
+                f.push_tri(tris[1], barrel);
+            }
         }
         // Top cap: ring CCW around +axis matches the outward (+axis) normal.
         let cap = f.add_surface(SurfaceKind::Plane);

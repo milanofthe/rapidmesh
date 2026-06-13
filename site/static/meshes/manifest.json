@@ -5,9 +5,9 @@
    "name": "Spur Gear",
    "file": "meshes/gear.json",
    "stats": {
-    "n_tets": 7356,
-    "n_points": 2048,
-    "min_dihedral_deg": 9.0
+    "n_tets": 7371,
+    "n_points": 2092,
+    "min_dihedral_deg": 10.1
    }
   },
   {
@@ -15,9 +15,9 @@
    "name": "Dice",
    "file": "meshes/dice.json",
    "stats": {
-    "n_tets": 9709,
-    "n_points": 2648,
-    "min_dihedral_deg": 3.5
+    "n_tets": 9673,
+    "n_points": 2630,
+    "min_dihedral_deg": 2.1
    }
   },
   {
@@ -25,9 +25,9 @@
    "name": "Ball Bearing",
    "file": "meshes/bearing.json",
    "stats": {
-    "n_tets": 17008,
-    "n_points": 4746,
-    "min_dihedral_deg": 8.2
+    "n_tets": 15180,
+    "n_points": 4157,
+    "min_dihedral_deg": 19.2
    }
   },
   {
@@ -35,9 +35,9 @@
    "name": "Corner Bracket",
    "file": "meshes/bracket.json",
    "stats": {
-    "n_tets": 10711,
-    "n_points": 2983,
-    "min_dihedral_deg": 4.7
+    "n_tets": 10224,
+    "n_points": 2845,
+    "min_dihedral_deg": 5.9
    }
   },
   {
@@ -45,9 +45,9 @@
    "name": "Counterbore Plate",
    "file": "meshes/counterbore_plate.json",
    "stats": {
-    "n_tets": 11666,
-    "n_points": 3164,
-    "min_dihedral_deg": 0.6
+    "n_tets": 11448,
+    "n_points": 3061,
+    "min_dihedral_deg": 2.6
    }
   },
   {
@@ -55,9 +55,9 @@
    "name": "Lattice Cube",
    "file": "meshes/lattice_cube.json",
    "stats": {
-    "n_tets": 25903,
-    "n_points": 6542,
-    "min_dihedral_deg": 2.8
+    "n_tets": 25646,
+    "n_points": 6453,
+    "min_dihedral_deg": 0.7
    }
   },
   {
@@ -65,9 +65,9 @@
    "name": "Molecule",
    "file": "meshes/orbs.json",
    "stats": {
-    "n_tets": 10800,
-    "n_points": 2669,
-    "min_dihedral_deg": 0.3
+    "n_tets": 10967,
+    "n_points": 2719,
+    "min_dihedral_deg": 0.1
    }
   },
   {
@@ -75,9 +75,9 @@
    "name": "Rocket",
    "file": "meshes/rocket.json",
    "stats": {
-    "n_tets": 12340,
-    "n_points": 3086,
-    "min_dihedral_deg": 0.6
+    "n_tets": 12248,
+    "n_points": 3021,
+    "min_dihedral_deg": 7.3
    }
   },
   {
@@ -95,9 +95,9 @@
    "name": "Coil Spring",
    "file": "meshes/spring.json",
    "stats": {
-    "n_tets": 25989,
-    "n_points": 8089,
-    "min_dihedral_deg": 14.4
+    "n_tets": 26016,
+    "n_points": 8092,
+    "min_dihedral_deg": 5.8
    }
   },
   {
@@ -105,8 +105,18 @@
    "name": "Serpentine Pipe",
    "file": "meshes/serpentine.json",
    "stats": {
-    "n_tets": 9640,
-    "n_points": 3097,
+    "n_tets": 9638,
+    "n_points": 3080,
+    "min_dihedral_deg": 0.0
+   }
+  },
+  {
+   "id": "square_to_round",
+   "name": "Square-to-Round Duct",
+   "file": "meshes/square_to_round.json",
+   "stats": {
+    "n_tets": 8218,
+    "n_points": 2600,
     "min_dihedral_deg": 0.0
    }
   },
@@ -115,9 +125,9 @@
    "name": "Perforated Plate",
    "file": "meshes/perforated_plate.json",
    "stats": {
-    "n_tets": 13268,
-    "n_points": 4922,
-    "min_dihedral_deg": 3.6
+    "n_tets": 13526,
+    "n_points": 4942,
+    "min_dihedral_deg": 3.5
    }
   },
   {
@@ -125,9 +135,9 @@
    "name": "Cavity Sampler",
    "file": "meshes/mold_block.json",
    "stats": {
-    "n_tets": 26645,
-    "n_points": 6087,
-    "min_dihedral_deg": 4.4
+    "n_tets": 26760,
+    "n_points": 6099,
+    "min_dihedral_deg": 1.6
    }
   },
   {
@@ -145,9 +155,9 @@
    "name": "Baffled Tank",
    "file": "meshes/baffled_tank.json",
    "stats": {
-    "n_tets": 7763,
-    "n_points": 1686,
-    "min_dihedral_deg": 22.9
+    "n_tets": 7769,
+    "n_points": 1682,
+    "min_dihedral_deg": 20.1
    }
   },
   {
@@ -165,9 +175,9 @@
    "name": "Coax Step",
    "file": "meshes/coax_step.json",
    "stats": {
-    "n_tets": 2246,
-    "n_points": 711,
-    "min_dihedral_deg": 6.0
+    "n_tets": 2331,
+    "n_points": 721,
+    "min_dihedral_deg": 5.9
    }
   },
   {
@@ -175,9 +185,9 @@
    "name": "Microstrip",
    "file": "meshes/microstrip.json",
    "stats": {
-    "n_tets": 1342,
-    "n_points": 334,
-    "min_dihedral_deg": 4.9
+    "n_tets": 1338,
+    "n_points": 331,
+    "min_dihedral_deg": 3.6
    }
   }
  ]

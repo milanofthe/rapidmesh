@@ -220,4 +220,53 @@ coplanar clip) → WP1d classification per polygon + coplanar merge → WP1 gate
 WP1c is the risk; it is reached only after the datatype and emission are in and
 testable in isolation.
 
+## 8. What landed (status)
+
+**WP1+WP2 DONE and merged on feature/cdt-recovery** (commits: WP1b 15b2c02,
+WP1c/d+late-triangulation d3b08cb). The flat-face path is fully conformal:
+
+- `Faceted` is hybrid: flat faces carry a first-class `PlanarFacet` (boundary
+  loops) plus their helper triangulation (`FlatFacet`); curved faces stay
+  triangles (geom/faceted.rs, prim.rs).
+- A new conformal arrangement (csg/planar.rs `arrange_facets`) intersects helper
+  triangles via the existing `tri_tri_intersection`, but MERGES the resulting
+  sub-segments along their common line (`merge_on_line`) before they become
+  constraints, so a flat face's constraints meet exactly at the piercing
+  surface's vertices (the near-twins coincide on the line and merge away). It
+  reuses the exact predicates unchanged; the adjacency fast-path and the BVH are
+  shared with the triangle-soup `arrange`. Coplanar facet pairs clip
+  boundary-only edges against the other facet's helper triangles.
+- `triangulate_seeded` generalizes `triangulate_facet` from one input triangle
+  to a planar polygon (with holes), seeded from a boundary fan (convex) or the
+  helper triangulation (non-convex/holed); the Delaunay pass reshapes the
+  interior so no artificial fan structure survives.
+- scene.assemble feeds `arrange_facets`; classification is per facet with a
+  representative triangle.
+- Gate: all 18 conform end-to-end tests green (exact PLC-vs-mesh region volumes,
+  conformity, feature edges, sizing, voids, torus, horn loft, resonator), all
+  csg/exact/geom suites green. counterbore min-dih 0.6 -> 3.56; flat-only seam
+  models (laminate, baffled_tank) cleaned.
+
+## 9. WP3 finding (validated, not yet landed)
+
+The counterbore RESIDUAL after WP2 is not a flat-face seam: it is the bore
+CYLINDER barrel. A cylinder/cone barrel quad is piecewise PLANAR (a vertical
+rectangle/trapezoid), but prim emits it as two triangles whose DIAGONAL crosses
+a pierced flat face ~chord/12 off the true ring vertex -> a near-twin. Emitting
+each axis-aligned barrel quad as one `PlanarFacet` (exact-coplanarity guard via
+orient3d; `top = bottom + axis` for exact z-coplanarity) makes the merge fuse
+the diagonal crossing away. MEASURED: counterbore min-dih 0.6 -> **17.30**,
+divergent PLC-PLC 254 -> **0**, PLC edges < t/4: 240 -> 0.
+
+This was reverted from this session because it exposes a pre-existing looseness:
+the optimize edge-collapse / coarsening-collapse stages are NOT volume-exact
+(material grows ~1e-6 past `want`; RAPIDMESH_VOLUME_WATCH shows collapse
+27.998->28.017, coarsen ->28.026). With the seamy tessellation the fidelity
+snap-shrink masked it; with the clean conformal barrel the grow wins, breaking
+cylinder_void_volume_through_optimize by +1.3e-6. The barrel-quad-flat change
+must land WITH the WP4 optimize fix (a volume-non-growth gate on region-boundary
+collapses, or a final fidelity re-snap after collapse/coarsen). Tilted-axis
+cylinders and genuinely doubly-curved surfaces (sphere/torus) remain true Level
+B (analytic intersection curves).
+
 Related: docs/cdt-recovery-plan.md, DESIGN.md (§ CSG kernel, § Tet mesher).

@@ -140,13 +140,28 @@ pub fn triangulate_facet(
     let t_recover = std::time::Instant::now();
 
     // -------------------------------------------- constraint recovery
+    // Cached f64 positions for the segment bounding-box prefilter below.
+    let approx: Vec<[f64; 3]> = pool.iter().map(|p| p.approx().expect("valid")).collect();
     let mut chain_edges: Vec<(usize, usize)> = Vec::new();
     for &(ia, ib) in &constraint_ids {
+        // Padded segment bounding box (f64): a vertex strictly on the
+        // segment lies within it (its approx is within an ulp of the exact
+        // position; the pad is a million times that). On boolean scenes most
+        // pool vertices belong to OTHER constraints far from this one, so the
+        // cheap box test rejects them before the exact collinear/between
+        // predicates run -- the difference between O(C*P) exact tests and a
+        // handful per segment.
+        let (pa, pb) = (approx[ia], approx[ib]);
+        let seg_len = (0..3).map(|k| (pa[k] - pb[k]).powi(2)).sum::<f64>().sqrt();
+        let pad = 1e-9 * seg_len.max(f64::MIN_POSITIVE);
+        let slo: [f64; 3] = std::array::from_fn(|k| pa[k].min(pb[k]) - pad);
+        let shi: [f64; 3] = std::array::from_fn(|k| pa[k].max(pb[k]) + pad);
         // All pool vertices strictly inside the segment split it into a chain.
         let mut on_seg: Vec<usize> = (0..pool.len())
             .filter(|&k| {
                 k != ia
                     && k != ib
+                    && (0..3).all(|d| approx[k][d] >= slo[d] && approx[k][d] <= shi[d])
                     && collinear(&pool[ia], &pool[ib], &pool[k]).expect("valid")
                     && strictly_between(&pool[ia], &pool[ib], &pool[k]).expect("valid")
             })
@@ -182,11 +197,23 @@ pub fn triangulate_facet(
     // function of the geometry, so coincident coplanar facets of different
     // inputs triangulate their overlap identically and can be matched
     // triangle-by-triangle downstream.
+    let d_recover = t_recover.elapsed();
+    let t_delaunay = std::time::Instant::now();
     let constrained: std::collections::HashSet<(usize, usize)> = chain_edges
         .iter()
         .map(|&(u, v)| (u.min(v), u.max(v)))
         .collect();
     delaunay_pass(&mut tris, &pool, axis, orientation, &constrained);
+    if tri_trace {
+        let total = t_pool.elapsed();
+        if total.as_millis() > 50 {
+            eprintln!(
+                "tri facet: {} pts, {} constraints, {} tris in {:.1?} (pool {:.1?}, presplit {:.1?}, insert {:.1?}, recover {:.1?}, delaunay {:.1?})",
+                pool.len(), constraints.len(), tris.len(), total,
+                d_pool, d_presplit, d_insert, d_recover, t_delaunay.elapsed(),
+            );
+        }
+    }
 
     FacetTriangulation {
         vertices: pool,

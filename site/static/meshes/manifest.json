@@ -161,23 +161,13 @@
    }
   },
   {
-   "id": "laminate",
-   "name": "Graded Laminate",
-   "file": "meshes/laminate.json",
-   "stats": {
-    "n_tets": 19886,
-    "n_points": 4152,
-    "min_dihedral_deg": 0.0
-   }
-  },
-  {
    "id": "coax_step",
    "name": "Coax Step",
    "file": "meshes/coax_step.json",
    "stats": {
-    "n_tets": 2331,
-    "n_points": 721,
-    "min_dihedral_deg": 5.9
+    "n_tets": 10882,
+    "n_points": 3271,
+    "min_dihedral_deg": 6.5
    }
   },
   {
@@ -185,9 +175,9 @@
    "name": "Microstrip",
    "file": "meshes/microstrip.json",
    "stats": {
-    "n_tets": 1338,
-    "n_points": 331,
-    "min_dihedral_deg": 3.6
+    "n_tets": 17607,
+    "n_points": 4156,
+    "min_dihedral_deg": 16.1
    }
   }
  ]

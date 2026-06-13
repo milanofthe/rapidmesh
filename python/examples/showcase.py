@@ -480,18 +480,6 @@ def baffled_tank() -> rm.Geometry:
     return g
 
 
-def laminate() -> rm.Geometry:
-    """Graded laminate: six stacked layers with alternating per-solid mesh
-    size, the grading blends the densities across the interfaces."""
-    g = rm.Geometry(maxh=0.5)
-    t = 0.28
-    for i in range(6):
-        ply = g.box(3.2, 3.2, t, position=(-1.6, -1.6, i * t),
-                    maxh=0.42 if i % 2 == 0 else 0.16)
-        g.label(ply, "coarse plies" if i % 2 == 0 else "fine plies")
-    return g
-
-
 def coax_step() -> rm.Geometry:
     """Coaxial impedance step (the EM classic kept as a benchmark): outer
     dielectric with two stepped inner-conductor voids and finer surface
@@ -499,16 +487,18 @@ def coax_step() -> rm.Geometry:
     mm = 1e-3
     ri1, ri2, ro = 1.50 * mm, 0.99 * mm, 3.45 * mm
     l1, l2 = 15.0 * mm, 15.0 * mm
-    h = 3.0 * mm
-    g = rm.Geometry(maxh=h)
+    # Bulk dielectric a touch finer than the outer radius, conductor walls
+    # ~1/3 of that, and a gentle grading so the size grows smoothly from the
+    # conductors out into the bulk (instead of a 2x jump at the wall).
+    g = rm.Geometry(maxh=1.4 * mm, grading=0.35)
     g.label(g.cylinder(radius=ro, height=l1 + l2, position=(0, 0, 0)),
             "dielectric")
     inner1 = g.cylinder(radius=ri1, height=l1, position=(0, 0, 0), void=True)
     inner2 = g.cylinder(radius=ri2, height=l2, position=(0, 0, l1), void=True)
     g.label(inner1, "inner conductor a")
     g.label(inner2, "inner conductor b")
-    g.refine_surface(inner1, h / 2)
-    g.refine_surface(inner2, h / 2)
+    g.refine_surface(inner1, 0.45 * mm)
+    g.refine_surface(inner2, 0.32 * mm)
     return g
 
 
@@ -518,13 +508,17 @@ def microstrip() -> rm.Geometry:
     mm = 1e-3
     sub_h, line_w, line_l = 0.508 * mm, 1.13 * mm, 30.0 * mm
     sub_w, air_h = 20.0 * mm, 10.0 * mm
-    g = rm.Geometry(maxh=9.0 * mm)
+    # The trace is the finest feature; the thin substrate needs its own
+    # (much finer) size so it is not a single coarse layer, and a gentle
+    # grading carries the size up into the air instead of jumping. Air is
+    # also brought down from 9 mm so the transition spans more elements.
+    g = rm.Geometry(maxh=4.0 * mm, grading=0.35)
     g.label(g.box(sub_w, line_l, air_h + sub_h, position=(-sub_w / 2, 0, 0)),
             "air")
     g.label(g.box(sub_w, line_l, sub_h, position=(-sub_w / 2, 0, 0),
-                  maxh=4.8 * mm), "substrate")
+                  maxh=0.7 * mm), "substrate")
     g.xy_plate(line_w, line_l, position=(-line_w / 2, 0, sub_h), tag=7,
-               maxh=0.55 * mm)
+               maxh=0.4 * mm)
     g.label(7, "trace")
     return g
 
@@ -561,7 +555,6 @@ MODELS: list[Model] = [
     Model("pressure_vessel", "Pressure Vessel", pressure_vessel),
     Model("sizing_field", "Sizing Field", sizing_field),
     Model("baffled_tank", "Baffled Tank", baffled_tank),
-    Model("laminate", "Graded Laminate", laminate),
     Model("coax_step", "Coax Step", coax_step),
     Model("microstrip", "Microstrip", microstrip),
 ]

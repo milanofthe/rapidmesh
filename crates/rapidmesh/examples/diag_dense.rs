@@ -110,5 +110,104 @@ fn main() {
             }
         }
         println!("  short (< t/4) endpoints: PLC-PLC {pp}, PLC-Steiner {ps}, Steiner-Steiner {ss}");
+
+        // Characterize the shortest PLC-PLC edges: surface faces / patches /
+        // surfaces at each endpoint, and whether the edge is a surface edge
+        // (shared by two surface faces) running along a feature curve.
+        if tag.starts_with("quality") {
+            use std::collections::{HashMap, HashSet};
+            // vertex -> set of (patch, surface) of incident surface faces
+            let mut vpatch: HashMap<usize, HashSet<(u32, u32)>> = HashMap::new();
+            let mut edge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+            for (fi, sf) in mesh.faces.iter().enumerate() {
+                for &v in &sf.tri {
+                    vpatch.entry(v).or_default().insert((sf.patch, sf.surface));
+                }
+                for e in 0..3 {
+                    let (a, b) = (sf.tri[e] as usize, sf.tri[(e + 1) % 3] as usize);
+                    edge_faces.entry((a.min(b), a.max(b))).or_default().push(fi);
+                }
+            }
+            let mut short_pp: Vec<(f64, usize, usize)> = me
+                .iter()
+                .filter(|&&(a, b)| a < np && b < np)
+                .map(|&(a, b)| {
+                    let l: f64 = (0..3).map(|k| (mv[a][k] - mv[b][k]).powi(2)).sum::<f64>().sqrt();
+                    (l, a, b)
+                })
+                .filter(|&(l, _, _)| l < target / 4.0)
+                .collect();
+            short_pp.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let mut surf_edge = 0;
+            let mut nonsurf = 0;
+            for &(_, a, b) in &short_pp {
+                if edge_faces.get(&(a.min(b), a.max(b))).is_some_and(|f| f.len() >= 2) {
+                    surf_edge += 1;
+                } else {
+                    nonsurf += 1;
+                }
+            }
+            println!("  PLC-PLC short: {} surface-edge, {} non-surface-edge", surf_edge, nonsurf);
+            // How many short PLC-PLC edges have one endpoint's surfaces a
+            // subset of the other's (collapsible without changing surface
+            // topology) vs. divergent surface sets (collapse would alter the
+            // geometry, so the patch gate correctly forbids it)?
+            let mut subset = 0;
+            let mut divergent = 0;
+            for &(_, a, b) in &short_pp {
+                let empty = HashSet::new();
+                let sa = vpatch.get(&a).unwrap_or(&empty);
+                let sb = vpatch.get(&b).unwrap_or(&empty);
+                if sb.is_subset(sa) || sa.is_subset(sb) {
+                    subset += 1;
+                } else {
+                    divergent += 1;
+                }
+            }
+            println!("  PLC-PLC short: {subset} subset-patches (collapsible), {divergent} divergent (pinned)");
+            // For divergent edges, which surface-KIND pairs face off across
+            // the seam? (the geometric source of the incommensurable rings)
+            let kind_name = |s: u32| -> &'static str {
+                match mesh.surfaces[s as usize] {
+                    rapidmesh_geom::SurfaceKind::Plane => "Plane",
+                    rapidmesh_geom::SurfaceKind::Sphere { .. } => "Sphere",
+                    rapidmesh_geom::SurfaceKind::Cylinder { .. } => "Cylinder",
+                    rapidmesh_geom::SurfaceKind::Cone { .. } => "Cone",
+                    rapidmesh_geom::SurfaceKind::Torus { .. } => "Torus",
+                }
+            };
+            let mut pair_counts: HashMap<String, usize> = HashMap::new();
+            for &(_, a, b) in &short_pp {
+                let empty = HashSet::new();
+                let sa = vpatch.get(&a).unwrap_or(&empty);
+                let sb = vpatch.get(&b).unwrap_or(&empty);
+                if sb.is_subset(sa) || sa.is_subset(sb) {
+                    continue;
+                }
+                // surfaces unique to each side
+                let mut only_a: Vec<&str> = sa.difference(sb).map(|&(_, s)| kind_name(s)).collect();
+                let mut only_b: Vec<&str> = sb.difference(sa).map(|&(_, s)| kind_name(s)).collect();
+                only_a.sort_unstable();
+                only_a.dedup();
+                only_b.sort_unstable();
+                only_b.dedup();
+                let key = format!("{only_a:?} vs {only_b:?}");
+                *pair_counts.entry(key).or_default() += 1;
+            }
+            let mut pairs: Vec<(String, usize)> = pair_counts.into_iter().collect();
+            pairs.sort_by(|x, y| y.1.cmp(&x.1));
+            for (k, n) in pairs.iter().take(6) {
+                println!("    divergent {n:>4}x  {k}");
+            }
+            // Coordinates of the shortest divergent edges (where are they?).
+            for &(l, a, b) in short_pp.iter().filter(|&&(_, a, b)| {
+                let empty = HashSet::new();
+                let sa = vpatch.get(&a).unwrap_or(&empty);
+                let sb = vpatch.get(&b).unwrap_or(&empty);
+                !(sb.is_subset(sa) || sa.is_subset(sb))
+            }).take(4) {
+                println!("    div L={l:.2e}  a={:?}  b={:?}", mv[a].map(|x| (x*1e4).round()/1e4), mv[b].map(|x| (x*1e4).round()/1e4));
+            }
+        }
     }
 }

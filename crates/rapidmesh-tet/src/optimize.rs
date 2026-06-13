@@ -132,6 +132,15 @@ impl Default for OptimizeParams {
 /// documented slack the mesher's own max-edge contract uses).
 const EDGE_CONTRACT: f64 = 1.5;
 
+/// Coarsening: an edge shorter than this fraction of the local size target
+/// is "too short" and is a collapse candidate, even when the tets around it
+/// are well shaped. The conforming mesh of a CSG arrangement is dense along
+/// intersection seams (thin input facets force short transverse edges, and
+/// refinement seeds a swarm of tiny Steiner points around them); pulling
+/// these in on a do-no-harm gate recovers the size target there. The band
+/// of accepted edge lengths is then [COARSEN_FRACTION, EDGE_CONTRACT] x h.
+const COARSEN_FRACTION: f64 = 0.5;
+
 /// Local complexes whose worst tet is already at or above this
 /// comparison-scale quality (min dihedral ~35 deg, max ~145 deg by the
 /// symmetric -max|cos| metric) are left alone: optimization effort
@@ -256,6 +265,21 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             (EDGE_CONTRACT * h) * (EDGE_CONTRACT * h)
         } else {
             f64::INFINITY
+        }
+    };
+    // Squared "too short" floor per region (0 = no finite size target, so
+    // no coarsening: a sizeless surface mesh has no length to coarsen to).
+    let coarsen_floor2 = |region: rapidmesh_geom::RegionTag| -> f64 {
+        let h = params
+            .region_maxh
+            .iter()
+            .find(|(r, _)| *r == region.0)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh);
+        if h.is_finite() {
+            (COARSEN_FRACTION * h) * (COARSEN_FRACTION * h)
+        } else {
+            0.0
         }
     };
     // Squared edge budget on a surface face (tighter than the adjacent
@@ -628,6 +652,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     &face_budget2,
                     &mut next_dirty,
                     ti,
+                    0.0,
                 ) {
                     ops += 1;
                 }
@@ -635,6 +660,62 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
         edge_watch("collapse", mesh, &alive);
         volume_watch("collapse", mesh, &alive);
+
+        // --------------------------------------- coarsening collapse
+        // Pull in edges shorter than the local size floor (seam micro-edges
+        // and the Steiner swarms refinement seeds around them), shortest
+        // first. The collapse runs in do-no-harm mode: a well-shaped but
+        // too-small tet coarsens toward the target as long as the merge does
+        // not lower the local minimum quality.
+        {
+            let mut short: Vec<(f64, u32)> = Vec::new();
+            for &ti in &map_tets {
+                if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
+                    continue;
+                }
+                let floor2 = coarsen_floor2(mesh.tet_regions[ti as usize]);
+                if floor2 <= 0.0 {
+                    continue;
+                }
+                let t = mesh.tets[ti as usize];
+                let mut lmin2 = f64::MAX;
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        lmin2 = lmin2.min(dist2_pts(mesh.points[t[i]], mesh.points[t[j]]));
+                    }
+                }
+                if lmin2 < floor2 {
+                    short.push((lmin2, ti));
+                }
+            }
+            short.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            for (_, ti) in short {
+                let ti = ti as usize;
+                if !alive[ti] {
+                    continue; // rewritten by an earlier collapse
+                }
+                let floor2 = coarsen_floor2(mesh.tet_regions[ti]);
+                if try_edge_collapse(
+                    mesh,
+                    &mut g_incident,
+                    &mut alive,
+                    &mut tet_q,
+                    &mut face_idx,
+                    &mut constrained_faces,
+                    &mut constrained_edges,
+                    &constrained_verts,
+                    &edge_budget2,
+                    &face_budget2,
+                    &mut next_dirty,
+                    ti,
+                    floor2,
+                ) {
+                    ops += 1;
+                }
+            }
+        }
+        edge_watch("coarsen", mesh, &alive);
+        volume_watch("coarsen", mesh, &alive);
         let t2 = std::time::Instant::now();
 
         // ------------------------------------------------------ flips
@@ -1522,7 +1603,13 @@ fn try_edge_collapse(
     face_budget2: &impl Fn(rapidmesh_geom::FaceTag, u32) -> f64,
     next_dirty: &mut DSet<usize>,
     ti: usize,
+    // > 0 enables COARSENING: only edges shorter than this (squared) are
+    // collapsed, and the gate is do-no-harm (keep the local minimum
+    // quality) rather than strict improvement. 0 is the quality mode used
+    // for bad-tet repair: any edge, must improve.
+    coarsen_floor2: f64,
 ) -> bool {
+    let coarsen = coarsen_floor2 > 0.0;
     let t = mesh.tets[ti];
     let ctrace = std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some();
     if ctrace {
@@ -1598,6 +1685,11 @@ fn try_edge_collapse(
 
         'targets: for (ai, &a) in t.iter().enumerate() {
             if ai == bi {
+                continue;
+            }
+            // Coarsening targets the short edge only: a do-no-harm collapse
+            // of a well-sized edge would coarsen the mesh below its target.
+            if coarsen && dist2_pts(mesh.points[a], mesh.points[b]) >= coarsen_floor2 {
                 continue;
             }
             if !b_faces.is_empty() {
@@ -1778,7 +1870,11 @@ fn try_edge_collapse(
                         mesh.points[a] = pa0;
                         continue 'positions;
                     }
-                    match quality_above(&mesh.points, n, old_q) {
+                    // Quality mode requires improvement (cutoff old_q);
+                    // coarsening only requires do-no-harm, so its cutoff sits
+                    // just below old_q to let quality-neutral merges through.
+                    let cutoff = if coarsen { old_q - 2.0 * QUALITY_EPS } else { old_q };
+                    match quality_above(&mesh.points, n, cutoff) {
                         Some(q) => new_q = new_q.min(q),
                         None => {
                             mesh.points[a] = pa0;
@@ -1786,11 +1882,18 @@ fn try_edge_collapse(
                         }
                     }
                 }
-                if new_q <= old_q + QUALITY_EPS {
+                // Coarsening: keep the local minimum quality (do no harm).
+                // Quality mode: strictly improve it.
+                let accept = if coarsen {
+                    new_q >= old_q - QUALITY_EPS
+                } else {
+                    new_q > old_q + QUALITY_EPS
+                };
+                if !accept {
                     mesh.points[a] = pa0;
                     creject(4);
                     if ctrace {
-                        eprintln!("  b {b} -> a {a} pos {moved}: quality {new_q:.4} <= {old_q:.4}");
+                        eprintln!("  b {b} -> a {a} pos {moved}: quality {new_q:.4} vs {old_q:.4} (coarsen {coarsen})");
                     }
                     continue 'positions;
                 }

@@ -171,4 +171,53 @@ coaxial/orthogonal cases.
   must still split coplanar facets against each other; planar facets must carry
   the coplanar-merge logic that the triangle path has today.
 
+## 7. WP1-Design decision (resolved)
+
+The three §6 questions, decided before writing WP1a:
+
+**(a) First-class PlanarFacet, not post-hoc triangle grouping.** Verified the
+root precisely: the counterbore step floor is a fan triangulation; its radial
+spokes cross the bore circle and create intersection points *between* the bore
+vertices. ANY pre-triangulation has edges that cross a piercing curve — so the
+flat face must be carried as an **un-triangulated boundary polygon** and
+triangulated only AFTER the arrangement, with the piercing curves as
+constraints landing on their own vertices. Post-hoc grouping would have to
+discard the interior edges and re-triangulate anyway, i.e. reconstruct what
+prim.rs already knows. First-class is therefore both cleaner and the only thing
+that actually removes the near-twins.
+
+**Consequence for the arrangement (the load-bearing change).** A `Faceted`
+becomes hybrid: curved barrels stay tessellated triangles, flat faces become
+`PlanarFacet`s (boundary loop + plane + surface backref). The intersection
+of a PlanarFacet with another surface is a SEGMENT whose endpoints are the
+true geometric crossings (the other surface's vertices on the shared curve),
+*independent of any helper triangulation* — so the facet picks up constraints
+exactly at the piercing surface's vertices. The arrangement's intersection
+core generalizes from tri×tri to {tri, polygon}×{tri, polygon}: tri×tri stays,
+polygon sides clip the inter-plane line against the boundary loop. The exact
+predicates and implicit-point machinery are unchanged; only the *units* widen.
+
+**(b) Holed / non-convex flat faces.** PlanarFacet carries an outer loop plus
+optional hole loops (prism-with-holes, sheet_polygon already produce these).
+triangulate_facet already triangulates from boundary + constraints; hole loops
+are just additional constraint loops. No new machinery.
+
+**(c) Coplanar overlaps between solids (box on substrate).** The triangle path
+clips coplanar pairs (clip_coplanar_edge) and dedups coincident survivors. The
+polygon path needs the coplanar analog: coplanar PlanarFacets are clipped
+against each other (2D polygon arrangement in the shared plane) so the shared
+region is split consistently and classified once. This is the most intricate
+piece of WP1c and gets its own sub-step + fixture (box-on-substrate).
+
+**Gate semantics correction.** WP1 changes how flat faces are triangulated, so
+the mesh is NOT triangle-identical to the old pipeline — by design. The WP1
+gate is therefore **region volumes bit-exact + conformity valid + S-parameter
+fixtures green**, not "identical triangulation".
+
+**Migration order (risk-first):** WP1a datatype → WP1b prim.rs emits polygons
+(barrels unchanged) → WP1c arrangement generalization (tri×poly, poly×poly,
+coplanar clip) → WP1d classification per polygon + coplanar merge → WP1 gate.
+WP1c is the risk; it is reached only after the datatype and emission are in and
+testable in isolation.
+
 Related: docs/cdt-recovery-plan.md, DESIGN.md (§ CSG kernel, § Tet mesher).

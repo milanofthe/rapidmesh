@@ -1646,16 +1646,6 @@ fn try_edge_collapse(
                 }
             }
         }
-        // Fidelity-preserving coarsening: never coarsen a SURFACE vertex. It
-        // defines the analytic boundary tessellation, and removing it shifts
-        // that boundary (collapsing a convex bore-ring vertex shrinks the bore
-        // polygon, growing the material region). Coarsening therefore only
-        // thins INTERIOR Steiner vertices; bad-tet repair (coarsen_floor2 == 0)
-        // may still collapse surface slivers, where keeping shape beats keeping
-        // volume.
-        if coarsen && !b_faces.is_empty() {
-            continue;
-        }
         let b_patches: Vec<u32> = {
             let mut ps: Vec<u32> = b_faces
                 .iter()

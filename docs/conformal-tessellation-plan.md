@@ -247,7 +247,30 @@ WP1c/d+late-triangulation d3b08cb). The flat-face path is fully conformal:
   csg/exact/geom suites green. counterbore min-dih 0.6 -> 3.56; flat-only seam
   models (laminate, baffled_tank) cleaned.
 
-## 9. WP3 finding (validated, not yet landed)
+## 9b. WP3 bores + WP4 surface coarsening (LANDED, commit 7303104)
+
+The barrel-quad-flat fix below LANDED, together with its required optimize fix:
+
+- **Barrel-quad flats** (prim.rs): axis-aligned cylinder/cone barrel quads emit
+  one `PlanarFacet` each (exact-coplanarity guard; `top = bottom + axis`), so
+  the conformal merge fuses the quad-diagonal crossings that caused the bore
+  slivers. Tilted/doubly-curved quads fall back to triangles.
+- **Fidelity-preserving coarsening** (optimize.rs try_edge_collapse): coarsening
+  no longer collapses SURFACE vertices (they define the analytic boundary
+  tessellation; removing a convex bore-ring vertex shrinks the bore and grows
+  the region). This fixed the +1.3e-6 material growth AT THE ROOT;
+  cylinder_void_volume_through_optimize passes at the original 1e-9 bound.
+
+Corpus result (min-dih, vs WP0 baseline): lattice_cube 2.8->11.8, bracket
+4.7->11.5, counterbore 0.6->8.7, perforated_plate 3.6->8.6, dice 3.5->6.6,
+spring (recovered) ->8.6; pipe_cross now meshes. All 18 conform + csg/exact/geom
+green. STILL ~0: serpentine/square_to_round (sweeps), orbs (spheres), laminate
+(coplanar stacks), mold_block (regressed 4.4->0.1). laminate+mold_block point at
+the COPLANAR facet path (box-on-box overlaps) as the remaining weak spot. Four
+models still panic at mesh time (pipe_junction, nested_shells, house,
+pressure_vessel), pre-existing.
+
+## 9. WP3 finding (validated path, now landed in 9b)
 
 The counterbore RESIDUAL after WP2 is not a flat-face seam: it is the bore
 CYLINDER barrel. A cylinder/cone barrel quad is piecewise PLANAR (a vertical

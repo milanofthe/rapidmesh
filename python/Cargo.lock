@@ -256,6 +256,7 @@ version = "0.1.0"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-exact",
+ "rayon",
 ]
 
 [[package]]
@@ -271,6 +272,7 @@ version = "0.1.0"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
+ "rayon",
 ]
 
 [[package]]

@@ -11,7 +11,7 @@
 
 use crate::faceted::{Faceted, SurfaceKind};
 use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc, SHEET_OWNER};
-use rapidmesh_csg::{arrange, classify, Placement, Tri, TriBoxes, VertexPool};
+use rapidmesh_csg::{arrange_facets, classify, Placement, PlanarInput, Tri, TriBoxes, VertexPool};
 use rapidmesh_exact::Point3;
 use std::collections::{HashMap, HashSet};
 
@@ -83,8 +83,15 @@ impl Scene {
     /// Assembles the conforming tagged PLC.
     pub fn assemble(&self) -> TaggedPlc {
         // ------------------------------------------------------- flatten
-        let mut tris: Vec<Tri> = Vec::new();
+        // Each input shape becomes a list of planar facets for the conformal
+        // arrangement: every flat face (FlatFacet) is one boundary-polygon
+        // facet carrying its helper triangulation; every remaining (curved)
+        // triangle is a single-triangle facet. `rep_tri` is a representative
+        // triangle per facet (coplanar with it, same outward normal) for the
+        // boundary-coincidence classification.
+        let mut facets: Vec<PlanarInput> = Vec::new();
         let mut src: Vec<Src> = Vec::new();
+        let mut rep_tri: Vec<Tri> = Vec::new();
         let mut surfaces: Vec<SurfaceKind> = Vec::new();
         let mut surface_owners: Vec<u32> = Vec::new();
         let mut flatten = |f: &Faceted, solid: Option<usize>, tag: FaceTag| {
@@ -92,12 +99,35 @@ impl Scene {
             surfaces.extend(f.surfaces.iter().cloned());
             let owner = solid.map_or(SHEET_OWNER, |k| k as u32);
             surface_owners.extend(std::iter::repeat(owner).take(f.surfaces.len()));
-            for (t, &fs) in f.tris.iter().zip(&f.face_surface) {
-                tris.push(*t);
+            // Flat faces first, as boundary polygons with their helper tiling.
+            let mut claimed = vec![false; f.tris.len()];
+            for fl in &f.flats {
+                let helpers: Vec<Tri> = f.tris[fl.tris.clone()].to_vec();
+                for i in fl.tris.clone() {
+                    claimed[i] = true;
+                }
+                rep_tri.push(helpers[0]);
+                facets.push(PlanarInput {
+                    boundary: fl.facet.clone(),
+                    helpers,
+                });
                 src.push(Src {
                     solid,
                     tag,
-                    surface: base + fs,
+                    surface: base + fl.surface,
+                });
+            }
+            // Remaining (curved) triangles as single-triangle facets.
+            for (i, t) in f.tris.iter().enumerate() {
+                if claimed[i] {
+                    continue;
+                }
+                rep_tri.push(*t);
+                facets.push(PlanarInput::tri(*t));
+                src.push(Src {
+                    solid,
+                    tag,
+                    surface: base + f.face_surface[i],
                 });
             }
         };
@@ -110,20 +140,22 @@ impl Scene {
 
         let trace = std::env::var_os("RAPIDMESH_TRACE").is_some();
         let t0 = std::time::Instant::now();
-        let arr = arrange(&tris);
+        let arr = arrange_facets(&facets);
         if trace {
             eprintln!("assemble: arrange {:.1?}", t0.elapsed());
         }
         let t1 = std::time::Instant::now();
 
-        // Scene bounding box for ray targets.
+        // Scene bounding box for ray targets, over every facet's geometry.
         let mut lo = [f64::MAX; 3];
         let mut hi = [f64::MIN; 3];
-        for t in &tris {
-            for v in &t.v {
-                for k in 0..3 {
-                    lo[k] = lo[k].min(v[k]);
-                    hi[k] = hi[k].max(v[k]);
+        for f in &facets {
+            for t in &f.helpers {
+                for v in &t.v {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(v[k]);
+                        hi[k] = hi[k].max(v[k]);
+                    }
                 }
             }
         }
@@ -217,7 +249,7 @@ impl Scene {
                     let (in_front, in_back) = match classify(
                         &bary,
                         rep,
-                        &tris[fi],
+                        &rep_tri[fi],
                         &self.solids[j].tris,
                         &solid_boxes[j],
                         (lo, hi),

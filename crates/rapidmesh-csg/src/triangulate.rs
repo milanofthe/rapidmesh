@@ -83,6 +83,39 @@ pub fn triangulate_facet(
     constraints: &[Constraint],
 ) -> FacetTriangulation {
     let (axis, orientation) = facet.projection_axis();
+    let seed_pool: Vec<Point3> = (0..3).map(|i| facet.point(i)).collect();
+    let seed_tris = vec![[0usize, 1, 2]];
+    triangulate_seeded(
+        axis,
+        orientation,
+        facet.v,
+        seed_pool,
+        seed_tris,
+        points,
+        constraints,
+    )
+}
+
+/// Exact constrained triangulation of a planar facet given a SEED triangulation
+/// (a valid tiling of the facet by triangles, vertices `seed_pool`, faces
+/// `seed_tris`), the facet's projection (`axis`, `orientation`), three
+/// non-collinear plane points `plane3` (for `PlaneCut` TPI provenance), and the
+/// points/constraints dropped on it. Generalizes [`triangulate_facet`] from a
+/// single input triangle to an arbitrary planar polygon (with holes): the seed
+/// boundary edges (loops, including holes) have no opposite triangle and are
+/// preserved, while seed-internal edges are flipped toward the constrained
+/// Delaunay triangulation — so a fan/ear seed leaves no artificial interior
+/// structure behind.
+#[allow(clippy::too_many_arguments)]
+pub fn triangulate_seeded(
+    axis: Axis,
+    orientation: Sign,
+    plane3: [[f64; 3]; 3],
+    seed_pool: Vec<Point3>,
+    seed_tris: Vec<[usize; 3]>,
+    points: &[Point3],
+    constraints: &[Constraint],
+) -> FacetTriangulation {
     let o2d = |a: &Point3, b: &Point3, c: &Point3| -> Sign {
         orient2d(a, b, c, axis).expect("all triangulation points are valid")
     };
@@ -90,10 +123,8 @@ pub fn triangulate_facet(
     let tri_trace = std::env::var_os("RAPIDMESH_TRI_TRACE").is_some();
     let t_pool = std::time::Instant::now();
     // ------------------------------------------------------ vertex pool
-    let mut pool: Vec<Point3> = Vec::new();
-    for i in 0..3 {
-        add_vertex(&mut pool, facet.point(i));
-    }
+    let mut pool: Vec<Point3> = seed_pool;
+    let seed_len = pool.len();
     for p in points {
         add_vertex(&mut pool, p.clone());
     }
@@ -122,7 +153,7 @@ pub fn triangulate_facet(
                 continue;
             }
             let x = ci
-                .line_intersection(cj, facet.v)
+                .line_intersection(cj, plane3)
                 .expect("strictly crossing constraints have intersecting lines");
             debug_assert!(x.is_valid());
             add_vertex(&mut pool, x);
@@ -132,8 +163,8 @@ pub fn triangulate_facet(
     let d_presplit = t_presplit.elapsed();
     let t_insert = std::time::Instant::now();
     // ------------------------------------------------- point insertion
-    let mut tris: Vec<[usize; 3]> = vec![[0, 1, 2]];
-    for k in 3..pool.len() {
+    let mut tris: Vec<[usize; 3]> = seed_tris;
+    for k in seed_len..pool.len() {
         insert_vertex(&mut tris, &pool, orientation, axis, k);
     }
     let d_insert = t_insert.elapsed();

@@ -109,6 +109,31 @@ impl PlanarFacet {
         panic!("degenerate (collinear) planar facet: {:?}", self.outer);
     }
 
+    /// True if the (hole-free) outer loop is convex in its projection: no turn
+    /// is reflex (opposite the loop orientation). Collinear turns are allowed.
+    /// A holed facet is never convex (the hole forbids a single fan).
+    pub fn is_convex(&self) -> bool {
+        if !self.holes.is_empty() {
+            return false;
+        }
+        let (axis, orientation) = self.projection_axis();
+        let n = self.outer.len();
+        let reflex = orientation.flip();
+        for i in 0..n {
+            let s = orient2d(
+                &self.point(i),
+                &self.point((i + 1) % n),
+                &self.point((i + 2) % n),
+                axis,
+            )
+            .expect("explicit points are always valid");
+            if s == reflex {
+                return false;
+            }
+        }
+        true
+    }
+
     /// A copy with every loop vertex mapped by `f` (a rigid/affine map keeps
     /// the facet planar; the caller is responsible for that).
     pub fn map_points(&self, f: impl Fn([f64; 3]) -> [f64; 3]) -> PlanarFacet {

@@ -85,6 +85,12 @@ pub struct SegmentChains {
     carriers: Vec<([f64; 3], [f64; 3])>,
     /// Per segment: total splits so far (divergence backstop).
     splits: Vec<usize>,
+    /// Per segment: creation-log position at its last clean recovery sweep
+    /// (every chain piece a DT edge). A segment is re-probed only when a tet
+    /// created since then overlaps its bounding box -- the incremental skip
+    /// that turns resume_segments from O(rounds * all pieces) into work
+    /// proportional to actual local change (see [`resume_segments`]).
+    clean_pos: Vec<usize>,
 }
 
 impl SegmentChains {
@@ -218,6 +224,7 @@ pub fn recover_segments(
             .map(|&(a, b_)| (b.approx_point(a), b.approx_point(b_)))
             .collect(),
         splits: vec![0; segments.len()],
+        clean_pos: vec![0; segments.len()],
     };
     resume_segments(b, &mut chains);
     chains
@@ -228,11 +235,93 @@ pub fn recover_segments(
 /// face-recovery surgery knocked out chain edges).
 pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
     // Recovery rounds: an insertion for one segment can knock out an edge
-    // confirmed for another, so iterate full passes until one is clean.
+    // confirmed for another, so iterate until a round splits nothing.
+    //
+    // Incremental skip (the dominant cost saver on seam-dense scenes): a
+    // segment's chain pieces can only be knocked out by a tet created near
+    // the segment, so a segment whose bounding box no tet has touched since
+    // its last clean sweep is skipped without probing any piece. The
+    // bounding box is the segment's endpoint box (the carrier is straight,
+    // every Steiner point lies between the ends), padded against the f64
+    // approximation of implicit chain vertices. Mirrors the creation-log
+    // skip in recover_faces.
+    let bbox_of = |seg: usize| -> ([f64; 3], [f64; 3]) {
+        let (a, c) = chains.carriers[seg];
+        let scale = (0..3).map(|k| (a[k] - c[k]).abs()).fold(0.0_f64, f64::max);
+        let pad = 1e-7 * scale.max(1e-30);
+        (
+            std::array::from_fn(|k| a[k].min(c[k]) - pad),
+            std::array::from_fn(|k| a[k].max(c[k]) + pad),
+        )
+    };
+    let tet_overlaps = |b_: &DelaunayBuilder, slot: u32, blo: &[f64; 3], bhi: &[f64; 3]| -> bool {
+        let Some(t) = b_.tet_at(slot) else { return false };
+        let mut lo = [f64::MAX; 3];
+        let mut hi = [f64::MIN; 3];
+        for v in t {
+            let p = b_.approx_point(v);
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        (0..3).all(|k| lo[k] <= bhi[k] && hi[k] >= blo[k])
+    };
+
+    let dbg = std::env::var_os("RAPIDMESH_SEG_TRACE").is_some();
+    let (mut n_rounds, mut n_skip, mut n_probe, mut n_split) = (0u64, 0u64, 0u64, 0u64);
     loop {
+        n_rounds += 1;
+        // Shared snapshot of the creation-log suffix from the oldest clean
+        // position: (log position, tet bbox) per still-alive slot, so each
+        // segment sweeps plain bboxes from its own position. Slots created
+        // DURING this round (splits of earlier segments) are after the
+        // snapshot; the live-tail check below covers them via the builder.
+        let from = chains.clean_pos.iter().copied().min().unwrap_or(0);
+        let snapshot_end = b.creation_log().len();
+        let news: Vec<(usize, [f64; 3], [f64; 3])> = b
+            .creation_log()
+            .iter()
+            .enumerate()
+            .skip(from)
+            .filter_map(|(pos, &s)| {
+                let t = b.tet_at(s)?;
+                let mut lo = [f64::MAX; 3];
+                let mut hi = [f64::MIN; 3];
+                for v in t {
+                    let p = b.approx_point(v);
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(p[k]);
+                        hi[k] = hi[k].max(p[k]);
+                    }
+                }
+                Some((pos, lo, hi))
+            })
+            .collect();
+
         let mut any_missing = false;
         for seg in 0..chains.nodes.len() {
+            // Incremental skip: nothing created near the segment since its
+            // last clean sweep means every piece is still a DT edge.
+            let (blo, bhi) = bbox_of(seg);
+            let bbox_hit = |lo: &[f64; 3], hi: &[f64; 3]| -> bool {
+                (0..3).all(|k| lo[k] <= bhi[k] && hi[k] >= blo[k])
+            };
+            let start = news.partition_point(|&(pos, _, _)| pos < chains.clean_pos[seg]);
+            let snap_clean = news[start..].iter().all(|(_, lo, hi)| !bbox_hit(lo, hi));
+            let tail_from = chains.clean_pos[seg].max(snapshot_end);
+            let tail_clean = b.creation_log()[tail_from..]
+                .iter()
+                .all(|&s| !tet_overlaps(b, s, &blo, &bhi));
+            if snap_clean && tail_clean {
+                chains.clean_pos[seg] = b.creation_log().len();
+                n_skip += 1;
+                continue;
+            }
+            n_probe += 1;
+
             let mut i = 0;
+            let mut seg_split = false;
             while i + 1 < chains.nodes[seg].len() {
                 let (va, ta) = chains.nodes[seg][i];
                 let (vb, tb) = chains.nodes[seg][i + 1];
@@ -241,6 +330,8 @@ pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
                     continue;
                 }
                 any_missing = true;
+                seg_split = true;
+                n_split += 1;
                 chains.splits[seg] += 1;
                 assert!(
                     chains.splits[seg] <= MAX_SPLITS_PER_SEGMENT,
@@ -266,10 +357,22 @@ pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
                 chains.cats[seg].insert(i + 1, right_cat);
                 // Re-check the shortened left piece in place.
             }
+            // A segment that was probed and needed no split is clean as of
+            // now; one that split created tets, so it stays dirty (its own
+            // and others' boxes re-checked against them next round).
+            if !seg_split {
+                chains.clean_pos[seg] = b.creation_log().len();
+            }
         }
         if !any_missing {
             break;
         }
+    }
+    if dbg {
+        eprintln!(
+            "resume_segments: {n_rounds} rounds, {n_probe} probes, {n_skip} skips, {n_split} splits ({} segments)",
+            chains.nodes.len(),
+        );
     }
 }
 

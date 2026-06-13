@@ -368,3 +368,202 @@ fn scaled_volume_and_surface_degradation() {
     let r = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
     assert!(solid_volume6(&r) > BigRational::zero());
 }
+
+// ---------------------------------------------------------- planar facets
+
+// Conformal-tessellation representation (WP1b): every flat face is carried as
+// a first-class boundary polygon plus a helper triangulation that must tile it
+// exactly. These checks prove the two views agree (coplanar, equal area,
+// disjoint helper ranges), which the conformal arrangement relies on.
+
+use rapidmesh_exact::{orient3d, Axis};
+use rapidmesh_geom::{pipe, sheet_disk, wedge, FlatFacet};
+
+fn proj(p: [f64; 3], drop: Axis) -> [f64; 2] {
+    match drop {
+        Axis::X => [p[1], p[2]],
+        Axis::Y => [p[2], p[0]],
+        Axis::Z => [p[0], p[1]],
+    }
+}
+
+/// Twice the signed shoelace area of a closed 3D loop in the given projection.
+fn loop_area2(loop3: &[[f64; 3]], drop: Axis) -> BigRational {
+    let n = loop3.len();
+    let mut acc = BigRational::zero();
+    for i in 0..n {
+        let a = proj(loop3[i], drop);
+        let b = proj(loop3[(i + 1) % n], drop);
+        acc += rat(a[0]) * rat(b[1]) - rat(b[0]) * rat(a[1]);
+    }
+    acc
+}
+
+fn abs_rat(x: BigRational) -> BigRational {
+    if x < BigRational::zero() {
+        -x
+    } else {
+        x
+    }
+}
+
+/// First exactly non-collinear triple of `loop3` (panics if fully collinear).
+fn noncollinear_triple(loop3: &[[f64; 3]]) -> (Point3, Point3, Point3) {
+    let n = loop3.len();
+    for i in 0..n {
+        let (a, b, c) = (
+            Point3::Explicit(loop3[i]),
+            Point3::Explicit(loop3[(i + 1) % n]),
+            Point3::Explicit(loop3[(i + 2) % n]),
+        );
+        // Non-collinear iff some axis projection has nonzero orient2d, i.e. the
+        // three are not on a line; detect via a nonzero scalar triple with a
+        // synthetic offset point per axis is overkill -- use 3D area sign.
+        for drop in [Axis::X, Axis::Y, Axis::Z] {
+            let pa = proj(loop3[i], drop);
+            let pb = proj(loop3[(i + 1) % n], drop);
+            let pc = proj(loop3[(i + 2) % n], drop);
+            let d = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]);
+            if d != 0.0 {
+                return (a, b, c);
+            }
+        }
+    }
+    panic!("flat facet outer loop is fully collinear");
+}
+
+/// Asserts every flat facet of `f` tiles its helper triangles by area, with
+/// disjoint and valid ranges. When `exact_planar` is set, also asserts exact
+/// coplanarity (only true for axis-constructed shapes; an f64 rotation rounds
+/// the vertices fractionally off their plane while keeping the tiling identity,
+/// which is combinatorial over the shared vertices and stays exact).
+fn assert_flats_consistent(f: &Faceted, exact_planar: bool) {
+    let mut covered = vec![false; f.tris.len()];
+    for FlatFacet { facet, tris, .. } in &f.flats {
+        assert!(tris.end <= f.tris.len() && tris.start < tris.end, "bad range");
+        // Disjoint coverage.
+        for i in tris.clone() {
+            assert!(!covered[i], "helper triangle {i} claimed by two flats");
+            covered[i] = true;
+        }
+        // Coplanarity: every helper-triangle vertex lies in the facet plane.
+        if exact_planar {
+            let (a, b, c) = noncollinear_triple(&facet.outer);
+            for i in tris.clone() {
+                for k in 0..3 {
+                    let p = Point3::Explicit(f.tris[i].v[k]);
+                    assert_eq!(
+                        orient3d(&a, &b, &c, &p),
+                        Some(rapidmesh_exact::Sign::Zero),
+                        "helper vertex off the facet plane"
+                    );
+                }
+            }
+        }
+        // Area: |outer| - sum|holes| == sum of helper-triangle areas, in the
+        // facet's own projection (drop the dominant normal axis).
+        let (axis, _) = facet.projection_axis();
+        let mut poly = abs_rat(loop_area2(&facet.outer, axis));
+        for h in &facet.holes {
+            poly -= abs_rat(loop_area2(h, axis));
+        }
+        let mut tiled = BigRational::zero();
+        for i in tris.clone() {
+            let t = &f.tris[i];
+            tiled += abs_rat(loop_area2(&t.v, axis));
+        }
+        assert_eq!(poly, tiled, "helper triangles do not tile the facet area");
+    }
+}
+
+#[test]
+fn box_flats_tile_six_faces() {
+    let f = solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]);
+    assert_eq!(f.flats.len(), 6, "box has six planar faces");
+    assert_flats_consistent(&f, true);
+    // All box triangles belong to a flat.
+    let claimed: usize = f.flats.iter().map(|fl| fl.tris.len()).sum();
+    assert_eq!(claimed, f.tris.len());
+}
+
+#[test]
+fn frustum_caps_are_flats_barrel_is_not() {
+    let f = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.5, 16);
+    assert_eq!(f.flats.len(), 2, "top and bottom caps");
+    assert_flats_consistent(&f, true);
+    // A cone has only the bottom cap.
+    let cone = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.0, 16);
+    assert_eq!(cone.flats.len(), 1);
+    assert_flats_consistent(&cone, true);
+}
+
+#[test]
+fn extrude_caps_and_walls_are_flats() {
+    let outer = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+    let hole = vec![[1.0, 1.0], [3.0, 1.0], [3.0, 3.0], [1.0, 3.0]];
+    let f = extrude_polygon(
+        &outer,
+        &[hole],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    // 2 caps + 4 outer walls + 4 hole walls.
+    assert_eq!(f.flats.len(), 10);
+    assert_flats_consistent(&f, true);
+}
+
+#[test]
+fn lshape_extrude_cap_tiles_with_hole() {
+    let f = extrude_polygon(
+        &L_SHAPE,
+        &[],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    assert_flats_consistent(&f, true);
+}
+
+#[test]
+fn sheets_and_disk_are_flats() {
+    let r = sheet_rect([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]);
+    assert_eq!(r.flats.len(), 1);
+    assert_flats_consistent(&r, true);
+    let d = sheet_disk([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 12);
+    assert_eq!(d.flats.len(), 1);
+    assert_flats_consistent(&d, true);
+    let p = sheet_polygon(
+        &L_SHAPE,
+        &[],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    );
+    assert_eq!(p.flats.len(), 1);
+    assert_flats_consistent(&p, true);
+}
+
+#[test]
+fn pipe_end_caps_are_flats() {
+    let f = pipe(&[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]], 0.3, 12);
+    assert_eq!(f.flats.len(), 2, "two end caps; barrel stays curved");
+    assert_flats_consistent(&f, true);
+}
+
+#[test]
+fn wedge_flats_consistent_through_transform() {
+    let f = wedge([0.0, 0.0, 0.0], 2.0, 1.0, 1.0, 0.5);
+    assert_flats_consistent(&f, true);
+    // Transforms keep the flat polygons tiling their helper triangles; an f64
+    // rotation rounds points fractionally off-plane, so coplanarity is checked
+    // exactly only on the axis-built shape.
+    let t = f.rotated([0.0, 0.0, 0.0], [0.3, 0.4, 0.5], 0.7);
+    assert_flats_consistent(&t, false);
+    let m = f.mirrored([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    assert_flats_consistent(&m, true);
+    let sc = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    assert_flats_consistent(&sc, true);
+}

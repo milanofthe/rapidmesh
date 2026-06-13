@@ -109,6 +109,32 @@ impl PlanarFacet {
         panic!("degenerate (collinear) planar facet: {:?}", self.outer);
     }
 
+    /// A copy with every loop vertex mapped by `f` (a rigid/affine map keeps
+    /// the facet planar; the caller is responsible for that).
+    pub fn map_points(&self, f: impl Fn([f64; 3]) -> [f64; 3]) -> PlanarFacet {
+        PlanarFacet {
+            outer: self.outer.iter().map(|&p| f(p)).collect(),
+            holes: self
+                .holes
+                .iter()
+                .map(|h| h.iter().map(|&p| f(p)).collect())
+                .collect(),
+        }
+    }
+
+    /// A copy with every loop reversed (winding flipped), as needed after an
+    /// orientation-reversing map (mirror, negative-determinant scale).
+    pub fn reversed(&self) -> PlanarFacet {
+        PlanarFacet {
+            outer: self.outer.iter().rev().copied().collect(),
+            holes: self
+                .holes
+                .iter()
+                .map(|h| h.iter().rev().copied().collect())
+                .collect(),
+        }
+    }
+
     /// Triangulates the outer loop into a triangle fan (for the arrangement
     /// broadphase and for shapes that still need a triangle soup, e.g. a
     /// solid operand). Holes are NOT represented here — this is the convex/

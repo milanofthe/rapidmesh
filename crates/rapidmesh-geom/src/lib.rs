@@ -14,7 +14,7 @@ pub mod polygon;
 pub mod prim;
 pub mod scene;
 
-pub use faceted::{Faceted, SurfaceKind};
+pub use faceted::{Faceted, FlatFacet, SurfaceKind};
 pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, ImportError};
 pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;

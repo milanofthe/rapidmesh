@@ -7,7 +7,7 @@
 
 use crate::faceted::{Faceted, SurfaceKind};
 use crate::polygon::{polygon_orientation, triangulate_polygon};
-use rapidmesh_csg::Tri;
+use rapidmesh_csg::{PlanarFacet, Tri};
 use rapidmesh_exact::Sign;
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -87,8 +87,12 @@ pub fn solid_box(min: [f64; 3], max: [f64; 3]) -> Faceted {
     let mut f = Faceted::new();
     for q in quads {
         let s = f.add_surface(SurfaceKind::Plane);
-        f.push_tri(Tri::new(c[q[0]], c[q[1]], c[q[2]]), s);
-        f.push_tri(Tri::new(c[q[0]], c[q[2]], c[q[3]]), s);
+        let loop4 = vec![c[q[0]], c[q[1]], c[q[2]], c[q[3]]];
+        let tris = [
+            Tri::new(c[q[0]], c[q[1]], c[q[2]]),
+            Tri::new(c[q[0]], c[q[2]], c[q[3]]),
+        ];
+        f.push_flat(PlanarFacet::new(loop4), &tris, s);
     }
     f
 }
@@ -148,17 +152,21 @@ pub fn frustum(
             f.push_tri(Tri::new(bottom[i], bottom[j], top[j]), barrel);
             f.push_tri(Tri::new(bottom[i], top[j], top[i]), barrel);
         }
+        // Top cap: ring CCW around +axis matches the outward (+axis) normal.
         let cap = f.add_surface(SurfaceKind::Plane);
-        for i in 0..segments {
-            let j = (i + 1) % segments;
-            f.push_tri(Tri::new(top_center, top[i], top[j]), cap);
-        }
+        let cap_tris: Vec<Tri> = (0..segments)
+            .map(|i| Tri::new(top_center, top[i], top[(i + 1) % segments]))
+            .collect();
+        f.push_flat(PlanarFacet::new(top.clone()), &cap_tris, cap);
     }
+    // Bottom cap: outward normal is -axis, so the boundary runs the bottom
+    // ring in reverse (clockwise around +axis), matching the fan winding.
     let cap = f.add_surface(SurfaceKind::Plane);
-    for i in 0..segments {
-        let j = (i + 1) % segments;
-        f.push_tri(Tri::new(base_center, bottom[j], bottom[i]), cap);
-    }
+    let cap_tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(base_center, bottom[(i + 1) % segments], bottom[i]))
+        .collect();
+    let bottom_loop: Vec<[f64; 3]> = bottom.iter().rev().copied().collect();
+    f.push_flat(PlanarFacet::new(bottom_loop), &cap_tris, cap);
     f
 }
 
@@ -245,35 +253,56 @@ pub fn extrude_polygon(
 
     let cap = triangulate_polygon(&outer_ccw, &holes_cw);
     let mut f = Faceted::new();
+    let top_base = add(base, h);
+    let embed_loop = |loop2: &[[f64; 2]], origin: [f64; 3]| -> Vec<[f64; 3]> {
+        loop2.iter().map(|&p| embed(origin, u, v, p)).collect()
+    };
 
     // Bottom cap: counterclockwise in (u, v) faces along +(u x v); the
-    // outward bottom normal is the opposite, so reverse the winding.
+    // outward bottom normal is the opposite, so reverse the winding (both the
+    // fan triangles and the boundary loops).
     let bottom = f.add_surface(SurfaceKind::Plane);
-    for t in &cap {
-        f.push_tri(
+    let bottom_tris: Vec<Tri> = cap
+        .iter()
+        .map(|t| {
             Tri::new(
                 embed(base, u, v, t[0]),
                 embed(base, u, v, t[2]),
                 embed(base, u, v, t[1]),
-            ),
-            bottom,
-        );
-    }
-    let top_base = add(base, h);
+            )
+        })
+        .collect();
+    let bottom_outer: Vec<[f64; 3]> =
+        embed_loop(&outer_ccw, base).into_iter().rev().collect();
+    let bottom_holes: Vec<Vec<[f64; 3]>> = holes_cw
+        .iter()
+        .map(|h| embed_loop(h, base).into_iter().rev().collect())
+        .collect();
+    f.push_flat(
+        PlanarFacet::with_holes(bottom_outer, bottom_holes),
+        &bottom_tris,
+        bottom,
+    );
+
     let top = f.add_surface(SurfaceKind::Plane);
-    for t in &cap {
-        f.push_tri(
+    let top_tris: Vec<Tri> = cap
+        .iter()
+        .map(|t| {
             Tri::new(
                 embed(top_base, u, v, t[0]),
                 embed(top_base, u, v, t[1]),
                 embed(top_base, u, v, t[2]),
-            ),
-            top,
-        );
-    }
+            )
+        })
+        .collect();
+    let top_outer = embed_loop(&outer_ccw, top_base);
+    let top_holes: Vec<Vec<[f64; 3]>> =
+        holes_cw.iter().map(|h| embed_loop(h, top_base)).collect();
+    f.push_flat(PlanarFacet::with_holes(top_outer, top_holes), &top_tris, top);
 
     // Walls: region lies left of every (normalized) ring edge, so the quad
-    // (a, b, b+h, a+h) faces outward.
+    // (a, b, b+h, a+h) faces outward. Each wall quad is its own plane, hence
+    // its own planar facet.
     for ring in std::iter::once(&outer_ccw).chain(holes_cw.iter()) {
         let side = f.add_surface(SurfaceKind::Plane);
         for i in 0..ring.len() {
@@ -281,8 +310,8 @@ pub fn extrude_polygon(
             let a = embed(base, u, v, ring[i]);
             let b = embed(base, u, v, ring[j]);
             let (at, bt) = (add(a, h), add(b, h));
-            f.push_tri(Tri::new(a, b, bt), side);
-            f.push_tri(Tri::new(a, bt, at), side);
+            let tris = [Tri::new(a, b, bt), Tri::new(a, bt, at)];
+            f.push_flat(PlanarFacet::new(vec![a, b, bt, at]), &tris, side);
         }
     }
     f
@@ -449,16 +478,18 @@ pub fn pipe(path: &[[f64; 3]], radius: f64, segments: usize) -> Faceted {
             f.push_tri(Tri::new(a, c, d), s);
         }
     }
+    // End caps lie in planes normal to the end tangents, so they are flat.
     let cap0 = f.add_surface(SurfaceKind::Plane);
-    for j in 0..segments {
-        let j2 = (j + 1) % segments;
-        f.push_tri(Tri::new(path[0], rings[0][j2], rings[0][j]), cap0);
-    }
+    let cap0_tris: Vec<Tri> = (0..segments)
+        .map(|j| Tri::new(path[0], rings[0][(j + 1) % segments], rings[0][j]))
+        .collect();
+    let cap0_loop: Vec<[f64; 3]> = rings[0].iter().rev().copied().collect();
+    f.push_flat(PlanarFacet::new(cap0_loop), &cap0_tris, cap0);
     let cap1 = f.add_surface(SurfaceKind::Plane);
-    for j in 0..segments {
-        let j2 = (j + 1) % segments;
-        f.push_tri(Tri::new(path[n - 1], rings[n - 1][j], rings[n - 1][j2]), cap1);
-    }
+    let cap1_tris: Vec<Tri> = (0..segments)
+        .map(|j| Tri::new(path[n - 1], rings[n - 1][j], rings[n - 1][(j + 1) % segments]))
+        .collect();
+    f.push_flat(PlanarFacet::new(rings[n - 1].clone()), &cap1_tris, cap1);
     debug_assert!(signed_volume(&f) > 0.0, "pipe orientation");
     f
 }
@@ -550,8 +581,8 @@ pub fn sheet_rect(corner: [f64; 3], u: [f64; 3], v: [f64; 3]) -> Faceted {
     let b = add(corner, u);
     let c = add(add(corner, u), v);
     let d = add(corner, v);
-    f.push_tri(Tri::new(corner, b, c), s);
-    f.push_tri(Tri::new(corner, c, d), s);
+    let tris = [Tri::new(corner, b, c), Tri::new(corner, c, d)];
+    f.push_flat(PlanarFacet::new(vec![corner, b, c, d]), &tris, s);
     f
 }
 
@@ -565,16 +596,22 @@ pub fn sheet_polygon(
 ) -> Faceted {
     let mut f = Faceted::new();
     let s = f.add_surface(SurfaceKind::Plane);
-    for t in triangulate_polygon(outer, holes) {
-        f.push_tri(
+    let tris: Vec<Tri> = triangulate_polygon(outer, holes)
+        .iter()
+        .map(|t| {
             Tri::new(
                 embed(base, u, v, t[0]),
                 embed(base, u, v, t[1]),
                 embed(base, u, v, t[2]),
-            ),
-            s,
-        );
-    }
+            )
+        })
+        .collect();
+    let outer_loop: Vec<[f64; 3]> = outer.iter().map(|&p| embed(base, u, v, p)).collect();
+    let hole_loops: Vec<Vec<[f64; 3]>> = holes
+        .iter()
+        .map(|h| h.iter().map(|&p| embed(base, u, v, p)).collect())
+        .collect();
+    f.push_flat(PlanarFacet::with_holes(outer_loop, hole_loops), &tris, s);
     f
 }
 
@@ -589,9 +626,9 @@ pub fn sheet_disk(center: [f64; 3], e1: [f64; 3], e2: [f64; 3], segments: usize)
             add(center, add(scale(e1, t.cos()), scale(e2, t.sin())))
         })
         .collect();
-    for i in 0..segments {
-        let j = (i + 1) % segments;
-        f.push_tri(Tri::new(center, ring[i], ring[j]), s);
-    }
+    let tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(center, ring[i], ring[(i + 1) % segments]))
+        .collect();
+    f.push_flat(PlanarFacet::new(ring), &tris, s);
     f
 }

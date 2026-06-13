@@ -1,7 +1,24 @@
 //! Faceted shapes: tessellated triangle meshes with analytic surface
 //! back-references.
 
-use rapidmesh_csg::{Solid, Tri};
+use rapidmesh_csg::{PlanarFacet, Solid, Tri};
+
+/// A flat (planar) face carried both as its helper triangulation (the range of
+/// `Faceted::tris` that tiles it) and as its first-class boundary polygon. The
+/// conformal arrangement intersects the helper triangles but accumulates the
+/// resulting constraints at the polygon level, so a flat face has no interior
+/// vertices of its own and curves piercing it land on their own vertices
+/// (see docs/conformal-tessellation-plan.md). Curved faces (barrels, spheres,
+/// tori) carry no `FlatFacet`; their triangles stay first-class.
+#[derive(Debug, Clone)]
+pub struct FlatFacet {
+    /// Boundary loops of the face, in this shape's coordinates.
+    pub facet: PlanarFacet,
+    /// Index into `Faceted::surfaces` (shared with the helper triangles).
+    pub surface: u32,
+    /// The helper triangles of this face: `Faceted::tris[tris]`.
+    pub tris: std::ops::Range<usize>,
+}
 
 /// The analytic surface a facet was tessellated from. Flat facets need no
 /// snapping; curved kinds carry the data the order-2 midside snapping stage
@@ -60,6 +77,9 @@ pub struct Faceted {
     pub face_surface: Vec<u32>,
     /// The distinct analytic surfaces of this shape.
     pub surfaces: Vec<SurfaceKind>,
+    /// Flat faces as first-class boundary polygons (each backed by a range of
+    /// `tris`). Empty until a builder registers them; curved faces never do.
+    pub flats: Vec<FlatFacet>,
 }
 
 impl Faceted {
@@ -69,6 +89,7 @@ impl Faceted {
             tris: Vec::new(),
             face_surface: Vec::new(),
             surfaces: Vec::new(),
+            flats: Vec::new(),
         }
     }
 
@@ -84,13 +105,35 @@ impl Faceted {
         self.face_surface.push(surface);
     }
 
-    /// Appends another shape (surface indices are re-based).
+    /// Adds a flat polygonal face: pushes its helper triangulation `tris` (all
+    /// on `surface`, and which must exactly tile the polygon) and records the
+    /// boundary `facet` as a first-class planar facet for the conformal
+    /// arrangement.
+    pub fn push_flat(&mut self, facet: PlanarFacet, tris: &[Tri], surface: u32) {
+        let start = self.tris.len();
+        for t in tris {
+            self.push_tri(*t, surface);
+        }
+        self.flats.push(FlatFacet {
+            facet,
+            surface,
+            tris: start..self.tris.len(),
+        });
+    }
+
+    /// Appends another shape (surface and triangle indices are re-based).
     pub fn append(&mut self, other: &Faceted) {
-        let base = self.surfaces.len() as u32;
+        let surf_base = self.surfaces.len() as u32;
+        let tri_base = self.tris.len();
         self.surfaces.extend(other.surfaces.iter().cloned());
         self.tris.extend(other.tris.iter().copied());
         self.face_surface
-            .extend(other.face_surface.iter().map(|&s| s + base));
+            .extend(other.face_surface.iter().map(|&s| s + surf_base));
+        self.flats.extend(other.flats.iter().map(|fl| FlatFacet {
+            facet: fl.facet.clone(),
+            surface: fl.surface + surf_base,
+            tris: (fl.tris.start + tri_base)..(fl.tris.end + tri_base),
+        }));
     }
 
     /// The bare triangle soup as a CSG solid operand. Only meaningful for
@@ -120,6 +163,15 @@ impl Faceted {
                 .map(|t| Tri::new(map(t.v[0]), map(t.v[1]), map(t.v[2])))
                 .collect(),
             face_surface: self.face_surface.clone(),
+            flats: self
+                .flats
+                .iter()
+                .map(|fl| FlatFacet {
+                    facet: fl.facet.map_points(map),
+                    surface: fl.surface,
+                    tris: fl.tris.clone(),
+                })
+                .collect(),
             surfaces: self
                 .surfaces
                 .iter()
@@ -186,6 +238,9 @@ impl Faceted {
         for t in &mut out.tris {
             t.v.swap(1, 2);
         }
+        for fl in &mut out.flats {
+            fl.facet = fl.facet.reversed();
+        }
         out
     }
 
@@ -237,6 +292,9 @@ impl Faceted {
         if factors[0] * factors[1] * factors[2] < 0.0 {
             for t in &mut out.tris {
                 t.v.swap(1, 2);
+            }
+            for fl in &mut out.flats {
+                fl.facet = fl.facet.reversed();
             }
         }
         out

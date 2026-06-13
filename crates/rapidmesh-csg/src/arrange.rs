@@ -393,8 +393,13 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
         );
     }
     let t_tri = std::time::Instant::now();
+    // Each facet retriangulates independently from its own intersection
+    // points and constraints (read-only), and this dominates assembly on
+    // boolean-heavy scenes; run it in parallel. collect() into an indexed
+    // Vec keeps the result order identical to the serial map.
+    use rayon::prelude::*;
     let facets = tris
-        .iter()
+        .par_iter()
         .enumerate()
         .map(|(i, t)| triangulate_facet(t, &points[i], &constraints[i]))
         .collect();

@@ -87,6 +87,8 @@ pub fn triangulate_facet(
         orient2d(a, b, c, axis).expect("all triangulation points are valid")
     };
 
+    let tri_trace = std::env::var_os("RAPIDMESH_TRI_TRACE").is_some();
+    let t_pool = std::time::Instant::now();
     // ------------------------------------------------------ vertex pool
     let mut pool: Vec<Point3> = Vec::new();
     for i in 0..3 {
@@ -103,6 +105,8 @@ pub fn triangulate_facet(
             constraint_ids.push((ia, ib));
         }
     }
+    let d_pool = t_pool.elapsed();
+    let t_presplit = std::time::Instant::now();
 
     // Pre-split: exact crossing points of strictly crossing constraint pairs.
     for (i, ci) in constraints.iter().enumerate() {
@@ -125,11 +129,15 @@ pub fn triangulate_facet(
         }
     }
 
+    let d_presplit = t_presplit.elapsed();
+    let t_insert = std::time::Instant::now();
     // ------------------------------------------------- point insertion
     let mut tris: Vec<[usize; 3]> = vec![[0, 1, 2]];
     for k in 3..pool.len() {
         insert_vertex(&mut tris, &pool, orientation, axis, k);
     }
+    let d_insert = t_insert.elapsed();
+    let t_recover = std::time::Instant::now();
 
     // -------------------------------------------- constraint recovery
     let mut chain_edges: Vec<(usize, usize)> = Vec::new();

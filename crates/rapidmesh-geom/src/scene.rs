@@ -170,15 +170,29 @@ impl Scene {
             .map(|f| TriBoxes::build(&f.tris, margin))
             .collect();
 
-        for (fi, ft) in arr.facets.iter().enumerate() {
-            let s = &src[fi];
-            for sub in &ft.triangles {
-                let (p0, p1, p2) = (
-                    &ft.vertices[sub[0]],
-                    &ft.vertices[sub[1]],
-                    &ft.vertices[sub[2]],
+        // Flat list of every sub-triangle (facet index, sub index): the
+        // region resolution below is read-only and dominates assembly on
+        // boolean-heavy scenes, so it runs in parallel; the cheap emission
+        // (vertex pool, dedup) stays sequential in the SAME order, keeping
+        // the output bit-identical to the serial pass.
+        use rayon::prelude::*;
+        let subs: Vec<(usize, usize)> = arr
+            .facets
+            .iter()
+            .enumerate()
+            .flat_map(|(fi, ft)| (0..ft.triangles.len()).map(move |si| (fi, si)))
+            .collect();
+        let regions: Vec<(RegionTag, RegionTag)> = subs
+            .par_iter()
+            .map(|&(fi, si)| {
+                let ft = &arr.facets[fi];
+                let s = &src[fi];
+                let sub = &ft.triangles[si];
+                let bary = Point3::bary(
+                    ft.vertices[sub[0]].clone(),
+                    ft.vertices[sub[1]].clone(),
+                    ft.vertices[sub[2]].clone(),
                 );
-                let bary = Point3::bary(p0.clone(), p1.clone(), p2.clone());
                 let rep = bary
                     .approx()
                     .expect("facet representative must be a valid point");
@@ -208,13 +222,13 @@ impl Scene {
                         &solid_boxes[j],
                         (lo, hi),
                     ) {
-                            Placement::Inside => (true, true),
-                            Placement::Outside => (false, false),
-                            // Coincident facets: j's interior lies behind j's
-                            // outward normal, i.e. behind ours iff the
-                            // normals agree.
-                            Placement::Boundary { same_normal } => (!same_normal, same_normal),
-                        };
+                        Placement::Inside => (true, true),
+                        Placement::Outside => (false, false),
+                        // Coincident facets: j's interior lies behind j's
+                        // outward normal, i.e. behind ours iff the
+                        // normals agree.
+                        Placement::Boundary { same_normal } => (!same_normal, same_normal),
+                    };
                     if in_front {
                         front.get_or_insert(region);
                     }
@@ -222,35 +236,46 @@ impl Scene {
                         back.get_or_insert(region);
                     }
                 }
-                let fr = RegionTag(front.unwrap_or(0));
-                let br = RegionTag(back.unwrap_or(0));
+                (RegionTag(front.unwrap_or(0)), RegionTag(back.unwrap_or(0)))
+            })
+            .collect();
 
-                // Solid facets survive only as region interfaces; sheets
-                // always survive.
-                if s.solid.is_some() && fr == br {
-                    continue;
-                }
+        for (idx_sub, &(fi, si)) in subs.iter().enumerate() {
+            let ft = &arr.facets[fi];
+            let s = &src[fi];
+            let sub = &ft.triangles[si];
+            let (p0, p1, p2) = (
+                &ft.vertices[sub[0]],
+                &ft.vertices[sub[1]],
+                &ft.vertices[sub[2]],
+            );
+            let (fr, br) = regions[idx_sub];
 
-                let idx: [u32; 3] = [
-                    pool.insert(p0.clone()) as u32,
-                    pool.insert(p1.clone()) as u32,
-                    pool.insert(p2.clone()) as u32,
-                ];
-                let mut key = idx;
-                key.sort_unstable();
-                if let Some(&e) = emitted.get(&key) {
-                    // Coincident facet already emitted: merge tags. Solid
-                    // interfaces win the region pair (they are equal up to
-                    // orientation anyway); sheets contribute their face tag.
-                    face_tags[e] = face_tags[e].max(s.tag);
-                    continue;
-                }
-                emitted.insert(key, triangles.len());
-                triangles.push(idx);
-                face_tags.push(s.tag);
-                surface_refs.push(SurfaceRef(s.surface));
-                region_tags.push([fr, br]);
+            // Solid facets survive only as region interfaces; sheets
+            // always survive.
+            if s.solid.is_some() && fr == br {
+                continue;
             }
+
+            let idx: [u32; 3] = [
+                pool.insert(p0.clone()) as u32,
+                pool.insert(p1.clone()) as u32,
+                pool.insert(p2.clone()) as u32,
+            ];
+            let mut key = idx;
+            key.sort_unstable();
+            if let Some(&e) = emitted.get(&key) {
+                // Coincident facet already emitted: merge tags. Solid
+                // interfaces win the region pair (they are equal up to
+                // orientation anyway); sheets contribute their face tag.
+                face_tags[e] = face_tags[e].max(s.tag);
+                continue;
+            }
+            emitted.insert(key, triangles.len());
+            triangles.push(idx);
+            face_tags.push(s.tag);
+            surface_refs.push(SurfaceRef(s.surface));
+            region_tags.push([fr, br]);
         }
 
         if trace {

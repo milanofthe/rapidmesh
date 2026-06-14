@@ -399,6 +399,246 @@ fn signed_volume(f: &Faceted) -> f64 {
     v6 / 6.0
 }
 
+/// Solid from an externally supplied triangle soup (an imported STL surface,
+/// a marching-cubes iso-surface, etc.). The input must describe a closed,
+/// non-self-intersecting surface; the winding is normalized to outward via the
+/// signed volume (every triangle flips together when the soup is inward). Each
+/// triangle is its own first-class facet on a single shared [`SurfaceKind::Plane`]
+/// surface (no `FlatFacet` grouping, so the conformal arrangement treats the
+/// many small facets independently rather than as one coplanar face). Fidelity
+/// snapping is off, as for any faceted import: the triangles are the surface.
+pub fn mesh_solid(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Faceted {
+    assert!(!tris.is_empty(), "mesh_solid needs at least one triangle");
+    let mut f = Faceted::new();
+    let s = f.add_surface(SurfaceKind::Plane);
+    for t in tris {
+        let (a, b, c) = (
+            verts[t[0] as usize],
+            verts[t[1] as usize],
+            verts[t[2] as usize],
+        );
+        f.push_tri(Tri::new(a, b, c), s);
+    }
+    let vol = signed_volume(&f);
+    assert!(vol.abs() > 0.0, "degenerate mesh_solid (zero volume)");
+    if vol < 0.0 {
+        for t in &mut f.tris {
+            t.v.swap(1, 2);
+        }
+    }
+    f
+}
+
+/// Cylinder with an isotropic barrel: instead of [`cylinder`]'s single ring of
+/// full-height quads, the side is a structured grid of `rows` height levels so
+/// the cells are roughly square (near-equilateral triangles), matching gmsh /
+/// tetgen's even surface-point distribution. Flat fan caps (the conformal
+/// mesher refines those isotropically anyway). Carries the analytic
+/// [`SurfaceKind::Cylinder`] for vertex snapping.
+pub fn cylinder_iso(
+    base_center: [f64; 3],
+    axis: [f64; 3],
+    radius: f64,
+    segments: usize,
+    rows: usize,
+) -> Faceted {
+    assert!(segments >= 3 && rows >= 1, "need >= 3 segments and >= 1 row");
+    assert!(radius > 0.0);
+    let (e1, e2) = orthonormal_basis(axis);
+    let ring = |center: [f64; 3]| -> Vec<[f64; 3]> {
+        (0..segments)
+            .map(|i| {
+                let a = 2.0 * std::f64::consts::PI * i as f64 / segments as f64;
+                add(center, add(scale(e1, radius * a.cos()), scale(e2, radius * a.sin())))
+            })
+            .collect()
+    };
+    // Height levels 0..=rows along the axis.
+    let levels: Vec<Vec<[f64; 3]>> = (0..=rows)
+        .map(|k| ring(add(base_center, scale(axis, k as f64 / rows as f64))))
+        .collect();
+
+    let mut f = Faceted::new();
+    let barrel = f.add_surface(SurfaceKind::Cylinder { center: base_center, axis, radius });
+    for k in 0..rows {
+        let (lo, hi) = (&levels[k], &levels[k + 1]);
+        for i in 0..segments {
+            let j = (i + 1) % segments;
+            // outward winding (matches frustum's barrel)
+            f.push_tri(Tri::new(lo[i], lo[j], hi[j]), barrel);
+            f.push_tri(Tri::new(lo[i], hi[j], hi[i]), barrel);
+        }
+    }
+    // Top cap: ring CCW around +axis -> outward (+axis) normal.
+    let top = &levels[rows];
+    let top_center = add(base_center, axis);
+    let cap_t = f.add_surface(SurfaceKind::Plane);
+    let top_tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(top_center, top[i], top[(i + 1) % segments]))
+        .collect();
+    f.push_flat(PlanarFacet::new(top.clone()), &top_tris, cap_t);
+    // Bottom cap: outward normal -axis -> reverse the ring.
+    let bot = &levels[0];
+    let cap_b = f.add_surface(SurfaceKind::Plane);
+    let bot_tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(base_center, bot[(i + 1) % segments], bot[i]))
+        .collect();
+    let bot_loop: Vec<[f64; 3]> = bot.iter().rev().copied().collect();
+    f.push_flat(PlanarFacet::new(bot_loop), &bot_tris, cap_b);
+    f
+}
+
+/// Frustum / cone with an isotropic barrel (the [`frustum`] analog of
+/// [`cylinder_iso`]): the side is a structured grid of `rows` height levels
+/// with a linear radius taper, so the cells stay roughly square instead of
+/// full-height strips. `r_top == 0.0` gives a true cone (the top row collapses
+/// to an apex fan, the one unavoidable rotationally-symmetric spot, like
+/// gmsh's apex). Flat fan caps. Carries the analytic [`SurfaceKind::Cylinder`]
+/// (equal radii) or [`SurfaceKind::Cone`] for vertex snapping.
+pub fn frustum_iso(
+    base_center: [f64; 3],
+    axis: [f64; 3],
+    r_base: f64,
+    r_top: f64,
+    segments: usize,
+    rows: usize,
+) -> Faceted {
+    assert!(segments >= 3 && rows >= 1, "need >= 3 segments and >= 1 row");
+    assert!(r_base > 0.0 && r_top >= 0.0, "radii must be positive (top may be 0)");
+    let (e1, e2) = orthonormal_basis(axis);
+    let ring = |center: [f64; 3], r: f64| -> Vec<[f64; 3]> {
+        (0..segments)
+            .map(|i| {
+                let a = 2.0 * std::f64::consts::PI * i as f64 / segments as f64;
+                add(center, add(scale(e1, r * a.cos()), scale(e2, r * a.sin())))
+            })
+            .collect()
+    };
+    let radius_at = |k: usize| r_base + (r_top - r_base) * (k as f64 / rows as f64);
+    let center_at = |k: usize| add(base_center, scale(axis, k as f64 / rows as f64));
+    let levels: Vec<Vec<[f64; 3]>> = (0..=rows).map(|k| ring(center_at(k), radius_at(k))).collect();
+
+    let mut f = Faceted::new();
+    let barrel_kind = if r_top == r_base {
+        SurfaceKind::Cylinder { center: base_center, axis, radius: r_base }
+    } else {
+        let factor = r_base / (r_base - r_top);
+        let apex = add(base_center, scale(axis, factor));
+        SurfaceKind::Cone {
+            apex,
+            axis: scale(axis, -factor),
+            tan_half_angle: r_base / (norm(axis) * factor).abs(),
+        }
+    };
+    let barrel = f.add_surface(barrel_kind);
+    let top_center = add(base_center, axis);
+
+    for k in 0..rows {
+        let (lo, hi) = (&levels[k], &levels[k + 1]);
+        let top_apex = r_top == 0.0 && k == rows - 1;
+        for i in 0..segments {
+            let j = (i + 1) % segments;
+            if top_apex {
+                f.push_tri(Tri::new(lo[i], lo[j], top_center), barrel);
+            } else {
+                f.push_tri(Tri::new(lo[i], lo[j], hi[j]), barrel);
+                f.push_tri(Tri::new(lo[i], hi[j], hi[i]), barrel);
+            }
+        }
+    }
+    if r_top > 0.0 {
+        let top = &levels[rows];
+        let cap_t = f.add_surface(SurfaceKind::Plane);
+        let top_tris: Vec<Tri> = (0..segments)
+            .map(|i| Tri::new(top_center, top[i], top[(i + 1) % segments]))
+            .collect();
+        f.push_flat(PlanarFacet::new(top.clone()), &top_tris, cap_t);
+    }
+    let bot = &levels[0];
+    let cap_b = f.add_surface(SurfaceKind::Plane);
+    let bot_tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(base_center, bot[(i + 1) % segments], bot[i]))
+        .collect();
+    let bot_loop: Vec<[f64; 3]> = bot.iter().rev().copied().collect();
+    f.push_flat(PlanarFacet::new(bot_loop), &bot_tris, cap_b);
+    f
+}
+
+/// Geodesic sphere (subdivided icosahedron projected onto the analytic
+/// sphere). Unlike [`sphere`]'s UV tessellation (latitude rings clustering at
+/// the poles, rotationally-symmetric points), the icosphere distributes
+/// near-equilateral triangles isotropically over the hull, matching how gmsh
+/// and tetgen tessellate a sphere. `subdivisions` controls density: the face
+/// count is `20 * 4^subdivisions` (0 -> 20, 2 -> 320, 3 -> 1280). Carries the
+/// exact [`SurfaceKind::Sphere`] so mesh vertices still snap onto the true
+/// sphere.
+pub fn icosphere(center: [f64; 3], radius: f64, subdivisions: usize) -> Faceted {
+    assert!(radius > 0.0);
+    // Regular icosahedron (golden-ratio rectangles).
+    let t = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let mut verts: Vec<[f64; 3]> = vec![
+        [-1.0, t, 0.0], [1.0, t, 0.0], [-1.0, -t, 0.0], [1.0, -t, 0.0],
+        [0.0, -1.0, t], [0.0, 1.0, t], [0.0, -1.0, -t], [0.0, 1.0, -t],
+        [t, 0.0, -1.0], [t, 0.0, 1.0], [-t, 0.0, -1.0], [-t, 0.0, 1.0],
+    ];
+    let mut faces: Vec<[usize; 3]> = vec![
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ];
+    // Loop-subdivide: each triangle -> four, sharing edge midpoints (a cache
+    // keyed by the sorted endpoint pair keeps the mesh watertight).
+    let mut cache: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for _ in 0..subdivisions {
+        cache.clear();
+        let mut next = Vec::with_capacity(faces.len() * 4);
+        for tri in &faces {
+            let mid = |a: usize, b: usize, verts: &mut Vec<[f64; 3]>,
+                       cache: &mut std::collections::HashMap<(usize, usize), usize>| -> usize {
+                let key = if a < b { (a, b) } else { (b, a) };
+                if let Some(&m) = cache.get(&key) {
+                    return m;
+                }
+                let (va, vb) = (verts[a], verts[b]);
+                verts.push([(va[0] + vb[0]) * 0.5, (va[1] + vb[1]) * 0.5, (va[2] + vb[2]) * 0.5]);
+                let idx = verts.len() - 1;
+                cache.insert(key, idx);
+                idx
+            };
+            let a = mid(tri[0], tri[1], &mut verts, &mut cache);
+            let b = mid(tri[1], tri[2], &mut verts, &mut cache);
+            let c = mid(tri[2], tri[0], &mut verts, &mut cache);
+            next.push([tri[0], a, c]);
+            next.push([tri[1], b, a]);
+            next.push([tri[2], c, b]);
+            next.push([a, b, c]);
+        }
+        faces = next;
+    }
+    // Project every vertex onto the sphere and emit.
+    let proj = |v: [f64; 3]| -> [f64; 3] {
+        let n = norm(v);
+        add(center, scale(v, radius / n))
+    };
+    let mut f = Faceted::new();
+    let s = f.add_surface(SurfaceKind::Sphere { center, radius });
+    for tri in &faces {
+        f.push_tri(
+            Tri::new(proj(verts[tri[0]]), proj(verts[tri[1]]), proj(verts[tri[2]])),
+            s,
+        );
+    }
+    // Icosahedron faces are wound outward; keep that (flip all if degenerate
+    // winding slipped through, as the other solid builders do).
+    if signed_volume(&f) < 0.0 {
+        for t in &mut f.tris {
+            t.v.swap(1, 2);
+        }
+    }
+    f
+}
+
 /// Tube swept along an open polyline path with a circular cross-section
 /// (rapidfem's `sweep_along_path`/`helix` substrate). One ring per path
 /// node, oriented normal to the local tangent bisector, with a

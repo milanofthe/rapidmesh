@@ -8,8 +8,9 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
-    cylinder, extrude_polygon, frustum, helix, loft, pipe, sheet_disk, sheet_polygon, sheet_rect,
-    solid_box, sphere, torus, wedge, FaceTag, Scene,
+    cylinder, cylinder_iso, extrude_polygon, frustum, frustum_iso, helix, icosphere, loft,
+    mesh_solid, pipe, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere, torus, wedge,
+    FaceTag, Scene,
 };
 use rapidmesh_tet::{
     mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, QualityStats, TetMesh,
@@ -80,6 +81,49 @@ impl SceneBuilder {
         void: bool,
     ) -> u32 {
         self.put(sphere(center, radius, segments, rings), maxh, void)
+    }
+
+    #[pyo3(signature = (center, radius, subdivisions, maxh=None, void=false))]
+    fn add_icosphere(
+        &mut self,
+        center: [f64; 3],
+        radius: f64,
+        subdivisions: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(icosphere(center, radius, subdivisions), maxh, void)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (base, axis, radius, segments, rows, maxh=None, void=false))]
+    fn add_cylinder_iso(
+        &mut self,
+        base: [f64; 3],
+        axis: [f64; 3],
+        radius: f64,
+        segments: usize,
+        rows: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(cylinder_iso(base, axis, radius, segments, rows), maxh, void)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (base, axis, r_base, r_top, segments, rows, maxh=None, void=false))]
+    fn add_frustum_iso(
+        &mut self,
+        base: [f64; 3],
+        axis: [f64; 3],
+        r_base: f64,
+        r_top: f64,
+        segments: usize,
+        rows: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(frustum_iso(base, axis, r_base, r_top, segments, rows), maxh, void)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -191,6 +235,21 @@ impl SceneBuilder {
         void: bool,
     ) -> u32 {
         self.put(loft(&profile_a, &profile_b), maxh, void)
+    }
+
+    /// Solid from an externally supplied triangle soup (imported STL surface,
+    /// marching-cubes iso-surface, ...). `tris` indexes into `verts`. The
+    /// surface must be closed and non-self-intersecting; the winding is
+    /// normalized to outward internally.
+    #[pyo3(signature = (verts, tris, maxh=None, void=false))]
+    fn add_mesh(
+        &mut self,
+        verts: Vec<[f64; 3]>,
+        tris: Vec<[u32; 3]>,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        self.put(mesh_solid(&verts, &tris), maxh, void)
     }
 
     fn add_sheet_rect(&mut self, corner: [f64; 3], u: [f64; 3], v: [f64; 3], tag: u32) {

@@ -58,7 +58,20 @@
 		// SHOWCASE SEAM: interaction callback + idle orbit for the
 		// auto-cycling showcase shell (additive; unused by rapidfem).
 		oninteract = undefined as (() => void) | undefined,
-		orbit = false
+		orbit = false,
+		// COMPARE SEAM: externalized camera + layer/clip state and a toolbar
+		// toggle, so several MeshViewers can share one camera and one control
+		// bar (the 3-pane rapidmesh/gmsh/tetgen comparison). Defaults reproduce
+		// the single-viewer showcase exactly; binding makes them shared.
+		camera = $bindable<Camera>({ theta: Math.PI / 4, phi: Math.PI / 4, distance: 1, target: [0, 0, 0] }),
+		controls = true,
+		layer_surface = $bindable(true),
+		layer_wire = $bindable(true),
+		layer_edges = $bindable(false),
+		layer_tets = $bindable(true),
+		clip_enable = $bindable(true),
+		clip_axis = $bindable(1 as 0 | 1 | 2),
+		clip_t = $bindable(0.6)
 	}: {
 		mesh?: MeshData | null;
 		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines?: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
@@ -78,6 +91,15 @@
 		td_playing?: boolean;
 		oninteract?: () => void;
 		orbit?: boolean;
+		camera?: Camera;
+		controls?: boolean;
+		layer_surface?: boolean;
+		layer_wire?: boolean;
+		layer_edges?: boolean;
+		layer_tets?: boolean;
+		clip_enable?: boolean;
+		clip_axis?: 0 | 1 | 2;
+		clip_t?: number;
 	} = $props();
 
 	// Channel metadata for the colourbar — title + SI unit per channel.
@@ -90,7 +112,7 @@
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let container = $state<HTMLDivElement | null>(null);
 	let gl_state: GLState | null = null;
-	let camera: Camera = { theta: Math.PI / 4, phi: Math.PI / 4, distance: 1, target: [0, 0, 0] };
+	// camera is now a $bindable prop (see COMPARE SEAM above).
 	let z_flip = 1;
 	let mounted = false;
 	let needs_rebuild = true;
@@ -101,19 +123,11 @@
 	let hidden_tags = $state(new Set<number>());
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
-	// ── Inspection layer toggles (internal toolbar state) ───────────────
-	// SHOWCASE CHANGE: wire and tet edges on by default (with the clip at
-	// 60% along y, the default view shows the interior mesh structure).
-	let layer_surface = $state(true);
-	let layer_wire    = $state(true);
-	let layer_edges   = $state(false);
-	let layer_tets    = $state(true);
-
-	// ── Crinkle clip (prefix-sort trick from rapidmesh MeshPanel) ───────
-	// SHOWCASE CHANGE: crinkle clip on by default, y axis at 60%.
-	let clip_enable = $state(true);
-	let clip_axis   = $state<0 | 1 | 2>(1);
-	let clip_t      = $state(0.6);
+	// ── Inspection layer toggles + crinkle clip ─────────────────────────
+	// Now $bindable props (see COMPARE SEAM): the single-viewer toolbar
+	// mutates the local defaults; the comparison page binds them so one
+	// control bar drives all three panes. Defaults: wire+tet edges on, crinkle
+	// clip on at 60% along y (the showcase interior-structure view).
 
 	// Each entry tracks one mesh/lineMesh in the GL state. Sorted by
 	// centroid along the active clip axis so the slider only needs a
@@ -1281,6 +1295,16 @@
 	});
 
 
+	// COMPARE SEAM: re-render when the (possibly shared) camera changes from
+	// outside this component, e.g. another pane orbited the bound camera.
+	// The component's own handlers already schedule_render on change, so this
+	// only adds renders for externally-driven mutations (coalesced anyway).
+	$effect(() => {
+		camera.theta; camera.phi; camera.distance;
+		camera.target[0]; camera.target[1]; camera.target[2];
+		if (mounted) schedule_render();
+	});
+
 	// Refit camera when the visible payload changes (mesh, wireframe or
 	// a time-domain field trajectory).
 	// SHOWCASE CHANGE: not during a fly transition; prepare_fly_in has
@@ -1607,6 +1631,7 @@
 		ondblclick={on_dbl_click}
 	></canvas>
 
+	{#if controls}
 	<div class="overlay-stack">
 		{#if tag_legend.length > 0 && show_geometry}
 			<div class="overlay-panel">
@@ -1784,6 +1809,7 @@
 			<span class="coord stats">min&#8736; {mesh.stats.min_dihedral_deg.toFixed(1)}&#176;</span>
 		{/if}
 	</div>
+	{/if}
 
 </div>
 
@@ -1801,6 +1827,7 @@
 		width: 100%;
 		height: 100%;
 		cursor: grab;
+		touch-action: none;   /* drag = orbit on touch, not page scroll/zoom */
 	}
 	canvas:active { cursor: grabbing; }
 

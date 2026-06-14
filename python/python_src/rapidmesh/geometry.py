@@ -314,16 +314,31 @@ class Geometry:
         axis: tuple[float, float, float] = (0, 0, 1),
         *,
         segments: int = 24,
+        uniform: bool = False,
+        rows: int | None = None,
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Cylinder from the base centre ``position`` along ``axis``. The
         barrel is tessellated with ``segments`` chords but carries the exact
-        analytic surface: mesh vertices snap onto the true cylinder."""
+        analytic surface: mesh vertices snap onto the true cylinder.
+
+        With ``uniform=True`` the barrel is a structured grid of height
+        ``rows`` (auto-chosen for roughly square cells when ``None``) instead of
+        full-height strips, giving an isotropic, evenly distributed surface mesh
+        like gmsh / tetgen (see :meth:`icosphere`)."""
         ax = [a * height for a in _unit(axis)]
-        region = self._builder.add_cylinder(
-            list(position), ax, radius, segments, maxh, void
-        )
+        if uniform:
+            if rows is None:
+                circ = 2 * math.pi * radius / max(segments, 1)
+                rows = max(1, round(height / circ)) if circ > 0 else 1
+            region = self._builder.add_cylinder_iso(
+                list(position), ax, radius, segments, rows, maxh, void
+            )
+        else:
+            region = self._builder.add_cylinder(
+                list(position), ax, radius, segments, maxh, void
+            )
         return self._solid(region)
 
     def sphere(
@@ -343,6 +358,26 @@ class Geometry:
         )
         return self._solid(region)
 
+    def icosphere(
+        self,
+        radius: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        *,
+        subdivisions: int = 3,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Geodesic sphere: a subdivided icosahedron projected onto the
+        analytic sphere. Distributes near-equilateral triangles isotropically
+        over the hull (no latitude rings / pole clustering like
+        :meth:`sphere`), matching how gmsh and tetgen tessellate a sphere; the
+        analytic surface is preserved so vertices still snap onto it.
+        ``subdivisions`` sets density (face count ``20 * 4**subdivisions``)."""
+        region = self._builder.add_icosphere(
+            list(position), radius, subdivisions, maxh, void
+        )
+        return self._solid(region)
+
     def cone(
         self,
         r1: float,
@@ -352,15 +387,30 @@ class Geometry:
         axis: tuple[float, float, float] = (0, 0, 1),
         *,
         segments: int = 24,
+        uniform: bool = False,
+        rows: int | None = None,
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Conical frustum: base radius ``r1`` at ``position``, top radius
-        ``r2`` (0 for a full cone) at ``position + height * axis``."""
+        ``r2`` (0 for a full cone) at ``position + height * axis``.
+
+        With ``uniform=True`` the barrel is a structured grid of height
+        ``rows`` (auto-chosen for roughly square cells) for an isotropic
+        surface like gmsh / tetgen (see :meth:`cylinder`)."""
         ax = [a * height for a in _unit(axis)]
-        region = self._builder.add_frustum(
-            list(position), ax, r1, r2, segments, maxh, void
-        )
+        if uniform:
+            if rows is None:
+                r_mean = 0.5 * (r1 + r2)
+                circ = 2 * math.pi * r_mean / max(segments, 1)
+                rows = max(1, round(height / circ)) if circ > 0 else 1
+            region = self._builder.add_frustum_iso(
+                list(position), ax, r1, r2, segments, rows, maxh, void
+            )
+        else:
+            region = self._builder.add_frustum(
+                list(position), ax, r1, r2, segments, maxh, void
+            )
         return self._solid(region)
 
     def prism(
@@ -494,6 +544,28 @@ class Geometry:
             [list(p) for p in profile_b],
             maxh,
             void,
+        )
+        return self._solid(region)
+
+    def mesh_solid(
+        self,
+        verts,
+        tris,
+        *,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from an externally supplied triangle soup: ``verts`` is an
+        ``(n, 3)`` array of vertex coordinates and ``tris`` an ``(m, 3)``
+        array of triangle vertex indices (an imported STL surface, a
+        marching-cubes iso-surface, ...). The surface must be closed and
+        non-self-intersecting; the winding is normalized to outward
+        internally. The triangles ARE the surface (no analytic back-reference,
+        so fidelity snapping is off): sample organic shapes finely."""
+        v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
+        t = np.asarray(tris, dtype=np.uint32).reshape(-1, 3)
+        region = self._builder.add_mesh(
+            v.tolist(), t.tolist(), maxh, void
         )
         return self._solid(region)
 

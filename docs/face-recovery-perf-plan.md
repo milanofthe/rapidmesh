@@ -94,6 +94,64 @@ gates keep it honest.
   per-element rate (~50us/tet, i.e. coax ~0.2s instead of 2.5s);
   perforated_plate / stepped_lpf `faces` time falls sharply.
 
+## 3b. P0 RESULT: the gift-wrap hypothesis is FALSIFIED
+
+Instrumenting `gift_wrap` + `recover_one_facet` (commit 36f3d0c, env
+RAPIDMESH_RECOVER_STATS) overturned the §1 diagnosis:
+
+| model | faces phase | gift-wrap | facets swept | orient3d (implicit / exact) |
+|---|---|---|---|---|
+| perforated_plate | 32.3s | **33.7us (1 cavity, 2 tets)** | 8780 | 11.5M (10.7M / **3.26M exact**) |
+| lattice_cube | 11.0s | 16ms (1 cavity) | 1341 | 8.2M (7.75M / 1.17M) |
+| coax_step | 7.77s | **0 cavities** | 1167 (x10 rounds) | 3.24M (3.09M / 105k) |
+
+**Gift wrapping is essentially never invoked** (0-1 cavities, microseconds). The
+`faces` time is the **piercing-edge DETECTION sweep**, run per facet per round,
+and almost every swept facet finds NO piercing -- it pays the detection cost and
+confirms "fine". The cost is therefore:
+
+1. **Volume of exact-predicate calls in detection.** Each swept facet BFS-walks
+   nearby tets and runs an exact orient3d per candidate tet edge against the
+   facet plane. Millions of these, dominated by IMPLICIT-point evaluations
+   (tet edges with LNC/PAC Steiner endpoints), with a heavy EXACT-expansion
+   fallback rate where tet edges are near-coplanar to facet planes (28% on
+   perforated_plate = 3.26M expansion orient3d, the bulk of its 32s).
+2. **Redundant re-sweeps.** 8780 facet-sweeps for a 13k-tet mesh; coax sweeps
+   1167 facets x 10 refinement rounds. The incremental creation-log/bbox skip
+   does not catch enough: refinement puts new tets near many facets each round,
+   re-triggering their (expensive, fruitless) sweep.
+
+Flip-based recovery (§2) would optimize a 33us non-problem. **Dropped.** The
+real target is the detection sweep and its predicate volume.
+
+## 3c. REVISED plan (detection cost)
+
+- **F1 -- float-filter the piercing test.** Before the exact orient3d in the
+  per-edge piercing check, run a fast f64 orient3d on the points' `approx()`
+  coordinates; fall to the exact predicate only when the f64 magnitude is within
+  a conservative epsilon of zero (genuinely near-coplanar). Most tet-edge-vs-
+  facet tests are decisively non-piercing in f64, so this should cut the
+  implicit/expansion orient3d by ~an order of magnitude. Exactness is preserved:
+  the exact predicate remains the arbiter for every ambiguous case. Gate:
+  conform + rapidfem green (bit-identical results), orient3d-exact count down
+  sharply, faces time down.
+
+- **F2 -- fewer re-sweeps.** Extend the `face_exists` short-circuit (currently
+  unsplit facets only) to a cheap "all my sub-faces are already tet faces" check
+  for SPLIT facets, and/or tighten the dirty-tracking so a facet whose
+  neighborhood did not actually change is not re-swept each refinement round.
+  Gate: facets-swept count drops; conform + rapidfem green.
+
+- **F3 -- cull coplanar incident tets.** The expensive expansion fallbacks come
+  from tet edges near-coplanar to the facet plane (the facet's own surface
+  tets). Reject those cheaply (a tet edge with both endpoints on the facet plane
+  cannot pierce it) before the exact test. Gate: orient3d-exact rate drops on
+  perforated_plate (the 28% case).
+
+- **F4 -- gate & measure.** conform + 5 rapidfem EM validations green
+  (bit-identical), showcase min-dih unchanged; faces time and orient3d-exact
+  count down sharply on perforated_plate / lattice_cube / coax_step.
+
 ## 4. Risk
 
 Facet recovery is correctness-critical -- the conform gate and the rapidfem

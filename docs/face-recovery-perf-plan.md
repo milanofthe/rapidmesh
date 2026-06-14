@@ -152,6 +152,36 @@ real target is the detection sweep and its predicate volume.
   (bit-identical), showcase min-dih unchanged; faces time and orient3d-exact
   count down sharply on perforated_plate / lattice_cube / coax_step.
 
+## 3d. F1 DONE (commit b12cbc1) + sharpened F2/F3 target
+
+F1 implemented as an **affine reduction in `orient3d`** (not a float epsilon):
+orient3d is multilinear, and an Lnc Steiner point is `(1-t) a + t b` with
+explicit parents, so `sign(orient3d(.., lnc)) = (1-t) O_a + t O_b`; with t in
+(0,1) (weights certifiably > 0 in f64), when the two explicit parent
+orientations share a sign the point shares it, resolved by the fast adaptive
+predicate with no implicit interval/expansion. Provably exact (real-number
+identity + exact parent signs), validated against the rational oracle
+(`orient3d_lnc_matches_oracle`). Pac deferred (its `1-u-v` weight is not as
+cheaply sign-certified). Result:
+
+| model | faces before | faces after | orient3d exact (expansion) |
+|---|---|---|---|
+| perforated_plate | 32.3s | **20.7s (-36%)** | 3.26M -> **756k (-77%)** |
+| lattice_cube | 11.0s | 10.5s | 1.17M -> 247k |
+| coax_step | 7.57s | 7.57s | 105k -> 26k |
+
+Conform (18/18) + csg/geom/exact green; region volumes exact. perforated_plate
+total mesh ~50s -> ~37s.
+
+**Sharpened target.** F1 cleared the EXPANSION-bound case. The remaining
+interval-bound case (coax_step: 3.1M implicit orient3d, faces UNCHANGED) is NOT
+predicate-bound anymore -- ~3M adaptive predicates cost ~0.5s, but faces is
+7.57s. The rest is the **per-facet sweep machinery itself**: coax sweeps facets
+across 10 refinement rounds (FACETS_SWEPT cumulative), each sweep rebuilding the
+BFS `seen` set, `star_slots` walks, and the per-sweep side/edge HashMaps. So F2
+(fewer / cheaper re-sweeps) is the lever for the curved/many-round case, and
+matters more than F3 (cull coplanar) now that expansion is largely gone.
+
 ## 4. Risk
 
 Facet recovery is correctness-critical -- the conform gate and the rapidfem

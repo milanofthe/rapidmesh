@@ -287,7 +287,9 @@
 
 	.panes {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		/* minmax(0,1fr): without the 0 minimum the px-sized canvas sets a
+		   min-content floor and the columns can grow but never shrink back */
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 1px;
 		flex: 1 1 auto;
 		min-height: 0;
@@ -297,6 +299,7 @@
 	.pane {
 		display: flex;
 		flex-direction: column;
+		min-width: 0;   /* allow the column to shrink below the canvas size */
 		min-height: 0;
 		background: var(--bg);
 	}
@@ -391,21 +394,26 @@
 	.tab:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
 	.tab.active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
 
-	/* Narrow / mobile: three panes can't sit side by side usefully, so the
-	   stage scrolls and each pane stacks at a usable height. Touch-orbit works
-	   inside each canvas (touch-action: none); page scroll happens on the
-	   topbar / gaps / tabs. */
+	/* Narrow / mobile: three panes can't sit side by side, so they stack and
+	   the stage itself scrolls (html/body are locked at 100%/overflow:hidden,
+	   so the document can't). The canvases switch to touch-action: pan-y so a
+	   vertical swipe scrolls the page while a horizontal drag still orbits. */
 	@media (max-width: 820px) {
 		.stage {
-			position: static;
-			min-height: 100vh;
+			display: block;
 			overflow-y: auto;
+			-webkit-overflow-scrolling: touch;
 		}
+		.topbar { position: sticky; top: 0; z-index: 30; background: var(--bg); }
 		.panes {
-			grid-template-columns: 1fr;
+			display: block;
 			margin-bottom: 0;
 		}
-		.pane { min-height: 78vh; }
+		.pane {
+			height: 70vh;
+			border-bottom: 1px solid var(--border);
+		}
 		.toolbar { width: 100%; margin-left: 0; justify-content: flex-start; }
+		.pane-canvas :global(canvas) { touch-action: pan-y; }
 	}
 </style>

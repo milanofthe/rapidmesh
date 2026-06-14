@@ -28,7 +28,9 @@ jobs:
           - { os: ubuntu-latest, target: x86_64 }
           - { os: windows-latest, target: x64 }
           - { os: macos-latest, target: aarch64 }
-          - { os: macos-13, target: x86_64 }
+          # Intel-mac wheel cross-compiled on the arm64 runner: GitHub's Intel
+          # macOS (macos-13) runners are scarce/deprecated and queue forever.
+          - { os: macos-latest, target: x86_64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

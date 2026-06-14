@@ -454,42 +454,42 @@
    "id": "bunny",
    "name": "Stanford Bunny",
    "category": "Organic",
-   "target_h": 0.12,
+   "target_h": 0.14,
    "meshers": {
     "rapidmesh": {
      "file": "meshes/compare/bunny.rapidmesh.json",
      "stats": {
-      "n_points": 1087,
-      "n_tets": 3748,
+      "n_points": 2880,
+      "n_tets": 8065,
       "n_regions": 1,
-      "min_dihedral_deg": 2.111796321550827,
-      "max_radius_edge": 20.595719704059178,
-      "max_edge": 0.32538420050438066,
-      "millis": 503
+      "min_dihedral_deg": 0.12381510560496167,
+      "max_radius_edge": 244.8120429179686,
+      "max_edge": 0.35627869426805175,
+      "millis": 2179
      }
     },
     "gmsh": {
      "file": "meshes/compare/bunny.gmsh.json",
      "stats": {
-      "n_points": 533,
-      "n_tets": 1651,
+      "n_points": 585,
+      "n_tets": 1702,
       "n_regions": 1,
-      "min_dihedral_deg": 1.3333573668249414,
-      "max_radius_edge": 22.479891556839696,
-      "max_edge": 0.24193535780762523,
-      "millis": 323
+      "min_dihedral_deg": 0.22391472243356247,
+      "max_radius_edge": 13.295261198580606,
+      "max_edge": 0.2814823016912268,
+      "millis": 293
      }
     },
     "tetgen": {
      "file": "meshes/compare/bunny.tetgen.json",
      "stats": {
-      "n_points": 962,
-      "n_tets": 3653,
+      "n_points": 1598,
+      "n_tets": 6697,
       "n_regions": 1,
-      "min_dihedral_deg": 0.5054098174083776,
-      "max_radius_edge": 21.72076021899037,
-      "max_edge": 0.2612277217932083,
-      "millis": 21,
+      "min_dihedral_deg": 1.1492652169915232,
+      "max_radius_edge": 21.08913683012357,
+      "max_edge": 0.28208789568218223,
+      "millis": 34,
       "on_surface_of": "gmsh"
      }
     }

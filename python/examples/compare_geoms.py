@@ -104,7 +104,10 @@ def ensure_bunny_stl() -> Path:
     # reconstruct_surface turns the points into a watertight shell (0 open
     # edges) that all three meshers can take, then decimate to a web size.
     surf = (raw.reconstruct_surface(nbr_sz=20).extract_largest()
-            .clean().triangulate().decimate(0.85).clean().triangulate())
+            .clean().triangulate())
+    # the scanned bunny is +Y up; the viewer is Z up -> stand it upright
+    surf = surf.rotate_x(90, inplace=False)
+    surf = surf.decimate(0.4).clean().triangulate()
     # normalize: centre at origin, bbox diagonal -> 2.0
     surf.points -= np.asarray(surf.center)
     diag = float(np.linalg.norm(
@@ -355,7 +358,7 @@ def _r_via():
 
 def _r_bunny():
     import rapidmesh as rm
-    g = rm.Geometry(maxh=0.30)
+    g = rm.Geometry(maxh=0.14)
     verts, tris = _read_stl_arrays(ensure_bunny_stl())
     g.label(g.mesh_solid(verts, tris), "bunny")
     return g
@@ -387,7 +390,7 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("bracket", "Bracket", "Mechanical", 0.15, _r_bracket, _g_bracket),
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
-    CompareGeom("bunny", "Stanford Bunny", "Organic", 0.12, _r_bunny, _g_bunny),
+    CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell),
     CompareGeom("layered_substrate", "Layered Substrate", "Multi-Region", 0.30,

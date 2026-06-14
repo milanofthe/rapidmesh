@@ -98,6 +98,19 @@ class Mesh:
         self.surface_owners: np.ndarray = native.surface_owners()
         self.edges: np.ndarray = native.edges()
         self.stats: dict = native.stats()
+        #: per-stage wall-clock seconds, pipeline order (assemble.* / mesh.* /
+        #: optimize.*), e.g. timings["mesh.faces"], timings["mesh.refine"]
+        self.timings: dict = native.timings()
+        #: detailed named statistics (predicate calls, recovery work, counts,
+        #: quality), e.g. metrics["predicates.orient3d_exact"]
+        self.metrics: dict = native.metrics()
+        #: ordered log events, each {level, stage, message, at} (at = seconds
+        #: since the run started; level in info/warn/error)
+        self.log: list[dict] = native.log()
+        #: quality with location: min_dihedral_deg, worst_location (xyz),
+        #: worst_region, max_radius_edge, max_edge, and a per-region breakdown
+        #: under "regions"
+        self.quality: dict = native.quality()
 
     def __repr__(self) -> str:
         s = self.stats
@@ -106,6 +119,49 @@ class Mesh:
             f"min dihedral {s['min_dihedral_deg']:.1f} deg, "
             f"{s['millis']} ms)"
         )
+
+    @property
+    def warnings(self) -> list[dict]:
+        """Log events at warn/error level (divergence backstops, budget caps,
+        slivers)."""
+        return [e for e in self.log if e["level"] in ("warn", "error")]
+
+    def log_text(self) -> str:
+        """The log as a human-readable string, one event per line."""
+        return "\n".join(
+            f"[{e['at']:8.3f}s {e['level']:>5} {e['stage']}] {e['message']}"
+            for e in self.log
+        )
+
+    def report(self) -> str:
+        """A full human-readable report: per-stage timings, key metrics, the
+        worst-quality location and per-region quality, and any warnings. Use
+        ``print(mesh.report())`` to see what happened, how long each stage took,
+        and where the mesh quality is worst."""
+        q = self.quality
+        lines: list[str] = [repr(self), "", "timings (s):"]
+        for stage, secs in self.timings.items():
+            lines.append(f"  {stage:<22} {secs:8.3f}")
+        lines.append("")
+        lines.append("quality:")
+        loc = q["worst_location"]
+        lines.append(
+            f"  min dihedral {q['min_dihedral_deg']:.2f} deg in region "
+            f"{q['worst_region']} near ({loc[0]:.4g}, {loc[1]:.4g}, {loc[2]:.4g})"
+        )
+        lines.append(f"  max radius/edge {q['max_radius_edge']:.2f}")
+        for r in q["regions"]:
+            lines.append(
+                f"  region {r['region']:<3} min dihedral {r['min_dihedral_deg']:6.2f} deg "
+                f"({r['n_tets']} tets)"
+            )
+        warn = self.warnings
+        if warn:
+            lines.append("")
+            lines.append("warnings:")
+            for e in warn:
+                lines.append(f"  [{e['stage']}] {e['message']}")
+        return "\n".join(lines)
 
     def to_viewer_dict(self, name: str) -> dict:
         """The mesh in the viewer JSON schema (shared by the comparison

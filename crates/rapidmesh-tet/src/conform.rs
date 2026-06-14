@@ -572,9 +572,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // refinement, implicit rounding), printed once at the end.
     let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
     let recover_stats = std::env::var_os("RAPIDMESH_RECOVER_STATS").is_some();
-    if recover_stats {
-        cdt::reset_recover_stats();
-    }
+    // Reset the recovery counters per mesh so the structured stats (always
+    // collected, exposed via the Python API) cover just this run.
+    cdt::reset_recover_stats();
     let mut t_faces = std::time::Duration::ZERO;
     let mut t_tiles = std::time::Duration::ZERO;
     let mut t_classify = std::time::Duration::ZERO;
@@ -646,16 +646,22 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         t_classify += tc.elapsed();
 
         if points.len() >= params.max_points {
-            if trace {
-                eprintln!("refinement stopped at point budget ({})", points.len());
-            }
+            rapidmesh_exact::log::warn(
+                "mesh.refine",
+                format!(
+                    "stopped at point budget ({}/{}): mesh may be under-refined",
+                    points.len(),
+                    params.max_points
+                ),
+            );
             break 'outer (dt_tets, all_tilings, tet_region);
         }
         refine_round += 1;
         if refine_round > 1000 {
-            if trace {
-                eprintln!("refinement stopped at round budget");
-            }
+            rapidmesh_exact::log::warn(
+                "mesh.refine",
+                "stopped at round budget (1000): mesh may be under-refined",
+            );
             break 'outer (dt_tets, all_tilings, tet_region);
         }
 
@@ -694,6 +700,16 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             &mut live_pieces,
         );
         t_refine += tr.elapsed();
+        // Live per-round progress (so a long run shows where it is / what
+        // hangs): the round, points added, running totals.
+        rapidmesh_exact::log::info(
+            "mesh.refine",
+            format!(
+                "round {refine_round}: +{inserted} points ({} total, {} tets)",
+                points.len(),
+                dt_tets.len()
+            ),
+        );
         if trace && inserted > 0 {
             eprintln!("round {round}: inserted {inserted}, {} points", points.len());
         }
@@ -709,12 +725,32 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     for (i, p) in points.iter_mut().enumerate() {
         *p = builder.approx_point(i);
     }
+    let t_rounding = tro.elapsed();
+    // Structured stage timings and stats (always collected; exposed via the
+    // Python API as mesh.timings / mesh.stats).
+    use rapidmesh_exact::log as rmlog;
+    rmlog::stage("mesh.segments", t_segments.as_secs_f64());
+    rmlog::stage("mesh.faces", t_faces.as_secs_f64());
+    rmlog::stage("mesh.tiles", t_tiles.as_secs_f64());
+    rmlog::stage("mesh.classify", t_classify.as_secs_f64());
+    rmlog::stage("mesh.refine", t_refine.as_secs_f64());
+    rmlog::stage("mesh.rounding", t_rounding.as_secs_f64());
+    rmlog::stat("mesh.rounds", round as f64);
+    rmlog::stat("mesh.points", points.len() as f64);
+    rmlog::stat("mesh.tets", tets.len() as f64);
+    let [oc, oi, oe, ic, ii, ie] = rapidmesh_exact::stats::take();
+    rmlog::stat("predicates.orient3d", oc as f64);
+    rmlog::stat("predicates.orient3d_implicit", oi as f64);
+    rmlog::stat("predicates.orient3d_exact", oe as f64);
+    rmlog::stat("predicates.insphere", ic as f64);
+    rmlog::stat("predicates.insphere_implicit", ii as f64);
+    rmlog::stat("predicates.insphere_exact", ie as f64);
+    cdt::record_recover_stats();
     if timing {
         eprintln!(
             "timing: segments {:?}, faces {:?}, tiles {:?}, classify {:?}, refine {:?}, rounding {:?} ({} rounds, {} points)",
-            t_segments, t_faces, t_tiles, t_classify, t_refine, tro.elapsed(), round, points.len(),
+            t_segments, t_faces, t_tiles, t_classify, t_refine, t_rounding, round, points.len(),
         );
-        let [oc, oi, oe, ic, ii, ie] = rapidmesh_exact::stats::take();
         eprintln!(
             "predicates: orient3d {oc} ({oi} implicit, {oe} exact), insphere {ic} ({ii} implicit, {ie} exact)",
         );
@@ -1710,8 +1746,10 @@ fn absorb_insert_deltas(
     }
 }
 
-/// Quality summary of a tet mesh.
-#[derive(Debug, Clone, Copy)]
+/// Quality summary of a tet mesh, with WHERE the worst element is and a
+/// per-region breakdown (so a caller can see not just that there is a sliver
+/// but which region it is in and roughly where).
+#[derive(Debug, Clone)]
 pub struct QualityStats {
     /// Number of tets.
     pub n_tets: usize,
@@ -1722,14 +1760,58 @@ pub struct QualityStats {
     pub max_radius_edge: f64,
     /// Longest edge in the mesh.
     pub max_edge: f64,
+    /// Index of the tet holding the smallest dihedral angle (`usize::MAX` for
+    /// an empty mesh).
+    pub worst_tet: usize,
+    /// Centroid of the worst tet: where the worst sliver sits.
+    pub worst_location: [f64; 3],
+    /// Region tag of the worst tet.
+    pub worst_region: u32,
+    /// Per region, in ascending tag order: (region, min dihedral deg, tets).
+    pub per_region: Vec<(u32, f64, usize)>,
 }
 
-/// Computes quality statistics over all tets.
+/// Smallest dihedral angle (degrees) of one tet, or `f64::MAX` if degenerate.
+fn tet_min_dihedral(p: [[f64; 3]; 4]) -> f64 {
+    let mut m = f64::MAX;
+    for i in 0..4 {
+        for j in i + 1..4 {
+            let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
+            let (a, b) = (p[i], p[j]);
+            let tlen: f64 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f64>().sqrt();
+            if tlen == 0.0 {
+                continue;
+            }
+            let tv: [f64; 3] = std::array::from_fn(|k| (b[k] - a[k]) / tlen);
+            let perp = |q: [f64; 3]| -> [f64; 3] {
+                let w: [f64; 3] = std::array::from_fn(|k| q[k] - a[k]);
+                let s: f64 = (0..3).map(|k| w[k] * tv[k]).sum();
+                std::array::from_fn(|k| w[k] - s * tv[k])
+            };
+            let (u, v) = (perp(p[others[0]]), perp(p[others[1]]));
+            let nu: f64 = (0..3).map(|k| u[k] * u[k]).sum::<f64>().sqrt();
+            let nv: f64 = (0..3).map(|k| v[k] * v[k]).sum::<f64>().sqrt();
+            if nu * nv == 0.0 {
+                continue;
+            }
+            let cosang = ((0..3).map(|k| u[k] * v[k]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
+            m = m.min(cosang.acos().to_degrees());
+        }
+    }
+    m
+}
+
+/// Computes quality statistics over all tets, tracking the worst element's
+/// location/region and a per-region min-dihedral breakdown.
 pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
     let mut min_dihedral = f64::MAX;
+    let mut worst_tet = usize::MAX;
     let mut max_re = 0.0_f64;
     let mut max_edge2 = 0.0_f64;
-    for t in &mesh.tets {
+    // region tag -> (min dihedral, count)
+    let mut per_region: std::collections::BTreeMap<u32, (f64, usize)> =
+        std::collections::BTreeMap::new();
+    for (ti, t) in mesh.tets.iter().enumerate() {
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| mesh.points[t[k]]);
         let mut lmin2 = f64::MAX;
         for i in 0..4 {
@@ -1742,35 +1824,35 @@ pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
         if let Some((_, r)) = tet_circumcenter(p) {
             max_re = max_re.max(r / lmin2.sqrt());
         }
-        // Dihedral angle at each of the 6 edges: angle between the projections
-        // of the two opposite vertices onto the plane normal to the edge.
-        for i in 0..4 {
-            for j in i + 1..4 {
-                let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
-                let (a, b) = (p[i], p[j]);
-                let tlen: f64 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f64>().sqrt();
-                let tv: [f64; 3] = std::array::from_fn(|k| (b[k] - a[k]) / tlen);
-                let perp = |q: [f64; 3]| -> [f64; 3] {
-                    let w: [f64; 3] = std::array::from_fn(|k| q[k] - a[k]);
-                    let s: f64 = (0..3).map(|k| w[k] * tv[k]).sum();
-                    std::array::from_fn(|k| w[k] - s * tv[k])
-                };
-                let (u, v) = (perp(p[others[0]]), perp(p[others[1]]));
-                let nu: f64 = (0..3).map(|k| u[k] * u[k]).sum::<f64>().sqrt();
-                let nv: f64 = (0..3).map(|k| v[k] * v[k]).sum::<f64>().sqrt();
-                if nu * nv == 0.0 {
-                    continue;
-                }
-                let cosang =
-                    ((0..3).map(|k| u[k] * v[k]).sum::<f64>() / (nu * nv)).clamp(-1.0, 1.0);
-                min_dihedral = min_dihedral.min(cosang.acos().to_degrees());
-            }
+        let md = tet_min_dihedral(p);
+        if md < min_dihedral {
+            min_dihedral = md;
+            worst_tet = ti;
         }
+        let region = mesh.tet_regions[ti].0;
+        let e = per_region.entry(region).or_insert((f64::MAX, 0));
+        e.0 = e.0.min(md);
+        e.1 += 1;
     }
+    let worst_location = if worst_tet != usize::MAX {
+        let t = mesh.tets[worst_tet];
+        std::array::from_fn(|k| (0..4).map(|c| mesh.points[t[c]][k]).sum::<f64>() / 4.0)
+    } else {
+        [0.0; 3]
+    };
+    let worst_region = if worst_tet != usize::MAX {
+        mesh.tet_regions[worst_tet].0
+    } else {
+        0
+    };
     QualityStats {
         n_tets: mesh.tets.len(),
         min_dihedral_deg: min_dihedral,
         max_radius_edge: max_re,
         max_edge: max_edge2.sqrt(),
+        worst_tet,
+        worst_location,
+        worst_region,
+        per_region: per_region.into_iter().map(|(r, (m, n))| (r, m, n)).collect(),
     }
 }

@@ -251,6 +251,9 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
 /// that scales with the remaining work.
 pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     let trace = std::env::var("RAPIDMESH_OPT_TRACE").is_ok();
+    let opt_t0 = std::time::Instant::now();
+    let mut acc_surf = std::time::Duration::ZERO;
+    let mut acc_smooth = std::time::Duration::ZERO;
     // Squared edge-length budget per region: quality operations may create
     // edges up to the sizing contract, or up to the local status quo where
     // the mesh is already coarser (never blocking improvements there).
@@ -467,6 +470,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &mut next_dirty,
         );
         let t_surf = t0.elapsed();
+        acc_surf += t_surf;
         edge_watch("surf", mesh, &alive);
         volume_watch("surf", mesh, &alive);
         let t1 = std::time::Instant::now();
@@ -612,6 +616,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
 
         let t_smooth = t1.elapsed();
+        acc_smooth += t_smooth;
         edge_watch("smooth", mesh, &alive);
         volume_watch("smooth", mesh, &alive);
 
@@ -1571,6 +1576,12 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
         mesh.points = pts;
     }
+    // Structured stage timings (exposed via the Python API as mesh.timings).
+    use rapidmesh_exact::log as rmlog;
+    rmlog::stage("optimize.surface", acc_surf.as_secs_f64());
+    rmlog::stage("optimize.smooth", acc_smooth.as_secs_f64());
+    rmlog::stage("optimize.total", opt_t0.elapsed().as_secs_f64());
+    rmlog::stat("optimize.ops", total_ops as f64);
     total_ops
 }
 

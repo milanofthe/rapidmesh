@@ -141,6 +141,8 @@ impl Scene {
         let trace = std::env::var_os("RAPIDMESH_TRACE").is_some();
         let t0 = std::time::Instant::now();
         let arr = arrange_facets(&facets);
+        rapidmesh_exact::log::stage("assemble.arrange", t0.elapsed().as_secs_f64());
+        rapidmesh_exact::log::stat("assemble.input_facets", facets.len() as f64);
         if trace {
             eprintln!("assemble: arrange {:.1?}", t0.elapsed());
         }
@@ -310,6 +312,7 @@ impl Scene {
             region_tags.push([fr, br]);
         }
 
+        rapidmesh_exact::log::stage("assemble.classify_emit", t1.elapsed().as_secs_f64());
         if trace {
             eprintln!("assemble: classify+emit {:.1?}", t1.elapsed());
         }
@@ -450,6 +453,8 @@ impl Scene {
             &mut out_region_tags,
             tol,
         );
+        rapidmesh_exact::log::stat("plc.vertices", vertices.len() as f64);
+        rapidmesh_exact::log::stat("plc.triangles", out_triangles.len() as f64);
 
         TaggedPlc {
             vertices,

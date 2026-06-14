@@ -6,12 +6,13 @@
 
 use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
     cylinder, extrude_polygon, frustum, helix, loft, pipe, sheet_disk, sheet_polygon, sheet_rect,
     solid_box, sphere, torus, wedge, FaceTag, Scene,
 };
 use rapidmesh_tet::{
-    mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, TetMesh,
+    mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, QualityStats, TetMesh,
 };
 
 /// Incremental scene builder (one solid/sheet per call); the Python layer
@@ -237,11 +238,13 @@ impl SceneBuilder {
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
+        rapidmesh_exact::log::clear();
         // The heavy pipeline runs without the GIL.
-        let (mesh, params) = py.allow_threads(|| {
+        let (mesh, params, q) = py.allow_threads(|| {
             let ta = std::time::Instant::now();
             let plc = self.scene.assemble();
             let t_assemble = ta.elapsed();
+            rapidmesh_exact::log::stage("assemble.total", t_assemble.as_secs_f64());
             let params = MeshParams {
                 maxh,
                 region_maxh: self.region_maxh.clone(),
@@ -255,6 +258,7 @@ impl SceneBuilder {
             let tm = std::time::Instant::now();
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
             let t_mesh = tm.elapsed();
+            rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             let opt = OptimizeParams {
                 maxh: params.maxh,
                 region_maxh: params.region_maxh.clone(),
@@ -264,6 +268,29 @@ impl SceneBuilder {
             };
             let to = std::time::Instant::now();
             optimize(&mut mesh, &opt);
+            // Quality (with the worst element's location/region), logged so a
+            // verbose run reports not just timings but where the mesh is worst.
+            let q = quality_stats(&mesh);
+            rapidmesh_exact::log::stat("quality.min_dihedral_deg", q.min_dihedral_deg);
+            rapidmesh_exact::log::stat("quality.max_radius_edge", q.max_radius_edge);
+            let lvl = if q.min_dihedral_deg < 5.0 {
+                rapidmesh_exact::log::Level::Warn
+            } else {
+                rapidmesh_exact::log::Level::Info
+            };
+            rapidmesh_exact::log::event(
+                lvl,
+                "quality",
+                format!(
+                    "min dihedral {:.2} deg in region {} near ({:.4}, {:.4}, {:.4}); {} tets",
+                    q.min_dihedral_deg,
+                    q.worst_region,
+                    q.worst_location[0],
+                    q.worst_location[1],
+                    q.worst_location[2],
+                    q.n_tets,
+                ),
+            );
             if timing {
                 eprintln!(
                     "stages: assemble {:?} ({} plc facets), mesh {:?}, optimize {:?}",
@@ -273,16 +300,23 @@ impl SceneBuilder {
                     to.elapsed(),
                 );
             }
-            (mesh, params)
+            (mesh, params, q)
         });
         let _ = params;
-        let q = quality_stats(&mesh);
+        let (timings, stats, events) = rapidmesh_exact::log::take();
         PyMesh {
             mesh,
             millis: t0.elapsed().as_millis() as u64,
             min_dihedral_deg: q.min_dihedral_deg,
             max_radius_edge: q.max_radius_edge,
             max_edge: q.max_edge,
+            timings,
+            stats,
+            events: events
+                .into_iter()
+                .map(|e| (e.level.tag().to_string(), e.stage, e.message, e.at))
+                .collect(),
+            quality: q,
         }
     }
 }
@@ -296,6 +330,14 @@ struct PyMesh {
     min_dihedral_deg: f64,
     max_radius_edge: f64,
     max_edge: f64,
+    /// Ordered (stage, seconds) timings collected during meshing.
+    timings: Vec<(String, f64)>,
+    /// Ordered (name, value) statistics collected during meshing.
+    stats: Vec<(String, f64)>,
+    /// Ordered (level, stage, message, seconds-since-start) log events.
+    events: Vec<(String, String, String, f64)>,
+    /// Quality summary with the worst element's location and per-region data.
+    quality: QualityStats,
 }
 
 #[pymethods]
@@ -391,9 +433,8 @@ impl PyMesh {
             .into_pyarray_bound(py)
     }
 
-    /// Quality and timing statistics.
-    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        use pyo3::types::PyDict;
+    /// Quality and timing summary (headline numbers).
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new_bound(py);
         d.set_item("n_points", self.mesh.points.len())?;
         d.set_item("n_tets", self.mesh.tets.len())?;
@@ -403,6 +444,75 @@ impl PyMesh {
         d.set_item("max_edge", self.max_edge)?;
         d.set_item("abandoned_patches", self.mesh.abandoned_patches.len())?;
         d.set_item("millis", self.millis)?;
+        Ok(d)
+    }
+
+    /// Per-stage wall-clock timings in seconds, in pipeline order
+    /// (assemble.* / mesh.* / optimize.*), e.g. `mesh.faces`, `mesh.refine`.
+    fn timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        for (k, v) in &self.timings {
+            d.set_item(k, v)?;
+        }
+        Ok(d)
+    }
+
+    /// Detailed named statistics collected during meshing (counts, predicate
+    /// calls, recovery work, quality), e.g. `predicates.orient3d_exact`,
+    /// `recover.facets_swept`, `mesh.rounds`.
+    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        for (k, v) in &self.stats {
+            d.set_item(k, v)?;
+        }
+        Ok(d)
+    }
+
+    /// The ordered log of events: a list of dicts
+    /// `{level, stage, message, at}` (`at` = seconds since the run started,
+    /// `level` in info/warn/error). Warnings flag divergence backstops, budget
+    /// caps and slivers.
+    fn log<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let rows: Vec<Bound<'py, PyDict>> = self
+            .events
+            .iter()
+            .map(|(level, stage, message, at)| {
+                let d = PyDict::new_bound(py);
+                d.set_item("level", level).unwrap();
+                d.set_item("stage", stage).unwrap();
+                d.set_item("message", message).unwrap();
+                d.set_item("at", at).unwrap();
+                d
+            })
+            .collect();
+        Ok(PyList::new_bound(py, rows))
+    }
+
+    /// Quality with location: min dihedral and WHERE it is (worst tet index,
+    /// its centroid, its region), the radius-edge bound, and a per-region
+    /// breakdown `regions = [{region, min_dihedral_deg, n_tets}, ...]`.
+    fn quality<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let q = &self.quality;
+        let d = PyDict::new_bound(py);
+        d.set_item("n_tets", q.n_tets)?;
+        d.set_item("min_dihedral_deg", q.min_dihedral_deg)?;
+        d.set_item("max_radius_edge", q.max_radius_edge)?;
+        d.set_item("max_edge", q.max_edge)?;
+        d.set_item("worst_tet", q.worst_tet)?;
+        d.set_item("worst_location", q.worst_location.to_vec())?;
+        d.set_item("worst_region", q.worst_region)?;
+        let regions: Vec<Bound<'py, PyDict>> = q
+            .per_region
+            .iter()
+            .map(|&(region, min_dih, n)| {
+                let r = PyDict::new_bound(py);
+                r.set_item("region", region).unwrap();
+                r.set_item("min_dihedral_deg", min_dih).unwrap();
+                r.set_item("n_tets", n).unwrap();
+                r
+            })
+            .collect();
+        d.set_item("regions", PyList::new_bound(py, regions))?;
         Ok(d)
     }
 }

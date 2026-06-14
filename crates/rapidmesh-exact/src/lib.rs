@@ -41,6 +41,7 @@
 pub mod expansion;
 pub mod geom;
 pub mod interval;
+pub mod log;
 pub mod order;
 pub mod orient;
 pub mod point;

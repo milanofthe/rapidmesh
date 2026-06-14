@@ -75,6 +75,28 @@ pub fn reset_recover_stats() {
     }
 }
 
+/// Records the face-recovery counters into the structured log (exposed via the
+/// Python API as `mesh.stats`).
+pub fn record_recover_stats() {
+    use rapidmesh_exact::log;
+    log::stat(
+        "recover.facets_swept",
+        FACETS_SWEPT.load(Ordering::Relaxed) as f64,
+    );
+    log::stat(
+        "recover.gift_wrap_cavities",
+        FACE_CAVITIES.load(Ordering::Relaxed) as f64,
+    );
+    log::stat(
+        "recover.gift_wrap_tets",
+        WRAP_TETS.load(Ordering::Relaxed) as f64,
+    );
+    log::stat(
+        "recover.gift_wrap_seconds",
+        WRAP_NANOS.load(Ordering::Relaxed) as f64 / 1e9,
+    );
+}
+
 /// One-line summary of the face-recovery perf counters.
 pub fn recover_stats_line() -> String {
     let cavities = FACE_CAVITIES.load(Ordering::Relaxed);

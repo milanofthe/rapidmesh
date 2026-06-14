@@ -6,6 +6,8 @@ build-backend = "maturin"
 name = "rapidmesh"
 version = "0.1.0"
 description = "Pure-Rust conforming tetrahedral mesher for electromagnetic FEM, with exact CSG and a Python builder API."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Milan Rother", email = "sporkhomat@gmail.com" },
@@ -27,6 +29,10 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
 ]
+
+[project.urls]
+Homepage = "https://mesh.rapidpassives.org"
+Repository = "https://github.com/milanofthe/rapidmesh"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

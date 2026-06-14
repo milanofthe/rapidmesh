@@ -182,6 +182,41 @@ BFS `seen` set, `star_slots` walks, and the per-sweep side/edge HashMaps. So F2
 (fewer / cheaper re-sweeps) is the lever for the curved/many-round case, and
 matters more than F3 (cull coplanar) now that expansion is largely gone.
 
+## 3e. F2 attempt: incremental piercing gate is a DEAD END (perf)
+
+Tried gating the per-facet sweep on "did a NEW tet (since clean_pos) pierce
+this facet", testing only new bbox-overlapping tets instead of the full
+neighborhood. Findings:
+
+- **Not a logic bug.** A RAPIDMESH_F2_DEBUG detector (in the full sweep's clean
+  branch) found ZERO cases where a new tet pierces but the sweep is clean: the
+  per-tet test agrees with the full sweep exactly. The earlier "no effect"
+  reading was a STALE-PYD artifact (the rapidfem UI held `_native.pyd`, maturin's
+  copy failed silently, the showcase ran the old module).
+
+- **The gate works but is slower.** With a fresh module it skips most sweeps
+  (facets swept: coax 1167->132, perforated_plate 8804->8). But faces time
+  ROSE (coax 7.57->11.4s) and orient3d EXPLODED (3.24M->34M, 10x). Cause: ~2000
+  new refinement tets overlap EACH facet's bbox (refinement is dense near
+  surfaces); the gate's per-tet piercing test over all of them (uncached) costs
+  more than the single CACHED ~700-tet full sweep it replaces. The per-facet
+  scan over new tets is O(facets x new_tets) -- the same shape as the original,
+  with a heavier per-element cost.
+
+The lesson: you cannot cheaply decide "is this facet still clean" by examining
+the new tets near it -- there are too many. **Reverted.**
+
+## 3f. The real F2: invert the dirtying
+
+Instead of each facet scanning all nearby new tets, the REFINEMENT should mark
+the few facets it actually disturbs. When `refine_queue` inserts a point, its
+Bowyer-Watson cavity is local and known; the facets whose region that cavity
+touches (or that the inserted point lies on) are the only ones that can need
+re-recovery. A forward index insert -> dirty-facets (cleared each round) would
+re-sweep O(disturbed facets) instead of O(all facets x new tets). This is a
+refinement/recovery coupling change (touch refine_queue + the facet_clean
+bookkeeping), larger than F1; deferred as the next real F2 attempt.
+
 ## 4. Risk
 
 Facet recovery is correctness-critical -- the conform gate and the rapidfem

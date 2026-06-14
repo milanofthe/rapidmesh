@@ -147,6 +147,24 @@ def _g_gear(occ):
     occ.cut(vol, [(3, bore)])
 
 
+def _g_core_shell(occ):
+    box = occ.addBox(-1, -1, -1, 2, 2, 2)
+    ball = occ.addSphere(0, 0, 0, 0.6)
+    occ.fragment([(3, box)], [(3, ball)])
+
+
+def _g_layered_substrate(occ):
+    air = occ.addBox(-1.5, -1.5, 0, 3, 3, 1.5)
+    sub = occ.addBox(-1.5, -1.5, 0, 3, 3, 0.5)
+    occ.fragment([(3, air)], [(3, sub)])
+
+
+def _g_nested_spheres(occ):
+    outer = occ.addSphere(0, 0, 0, 1.0)
+    inner = occ.addSphere(0, 0, 0, 0.55)
+    occ.fragment([(3, outer)], [(3, inner)])
+
+
 def _g_blob(occ):
     # gmsh cannot CAD an organic blob; it remeshes the STL surface as a
     # discrete geometry, then tetrahedralizes the volume it bounds.
@@ -168,14 +186,16 @@ def _g_blob(occ):
 def _r_sphere():
     import rapidmesh as rm
     g = rm.Geometry(maxh=0.28)
-    g.label(g.sphere(1.0, segments=20, rings=10), "sphere")
+    # icosphere (geodesic): isotropic, no pole rings, like gmsh/tetgen
+    g.label(g.icosphere(1.0, subdivisions=2), "sphere")
     return g
 
 
 def _r_cylinder():
     import rapidmesh as rm
     g = rm.Geometry(maxh=0.25)
-    g.label(g.cylinder(0.7, 2.0, segments=24), "cylinder")
+    # uniform barrel grid (even surface distribution) vs ring strips
+    g.label(g.cylinder(0.7, 2.0, segments=24, uniform=True), "cylinder")
     return g
 
 
@@ -198,8 +218,8 @@ def _r_drilled_block():
 def _r_fused_spheres():
     import rapidmesh as rm
     g = rm.Geometry(maxh=0.30)
-    g.label(g.sphere(0.7, position=(-0.55, 0, 0), segments=20, rings=10), "a")
-    g.label(g.sphere(0.7, position=(0.55, 0, 0), segments=20, rings=10), "b")
+    g.label(g.icosphere(0.7, position=(-0.55, 0, 0), subdivisions=2), "a")
+    g.label(g.icosphere(0.7, position=(0.55, 0, 0), subdivisions=2), "b")
     return g
 
 
@@ -230,6 +250,35 @@ def _r_blob():
     return g
 
 
+# multi-region: a later solid carves its region out of the earlier one, leaving
+# a conformal material interface (rapidmesh's core capability). gmsh gets the
+# same shared interface via OCC fragment; tetgen meshes the interface but has no
+# material model (single region).
+
+def _r_core_shell():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.28)
+    g.label(g.box(2, 2, 2, position=(-1, -1, -1)), "shell")
+    g.label(g.icosphere(0.6, subdivisions=2), "core")
+    return g
+
+
+def _r_layered_substrate():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.30)
+    g.label(g.box(3, 3, 1.5, position=(-1.5, -1.5, 0)), "air")
+    g.label(g.box(3, 3, 0.5, position=(-1.5, -1.5, 0)), "substrate")
+    return g
+
+
+def _r_nested_spheres():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.28)
+    g.label(g.icosphere(1.0, subdivisions=2), "shell")
+    g.label(g.icosphere(0.55, subdivisions=2), "core")
+    return g
+
+
 # ----------------------------------------------------------------- registry
 
 
@@ -254,4 +303,10 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("bracket", "Bracket", "Mechanical", 0.15, _r_bracket, _g_bracket),
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
+    CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
+                _r_core_shell, _g_core_shell),
+    CompareGeom("layered_substrate", "Layered Substrate", "Multi-Region", 0.30,
+                _r_layered_substrate, _g_layered_substrate),
+    CompareGeom("nested_spheres", "Nested Spheres", "Multi-Region", 0.28,
+                _r_nested_spheres, _g_nested_spheres),
 ]

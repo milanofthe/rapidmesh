@@ -314,16 +314,31 @@ class Geometry:
         axis: tuple[float, float, float] = (0, 0, 1),
         *,
         segments: int = 24,
+        uniform: bool = False,
+        rows: int | None = None,
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Cylinder from the base centre ``position`` along ``axis``. The
         barrel is tessellated with ``segments`` chords but carries the exact
-        analytic surface: mesh vertices snap onto the true cylinder."""
+        analytic surface: mesh vertices snap onto the true cylinder.
+
+        With ``uniform=True`` the barrel is a structured grid of height
+        ``rows`` (auto-chosen for roughly square cells when ``None``) instead of
+        full-height strips, giving an isotropic, evenly distributed surface mesh
+        like gmsh / tetgen (see :meth:`icosphere`)."""
         ax = [a * height for a in _unit(axis)]
-        region = self._builder.add_cylinder(
-            list(position), ax, radius, segments, maxh, void
-        )
+        if uniform:
+            if rows is None:
+                circ = 2 * math.pi * radius / max(segments, 1)
+                rows = max(1, round(height / circ)) if circ > 0 else 1
+            region = self._builder.add_cylinder_iso(
+                list(position), ax, radius, segments, rows, maxh, void
+            )
+        else:
+            region = self._builder.add_cylinder(
+                list(position), ax, radius, segments, maxh, void
+            )
         return self._solid(region)
 
     def sphere(
@@ -340,6 +355,26 @@ class Geometry:
         :meth:`cylinder`)."""
         region = self._builder.add_sphere(
             list(position), radius, segments, rings, maxh, void
+        )
+        return self._solid(region)
+
+    def icosphere(
+        self,
+        radius: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        *,
+        subdivisions: int = 3,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Geodesic sphere: a subdivided icosahedron projected onto the
+        analytic sphere. Distributes near-equilateral triangles isotropically
+        over the hull (no latitude rings / pole clustering like
+        :meth:`sphere`), matching how gmsh and tetgen tessellate a sphere; the
+        analytic surface is preserved so vertices still snap onto it.
+        ``subdivisions`` sets density (face count ``20 * 4**subdivisions``)."""
+        region = self._builder.add_icosphere(
+            list(position), radius, subdivisions, maxh, void
         )
         return self._solid(region)
 

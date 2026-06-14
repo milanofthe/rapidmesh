@@ -41,15 +41,18 @@ MESHERS = ("rapidmesh", "gmsh", "tetgen")
 # --------------------------------------------------------------- viewer JSON
 
 
-def _viewer_dict(name: str, mesher: str, points, tets, q: dict, millis: int,
-                 extra: dict | None = None) -> dict:
+def _viewer_dict(name: str, mesher: str, points, tets, tet_regions, q: dict,
+                 millis: int, extra: dict | None = None) -> dict:
     """A mesh in the shared viewer schema. ``faces=[]``: the renderer builds
-    the surface hull from the tets. ``tet_regions`` is a flat single region."""
+    the surface hull (and the internal region interfaces) from the tets +
+    ``tet_regions``."""
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     tt = np.asarray(tets, dtype=np.int64).reshape(-1, 4)
+    tr = np.asarray(tet_regions, dtype=np.int64).reshape(-1)
     stats = {
         "n_points": q["n_points"],
         "n_tets": q["n_tets"],
+        "n_regions": int(len(np.unique(tr))) if tr.size else 0,
         "min_dihedral_deg": q["min_dihedral_deg"],
         "max_radius_edge": q["max_radius_edge"],
         "max_edge": q["max_edge"],
@@ -62,7 +65,7 @@ def _viewer_dict(name: str, mesher: str, points, tets, q: dict, millis: int,
         "mesher": mesher,
         "points": pts.tolist(),
         "tets": tt.tolist(),
-        "tet_regions": [1] * tt.shape[0],
+        "tet_regions": tr.tolist(),
         "faces": [],
         "stats": stats,
     }
@@ -72,41 +75,51 @@ def _viewer_dict(name: str, mesher: str, points, tets, q: dict, millis: int,
 
 
 def mesh_rapidmesh(geom: CompareGeom):
-    """(points, tets, millis) from rapidmesh's native pipeline."""
+    """(points, tets, tet_regions, millis) from rapidmesh's native pipeline."""
     g = geom.build_rapidmesh()
     t0 = time.perf_counter()
     m = g.mesh(maxh=geom.target_h)
     millis = (time.perf_counter() - t0) * 1e3
-    return np.asarray(m.points), np.asarray(m.tets, dtype=np.int64), millis
+    return (np.asarray(m.points), np.asarray(m.tets, dtype=np.int64),
+            np.asarray(m.tet_regions, dtype=np.int64), millis)
 
 
 def _gmsh_extract():
-    """Compact (points, tets) and the surface (sverts, stris) from the current
-    gmsh model after generate(3). Node tags are remapped to dense indices."""
+    """Compact (points, tets, tet_regions) and the surface (sverts, stris)
+    from the current gmsh model after generate(3). Region tags come from the
+    elementary volume each tet belongs to (1-based), so fragmented multi-region
+    models carry real per-material regions. The surface includes the internal
+    interface facets, so tetgen meshes them too."""
     import gmsh
 
     tags, coords, _ = gmsh.model.mesh.getNodes()
     coords = np.asarray(coords, dtype=np.float64).reshape(-1, 3)
     tag_to_idx = {int(t): i for i, t in enumerate(tags)}
 
-    _, tet_nodes = gmsh.model.mesh.getElementsByType(4)  # 4-node tets
-    tet_nodes = np.asarray(tet_nodes, dtype=np.int64).reshape(-1, 4)
-    tets = np.vectorize(tag_to_idx.get)(tet_nodes)
+    tet_blocks, reg_blocks = [], []
+    for ri, (_, vtag) in enumerate(gmsh.model.getEntities(3), start=1):
+        _, tn = gmsh.model.mesh.getElementsByType(4, vtag)
+        tn = np.asarray(tn, dtype=np.int64).reshape(-1, 4)
+        if tn.size == 0:
+            continue
+        tet_blocks.append(np.vectorize(tag_to_idx.get)(tn))
+        reg_blocks.append(np.full(tn.shape[0], ri, dtype=np.int64))
+    tets = np.concatenate(tet_blocks) if tet_blocks else np.zeros((0, 4), np.int64)
+    tet_regions = np.concatenate(reg_blocks) if reg_blocks else np.zeros((0,), np.int64)
 
     _, tri_nodes = gmsh.model.mesh.getElementsByType(2)  # 3-node tris (surface)
     tri_nodes = np.asarray(tri_nodes, dtype=np.int64).reshape(-1, 3)
     tris_global = np.vectorize(tag_to_idx.get)(tri_nodes)
-    # compact the surface to only its own vertices for tetgen
     used = np.unique(tris_global)
     remap = {int(g): i for i, g in enumerate(used)}
     sverts = coords[used]
     stris = np.vectorize(remap.get)(tris_global)
-    return coords, tets, sverts, stris
+    return coords, tets, tet_regions, sverts, stris
 
 
 def mesh_gmsh(geom: CompareGeom):
-    """(points, tets, millis, (sverts, stris)) from gmsh's native pipeline;
-    the surface mesh is returned for the tetgen run."""
+    """(points, tets, tet_regions, millis, (sverts, stris)) from gmsh's native
+    pipeline; the surface mesh is returned for the tetgen run."""
     import gmsh
 
     gmsh.initialize()
@@ -123,14 +136,17 @@ def mesh_gmsh(geom: CompareGeom):
         t0 = time.perf_counter()
         gmsh.model.mesh.generate(3)
         millis = (time.perf_counter() - t0) * 1e3
-        pts, tets, sverts, stris = _gmsh_extract()
-        return pts, tets, millis, (sverts, stris)
+        pts, tets, tet_regions, sverts, stris = _gmsh_extract()
+        return pts, tets, tet_regions, millis, (sverts, stris)
     finally:
         gmsh.finalize()
 
 
 def mesh_tetgen(geom: CompareGeom, surface):
-    """(points, tets, millis) from tetgen on gmsh's surface triangulation."""
+    """(points, tets, tet_regions, millis) from tetgen on gmsh's surface.
+    tetgen is a PLC tetrahedralizer with no material model: the internal
+    interface facets are meshed (so the mesh is conformal to them), but without
+    region seed points all tets share one region (the honest PLC limitation)."""
     import tetgen
 
     sverts, stris = surface
@@ -147,7 +163,8 @@ def mesh_tetgen(geom: CompareGeom, surface):
     # UnstructuredGrid cells: VTK_TETRA stored as [4, a,b,c,d, 4, ...]
     cells = np.asarray(grid.cells, dtype=np.int64).reshape(-1, 5)
     tets = cells[:, 1:]
-    return pts, tets, millis
+    tet_regions = np.ones(tets.shape[0], dtype=np.int64)
+    return pts, tets, tet_regions, millis
 
 
 # --------------------------------------------------------------------- main
@@ -167,9 +184,9 @@ def main(argv: list[str]) -> None:
         # rapidmesh (a pyo3 PanicException is a BaseException, so catch broadly
         # to isolate a single geometry's robustness failure from the run)
         try:
-            pts, tets, ms = mesh_rapidmesh(geom)
+            pts, tets, tr, ms = mesh_rapidmesh(geom)
             q = quality(pts, tets)
-            d = _viewer_dict(geom.name, "rapidmesh", pts, tets, q, ms)
+            d = _viewer_dict(geom.name, "rapidmesh", pts, tets, tr, q, ms)
             (OUT / f"{geom.id}.rapidmesh.json").write_text(json.dumps(d))
             per_mesher["rapidmesh"] = {"file": f"meshes/compare/{geom.id}.rapidmesh.json",
                                        "stats": d["stats"]}
@@ -181,9 +198,9 @@ def main(argv: list[str]) -> None:
 
         # gmsh (also yields the surface for tetgen)
         try:
-            pts, tets, ms, surface = mesh_gmsh(geom)
+            pts, tets, tr, ms, surface = mesh_gmsh(geom)
             q = quality(pts, tets)
-            d = _viewer_dict(geom.name, "gmsh", pts, tets, q, ms)
+            d = _viewer_dict(geom.name, "gmsh", pts, tets, tr, q, ms)
             (OUT / f"{geom.id}.gmsh.json").write_text(json.dumps(d))
             per_mesher["gmsh"] = {"file": f"meshes/compare/{geom.id}.gmsh.json",
                                   "stats": d["stats"]}
@@ -195,9 +212,9 @@ def main(argv: list[str]) -> None:
         # tetgen on gmsh's surface
         if surface is not None:
             try:
-                pts, tets, ms = mesh_tetgen(geom, surface)
+                pts, tets, tr, ms = mesh_tetgen(geom, surface)
                 q = quality(pts, tets)
-                d = _viewer_dict(geom.name, "tetgen", pts, tets, q, ms,
+                d = _viewer_dict(geom.name, "tetgen", pts, tets, tr, q, ms,
                                  extra={"on_surface_of": "gmsh"})
                 (OUT / f"{geom.id}.tetgen.json").write_text(json.dumps(d))
                 per_mesher["tetgen"] = {"file": f"meshes/compare/{geom.id}.tetgen.json",

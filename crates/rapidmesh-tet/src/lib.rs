@@ -18,6 +18,7 @@ pub mod conform;
 pub mod delaunay;
 pub mod optimize;
 pub mod project;
+pub mod seed;
 pub mod spatial;
 
 pub use cdt::{

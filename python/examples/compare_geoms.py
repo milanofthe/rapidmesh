@@ -210,8 +210,8 @@ def _r_drilled_block():
     import rapidmesh as rm
     g = rm.Geometry(maxh=0.25)
     g.label(g.box(2.0, 2.0, 1.0, position=(-1.0, -1.0, -0.5)), "block")
-    g.label(g.cylinder(0.5, 1.2, position=(0, 0, -0.6), segments=20, void=True),
-            "bore")
+    g.label(g.cylinder(0.5, 1.2, position=(0, 0, -0.6), segments=20,
+                       uniform=True, void=True), "bore")
     return g
 
 
@@ -229,7 +229,7 @@ def _r_bracket():
     g.label(g.box(2.0, 1.2, 0.3, position=(-1.0, -0.6, 0.0)), "plate")
     for x in (-0.6, 0.6):
         g.label(g.cylinder(0.18, 0.5, position=(x, 0, -0.1), segments=16,
-                           void=True), "bores")
+                           uniform=True, void=True), "bores")
     return g
 
 

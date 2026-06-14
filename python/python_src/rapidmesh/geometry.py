@@ -387,15 +387,30 @@ class Geometry:
         axis: tuple[float, float, float] = (0, 0, 1),
         *,
         segments: int = 24,
+        uniform: bool = False,
+        rows: int | None = None,
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Conical frustum: base radius ``r1`` at ``position``, top radius
-        ``r2`` (0 for a full cone) at ``position + height * axis``."""
+        ``r2`` (0 for a full cone) at ``position + height * axis``.
+
+        With ``uniform=True`` the barrel is a structured grid of height
+        ``rows`` (auto-chosen for roughly square cells) for an isotropic
+        surface like gmsh / tetgen (see :meth:`cylinder`)."""
         ax = [a * height for a in _unit(axis)]
-        region = self._builder.add_frustum(
-            list(position), ax, r1, r2, segments, maxh, void
-        )
+        if uniform:
+            if rows is None:
+                r_mean = 0.5 * (r1 + r2)
+                circ = 2 * math.pi * r_mean / max(segments, 1)
+                rows = max(1, round(height / circ)) if circ > 0 else 1
+            region = self._builder.add_frustum_iso(
+                list(position), ax, r1, r2, segments, rows, maxh, void
+            )
+        else:
+            region = self._builder.add_frustum(
+                list(position), ax, r1, r2, segments, maxh, void
+            )
         return self._solid(region)
 
     def prism(

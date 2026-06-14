@@ -488,6 +488,82 @@ pub fn cylinder_iso(
     f
 }
 
+/// Frustum / cone with an isotropic barrel (the [`frustum`] analog of
+/// [`cylinder_iso`]): the side is a structured grid of `rows` height levels
+/// with a linear radius taper, so the cells stay roughly square instead of
+/// full-height strips. `r_top == 0.0` gives a true cone (the top row collapses
+/// to an apex fan, the one unavoidable rotationally-symmetric spot, like
+/// gmsh's apex). Flat fan caps. Carries the analytic [`SurfaceKind::Cylinder`]
+/// (equal radii) or [`SurfaceKind::Cone`] for vertex snapping.
+pub fn frustum_iso(
+    base_center: [f64; 3],
+    axis: [f64; 3],
+    r_base: f64,
+    r_top: f64,
+    segments: usize,
+    rows: usize,
+) -> Faceted {
+    assert!(segments >= 3 && rows >= 1, "need >= 3 segments and >= 1 row");
+    assert!(r_base > 0.0 && r_top >= 0.0, "radii must be positive (top may be 0)");
+    let (e1, e2) = orthonormal_basis(axis);
+    let ring = |center: [f64; 3], r: f64| -> Vec<[f64; 3]> {
+        (0..segments)
+            .map(|i| {
+                let a = 2.0 * std::f64::consts::PI * i as f64 / segments as f64;
+                add(center, add(scale(e1, r * a.cos()), scale(e2, r * a.sin())))
+            })
+            .collect()
+    };
+    let radius_at = |k: usize| r_base + (r_top - r_base) * (k as f64 / rows as f64);
+    let center_at = |k: usize| add(base_center, scale(axis, k as f64 / rows as f64));
+    let levels: Vec<Vec<[f64; 3]>> = (0..=rows).map(|k| ring(center_at(k), radius_at(k))).collect();
+
+    let mut f = Faceted::new();
+    let barrel_kind = if r_top == r_base {
+        SurfaceKind::Cylinder { center: base_center, axis, radius: r_base }
+    } else {
+        let factor = r_base / (r_base - r_top);
+        let apex = add(base_center, scale(axis, factor));
+        SurfaceKind::Cone {
+            apex,
+            axis: scale(axis, -factor),
+            tan_half_angle: r_base / (norm(axis) * factor).abs(),
+        }
+    };
+    let barrel = f.add_surface(barrel_kind);
+    let top_center = add(base_center, axis);
+
+    for k in 0..rows {
+        let (lo, hi) = (&levels[k], &levels[k + 1]);
+        let top_apex = r_top == 0.0 && k == rows - 1;
+        for i in 0..segments {
+            let j = (i + 1) % segments;
+            if top_apex {
+                f.push_tri(Tri::new(lo[i], lo[j], top_center), barrel);
+            } else {
+                f.push_tri(Tri::new(lo[i], lo[j], hi[j]), barrel);
+                f.push_tri(Tri::new(lo[i], hi[j], hi[i]), barrel);
+            }
+        }
+    }
+    if r_top > 0.0 {
+        let top = &levels[rows];
+        let cap_t = f.add_surface(SurfaceKind::Plane);
+        let top_tris: Vec<Tri> = (0..segments)
+            .map(|i| Tri::new(top_center, top[i], top[(i + 1) % segments]))
+            .collect();
+        f.push_flat(PlanarFacet::new(top.clone()), &top_tris, cap_t);
+    }
+    let bot = &levels[0];
+    let cap_b = f.add_surface(SurfaceKind::Plane);
+    let bot_tris: Vec<Tri> = (0..segments)
+        .map(|i| Tri::new(base_center, bot[(i + 1) % segments], bot[i]))
+        .collect();
+    let bot_loop: Vec<[f64; 3]> = bot.iter().rev().copied().collect();
+    f.push_flat(PlanarFacet::new(bot_loop), &bot_tris, cap_b);
+    f
+}
+
 /// Geodesic sphere (subdivided icosahedron projected onto the analytic
 /// sphere). Unlike [`sphere`]'s UV tessellation (latitude rings clustering at
 /// the poles, rotationally-symmetric points), the icosphere distributes

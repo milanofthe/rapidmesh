@@ -28,6 +28,7 @@ import numpy as np
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BLOB_STL = FIXTURES / "blob.stl"
+BUNNY_STL = FIXTURES / "bunny.stl"
 
 
 # ----------------------------------------------------------- shared profiles
@@ -85,6 +86,33 @@ def ensure_blob_stl() -> Path:
     surf = surf.decimate(0.5).clean()
     surf.save(str(BLOB_STL))
     return BLOB_STL
+
+
+def ensure_bunny_stl() -> Path:
+    """Fetch the Stanford bunny once (pyvista example data), repair it to a
+    watertight surface (fill the base hole), decimate to a web-friendly size,
+    normalize to a ~2-unit body centred at the origin, and cache it."""
+    if BUNNY_STL.exists():
+        return BUNNY_STL
+    import numpy as np
+    import pyvista as pv
+    from pyvista import examples
+
+    FIXTURES.mkdir(parents=True, exist_ok=True)
+    raw = examples.download_bunny()
+    # The scanned bunny is an OPEN surface (hole at the base). Poisson-style
+    # reconstruct_surface turns the points into a watertight shell (0 open
+    # edges) that all three meshers can take, then decimate to a web size.
+    surf = (raw.reconstruct_surface(nbr_sz=20).extract_largest()
+            .clean().triangulate().decimate(0.85).clean().triangulate())
+    # normalize: centre at origin, bbox diagonal -> 2.0
+    surf.points -= np.asarray(surf.center)
+    diag = float(np.linalg.norm(
+        np.asarray(surf.bounds[1::2]) - np.asarray(surf.bounds[0::2])))
+    if diag > 0:
+        surf.points *= 2.0 / diag
+    surf.save(str(BUNNY_STL))
+    return BUNNY_STL
 
 
 def _read_stl_arrays(path: Path):
@@ -165,19 +193,40 @@ def _g_nested_spheres(occ):
     occ.fragment([(3, outer)], [(3, inner)])
 
 
-def _g_blob(occ):
-    # gmsh cannot CAD an organic blob; it remeshes the STL surface as a
-    # discrete geometry, then tetrahedralizes the volume it bounds.
+def _g_stl(stl_path):
+    # gmsh cannot CAD an organic surface; it remeshes the STL as a discrete
+    # geometry, then tetrahedralizes the volume it bounds.
     import gmsh
 
-    gmsh.merge(str(ensure_blob_stl()))
-    # classify the discrete surface into a single watertight closed shell
+    gmsh.merge(str(stl_path))
     gmsh.model.mesh.classifySurfaces(math.pi, True, True, math.pi / 6)
     gmsh.model.mesh.createGeometry()
     surfs = gmsh.model.getEntities(2)
     loop = gmsh.model.geo.addSurfaceLoop([s[1] for s in surfs])
     gmsh.model.geo.addVolume([loop])
     gmsh.model.geo.synchronize()
+
+
+def _g_blob(occ):
+    _g_stl(ensure_blob_stl())
+
+
+def _g_bunny(occ):
+    _g_stl(ensure_bunny_stl())
+
+
+def _g_box(occ):
+    occ.addBox(-0.8, -0.8, -0.8, 1.6, 1.6, 1.6)
+
+
+def _g_cone(occ):
+    occ.addCone(0, 0, -1.0, 0, 0, 2.0, 0.8, 0.4)
+
+
+def _g_via(occ):
+    box = occ.addBox(-1, -1, -0.5, 2, 2, 1)
+    pin = occ.addCylinder(0, 0, -0.7, 0, 0, 1.4, 0.3)
+    occ.fragment([(3, box)], [(3, pin)])
 
 
 # --------------------------------------------------------- rapidmesh builders
@@ -279,6 +328,39 @@ def _r_nested_spheres():
     return g
 
 
+def _r_box():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.30)
+    g.label(g.box(1.6, 1.6, 1.6, position=(-0.8, -0.8, -0.8)), "box")
+    return g
+
+
+def _r_cone():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.25)
+    # gentle taper (a steep tip would re-introduce apex slivers)
+    g.label(g.cone(0.8, 0.4, 2.0, position=(0, 0, -1.0), segments=24,
+                   uniform=True), "cone")
+    return g
+
+
+def _r_via():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.25)
+    g.label(g.box(2, 2, 1, position=(-1, -1, -0.5)), "substrate")
+    g.label(g.cylinder(0.3, 1.4, position=(0, 0, -0.7), segments=20,
+                       uniform=True), "conductor")
+    return g
+
+
+def _r_bunny():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.30)
+    verts, tris = _read_stl_arrays(ensure_bunny_stl())
+    g.label(g.mesh_solid(verts, tris), "bunny")
+    return g
+
+
 # ----------------------------------------------------------------- registry
 
 
@@ -295,6 +377,8 @@ class CompareGeom:
 GEOMS: list[CompareGeom] = [
     CompareGeom("sphere", "Sphere", "Primitives", 0.28, _r_sphere, _g_sphere),
     CompareGeom("cylinder", "Cylinder", "Primitives", 0.25, _r_cylinder, _g_cylinder),
+    CompareGeom("box", "Box", "Primitives", 0.30, _r_box, _g_box),
+    CompareGeom("cone", "Cone", "Primitives", 0.25, _r_cone, _g_cone),
     CompareGeom("torus", "Torus", "Primitives", 0.25, _r_torus, _g_torus),
     CompareGeom("drilled_block", "Drilled Block", "Booleans", 0.25,
                 _r_drilled_block, _g_drilled_block),
@@ -303,10 +387,13 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("bracket", "Bracket", "Mechanical", 0.15, _r_bracket, _g_bracket),
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
+    CompareGeom("bunny", "Stanford Bunny", "Organic", 0.12, _r_bunny, _g_bunny),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell),
     CompareGeom("layered_substrate", "Layered Substrate", "Multi-Region", 0.30,
                 _r_layered_substrate, _g_layered_substrate),
     CompareGeom("nested_spheres", "Nested Spheres", "Multi-Region", 0.28,
                 _r_nested_spheres, _g_nested_spheres),
+    CompareGeom("via", "Via (substrate + pin)", "Multi-Region", 0.25,
+                _r_via, _g_via),
 ]

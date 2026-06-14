@@ -23,7 +23,9 @@ fn report(name: &str, scene: &Scene, params: MeshParams) {
         }
     }
     for (k, v) in &stats {
-        if k.contains("gift_wrap_seconds") {
+        if k.contains("gift_wrap") || k.contains("predicates") || k.contains("facets")
+            || k.contains("rounds")
+        {
             println!("  {k:<28} {v}");
         }
     }

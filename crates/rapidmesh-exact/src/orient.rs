@@ -52,6 +52,63 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
 
     let pts = [a, b, c, d];
 
+    // Affine-reduction fast path. orient3d is multilinear in each argument, so
+    // if exactly one point is an affine Steiner point (Lnc) -- a convex
+    // combination `(1-t) a + t b` of explicit parents with t in (0, 1) -- its
+    // orientation is `(1-t) O_a + t O_b` where O_a, O_b are the orientations
+    // with the parent substituted in. With both weights strictly positive, when
+    // O_a and O_b share a sign (or are zero) the point shares it; each O_i is a
+    // fully explicit predicate (the fast adaptive path). This resolves the
+    // common "Steiner clearly on one side of the facet plane" case without the
+    // implicit interval / expansion machinery; the straddling case (O_a, O_b
+    // opposite) falls through to the exact stages below. Exact: the identity is
+    // a real-number identity (the point IS `(1-t) a + t b` exactly) and the
+    // per-parent signs are exact. (Lpi/Tpi/Bary and Pac -- whose `1-u-v` weight
+    // is not as cheaply sign-certified in f64 -- take the path below.)
+    {
+        let mut implicit_idx: Option<usize> = None;
+        let mut explicit = [[0.0f64; 3]; 4];
+        let mut single = true;
+        for (k, p) in pts.iter().enumerate() {
+            match p.as_explicit() {
+                Some(c) => explicit[k] = c,
+                None if implicit_idx.is_none() => implicit_idx = Some(k),
+                None => {
+                    single = false;
+                    break;
+                }
+            }
+        }
+        if single {
+            if let Some(k) = implicit_idx {
+                if let Some((parents, weights, 2)) = pts[k].affine_combo() {
+                    if weights[0] > 0.0 && weights[1] > 0.0 {
+                        let (mut pos, mut neg) = (false, false);
+                        for parent in &parents[..2] {
+                            let mut q = explicit;
+                            q[k] = *parent;
+                            match Sign::of_f64(geometry_predicates::orient3d(q[0], q[1], q[2], q[3]))
+                            {
+                                Sign::Positive => pos = true,
+                                Sign::Negative => neg = true,
+                                Sign::Zero => {}
+                            }
+                        }
+                        if !(pos && neg) {
+                            return Some(if pos {
+                                Sign::Positive
+                            } else if neg {
+                                Sign::Negative
+                            } else {
+                                Sign::Zero
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Affine interval filter (all w exactly 1: explicit, Lnc, Pac — the
     // dominant meshing path): the homogeneous det4 equals det3 of the rows
     // a-d, b-d, c-d, with no w corrections. When indecisive, the exact

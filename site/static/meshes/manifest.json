@@ -55,9 +55,9 @@
    "name": "Lattice Cube",
    "file": "meshes/lattice_cube.json",
    "stats": {
-    "n_tets": 25267,
-    "n_points": 6390,
-    "min_dihedral_deg": 0.1
+    "n_tets": 25795,
+    "n_points": 6485,
+    "min_dihedral_deg": 0.7
    }
   },
   {
@@ -125,9 +125,9 @@
    "name": "Perforated Plate",
    "file": "meshes/perforated_plate.json",
    "stats": {
-    "n_tets": 13290,
-    "n_points": 4865,
-    "min_dihedral_deg": 2.4
+    "n_tets": 13094,
+    "n_points": 4837,
+    "min_dihedral_deg": 3.9
    }
   },
   {

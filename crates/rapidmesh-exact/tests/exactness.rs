@@ -161,6 +161,49 @@ fn orient3d_explicit_matches_oracle() {
 }
 
 #[test]
+fn orient3d_lnc_matches_oracle() {
+    // The affine-reduction fast path (orient3d with one Lnc Steiner point and
+    // three explicit points) must agree with the rational oracle, both where
+    // the segment is clearly on one side and where it straddles the plane
+    // (fall-through), and at parameters near 0 and 1.
+    let mut rng = Rng::new(0x4C);
+    let ts = [1e-12, 1e-3, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0 - 1e-3, 1.0 - 1e-12];
+    let (mut zeros, mut nonzeros) = (0u32, 0u32);
+    for i in 0..3000 {
+        let coarse = i % 3 == 0; // coarse grid hits coplanar/degenerate configs
+        let mut mk = |r: &mut Rng| {
+            if coarse {
+                r.point_coarse()
+            } else {
+                r.point_grid()
+            }
+        };
+        let e = [
+            Point3::Explicit(mk(&mut rng)),
+            Point3::Explicit(mk(&mut rng)),
+            Point3::Explicit(mk(&mut rng)),
+        ];
+        let lnc = Point3::lnc(mk(&mut rng), mk(&mut rng), ts[i % ts.len()]);
+        // Lnc in the 4th position (the recovery side-test shape) and the 1st
+        // (to exercise the position handling).
+        for arr in [
+            [e[0].clone(), e[1].clone(), e[2].clone(), lnc.clone()],
+            [lnc.clone(), e[0].clone(), e[1].clone(), e[2].clone()],
+        ] {
+            let got = orient3d(&arr[0], &arr[1], &arr[2], &arr[3]);
+            let want = orient3d_oracle([&arr[0], &arr[1], &arr[2], &arr[3]]);
+            assert_eq!(got, want, "lnc orient3d disagrees with oracle");
+            match got {
+                Some(Sign::Zero) => zeros += 1,
+                Some(_) => nonzeros += 1,
+                None => {}
+            }
+        }
+    }
+    assert!(nonzeros > 0 && zeros > 0, "test should hit both signed and coplanar cases");
+}
+
+#[test]
 fn orient3d_exactly_coplanar_affine_combination() {
     let mut rng = Rng::new(0x04);
     for _ in 0..200 {

@@ -181,6 +181,29 @@ impl Point3 {
         }
     }
 
+    /// Affine (degree-1, w = 1) decomposition into explicit parent points and
+    /// barycentric weights, for the Steiner types [`Point3::Lnc`] and
+    /// [`Point3::Pac`]: the point equals `sum_i weight_i * parent_i` exactly
+    /// (the weights are the real numbers `1 - t`, `t`, etc.; the returned f64
+    /// values are their roundings, used only for a strictly-positive guard).
+    /// Returns the parents, weights, and the count `n` (2 for Lnc, 3 for Pac).
+    /// `None` for explicit points and the projective types (Lpi/Tpi/Bary).
+    ///
+    /// Multilinear predicates (orient3d) can substitute the parents for the
+    /// point: the predicate's value is the same weighted combination of the
+    /// per-parent values, so when every parent shares an orientation sign the
+    /// point shares it too -- resolved by fast explicit predicates instead of
+    /// the implicit interval/expansion path.
+    pub fn affine_combo(&self) -> Option<([[f64; 3]; 3], [f64; 3], usize)> {
+        match self {
+            Point3::Lnc { a, b, t } => Some(([*a, *b, [0.0; 3]], [1.0 - t, *t, 0.0], 2)),
+            Point3::Pac { a, b, c, u, v } => {
+                Some(([*a, *b, *c], [1.0 - u - v, *u, *v], 3))
+            }
+            _ => None,
+        }
+    }
+
     /// Homogeneous coordinates (x, y, z, w) in the given ring. For explicit
     /// points w = 1.
     pub fn hom<T: Ring>(&self) -> [T; 4] {

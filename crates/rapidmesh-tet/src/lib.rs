@@ -17,6 +17,8 @@ pub mod cdt;
 pub mod conform;
 pub mod delaunay;
 pub mod optimize;
+pub mod project;
+pub mod spatial;
 
 pub use cdt::{
     acute_vertices, recover_faces, recover_plc, recover_segments, resume_segments, FacetRef,

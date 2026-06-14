@@ -128,13 +128,13 @@ impl TetMesh {
 }
 
 /// A maximal coplanar group of equally tagged PLC facets.
-struct Patch {
+pub(crate) struct Patch {
     /// Member facet (PLC triangle) indices.
-    member_indices: Vec<usize>,
-    face_tag: FaceTag,
-    regions: [RegionTag; 2],
+    pub(crate) member_indices: Vec<usize>,
+    pub(crate) face_tag: FaceTag,
+    pub(crate) regions: [RegionTag; 2],
     /// Analytic surface of the members (index into the PLC surface table).
-    surface: u32,
+    pub(crate) surface: u32,
 }
 
 /// Graded size value for a new point: the regional cap, tightened by the
@@ -211,7 +211,7 @@ fn facet_of_tile(on_facet: &[OnFacet], f: [usize; 3]) -> Option<u32> {
 
 /// Builds the maximal coplanar same-tag patches by union-find over facets
 /// sharing an edge.
-fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
+pub(crate) fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
     let n = plc.triangles.len();
     let tri = |i: usize| -> [usize; 3] {
         let t = plc.triangles[i];

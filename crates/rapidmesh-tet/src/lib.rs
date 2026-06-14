@@ -15,6 +15,7 @@
 
 pub mod cdt;
 pub mod conform;
+pub mod cvt;
 pub mod delaunay;
 pub mod optimize;
 pub mod project;

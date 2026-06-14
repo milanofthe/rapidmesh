@@ -334,6 +334,17 @@ pub fn resume_segments(b: &mut DelaunayBuilder, chains: &mut SegmentChains) {
     let (mut n_rounds, mut n_skip, mut n_probe, mut n_split) = (0u64, 0u64, 0u64, 0u64);
     loop {
         n_rounds += 1;
+        // A round only continues when some piece was missing and got split, so
+        // a converging recovery stops in a handful of rounds. A partial-flush
+        // T-junction can make segments knock each other's chain edges out
+        // indefinitely (the open T-junction recovery spiral): cap the rounds so
+        // that surfaces as a clear error rather than an unbounded hang.
+        assert!(
+            n_rounds <= 4096,
+            "segment recovery did not converge in {n_rounds} rounds \
+             ({n_split} splits, {} segments) -- T-junction recovery spiral",
+            chains.nodes.len(),
+        );
         // Shared snapshot of the creation-log suffix from the oldest clean
         // position: (log position, tet bbox) per still-alive slot, so each
         // segment sweeps plain bboxes from its own position. Slots created

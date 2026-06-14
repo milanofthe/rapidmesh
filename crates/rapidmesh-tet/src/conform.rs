@@ -602,12 +602,32 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // another facet or a chain edge, so alternate face and segment
         // recovery until a face pass finds nothing.
         let tf = std::time::Instant::now();
+        let trace_inner = std::env::var_os("RAPIDMESH_RECOVER_TRACE").is_some();
+        let mut inner = 0usize;
         loop {
+            inner += 1;
             let any = cdt::recover_faces(&mut builder, &facets, &chains, &mut facet_clean);
             cdt::resume_segments(&mut builder, &mut chains);
             sync_chains(
                 &builder, &chains, &segments, &seg_facets, params.grading, &params.size_points,
                 &mut points, point_h, &mut on_facet, &mut point_index,
+            );
+            if trace_inner {
+                eprintln!(
+                    "  recover inner iter {inner}: faces_dirty={any}, points={}",
+                    points.len()
+                );
+            }
+            // The face/segment recovery alternation must converge: a face
+            // pass that finds nothing leaves the boundary conforming. A
+            // partial-flush T-junction can make the two passes undo each other
+            // (face surgery knocks out a chain edge, segment recovery resplits
+            // it, knocking out a face): cap the alternation so that spiral
+            // surfaces as a clear error instead of an infinite hang.
+            assert!(
+                inner <= 512,
+                "boundary recovery did not converge in {inner} face/segment passes \
+                 (T-junction recovery spiral)",
             );
             if !any {
                 break;

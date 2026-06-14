@@ -102,17 +102,16 @@
 </script>
 
 <main class="stage">
-	<header class="brand">
+	<header class="topbar">
 		<span class="wordmark">
 			<img class="logo" src="{base}/favicon.svg" alt="" />
 			<span class="name">rapidmesh</span>
+			<span class="tagline">pure-rust tet mesher</span>
 		</span>
-		<span class="tagline">pure-rust tet mesher</span>
-	</header>
 
-	<!-- shared mesh-layer toolbar (the rapidfem MeshViewer toolbar, lifted out
-	     so it drives all three panes at once) -->
-	<div class="toolbar">
+		<!-- shared mesh-layer toolbar (the rapidfem MeshViewer toolbar, lifted
+		     out so it drives all three panes at once) -->
+		<div class="toolbar">
 		<button class="tb" onclick={fitAll} title="Fit view">Fit</button>
 		<span class="tb-sep"></span>
 		<button class="tb" class:active={layer_surface} onclick={() => (layer_surface = !layer_surface)}>Tets</button>
@@ -127,6 +126,8 @@
 		<input class="clip-slider" type="range" min="0" max="1" step="0.001"
 			bind:value={clip_t} disabled={!clip_enable} />
 	</div>
+
+	</header>
 
 	<section class="panes">
 		{#each MESHERS as key (key)}
@@ -188,19 +189,18 @@
 		overflow: hidden;
 	}
 
-	/* rapidfem brand lockup: logo mark + monospace accent wordmark */
-	.brand {
-		position: absolute;
-		top: var(--space-md);
-		left: var(--space-lg);
-		z-index: 20;
+	/* top bar in normal flow: brand left, shared toolbar right, both wrap */
+	.topbar {
+		flex: none;
 		display: flex;
-		flex-direction: column;
-		gap: var(--space-xs);
-		pointer-events: none;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-md) var(--space-lg);
+		padding: var(--space-md) var(--space-lg);
+		border-bottom: 1px solid var(--border);
 	}
-	.wordmark { display: flex; align-items: center; gap: var(--space-md); }
-	.logo { height: 20px; width: auto; display: block; }
+	.wordmark { display: flex; align-items: baseline; gap: var(--space-md); }
+	.logo { height: 20px; width: auto; align-self: center; }
 	.name {
 		font-family: var(--font-mono);
 		font-size: var(--fs-lg);
@@ -218,10 +218,7 @@
 
 	/* shared toolbar — verbatim rapidfem MeshViewer .tb button look */
 	.toolbar {
-		position: absolute;
-		top: var(--space-md);
-		right: var(--space-lg);
-		z-index: 20;
+		margin-left: auto;
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -295,7 +292,6 @@
 		flex: 1 1 auto;
 		min-height: 0;
 		background: var(--border);
-		margin-top: 56px;             /* clear the brand / toolbar row */
 		margin-bottom: var(--space-lg); /* breathing room above the geometry tabs */
 	}
 	.pane {
@@ -395,7 +391,21 @@
 	.tab:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
 	.tab.active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
 
-	@media (max-width: 900px) {
-		.panes { grid-template-columns: 1fr; }
+	/* Narrow / mobile: three panes can't sit side by side usefully, so the
+	   stage scrolls and each pane stacks at a usable height. Touch-orbit works
+	   inside each canvas (touch-action: none); page scroll happens on the
+	   topbar / gaps / tabs. */
+	@media (max-width: 820px) {
+		.stage {
+			position: static;
+			min-height: 100vh;
+			overflow-y: auto;
+		}
+		.panes {
+			grid-template-columns: 1fr;
+			margin-bottom: 0;
+		}
+		.pane { min-height: 78vh; }
+		.toolbar { width: 100%; margin-left: 0; justify-content: flex-start; }
 	}
 </style>

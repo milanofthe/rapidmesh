@@ -1827,6 +1827,7 @@
 		width: 100%;
 		height: 100%;
 		cursor: grab;
+		touch-action: none;   /* drag = orbit on touch, not page scroll/zoom */
 	}
 	canvas:active { cursor: grabbing; }
 

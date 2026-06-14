@@ -35,9 +35,9 @@
    "name": "Corner Bracket",
    "file": "meshes/bracket.json",
    "stats": {
-    "n_tets": 10224,
-    "n_points": 2845,
-    "min_dihedral_deg": 5.9
+    "n_tets": 10243,
+    "n_points": 2834,
+    "min_dihedral_deg": 2.0
    }
   },
   {
@@ -45,9 +45,9 @@
    "name": "Counterbore Plate",
    "file": "meshes/counterbore_plate.json",
    "stats": {
-    "n_tets": 11448,
-    "n_points": 3061,
-    "min_dihedral_deg": 2.6
+    "n_tets": 11293,
+    "n_points": 3029,
+    "min_dihedral_deg": 3.9
    }
   },
   {
@@ -55,9 +55,9 @@
    "name": "Lattice Cube",
    "file": "meshes/lattice_cube.json",
    "stats": {
-    "n_tets": 25646,
-    "n_points": 6453,
-    "min_dihedral_deg": 0.7
+    "n_tets": 25267,
+    "n_points": 6390,
+    "min_dihedral_deg": 0.1
    }
   },
   {
@@ -125,9 +125,9 @@
    "name": "Perforated Plate",
    "file": "meshes/perforated_plate.json",
    "stats": {
-    "n_tets": 13526,
-    "n_points": 4942,
-    "min_dihedral_deg": 3.5
+    "n_tets": 13290,
+    "n_points": 4865,
+    "min_dihedral_deg": 2.4
    }
   },
   {

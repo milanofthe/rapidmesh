@@ -571,6 +571,10 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // (segment recovery, the per-round face recovery / tile derivation /
     // refinement, implicit rounding), printed once at the end.
     let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
+    let recover_stats = std::env::var_os("RAPIDMESH_RECOVER_STATS").is_some();
+    if recover_stats {
+        cdt::reset_recover_stats();
+    }
     let mut t_faces = std::time::Duration::ZERO;
     let mut t_tiles = std::time::Duration::ZERO;
     let mut t_classify = std::time::Duration::ZERO;
@@ -714,6 +718,9 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         eprintln!(
             "predicates: orient3d {oc} ({oi} implicit, {oe} exact), insphere {ic} ({ii} implicit, {ie} exact)",
         );
+    }
+    if recover_stats {
+        eprintln!("{}", cdt::recover_stats_line());
     }
 
     if std::env::var_os("RAPIDMESH_EDGE_DUMP").is_some() {

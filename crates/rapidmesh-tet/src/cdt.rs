@@ -51,6 +51,46 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// counters in `delaunay`).
 pub static FACE_CAVITIES: AtomicU64 = AtomicU64::new(0);
 pub static WRAP_TETS: AtomicU64 = AtomicU64::new(0);
+/// Perf instrumentation (P0, docs/face-recovery-perf-plan.md): total time
+/// spent in `gift_wrap`, the summed and largest cavity vertex counts (to see
+/// whether a few huge cavities dominate), and the number of facets that ran a
+/// full recovery sweep (past the skip/short-circuit gates). Read and reset by
+/// the mesher when RAPIDMESH_RECOVER_STATS is set.
+pub static WRAP_NANOS: AtomicU64 = AtomicU64::new(0);
+pub static WRAP_VERTS_SUM: AtomicU64 = AtomicU64::new(0);
+pub static WRAP_VERTS_MAX: AtomicU64 = AtomicU64::new(0);
+pub static FACETS_SWEPT: AtomicU64 = AtomicU64::new(0);
+
+/// Resets the perf counters (per-mesh stats).
+pub fn reset_recover_stats() {
+    for c in [
+        &FACE_CAVITIES,
+        &WRAP_TETS,
+        &WRAP_NANOS,
+        &WRAP_VERTS_SUM,
+        &WRAP_VERTS_MAX,
+        &FACETS_SWEPT,
+    ] {
+        c.store(0, Ordering::Relaxed);
+    }
+}
+
+/// One-line summary of the face-recovery perf counters.
+pub fn recover_stats_line() -> String {
+    let cavities = FACE_CAVITIES.load(Ordering::Relaxed);
+    let verts_sum = WRAP_VERTS_SUM.load(Ordering::Relaxed);
+    let avg = if cavities > 0 { verts_sum / cavities } else { 0 };
+    format!(
+        "recover: {} facets swept, {} gift-wrap cavities ({} tets) in {:?}; \
+         cavity verts avg {} max {}",
+        FACETS_SWEPT.load(Ordering::Relaxed),
+        cavities,
+        WRAP_TETS.load(Ordering::Relaxed),
+        std::time::Duration::from_nanos(WRAP_NANOS.load(Ordering::Relaxed)),
+        avg,
+        WRAP_VERTS_MAX.load(Ordering::Relaxed),
+    )
+}
 
 /// Relative (to the carrier parameter range of the sub-segment) margin a
 /// split parameter must keep from the sub-segment ends; rule results outside
@@ -859,6 +899,7 @@ fn recover_one_facet(
         return true; // work remains: chains first, then this facet
     }
 
+    FACETS_SWEPT.fetch_add(1, Ordering::Relaxed);
     let [pa, pb, pc] = f.corners.map(|v| b.exact_point(v));
 
     // One cavity per detection sweep: a surgery invalidates the sweep
@@ -1107,6 +1148,8 @@ fn gift_wrap(
     skip_plane: bool,
     out: &mut Vec<[usize; 4]>,
 ) -> Vec<[usize; 3]> {
+    let wrap_t0 = std::time::Instant::now();
+    let n_verts = verts.len() as u64;
     // Active front: sorted key -> oriented face.
     let mut active: rustc_hash::FxHashMap<[usize; 3], [usize; 3]> =
         rustc_hash::FxHashMap::default();
@@ -1198,6 +1241,9 @@ fn gift_wrap(
             push(&mut active, &mut queue, [g[0], g[2], g[1]]);
         }
     }
+    WRAP_NANOS.fetch_add(wrap_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    WRAP_VERTS_SUM.fetch_add(n_verts, Ordering::Relaxed);
+    WRAP_VERTS_MAX.fetch_max(n_verts, Ordering::Relaxed);
     interface
 }
 

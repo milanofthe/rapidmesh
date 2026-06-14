@@ -399,6 +399,36 @@ fn signed_volume(f: &Faceted) -> f64 {
     v6 / 6.0
 }
 
+/// Solid from an externally supplied triangle soup (an imported STL surface,
+/// a marching-cubes iso-surface, etc.). The input must describe a closed,
+/// non-self-intersecting surface; the winding is normalized to outward via the
+/// signed volume (every triangle flips together when the soup is inward). Each
+/// triangle is its own first-class facet on a single shared [`SurfaceKind::Plane`]
+/// surface (no `FlatFacet` grouping, so the conformal arrangement treats the
+/// many small facets independently rather than as one coplanar face). Fidelity
+/// snapping is off, as for any faceted import: the triangles are the surface.
+pub fn mesh_solid(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Faceted {
+    assert!(!tris.is_empty(), "mesh_solid needs at least one triangle");
+    let mut f = Faceted::new();
+    let s = f.add_surface(SurfaceKind::Plane);
+    for t in tris {
+        let (a, b, c) = (
+            verts[t[0] as usize],
+            verts[t[1] as usize],
+            verts[t[2] as usize],
+        );
+        f.push_tri(Tri::new(a, b, c), s);
+    }
+    let vol = signed_volume(&f);
+    assert!(vol.abs() > 0.0, "degenerate mesh_solid (zero volume)");
+    if vol < 0.0 {
+        for t in &mut f.tris {
+            t.v.swap(1, 2);
+        }
+    }
+    f
+}
+
 /// Tube swept along an open polyline path with a circular cross-section
 /// (rapidfem's `sweep_along_path`/`helix` substrate). One ring per path
 /// node, oriented normal to the local tangent bisector, with a

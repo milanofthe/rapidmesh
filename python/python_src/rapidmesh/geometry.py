@@ -497,6 +497,28 @@ class Geometry:
         )
         return self._solid(region)
 
+    def mesh_solid(
+        self,
+        verts,
+        tris,
+        *,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from an externally supplied triangle soup: ``verts`` is an
+        ``(n, 3)`` array of vertex coordinates and ``tris`` an ``(m, 3)``
+        array of triangle vertex indices (an imported STL surface, a
+        marching-cubes iso-surface, ...). The surface must be closed and
+        non-self-intersecting; the winding is normalized to outward
+        internally. The triangles ARE the surface (no analytic back-reference,
+        so fidelity snapping is off): sample organic shapes finely."""
+        v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
+        t = np.asarray(tris, dtype=np.uint32).reshape(-1, 3)
+        region = self._builder.add_mesh(
+            v.tolist(), t.tolist(), maxh, void
+        )
+        return self._solid(region)
+
     # ------------------------------------------------------------ sheets
 
     def xy_plate(

@@ -1,0 +1,340 @@
+{
+ "geometries": [
+  {
+   "id": "sphere",
+   "name": "Sphere",
+   "category": "Primitives",
+   "target_h": 0.28,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/sphere.rapidmesh.json",
+     "stats": {
+      "n_points": 557,
+      "n_tets": 2203,
+      "min_dihedral_deg": 19.964677710336247,
+      "max_radius_edge": 2.579177448845118,
+      "max_edge": 0.6152764347925684,
+      "millis": 399
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/sphere.gmsh.json",
+     "stats": {
+      "n_points": 282,
+      "n_tets": 1004,
+      "min_dihedral_deg": 16.153032117355963,
+      "max_radius_edge": 1.549386390918681,
+      "max_edge": 0.5447876967797226,
+      "millis": 15
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/sphere.tetgen.json",
+     "stats": {
+      "n_points": 259,
+      "n_tets": 841,
+      "min_dihedral_deg": 3.071859709625926,
+      "max_radius_edge": 1.3999449597670557,
+      "max_edge": 0.7653686334322959,
+      "millis": 13,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "cylinder",
+   "name": "Cylinder",
+   "category": "Primitives",
+   "target_h": 0.25,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/cylinder.rapidmesh.json",
+     "stats": {
+      "n_points": 537,
+      "n_tets": 2238,
+      "min_dihedral_deg": 22.114976079838215,
+      "max_radius_edge": 1.5983402851747923,
+      "max_edge": 0.3746750242556113,
+      "millis": 240
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/cylinder.gmsh.json",
+     "stats": {
+      "n_points": 310,
+      "n_tets": 1043,
+      "min_dihedral_deg": 15.197318286668292,
+      "max_radius_edge": 1.3932210403816787,
+      "max_edge": 0.48992334594279147,
+      "millis": 14
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/cylinder.tetgen.json",
+     "stats": {
+      "n_points": 292,
+      "n_tets": 929,
+      "min_dihedral_deg": 3.716800736959243,
+      "max_radius_edge": 1.3266955710727963,
+      "max_edge": 0.6294277192299942,
+      "millis": 3,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "torus",
+   "name": "Torus",
+   "category": "Primitives",
+   "target_h": 0.25,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/torus.rapidmesh.json",
+     "stats": {
+      "n_points": 612,
+      "n_tets": 2074,
+      "min_dihedral_deg": 9.51502574118237,
+      "max_radius_edge": 2.293187410736926,
+      "max_edge": 0.47687734341052496,
+      "millis": 278
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/torus.gmsh.json",
+     "stats": {
+      "n_points": 290,
+      "n_tets": 765,
+      "min_dihedral_deg": 11.785415933767439,
+      "max_radius_edge": 1.3437869822721045,
+      "max_edge": 0.4872290726406293,
+      "millis": 15
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/torus.tetgen.json",
+     "stats": {
+      "n_points": 294,
+      "n_tets": 791,
+      "min_dihedral_deg": 10.704583962714139,
+      "max_radius_edge": 1.192216768440833,
+      "max_edge": 0.4661724533755755,
+      "millis": 3,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "drilled_block",
+   "name": "Drilled Block",
+   "category": "Booleans",
+   "target_h": 0.25,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/drilled_block.rapidmesh.json",
+     "stats": {
+      "n_points": 903,
+      "n_tets": 3222,
+      "min_dihedral_deg": 1.909975169646657,
+      "max_radius_edge": 14.043171894061938,
+      "max_edge": 0.37414076124323853,
+      "millis": 662
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/drilled_block.gmsh.json",
+     "stats": {
+      "n_points": 408,
+      "n_tets": 1214,
+      "min_dihedral_deg": 14.96789521861362,
+      "max_radius_edge": 1.338634340044715,
+      "max_edge": 0.4851334462180722,
+      "millis": 17
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/drilled_block.tetgen.json",
+     "stats": {
+      "n_points": 420,
+      "n_tets": 1297,
+      "min_dihedral_deg": 1.8478728142853527,
+      "max_radius_edge": 1.3635548363568035,
+      "max_edge": 0.5468801702181508,
+      "millis": 4,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "fused_spheres",
+   "name": "Fused Spheres",
+   "category": "Booleans",
+   "target_h": 0.3,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/fused_spheres.rapidmesh.json",
+     "stats": {
+      "n_points": 529,
+      "n_tets": 1674,
+      "min_dihedral_deg": 6.695058344978065,
+      "max_radius_edge": 38.334515557670414,
+      "max_edge": 0.8465546987776903,
+      "millis": 593
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/fused_spheres.gmsh.json",
+     "stats": {
+      "n_points": 193,
+      "n_tets": 560,
+      "min_dihedral_deg": 13.419128569400499,
+      "max_radius_edge": 1.5599321967363022,
+      "max_edge": 0.5883950746017423,
+      "millis": 11
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/fused_spheres.tetgen.json",
+     "stats": {
+      "n_points": 192,
+      "n_tets": 528,
+      "min_dihedral_deg": 4.809279500235107,
+      "max_radius_edge": 3.231769985397468,
+      "max_edge": 0.7306193528288591,
+      "millis": 9,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "bracket",
+   "name": "Bracket",
+   "category": "Mechanical",
+   "target_h": 0.15,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/bracket.rapidmesh.json",
+     "stats": {
+      "n_points": 896,
+      "n_tets": 3027,
+      "min_dihedral_deg": 5.154584087601876,
+      "max_radius_edge": 23.43793285779423,
+      "max_edge": 0.255268235753709,
+      "millis": 1351
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/bracket.gmsh.json",
+     "stats": {
+      "n_points": 431,
+      "n_tets": 1242,
+      "min_dihedral_deg": 13.96320408334077,
+      "max_radius_edge": 1.439001781721173,
+      "max_edge": 0.30966022388271275,
+      "millis": 18
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/bracket.tetgen.json",
+     "stats": {
+      "n_points": 435,
+      "n_tets": 1287,
+      "min_dihedral_deg": 2.207342226803007,
+      "max_radius_edge": 1.1971642376841616,
+      "max_edge": 0.3406331775271099,
+      "millis": 5,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "gear",
+   "name": "Spur Gear",
+   "category": "Mechanical",
+   "target_h": 0.16,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/gear.rapidmesh.json",
+     "stats": {
+      "n_points": 1513,
+      "n_tets": 5699,
+      "min_dihedral_deg": 20.762211811900727,
+      "max_radius_edge": 2.173742015711346,
+      "max_edge": 0.23959909325252823,
+      "millis": 738
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/gear.gmsh.json",
+     "stats": {
+      "n_points": 1214,
+      "n_tets": 3750,
+      "min_dihedral_deg": 13.978965634267638,
+      "max_radius_edge": 1.5804006766794643,
+      "max_edge": 0.3275005934275672,
+      "millis": 84
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/gear.tetgen.json",
+     "stats": {
+      "n_points": 1728,
+      "n_tets": 6090,
+      "min_dihedral_deg": 3.3212716959226327,
+      "max_radius_edge": 1.571391972025648,
+      "max_edge": 0.3226624228098734,
+      "millis": 22,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "blob",
+   "name": "Organic Blob",
+   "category": "Organic",
+   "target_h": 0.16,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/blob.rapidmesh.json",
+     "stats": {
+      "n_points": 963,
+      "n_tets": 2832,
+      "min_dihedral_deg": 4.992262900046768,
+      "max_radius_edge": 15.97369747561303,
+      "max_edge": 0.5210660946120524,
+      "millis": 215
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/blob.gmsh.json",
+     "stats": {
+      "n_points": 354,
+      "n_tets": 1031,
+      "min_dihedral_deg": 10.507860755379937,
+      "max_radius_edge": 7.088700858151154,
+      "max_edge": 0.34190962803939995,
+      "millis": 63
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/blob.tetgen.json",
+     "stats": {
+      "n_points": 565,
+      "n_tets": 2157,
+      "min_dihedral_deg": 1.7421467197032712,
+      "max_radius_edge": 8.154740487146073,
+      "max_edge": 0.3041336465855458,
+      "millis": 8,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  }
+ ]
+}

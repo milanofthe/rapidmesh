@@ -1223,34 +1223,46 @@ fn gift_wrap(
         assert!(steps <= WRAP_MAX_STEPS, "gift wrap diverged");
 
         let fp = f.map(|v| b.exact_point(v));
-        // Candidates: strictly on the positive (unfilled) side of f.
-        let mut best: Option<usize> = None;
-        for &w in verts {
-            if f.contains(&w) {
-                continue;
-            }
-            if exact_orient(&fp[0], &fp[1], &fp[2], &b.exact_point(w)) != Sign::Positive {
-                continue;
-            }
-            if crosses_front(b, f, w, &active) {
-                continue;
-            }
-            best = Some(match best {
-                None => w,
-                Some(cur) => {
-                    // Pencil order: w beats cur iff w is perturbed-inside
-                    // the circumsphere of (f, cur).
-                    if perturbed_insphere(b, [f[0], f[1], f[2], cur], w) == Sign::Positive {
-                        w
-                    } else {
-                        cur
-                    }
+        // Candidates: strictly on the positive (unfilled) side of f. The
+        // pencil-minimal positive candidate is the gift-wrap apex; one that
+        // crosses the active front (a locally non-convex cavity) is invalid.
+        // A valid cavity's apex almost never crosses, and `crosses_front` is
+        // O(active-front) of exact predicates -- so find the pencil-best
+        // WITHOUT it, validate just the winner, and only on the rare crossing
+        // re-scan with the full filter. This turns the dominant gift-wrap cost
+        // from O(verts * active-front) into O(verts) per face.
+        let pencil_best = |filter_cross: bool| -> Option<usize> {
+            let mut best: Option<usize> = None;
+            for &w in verts {
+                if f.contains(&w) {
+                    continue;
                 }
-            });
-        }
-        let w = best.unwrap_or_else(|| {
-            panic!("gift wrap stuck: no valid apex for front face {f:?}")
-        });
+                if exact_orient(&fp[0], &fp[1], &fp[2], &b.exact_point(w)) != Sign::Positive {
+                    continue;
+                }
+                if filter_cross && crosses_front(b, f, w, &active) {
+                    continue;
+                }
+                best = Some(match best {
+                    None => w,
+                    // Pencil order: w beats cur iff w is perturbed-inside the
+                    // circumsphere of (f, cur).
+                    Some(cur) if perturbed_insphere(b, [f[0], f[1], f[2], cur], w)
+                        == Sign::Positive => w,
+                    Some(cur) => cur,
+                });
+            }
+            best
+        };
+        let w = match pencil_best(false) {
+            Some(w) if !crosses_front(b, f, w, &active) => w,
+            // Rare: the global pencil apex crosses the front; fall back to the
+            // pencil-best among the non-crossing candidates (the original
+            // semantics).
+            _ => pencil_best(true).unwrap_or_else(|| {
+                panic!("gift wrap stuck: no valid apex for front face {f:?}")
+            }),
+        };
 
         active.remove(&key);
         let t = [f[0], f[1], f[2], w];
@@ -1292,9 +1304,45 @@ fn crosses_front(
         })
     };
 
+    // Conservative AABB of the candidate tet, padded for the f64 approximation
+    // of implicit (Lnc/Pac) points. A front face whose AABB is disjoint from
+    // this box cannot have a vertex inside the tet, pierce it, or overlap it,
+    // so all the exact predicate tests below are skipped for it. This prunes
+    // the O(active-front) inner loop to the handful of nearby faces (the gift
+    // wrap was spending almost all its time here on seam-dense cavities).
+    let ta = t.map(|v| b.approx_point(v));
+    let mut tlo = [f64::MAX; 3];
+    let mut thi = [f64::MIN; 3];
+    for p in &ta {
+        for k in 0..3 {
+            tlo[k] = tlo[k].min(p[k]);
+            thi[k] = thi[k].max(p[k]);
+        }
+    }
+    let pad = 1e-6 * (0..3).map(|k| thi[k] - tlo[k]).fold(0.0_f64, f64::max).max(1e-30);
+    for k in 0..3 {
+        tlo[k] -= pad;
+        thi[k] += pad;
+    }
+
     for tau in active.values() {
         if tau.iter().all(|v| t.contains(v)) {
             continue; // the base face itself or a face of t already in front
+        }
+        // AABB prefilter (conservative): disjoint boxes cannot intersect.
+        {
+            let mut glo = [f64::MAX; 3];
+            let mut ghi = [f64::MIN; 3];
+            for &v in tau {
+                let p = b.approx_point(v);
+                for k in 0..3 {
+                    glo[k] = glo[k].min(p[k]);
+                    ghi[k] = ghi[k].max(p[k]);
+                }
+            }
+            if (0..3).any(|k| ghi[k] < tlo[k] || glo[k] > thi[k]) {
+                continue;
+            }
         }
         // Front vertex strictly inside the candidate tet.
         for &v in tau {

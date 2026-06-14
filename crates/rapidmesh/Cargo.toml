@@ -10,3 +10,6 @@ rapidmesh-csg.workspace = true
 rapidmesh-tet.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+rapidmesh-exact.workspace = true

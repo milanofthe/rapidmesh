@@ -400,6 +400,45 @@ def _r_bunny():
     return g
 
 
+def _naca0012_points(chord: float, n: int):
+    """NACA 0012 outline as a polyline: upper trailing->leading edge, then
+    lower leading->trailing (blunt TE), cosine x-spacing toward the LE."""
+    def yt(x):
+        return 0.6 * (0.2969 * x ** 0.5 - 0.1260 * x - 0.3516 * x * x
+                      + 0.2843 * x ** 3 - 0.1015 * x ** 4)
+    pts = []
+    for i in range(n + 1):
+        x = 0.5 * (1.0 + math.cos(math.pi * i / n))  # 1 -> 0
+        pts.append((x * chord, yt(x) * chord))
+    for i in range(1, n + 1):
+        x = 0.5 * (1.0 - math.cos(math.pi * i / n))  # 0 -> 1
+        pts.append((x * chord, -yt(x) * chord))
+    return pts
+
+
+# A NACA 0012 wing section, centered on the origin (chord 1 along x, span 0.6
+# along z). rapidmesh sweeps its analytic spline profile; gmsh builds the same
+# outline as an OCC spline, extrudes, and meshes -- tetgen meshes gmsh's surface.
+def _r_naca():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.12)
+    g.label(
+        g.airfoil_naca0012(1.0, 0.6, position=(-0.5, 0.0, -0.3), n_seg=120),
+        "airfoil",
+    )
+    return g
+
+
+def _g_naca(occ):
+    pts = _naca0012_points(1.0, 40)
+    ptags = [occ.addPoint(x - 0.5, y, -0.3) for (x, y) in pts]
+    spline = occ.addSpline(ptags)
+    close = occ.addLine(ptags[-1], ptags[0])
+    loop = occ.addCurveLoop([spline, close])
+    surf = occ.addPlaneSurface([loop])
+    occ.extrude([(2, surf)], 0, 0, 0.6)
+
+
 # ----------------------------------------------------------------- registry
 
 
@@ -433,6 +472,7 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
     CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
+    CompareGeom("naca0012", "NACA 0012 Wing", "Organic", 0.12, _r_naca, _g_naca),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell,
                 region_seeds=((0.8, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2))),

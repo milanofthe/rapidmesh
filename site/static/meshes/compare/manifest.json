@@ -496,6 +496,51 @@
    }
   },
   {
+   "id": "naca0012",
+   "name": "NACA 0012 Wing",
+   "category": "Organic",
+   "target_h": 0.12,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/naca0012.rapidmesh.json",
+     "stats": {
+      "n_points": 1259,
+      "n_tets": 3529,
+      "n_regions": 1,
+      "min_dihedral_deg": 2.571360570906137,
+      "max_radius_edge": 158.7359007355497,
+      "max_edge": 0.17104235847007887,
+      "millis": 6864
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/naca0012.gmsh.json",
+     "stats": {
+      "n_points": 224,
+      "n_tets": 353,
+      "n_regions": 1,
+      "min_dihedral_deg": 0.6344721502021287,
+      "max_radius_edge": 52.92632943195402,
+      "max_edge": 0.1792322660223537,
+      "millis": 17
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/naca0012.tetgen.json",
+     "stats": {
+      "n_points": 978,
+      "n_tets": 2775,
+      "n_regions": 1,
+      "min_dihedral_deg": 0.4641587171634569,
+      "max_radius_edge": 52.91460464969839,
+      "max_edge": 0.1792322660223537,
+      "millis": 9,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
    "id": "core_shell",
    "name": "Core + Shell",
    "category": "Multi-Region",

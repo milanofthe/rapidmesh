@@ -46,17 +46,14 @@ const DEFAULT_SUBDIV: f64 = 8.0;
 const BOX_PAD_FRAC: f64 = 1e-6;
 /// Minimum separation of a seeded/moved site from any other, fraction of spacing.
 const SEPARATION_FRAC: f64 = 0.45;
-/// Interface-recovery rounds cap (a divergence backstop; it converges in a few).
-const MAX_RECOVER_ROUNDS: usize = 64;
-/// A tet straddles a patch plane if vertices sit on both sides by more than this
-/// (fraction of the scene diagonal); on-plane points sit exactly at 0.
-const STRADDLE_EPS_FRAC: f64 = 1e-9;
+/// The surface (edges + faces) is seeded finer than the volume by this factor.
+/// Oversampling the boundary makes the restricted Delaunay recover it as tet
+/// faces automatically (no explicit boundary recovery needed); region assignment
+/// is then a raytracing classification (`classify_tet_regions`).
+const SURFACE_OVERSAMPLE: f64 = 0.5;
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 fn scale(a: V3, s: f64) -> V3 {
     [a[0] * s, a[1] * s, a[2] * s]
@@ -75,10 +72,6 @@ fn tet_det(p: [V3; 4]) -> f64 {
 }
 fn centroid4(p: [V3; 4]) -> V3 {
     std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]))
-}
-/// Orthogonal projection of `c` onto the plane (point `p0`, unit normal `n`).
-fn project_plane(c: V3, p0: V3, n: V3) -> V3 {
-    sub(c, scale(n, dot(sub(c, p0), n)))
 }
 
 fn tri_of(plc: &TaggedPlc, t: [u32; 3]) -> Tri {
@@ -261,6 +254,9 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let patches = build_patches(plc);
     let planes: Vec<(V3, V3)> = patches.iter().map(|p| patch_plane(plc, p)).collect();
     let sep = SEPARATION_FRAC * spacing;
+    // Surface seeded finer than the volume so the boundary self-recovers.
+    let surf_spacing = spacing * SURFACE_OVERSAMPLE;
+    let surf_sep = SEPARATION_FRAC * surf_spacing;
 
     // ---- stage 1: corners + feature edges (1D), fixed --------------------
     let t_surf = std::time::Instant::now();
@@ -274,7 +270,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if edge_pts.contains_key(&e) {
                 continue;
             }
-            let idx: Vec<usize> = subdivide(plc.vertices[e.0], plc.vertices[e.1], spacing)
+            let idx: Vec<usize> = subdivide(plc.vertices[e.0], plc.vertices[e.1], surf_spacing)
                 .into_iter()
                 .map(|p| {
                     sites.push(p);
@@ -315,12 +311,12 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
         let inside2 = |uv: [f64; 2]| point_in_patch(plc, patch, lift3(uv, drop, p0, n));
-        let interior = cvt_fill(&bnd, lo2, hi2, spacing, LLOYD_ITERS, inside2);
+        let interior = cvt_fill(&bnd, lo2, hi2, surf_spacing, LLOYD_ITERS, inside2);
         // Lift back to the plane; keep clear of existing sites.
         let tree = Octree::build(&sites);
         for uv in interior {
             let q = lift3(uv, drop, p0, n);
-            let near = tree.nearest(q).map(|j| dist(q, sites[j as usize]) < sep).unwrap_or(false);
+            let near = tree.nearest(q).map(|j| dist(q, sites[j as usize]) < surf_sep).unwrap_or(false);
             if !near {
                 sites.push(q);
                 fixed.push(true);
@@ -383,59 +379,6 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
     rmlog::stage("mesh.lloyd", t_lloyd.elapsed().as_secs_f64());
-
-    // ---- interface/boundary recovery -------------------------------------
-    let t_recover = std::time::Instant::now();
-    let eps = STRADDLE_EPS_FRAC * diag.max(1.0);
-    // Recovery must insert the crossing point even when it sits near an existing
-    // site (that is often exactly the point needed to kill the straddle); only
-    // an actual near-duplicate would panic the Delaunay, so guard just that.
-    let dup_tol = 1e-7 * diag.max(1.0);
-    let mut recover_rounds = 0;
-    loop {
-        let tets = delaunay_of(&sites, lo, hi);
-        let mut adds: Vec<(V3, usize)> = Vec::new();
-        for t in &tets {
-            let pv = [sites[t[0]], sites[t[1]], sites[t[2]], sites[t[3]]];
-            for (pi, &(p0, n)) in planes.iter().enumerate() {
-                let d: [f64; 4] = std::array::from_fn(|k| dot(sub(pv[k], p0), n));
-                if !(d.iter().any(|&x| x > eps) && d.iter().any(|&x| x < -eps)) {
-                    continue;
-                }
-                for i in 0..4 {
-                    for j in (i + 1)..4 {
-                        let cross = (d[i] > eps && d[j] < -eps) || (d[j] > eps && d[i] < -eps);
-                        if !cross {
-                            continue;
-                        }
-                        let tt = d[i] / (d[i] - d[j]);
-                        let raw = add(pv[i], scale(sub(pv[j], pv[i]), tt));
-                        let x = project_plane(raw, p0, n);
-                        if point_in_patch(plc, &patches[pi], x)
-                            && sites.iter().all(|&q| dist(x, q) >= dup_tol)
-                            && adds.iter().all(|&(q, _)| dist(x, q) >= dup_tol)
-                        {
-                            adds.push((x, pi));
-                        }
-                    }
-                }
-            }
-        }
-        if adds.is_empty() {
-            break;
-        }
-        for (x, _pi) in adds {
-            sites.push(x);
-            fixed.push(true);
-        }
-        recover_rounds += 1;
-        assert!(
-            recover_rounds <= MAX_RECOVER_ROUNDS,
-            "interface recovery did not converge in {recover_rounds} rounds"
-        );
-    }
-    rmlog::stat("mesh.recover_rounds", recover_rounds as f64);
-    rmlog::stage("mesh.recover", t_recover.elapsed().as_secs_f64());
 
     // ---- final triangulation, tilings, region classification --------------
     let t_classify = std::time::Instant::now();

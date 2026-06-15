@@ -299,6 +299,10 @@ struct ChartGroup {
     members: Vec<usize>,
     boundary: Vec<(usize, usize)>,
     chart: Box<dyn crate::surfchart::SurfaceChart>,
+    /// Smallest principal radius of curvature over the group (drives the finest
+    /// seeding step); computed over ALL vertices, so the high-curvature interior
+    /// (an airfoil nose) is captured, not just the boundary loop.
+    min_radius: f64,
 }
 
 /// The bounded curved smooth-groups of the PLC suitable for chart-based volume
@@ -359,6 +363,10 @@ fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
         if seam {
             continue; // wrapping chart: stay on the faceted path
         }
+        let min_radius = gverts
+            .iter()
+            .map(|&v| chart.curvature_radius(chart.to_uv(plc.vertices[v])))
+            .fold(f64::INFINITY, f64::min);
         out.push(ChartGroup {
             surface: sid,
             kind,
@@ -367,6 +375,7 @@ fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
             members,
             boundary,
             chart,
+            min_radius,
         });
     }
     out
@@ -551,32 +560,21 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 hi2[k] = hi2[k].max(p[k]);
             }
         }
-        // The boundary density follows the VOLUME sizing field (graded), NOT the
-        // curvature bias: refining the surface finer than the volume can support
-        // would seed slivers. The curvature/volume-error bias stays a surface-
-        // export feature (`surface_mesh`); here the win is that the boundary
-        // nodes sit EXACTLY on the analytic surface instead of on chord facets.
-        let step = SURFACE_OVERSAMPLE * domain.finest();
+        // Curvature/volume-error bias drives the surface density: fine where the
+        // surface is tightly curved (an airfoil nose), coarse where it is flat,
+        // so the boundary is captured with FEW triangles, the nodes EXACTLY on
+        // the analytic surface. `min_radius` (over the whole group, not just the
+        // boundary loop) sets the finest grid step so the high-curvature interior
+        // is resolved. The chart is isometric, so the target is a true length.
+        let chord = (8.0 * SURF_CHORD_FRAC).sqrt();
+        let step = SURFACE_OVERSAMPLE * domain.finest().min(g.min_radius * chord);
         let inside2 = |uv: [f64; 2]| in_loops(uv, &segs);
-        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(g.chart.to_xyz(uv));
-        // The chart separation is in ARC LENGTH (isometric); across a tightly
-        // curved region (an airfoil nose) two points on opposite sides are far
-        // in arc length but close in 3D, which would seed slivers. Enforce 3D
-        // clearance (`sep`) against the existing surface and the accepted curved
-        // points -- the same guard the volume seeding uses.
-        let pos_now = positions(&sites);
-        let tree = Octree::build(&pos_now);
-        let mut accepted: Vec<V3> = Vec::new();
+        let target = |uv: [f64; 2]| {
+            let hc = g.chart.curvature_radius(uv) * chord;
+            SURFACE_OVERSAMPLE * domain.h_at(g.chart.to_xyz(uv)).min(hc)
+        };
         for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2) {
-            let p = g.chart.to_xyz(uv);
-            let near = tree.nearest(p).map(|j| dist(p, pos_now[j as usize]) < sep).unwrap_or(false);
-            if near || accepted.iter().any(|q| dist(p, *q) < sep) {
-                continue;
-            }
-            accepted.push(p);
-        }
-        for p in accepted {
-            sites.push(Site::on_surface(g.kind.clone(), p));
+            sites.push(Site::on_surface(g.kind.clone(), g.chart.to_xyz(uv)));
         }
     }
 

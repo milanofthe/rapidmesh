@@ -16,6 +16,48 @@ fn dist2(a: V3, b: V3) -> f64 {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
 
+/// Spreads the low 21 bits of `x` to every third bit (3D Morton split).
+fn split3(x: u64) -> u64 {
+    let mut x = x & 0x1f_ffff;
+    x = (x | x << 32) & 0x1f00_0000_00ff_ffff;
+    x = (x | x << 16) & 0x1f00_00ff_0000_ffff;
+    x = (x | x << 8) & 0x100f_00f0_0f00_f00f;
+    x = (x | x << 4) & 0x10c3_0c30_c30c_30c3;
+    x = (x | x << 2) & 0x1249_2492_4924_9249;
+    x
+}
+
+/// A permutation of `0..points.len()` ordering the points along a Morton
+/// (Z-order) curve. Inserting in this order keeps consecutive points spatially
+/// close, so an incremental Delaunay's point-location walk stays short (the
+/// classic BRIO/space-filling-curve speedup): near-linear construction instead
+/// of the long walks a geometrically-unsorted insertion order causes.
+pub fn morton_order(points: &[V3]) -> Vec<usize> {
+    let n = points.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut lo = points[0];
+    let mut hi = points[0];
+    for p in points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let span: [f64; 3] = std::array::from_fn(|k| (hi[k] - lo[k]).max(1e-300));
+    const MASK: u64 = (1 << 21) - 1;
+    let max = MASK as f64;
+    let code = |p: V3| -> u64 {
+        let q: [u64; 3] =
+            std::array::from_fn(|k| (((p[k] - lo[k]) / span[k] * max).round() as u64).min(MASK));
+        split3(q[0]) | (split3(q[1]) << 1) | (split3(q[2]) << 2)
+    };
+    let mut idx: Vec<usize> = (0..n).collect();
+    idx.sort_by_key(|&i| code(points[i]));
+    idx
+}
+
 enum Node {
     Leaf(Vec<u32>),
     Inner(Box<[Node; 8]>),

@@ -453,13 +453,21 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 }
 
 /// A fresh Delaunay over the current site positions; returns real tets in site
-/// (insertion) indices.
+/// indices. Points are inserted in Morton (space-filling) order so the builder's
+/// location walk stays short (near-linear construction); the returned tets are
+/// remapped from insertion order back to site indices.
 fn delaunay_of(sites: &[Site], lo: V3, hi: V3) -> Vec<[usize; 4]> {
+    let pos: Vec<V3> = sites.iter().map(|s| s.pos()).collect();
+    let order = crate::spatial::morton_order(&pos);
     let mut db = DelaunayBuilder::enclosing(lo, hi);
-    for s in sites {
-        db.insert(s.pos());
+    for &si in &order {
+        db.insert(pos[si]);
     }
+    // Insertion index k corresponds to site `order[k]`.
     db.tets()
+        .into_iter()
+        .map(|t| std::array::from_fn(|j| order[t[j]]))
+        .collect()
 }
 
 /// Reflection of `p` across the plane (`p0`, unit `n`).

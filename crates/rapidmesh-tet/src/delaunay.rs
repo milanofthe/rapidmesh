@@ -127,6 +127,11 @@ fn face(t: [u32; 4], i: usize) -> [u32; 3] {
 
 /// Incremental Delaunay tetrahedralization. Internal indices 0..4 are the
 /// super-tet corners; public indices count inserted points from 0.
+///
+/// `Clone` lets the CVT mesher build the fixed-surface triangulation once and
+/// clone it each Lloyd pass before adding the (moving) volume points, avoiding
+/// re-insertion of the surface every iteration.
+#[derive(Clone)]
 pub struct DelaunayBuilder {
     /// The super-tet interior: per-axis lower bounds and the upper bound on
     /// the coordinate sum (the four face planes of the super-tet).

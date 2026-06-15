@@ -179,21 +179,46 @@ def _g_gear(occ):
 
 
 def _g_core_shell(occ):
+    import gmsh
     box = occ.addBox(-1, -1, -1, 2, 2, 2)
     ball = occ.addSphere(0, 0, 0, 0.6)
-    occ.fragment([(3, box)], [(3, ball)])
+    _, dim_tag_map = occ.fragment([(3, box)], [(3, ball)])
+    occ.synchronize()
+    # The tool (ball) volumes appear in both dtmap[0] and dtmap[1].
+    # Shell = box-only volumes (dtmap[0] minus dtmap[1]); core = all tool volumes.
+    tool_tags = {t[1] for t in dim_tag_map[1]}
+    shell_vols = [t[1] for t in dim_tag_map[0] if t[1] not in tool_tags]
+    core_vols = [t[1] for t in dim_tag_map[1]]
+    gmsh.model.addPhysicalGroup(3, shell_vols, tag=1, name="shell")
+    gmsh.model.addPhysicalGroup(3, core_vols, tag=2, name="core")
 
 
 def _g_layered_substrate(occ):
+    import gmsh
     air = occ.addBox(-1.5, -1.5, 0, 3, 3, 1.5)
     sub = occ.addBox(-1.5, -1.5, 0, 3, 3, 0.5)
-    occ.fragment([(3, air)], [(3, sub)])
+    _, dim_tag_map = occ.fragment([(3, air)], [(3, sub)])
+    occ.synchronize()
+    # Sub (tool) volumes appear in both maps; air = air-only (dtmap[0] minus dtmap[1]).
+    tool_tags = {t[1] for t in dim_tag_map[1]}
+    air_vols = [t[1] for t in dim_tag_map[0] if t[1] not in tool_tags]
+    sub_vols = [t[1] for t in dim_tag_map[1]]
+    gmsh.model.addPhysicalGroup(3, air_vols, tag=1, name="air")
+    gmsh.model.addPhysicalGroup(3, sub_vols, tag=2, name="substrate")
 
 
 def _g_nested_spheres(occ):
+    import gmsh
     outer = occ.addSphere(0, 0, 0, 1.0)
     inner = occ.addSphere(0, 0, 0, 0.55)
-    occ.fragment([(3, outer)], [(3, inner)])
+    _, dim_tag_map = occ.fragment([(3, outer)], [(3, inner)])
+    occ.synchronize()
+    # Inner (tool) volumes appear in both maps; shell = outer-only (dtmap[0] minus dtmap[1]).
+    tool_tags = {t[1] for t in dim_tag_map[1]}
+    shell_vols = [t[1] for t in dim_tag_map[0] if t[1] not in tool_tags]
+    core_vols = [t[1] for t in dim_tag_map[1]]
+    gmsh.model.addPhysicalGroup(3, shell_vols, tag=1, name="shell")
+    gmsh.model.addPhysicalGroup(3, core_vols, tag=2, name="core")
 
 
 def _g_stl(stl_path):
@@ -227,9 +252,20 @@ def _g_cone(occ):
 
 
 def _g_via(occ):
+    import gmsh
     box = occ.addBox(-1, -1, -0.5, 2, 2, 1)
     pin = occ.addCylinder(0, 0, -0.7, 0, 0, 1.4, 0.3)
-    occ.fragment([(3, box)], [(3, pin)])
+    _, dim_tag_map = occ.fragment([(3, box)], [(3, pin)])
+    occ.synchronize()
+    # Pin protrudes outside the box; fragment splits the pin into bottom stub,
+    # middle section (inside box), and top stub. The middle section appears in
+    # both dtmap[0] (box space) and dtmap[1] (pin space).
+    # Substrate = box-only (dtmap[0] minus dtmap[1]); conductor = all pin pieces.
+    pin_tags = {t[1] for t in dim_tag_map[1]}
+    substrate_vols = [t[1] for t in dim_tag_map[0] if t[1] not in pin_tags]
+    conductor_vols = [t[1] for t in dim_tag_map[1]]
+    gmsh.model.addPhysicalGroup(3, substrate_vols, tag=1, name="substrate")
+    gmsh.model.addPhysicalGroup(3, conductor_vols, tag=2, name="conductor")
 
 
 # --------------------------------------------------------- rapidmesh builders
@@ -375,6 +411,12 @@ class CompareGeom:
     target_h: float
     build_rapidmesh: Callable[[], "rm.Geometry"]
     build_gmsh: Callable[[object], None]
+    # Interior seed points for tetgen's -A (regionattrib) mechanism.
+    # Each entry is (x, y, z, material_id). One seed per topological sub-volume
+    # of the PLC; multiple entries may share the same material_id (e.g. the via
+    # conductor is 3 separate OCC solids after fragment but one material).
+    # Empty tuple means single-region geometry: all tets get label 1.
+    region_seeds: tuple = ()
 
 
 GEOMS: list[CompareGeom] = [
@@ -392,11 +434,16 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
     CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
-                _r_core_shell, _g_core_shell),
+                _r_core_shell, _g_core_shell,
+                region_seeds=((0.8, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2))),
     CompareGeom("layered_substrate", "Layered Substrate", "Multi-Region", 0.30,
-                _r_layered_substrate, _g_layered_substrate),
+                _r_layered_substrate, _g_layered_substrate,
+                region_seeds=((0.0, 0.0, 1.0, 1), (0.0, 0.0, 0.25, 2))),
     CompareGeom("nested_spheres", "Nested Spheres", "Multi-Region", 0.28,
-                _r_nested_spheres, _g_nested_spheres),
+                _r_nested_spheres, _g_nested_spheres,
+                region_seeds=((0.0, 0.0, 0.77, 1), (0.0, 0.0, 0.0, 2))),
     CompareGeom("via", "Via (substrate + pin)", "Multi-Region", 0.25,
-                _r_via, _g_via),
+                _r_via, _g_via,
+                region_seeds=((-0.7, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2),
+                               (0.0, 0.0, -0.6, 2), (0.0, 0.0, 0.6, 2))),
 ]

@@ -223,6 +223,7 @@ pub fn delaunay2(points: &[P2]) -> Vec<[usize; 3]> {
 /// scattered on a grid in `[lo, hi]`, kept inside and clear of the boundary by
 /// the local radius, then moved toward the area-weighted centroid of their
 /// incident triangles with a local separation guard (no collapse / sliver seed).
+#[allow(clippy::too_many_arguments)]
 pub fn cvt_fill(
     boundary: &[P2],
     lo: P2,
@@ -231,6 +232,7 @@ pub fn cvt_fill(
     target: impl Fn(P2) -> f64,
     iters: usize,
     inside: impl Fn(P2) -> bool,
+    density: bool,
 ) -> Vec<P2> {
     if !(step.is_finite() && step > 0.0) {
         return Vec::new();
@@ -276,10 +278,21 @@ pub fn cvt_fill(
                 (p[0][0] + p[1][0] + p[2][0]) / 3.0,
                 (p[0][1] + p[1][1] + p[2][1]) / 3.0,
             ];
+            // DENSITY-WEIGHTED CVT (2D, adaptive mode): weight by area * rho,
+            // rho = 1/target^2 (spacing ~ target), so a graded surface field
+            // relaxes into a smooth gradient. Gated: it shifts the surface point
+            // distribution, which the exact-volume fixtures (1e-9) cannot absorb;
+            // plain area weighting is the uniform CVT.
+            let w = if density {
+                let h = target(c).max(1e-12);
+                area / (h * h)
+            } else {
+                area
+            };
             for &v in t {
-                num[v][0] += area * c[0];
-                num[v][1] += area * c[1];
-                den[v] += area;
+                num[v][0] += w * c[0];
+                num[v][1] += w * c[1];
+                den[v] += w;
             }
         }
         for k in 0..interior.len() {
@@ -330,7 +343,7 @@ mod tests {
             boundary.push([0.0, 1.0 - i as f64 / m as f64]);
         }
         let sq = |p: P2| p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 1.0;
-        let interior = cvt_fill(&boundary, [0.0, 0.0], [1.0, 1.0], 0.2, |_| 0.2, 12, sq);
+        let interior = cvt_fill(&boundary, [0.0, 0.0], [1.0, 1.0], 0.2, |_| 0.2, 12, sq, true);
         assert!(!interior.is_empty());
         let mut all = boundary.clone();
         all.extend_from_slice(&interior);

@@ -34,8 +34,10 @@ type V3 = [f64; 3];
 /// The four vertex-index triples spanning a tet's faces.
 const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
 
-/// Lloyd relaxation passes (per stage).
-const LLOYD_ITERS: usize = 12;
+/// Volume (3D) Lloyd relaxation passes.
+const LLOYD_ITERS: usize = 8;
+/// Surface (2D) Lloyd passes (a planar grid scatter needs little relaxation).
+const SURF_LLOYD_ITERS: usize = 4;
 /// Bounding-box subdivisions for the default spacing when no `maxh` is given.
 const DEFAULT_SUBDIV: f64 = 8.0;
 /// Per-triangle bounding-box pad for the inside test, fraction of the diagonal.
@@ -44,6 +46,7 @@ const BOX_PAD_FRAC: f64 = 1e-6;
 const SEPARATION_FRAC: f64 = 0.45;
 /// The surface (edges + faces) is seeded finer than the volume by this factor so
 /// the restricted Delaunay recovers the boundary without explicit recovery.
+/// 0.5 is the conformity threshold here; coarser (0.7) reintroduces straddlers.
 const SURFACE_OVERSAMPLE: f64 = 0.5;
 /// A face is coplanar with a patch if all its vertices are within this fraction
 /// of the scene diagonal of the patch plane (f64 surface points sit on tilted
@@ -299,7 +302,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         let inside2 =
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
-        let interior = cvt_fill(&bnd, lo2, hi2, surf_spacing, LLOYD_ITERS, inside2);
+        let interior = cvt_fill(&bnd, lo2, hi2, surf_spacing, SURF_LLOYD_ITERS, inside2);
         let pos = positions(&sites);
         let tree = Octree::build(&pos);
         for uv in interior {

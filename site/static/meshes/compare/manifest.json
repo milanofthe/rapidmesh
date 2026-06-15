@@ -9,13 +9,13 @@
     "rapidmesh": {
      "file": "meshes/compare/sphere.rapidmesh.json",
      "stats": {
-      "n_points": 425,
-      "n_tets": 1855,
+      "n_points": 829,
+      "n_tets": 3061,
       "n_regions": 1,
-      "min_dihedral_deg": 23.79890297487995,
-      "max_radius_edge": 1.439051146555198,
-      "max_edge": 0.41935513260994894,
-      "millis": 43
+      "min_dihedral_deg": 23.379387194398902,
+      "max_radius_edge": 1.9971978086493771,
+      "max_edge": 0.41745895794493515,
+      "millis": 99
      }
     },
     "gmsh": {
@@ -27,7 +27,7 @@
       "min_dihedral_deg": 16.153032117355963,
       "max_radius_edge": 1.549386390918681,
       "max_edge": 0.5447876967797226,
-      "millis": 15
+      "millis": 14
      }
     },
     "tetgen": {
@@ -54,13 +54,13 @@
     "rapidmesh": {
      "file": "meshes/compare/cylinder.rapidmesh.json",
      "stats": {
-      "n_points": 655,
-      "n_tets": 2483,
+      "n_points": 664,
+      "n_tets": 2648,
       "n_regions": 1,
-      "min_dihedral_deg": 25.172720352015432,
-      "max_radius_edge": 2.0960743686203105,
-      "max_edge": 0.3743666440029548,
-      "millis": 830
+      "min_dihedral_deg": 24.18732123638523,
+      "max_radius_edge": 1.781080994726294,
+      "max_edge": 0.3672276826568481,
+      "millis": 107
      }
     },
     "gmsh": {
@@ -99,13 +99,13 @@
     "rapidmesh": {
      "file": "meshes/compare/box.rapidmesh.json",
      "stats": {
-      "n_points": 440,
-      "n_tets": 1663,
+      "n_points": 677,
+      "n_tets": 2391,
       "n_regions": 1,
-      "min_dihedral_deg": 26.981863414202166,
-      "max_radius_edge": 1.2250409817016141,
-      "max_edge": 0.44971220047702326,
-      "millis": 71
+      "min_dihedral_deg": 29.196240013236746,
+      "max_radius_edge": 1.9179635477249182,
+      "max_edge": 0.4475177668139718,
+      "millis": 68
      }
     },
     "gmsh": {
@@ -144,13 +144,13 @@
     "rapidmesh": {
      "file": "meshes/compare/cone.rapidmesh.json",
      "stats": {
-      "n_points": 556,
-      "n_tets": 1976,
+      "n_points": 738,
+      "n_tets": 2555,
       "n_regions": 1,
-      "min_dihedral_deg": 12.854009686869489,
-      "max_radius_edge": 2.8480186816013218,
-      "max_edge": 0.6466849919725651,
-      "millis": 223
+      "min_dihedral_deg": 5.366573743612065,
+      "max_radius_edge": 2.9531474547597045,
+      "max_edge": 0.3738480544737495,
+      "millis": 163
      }
     },
     "gmsh": {
@@ -189,13 +189,13 @@
     "rapidmesh": {
      "file": "meshes/compare/torus.rapidmesh.json",
      "stats": {
-      "n_points": 612,
-      "n_tets": 2074,
+      "n_points": 856,
+      "n_tets": 2692,
       "n_regions": 1,
-      "min_dihedral_deg": 9.51502574118237,
-      "max_radius_edge": 2.293187410736926,
-      "max_edge": 0.47687734341052496,
-      "millis": 292
+      "min_dihedral_deg": 12.616815416600247,
+      "max_radius_edge": 3.6084444029632174,
+      "max_edge": 0.3749140673616255,
+      "millis": 179
      }
     },
     "gmsh": {
@@ -207,7 +207,7 @@
       "min_dihedral_deg": 11.785415933767439,
       "max_radius_edge": 1.3437869822721045,
       "max_edge": 0.4872290726406293,
-      "millis": 15
+      "millis": 16
      }
     },
     "tetgen": {
@@ -219,7 +219,7 @@
       "min_dihedral_deg": 10.704583962714139,
       "max_radius_edge": 1.192216768440833,
       "max_edge": 0.4661724533755755,
-      "millis": 4,
+      "millis": 3,
       "on_surface_of": "gmsh"
      }
     }
@@ -234,13 +234,13 @@
     "rapidmesh": {
      "file": "meshes/compare/drilled_block.rapidmesh.json",
      "stats": {
-      "n_points": 847,
-      "n_tets": 3072,
+      "n_points": 1162,
+      "n_tets": 3922,
       "n_regions": 1,
-      "min_dihedral_deg": 20.242557627253575,
-      "max_radius_edge": 3.1558324910383897,
-      "max_edge": 0.37479736324709684,
-      "millis": 941
+      "min_dihedral_deg": 25.98425893783687,
+      "max_radius_edge": 3.464723085502301,
+      "max_edge": 0.3676862441044938,
+      "millis": 179
      }
     },
     "gmsh": {
@@ -252,7 +252,7 @@
       "min_dihedral_deg": 14.96789521861362,
       "max_radius_edge": 1.338634340044715,
       "max_edge": 0.4851334462180722,
-      "millis": 25
+      "millis": 17
      }
     },
     "tetgen": {
@@ -264,7 +264,7 @@
       "min_dihedral_deg": 1.8478728142853527,
       "max_radius_edge": 1.3635548363568035,
       "max_edge": 0.5468801702181508,
-      "millis": 5,
+      "millis": 4,
       "on_surface_of": "gmsh"
      }
     }
@@ -279,13 +279,13 @@
     "rapidmesh": {
      "file": "meshes/compare/fused_spheres.rapidmesh.json",
      "stats": {
-      "n_points": 434,
-      "n_tets": 1523,
+      "n_points": 470,
+      "n_tets": 1667,
       "n_regions": 2,
-      "min_dihedral_deg": 22.321221867224608,
-      "max_radius_edge": 2.3252607945222907,
-      "max_edge": 0.4481759827781784,
-      "millis": 88
+      "min_dihedral_deg": 11.91631222170011,
+      "max_radius_edge": 6.108330158817575,
+      "max_edge": 0.4421377006876297,
+      "millis": 119
      }
     },
     "gmsh": {
@@ -297,7 +297,7 @@
       "min_dihedral_deg": 13.419128569400499,
       "max_radius_edge": 1.5599321967363022,
       "max_edge": 0.5883950746017423,
-      "millis": 17
+      "millis": 11
      }
     },
     "tetgen": {
@@ -309,7 +309,7 @@
       "min_dihedral_deg": 4.809279500235107,
       "max_radius_edge": 3.231769985397468,
       "max_edge": 0.7306193528288591,
-      "millis": 11,
+      "millis": 9,
       "on_surface_of": "gmsh"
      }
     }
@@ -324,13 +324,13 @@
     "rapidmesh": {
      "file": "meshes/compare/bracket.rapidmesh.json",
      "stats": {
-      "n_points": 940,
-      "n_tets": 3179,
+      "n_points": 1262,
+      "n_tets": 4090,
       "n_regions": 1,
-      "min_dihedral_deg": 18.912106731421233,
-      "max_radius_edge": 3.0242300019439483,
-      "max_edge": 0.2907929845394885,
-      "millis": 2241
+      "min_dihedral_deg": 21.223716734428592,
+      "max_radius_edge": 2.647588073295414,
+      "max_edge": 0.2236488713454068,
+      "millis": 287
      }
     },
     "gmsh": {
@@ -342,7 +342,7 @@
       "min_dihedral_deg": 13.96320408334077,
       "max_radius_edge": 1.439001781721173,
       "max_edge": 0.30966022388271275,
-      "millis": 26
+      "millis": 18
      }
     },
     "tetgen": {
@@ -354,7 +354,7 @@
       "min_dihedral_deg": 2.207342226803007,
       "max_radius_edge": 1.1971642376841616,
       "max_edge": 0.3406331775271099,
-      "millis": 7,
+      "millis": 5,
       "on_surface_of": "gmsh"
      }
     }
@@ -369,13 +369,13 @@
     "rapidmesh": {
      "file": "meshes/compare/gear.rapidmesh.json",
      "stats": {
-      "n_points": 1513,
-      "n_tets": 5699,
+      "n_points": 2112,
+      "n_tets": 7142,
       "n_regions": 1,
-      "min_dihedral_deg": 20.762211811900727,
-      "max_radius_edge": 2.173742015711346,
-      "max_edge": 0.23959909325252823,
-      "millis": 1134
+      "min_dihedral_deg": 20.070698471147267,
+      "max_radius_edge": 3.1117850375790987,
+      "max_edge": 0.23991236464120566,
+      "millis": 250
      }
     },
     "gmsh": {
@@ -387,7 +387,7 @@
       "min_dihedral_deg": 13.978965634267638,
       "max_radius_edge": 1.5804006766794643,
       "max_edge": 0.3275005934275672,
-      "millis": 126
+      "millis": 83
      }
     },
     "tetgen": {
@@ -399,7 +399,7 @@
       "min_dihedral_deg": 3.3212716959226327,
       "max_radius_edge": 1.571391972025648,
       "max_edge": 0.3226624228098734,
-      "millis": 30,
+      "millis": 21,
       "on_surface_of": "gmsh"
      }
     }
@@ -414,13 +414,13 @@
     "rapidmesh": {
      "file": "meshes/compare/blob.rapidmesh.json",
      "stats": {
-      "n_points": 963,
-      "n_tets": 2832,
+      "n_points": 1016,
+      "n_tets": 3115,
       "n_regions": 1,
-      "min_dihedral_deg": 4.992262900046768,
-      "max_radius_edge": 15.97369747561303,
-      "max_edge": 0.5210660946120524,
-      "millis": 313
+      "min_dihedral_deg": 8.987763502757673,
+      "max_radius_edge": 9.252681050008658,
+      "max_edge": 0.23980995524378515,
+      "millis": 281
      }
     },
     "gmsh": {
@@ -432,7 +432,7 @@
       "min_dihedral_deg": 10.507860755379937,
       "max_radius_edge": 7.088700858151154,
       "max_edge": 0.34190962803939995,
-      "millis": 95
+      "millis": 61
      }
     },
     "tetgen": {
@@ -444,7 +444,7 @@
       "min_dihedral_deg": 1.7421467197032712,
       "max_radius_edge": 8.154740487146073,
       "max_edge": 0.3041336465855458,
-      "millis": 12,
+      "millis": 8,
       "on_surface_of": "gmsh"
      }
     }
@@ -459,13 +459,13 @@
     "rapidmesh": {
      "file": "meshes/compare/bunny.rapidmesh.json",
      "stats": {
-      "n_points": 2880,
-      "n_tets": 8065,
+      "n_points": 2810,
+      "n_tets": 7710,
       "n_regions": 1,
-      "min_dihedral_deg": 0.12381510560496167,
-      "max_radius_edge": 244.8120429179686,
-      "max_edge": 0.35627869426805175,
-      "millis": 2179
+      "min_dihedral_deg": 2.9223821569928248,
+      "max_radius_edge": 33.402652076743,
+      "max_edge": 0.20991992863041786,
+      "millis": 1302
      }
     },
     "gmsh": {
@@ -477,7 +477,7 @@
       "min_dihedral_deg": 0.22391472243356247,
       "max_radius_edge": 13.295261198580606,
       "max_edge": 0.2814823016912268,
-      "millis": 293
+      "millis": 261
      }
     },
     "tetgen": {
@@ -489,7 +489,7 @@
       "min_dihedral_deg": 1.1492652169915232,
       "max_radius_edge": 21.08913683012357,
       "max_edge": 0.28208789568218223,
-      "millis": 34,
+      "millis": 30,
       "on_surface_of": "gmsh"
      }
     }
@@ -504,13 +504,13 @@
     "rapidmesh": {
      "file": "meshes/compare/core_shell.rapidmesh.json",
      "stats": {
-      "n_points": 978,
-      "n_tets": 4237,
+      "n_points": 1571,
+      "n_tets": 6255,
       "n_regions": 2,
-      "min_dihedral_deg": 25.548236760080783,
-      "max_radius_edge": 1.5141882251874001,
-      "max_edge": 0.41980952931699245,
-      "millis": 186
+      "min_dihedral_deg": 18.365508231358717,
+      "max_radius_edge": 1.5954340274967342,
+      "max_edge": 0.4160610818242838,
+      "millis": 147
      }
     },
     "gmsh": {
@@ -522,7 +522,7 @@
       "min_dihedral_deg": 14.125501803709597,
       "max_radius_edge": 1.3654429722051677,
       "max_edge": 0.5829252461852631,
-      "millis": 39
+      "millis": 26
      }
     },
     "tetgen": {
@@ -530,11 +530,11 @@
      "stats": {
       "n_points": 609,
       "n_tets": 2230,
-      "n_regions": 1,
+      "n_regions": 2,
       "min_dihedral_deg": 3.95709843125519,
       "max_radius_edge": 1.4379421618336667,
       "max_edge": 0.5969489252175226,
-      "millis": 13,
+      "millis": 10,
       "on_surface_of": "gmsh"
      }
     }
@@ -549,13 +549,13 @@
     "rapidmesh": {
      "file": "meshes/compare/layered_substrate.rapidmesh.json",
      "stats": {
-      "n_points": 1282,
-      "n_tets": 5514,
+      "n_points": 2010,
+      "n_tets": 8422,
       "n_regions": 2,
-      "min_dihedral_deg": 21.04563793703241,
-      "max_radius_edge": 1.750454241466393,
-      "max_edge": 0.44984699663328287,
-      "millis": 256
+      "min_dihedral_deg": 25.532943135054836,
+      "max_radius_edge": 1.9735780585590899,
+      "max_edge": 0.44981367304481884,
+      "millis": 250
      }
     },
     "gmsh": {
@@ -567,7 +567,7 @@
       "min_dihedral_deg": 12.621681203260664,
       "max_radius_edge": 1.3234974091495937,
       "max_edge": 0.6382129651134315,
-      "millis": 45
+      "millis": 30
      }
     },
     "tetgen": {
@@ -575,11 +575,11 @@
      "stats": {
       "n_points": 700,
       "n_tets": 2577,
-      "n_regions": 1,
+      "n_regions": 2,
       "min_dihedral_deg": 1.4849736368653623,
       "max_radius_edge": 1.3178474735981462,
       "max_edge": 0.6749052004547333,
-      "millis": 10,
+      "millis": 8,
       "on_surface_of": "gmsh"
      }
     }
@@ -594,13 +594,13 @@
     "rapidmesh": {
      "file": "meshes/compare/nested_spheres.rapidmesh.json",
      "stats": {
-      "n_points": 486,
-      "n_tets": 2235,
+      "n_points": 883,
+      "n_tets": 3467,
       "n_regions": 2,
-      "min_dihedral_deg": 19.562629720712607,
-      "max_radius_edge": 1.7031611002570062,
-      "max_edge": 0.419427590746139,
-      "millis": 79
+      "min_dihedral_deg": 17.3940209521067,
+      "max_radius_edge": 1.8618600991048069,
+      "max_edge": 0.4189880072870977,
+      "millis": 115
      }
     },
     "gmsh": {
@@ -612,7 +612,7 @@
       "min_dihedral_deg": 12.243177928989724,
       "max_radius_edge": 1.9247782089578698,
       "max_edge": 0.5686860824552035,
-      "millis": 25
+      "millis": 16
      }
     },
     "tetgen": {
@@ -620,11 +620,11 @@
      "stats": {
       "n_points": 342,
       "n_tets": 1367,
-      "n_regions": 1,
+      "n_regions": 2,
       "min_dihedral_deg": 2.0067010277004442,
       "max_radius_edge": 2.5412729714703617,
       "max_edge": 0.5577485421947009,
-      "millis": 8,
+      "millis": 6,
       "on_surface_of": "gmsh"
      }
     }
@@ -639,13 +639,13 @@
     "rapidmesh": {
      "file": "meshes/compare/via.rapidmesh.json",
      "stats": {
-      "n_points": 1151,
-      "n_tets": 4779,
+      "n_points": 1427,
+      "n_tets": 5285,
       "n_regions": 2,
-      "min_dihedral_deg": 15.425622332928526,
-      "max_radius_edge": 4.291499892862139,
-      "max_edge": 0.5356290655565383,
-      "millis": 3356
+      "min_dihedral_deg": 13.673137048105247,
+      "max_radius_edge": 5.084334959038623,
+      "max_edge": 0.37471939644933844,
+      "millis": 302
      }
     },
     "gmsh": {
@@ -653,11 +653,11 @@
      "stats": {
       "n_points": 480,
       "n_tets": 1651,
-      "n_regions": 4,
+      "n_regions": 2,
       "min_dihedral_deg": 13.226607856299978,
       "max_radius_edge": 1.3087778704869577,
       "max_edge": 0.5013584881701251,
-      "millis": 28
+      "millis": 21
      }
     },
     "tetgen": {
@@ -665,11 +665,11 @@
      "stats": {
       "n_points": 478,
       "n_tets": 1651,
-      "n_regions": 1,
+      "n_regions": 2,
       "min_dihedral_deg": 10.172367396517274,
       "max_radius_edge": 1.247743507211929,
       "max_edge": 0.5379499274363856,
-      "millis": 7,
+      "millis": 5,
       "on_surface_of": "gmsh"
      }
     }

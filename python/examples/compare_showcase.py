@@ -16,6 +16,14 @@ tetrahedralizes *gmsh's surface* of the same geometry (recorded as
 native pipeline from the geometry spec. Quality is recomputed here for all
 three with identical formulas, so the numbers are apples-to-apples.
 
+Multi-region geometries: gmsh builders use OCC fragment and assign physical
+volume groups (one per material) via the fragment output map, so the physical
+group tag is the material id regardless of how many elementary volumes fragment
+produces. _gmsh_extract reads physical groups instead of raw elementary volume
+indices. tetgen receives region seed points (one per topological sub-volume of
+the PLC) and uses -A (regionattrib) to label each tet; seeds sharing the same
+material_id produce the correct per-material region count.
+
 Run from the repo root:
 
     python python/examples/compare_showcase.py [ids...]
@@ -86,24 +94,46 @@ def mesh_rapidmesh(geom: CompareGeom):
 
 def _gmsh_extract():
     """Compact (points, tets, tet_regions) and the surface (sverts, stris)
-    from the current gmsh model after generate(3). Region tags come from the
-    elementary volume each tet belongs to (1-based), so fragmented multi-region
-    models carry real per-material regions. The surface includes the internal
-    interface facets, so tetgen meshes them too."""
+    from the current gmsh model after generate(3).
+
+    Region tags come from physical volume groups when present. Each multi-region
+    gmsh builder assigns one physical group per material (tag=material_id), so
+    all elementary volumes that fragment produced from the same original solid
+    share one physical group tag. This gives correct per-material regions even
+    when OCC fragment splits a solid into multiple elementary volumes (e.g. via:
+    pin gets cut into 3 sub-volumes but all belong to physical group 2).
+
+    For single-region geometries (no physical groups), all tets fall back to
+    region 1. The surface includes internal interface facets so tetgen meshes
+    a conformal PLC with the same topology."""
     import gmsh
+
+    # Map elementary volume tag -> material region ID.
+    # When physical groups exist, pg_tag IS the material ID (assigned in the
+    # builder). Without physical groups (single-region geoms), every volume
+    # gets region 1.
+    phys = gmsh.model.getPhysicalGroups(3)
+    if phys:
+        elem_to_region: dict[int, int] = {}
+        for pg_dim, pg_tag in phys:
+            for vtag in gmsh.model.getEntitiesForPhysicalGroup(pg_dim, pg_tag):
+                elem_to_region[int(vtag)] = int(pg_tag)
+    else:
+        elem_to_region = {int(vtag): 1 for (_, vtag) in gmsh.model.getEntities(3)}
 
     tags, coords, _ = gmsh.model.mesh.getNodes()
     coords = np.asarray(coords, dtype=np.float64).reshape(-1, 3)
     tag_to_idx = {int(t): i for i, t in enumerate(tags)}
 
     tet_blocks, reg_blocks = [], []
-    for ri, (_, vtag) in enumerate(gmsh.model.getEntities(3), start=1):
+    for _, vtag in gmsh.model.getEntities(3):
+        region = elem_to_region.get(int(vtag), 1)
         _, tn = gmsh.model.mesh.getElementsByType(4, vtag)
         tn = np.asarray(tn, dtype=np.int64).reshape(-1, 4)
         if tn.size == 0:
             continue
         tet_blocks.append(np.vectorize(tag_to_idx.get)(tn))
-        reg_blocks.append(np.full(tn.shape[0], ri, dtype=np.int64))
+        reg_blocks.append(np.full(tn.shape[0], region, dtype=np.int64))
     tets = np.concatenate(tet_blocks) if tet_blocks else np.zeros((0, 4), np.int64)
     tet_regions = np.concatenate(reg_blocks) if reg_blocks else np.zeros((0,), np.int64)
 
@@ -144,9 +174,11 @@ def mesh_gmsh(geom: CompareGeom):
 
 def mesh_tetgen(geom: CompareGeom, surface):
     """(points, tets, tet_regions, millis) from tetgen on gmsh's surface.
-    tetgen is a PLC tetrahedralizer with no material model: the internal
-    interface facets are meshed (so the mesh is conformal to them), but without
-    region seed points all tets share one region (the honest PLC limitation)."""
+    tetgen is a PLC tetrahedralizer; when geom.region_seeds is non-empty the
+    seed points are registered via TetGen.add_region and the -A (regionattrib)
+    switch assigns material labels per tet. Multiple seeds can share the same
+    material_id (e.g. via: 3 conductor sub-volumes all labeled 2). Single-region
+    geometries pass no seeds and all tets receive label 1."""
     import tetgen
 
     sverts, stris = surface
@@ -155,15 +187,27 @@ def mesh_tetgen(geom: CompareGeom, surface):
     maxvol = (h ** 3) / (6 * math.sqrt(2.0)) * 1.4
     tg = tetgen.TetGen(np.asarray(sverts, dtype=np.float64),
                        np.asarray(stris, dtype=np.int32))
+    use_regions = bool(geom.region_seeds)
+    for x, y, z, mat_id in geom.region_seeds:
+        tg.add_region(mat_id, (x, y, z))
     t0 = time.perf_counter()
-    tg.tetrahedralize(order=1, mindihedral=0.0, minratio=1.2, maxvolume=maxvol)
+    _, _, attr, _ = tg.tetrahedralize(
+        order=1, mindihedral=0.0, minratio=1.2,
+        maxvolume=maxvol, regionattrib=use_regions,
+    )
     millis = (time.perf_counter() - t0) * 1e3
     grid = tg.grid
     pts = np.asarray(grid.points, dtype=np.float64)
     # UnstructuredGrid cells: VTK_TETRA stored as [4, a,b,c,d, 4, ...]
     cells = np.asarray(grid.cells, dtype=np.int64).reshape(-1, 5)
     tets = cells[:, 1:]
-    tet_regions = np.ones(tets.shape[0], dtype=np.int64)
+    if use_regions and np.asarray(attr).size > 0:
+        # tetgen stores region attributes as floats (e.g. 1.0, 2.0); round to int.
+        tet_regions = np.round(np.asarray(attr, dtype=np.float64)).astype(np.int64).ravel()
+        # Tets in a sub-volume with no seed coverage receive attribute 0; remap to 1.
+        tet_regions = np.where(tet_regions <= 0, 1, tet_regions)
+    else:
+        tet_regions = np.ones(tets.shape[0], dtype=np.int64)
     return pts, tets, tet_regions, millis
 
 

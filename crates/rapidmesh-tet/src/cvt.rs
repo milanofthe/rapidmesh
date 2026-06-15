@@ -29,7 +29,7 @@ use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
-use rapidmesh_exact::{orient3d, Point3, Sign};
+use rapidmesh_exact::Point3;
 use rapidmesh_geom::{RegionTag, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 
@@ -51,6 +51,11 @@ const SEPARATION_FRAC: f64 = 0.45;
 /// faces automatically (no explicit boundary recovery needed); region assignment
 /// is then a raytracing classification (`classify_tet_regions`).
 const SURFACE_OVERSAMPLE: f64 = 0.5;
+/// A tet face is coplanar with a patch if all its vertices are within this
+/// fraction of the scene diagonal of the patch plane. Surface points on tilted
+/// patches sit on the plane only to f64 precision (~1e-15); this absorbs that.
+/// The precise patch assignment is still the exact `contains_coplanar` test.
+const COPLANAR_EPS_FRAC: f64 = 1e-9;
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -202,24 +207,23 @@ fn point_in_patch(plc: &TaggedPlc, patch: &Patch, p: V3) -> bool {
     })
 }
 
-/// The patch a tet face tiles: coplanar with the patch plane (exact `orient3d`)
-/// and its centroid on a member facet (exact). `None` if interior to no patch.
-fn patch_of_face(plc: &TaggedPlc, patches: &[Patch], sites: &[V3], f: [usize; 3]) -> Option<usize> {
-    let fp = [
-        Point3::Explicit(sites[f[0]]),
-        Point3::Explicit(sites[f[1]]),
-        Point3::Explicit(sites[f[2]]),
-    ];
+/// The patch a tet face tiles: all three vertices within `eps` of the patch
+/// plane (tolerant, since tilted-patch surface points sit on the plane only to
+/// f64 precision) AND the face centroid on a member facet (exact
+/// `contains_coplanar`, which is the precise assignment). `None` if on no patch.
+fn patch_of_face(
+    plc: &TaggedPlc,
+    patches: &[Patch],
+    planes: &[(V3, V3)],
+    sites: &[V3],
+    f: [usize; 3],
+    eps: f64,
+) -> Option<usize> {
     let centroid: V3 =
         std::array::from_fn(|k| (sites[f[0]][k] + sites[f[1]][k] + sites[f[2]][k]) / 3.0);
     for (pi, p) in patches.iter().enumerate() {
-        let rt = plc.triangles[p.member_indices[0]];
-        let (a, b, c) = (
-            Point3::Explicit(plc.vertices[rt[0] as usize]),
-            Point3::Explicit(plc.vertices[rt[1] as usize]),
-            Point3::Explicit(plc.vertices[rt[2] as usize]),
-        );
-        let coplanar = fp.iter().all(|v| orient3d(&a, &b, &c, v) == Some(Sign::Zero));
+        let (p0, n) = planes[pi];
+        let coplanar = f.iter().all(|&v| dot(sub(sites[v], p0), n).abs() < eps);
         if coplanar && point_in_patch(plc, p, centroid) {
             return Some(pi);
         }
@@ -392,12 +396,13 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
     // A face can tile a patch only if all three vertices are fixed surface sites.
+    let coplanar_eps = COPLANAR_EPS_FRAC * diag.max(1.0);
     let mut tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
     for key in face_owners.keys() {
         if !key.iter().all(|&v| fixed[v]) {
             continue;
         }
-        if let Some(pi) = patch_of_face(plc, &patches, &sites, *key) {
+        if let Some(pi) = patch_of_face(plc, &patches, &planes, &sites, *key, coplanar_eps) {
             tilings[pi].push(*key);
         }
     }

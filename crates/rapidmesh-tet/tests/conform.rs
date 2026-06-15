@@ -124,7 +124,6 @@ fn air_dielectric_pec_scene_meshes_exactly() {
 }
 
 #[test]
-#[ignore = "CVT rewrite WP5/WP6: multi-region + curved boundary not yet wired"]
 fn cylinder_via_in_box_meshes_exactly() {
     // A polyhedral via through a dielectric block: curved-ish geometry,
     // non-grid points, region priority.
@@ -566,7 +565,6 @@ fn cylinder_void_volume_through_optimize() {
 /// confined to the flat all-marked sliver complex; the torus must mesh with
 /// exact region volume.
 #[test]
-#[ignore = "CVT rewrite WP4/WP6: concave torus boundary recovery not yet wired"]
 fn torus_meshes_exactly() {
     let mut scene = Scene::new();
     let r = scene.add_solid(rapidmesh_geom::torus(

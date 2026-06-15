@@ -30,7 +30,7 @@ use crate::surfchart::build_chart;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
-use rapidmesh_geom::{RegionTag, SurfaceKind, TaggedPlc};
+use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -73,9 +73,6 @@ pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
 /// `h_curv = R * sqrt(8 * frac)`. 0.02 gives ~16 facets around a full circle.
 pub(crate) const SURF_CHORD_FRAC: f64 = 0.02;
 /// A face is coplanar with a patch if all its vertices are within this fraction
-/// of the scene diagonal of the patch plane (f64 surface points sit on tilted
-/// planes only to ~1e-15; the precise assignment is the exact containment test).
-const COPLANAR_EPS_FRAC: f64 = 1e-9;
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -134,10 +131,6 @@ fn graded_edge_fracs(va: V3, vb: V3, domain: &DomainTree) -> Vec<f64> {
 
 fn centroid4(p: [V3; 4]) -> V3 {
     std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]))
-}
-
-fn centroid3(p: [V3; 3]) -> V3 {
-    std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0)
 }
 
 fn tri_of(plc: &TaggedPlc, t: [u32; 3]) -> Tri {
@@ -257,24 +250,18 @@ fn point_in_patch(plc: &TaggedPlc, patch: &Patch, p: &Point3) -> bool {
     })
 }
 
-/// The patch a tet face tiles: all three vertices within `eps` of the patch
-/// plane (tolerant, since f64 surface points sit on a tilted plane only to
-/// ~1e-15) AND the exact barycenter on a member facet (`contains_coplanar`,
-/// the precise assignment). `None` if on no patch (a volume vertex matches none).
-fn patch_of_face(
-    plc: &TaggedPlc,
-    patches: &[Patch],
-    sites: &[Site],
-    f: [usize; 3],
-    eps: f64,
-) -> Option<usize> {
-    let c: V3 = std::array::from_fn(|k| {
-        (sites[f[0]].pos()[k] + sites[f[1]].pos()[k] + sites[f[2]].pos()[k]) / 3.0
-    });
+/// The planar patch a tet face lies on: all three vertices within `eps` of the
+/// patch plane AND the barycenter on a member facet. Used ONLY as the face-tag
+/// FALLBACK for faces with no interior surface vertex to carry the tile (a coarse
+/// box face of only corners) and to recover embedded sheets; it labels, it does
+/// not decide manifoldness (the region interface already did), so it cannot
+/// double-emit. `None` if on no planar patch.
+fn patch_of_face(plc: &TaggedPlc, patches: &[Patch], pts: &[V3], f: [usize; 3], eps: f64) -> Option<usize> {
+    let c: V3 = std::array::from_fn(|k| (pts[f[0]][k] + pts[f[1]][k] + pts[f[2]][k]) / 3.0);
     let bary = Point3::Explicit(c);
     for (pi, p) in patches.iter().enumerate() {
         let (p0, n) = patch_plane(plc, p);
-        let coplanar = f.iter().all(|&v| dot(sub(sites[v].pos(), p0), n).abs() < eps);
+        let coplanar = f.iter().all(|&v| dot(sub(pts[v], p0), n).abs() < eps);
         if coplanar && point_in_patch(plc, p, &bary) {
             return Some(pi);
         }
@@ -294,8 +281,7 @@ fn positions(sites: &[Site]) -> Vec<V3> {
 struct ChartGroup {
     surface: u32,
     kind: SurfaceKind,
-    regions: [RegionTag; 2],
-    face_tag: rapidmesh_geom::FaceTag,
+    face_tag: FaceTag,
     members: Vec<usize>,
     boundary: Vec<(usize, usize)>,
     chart: Box<dyn crate::surfchart::SurfaceChart>,
@@ -324,7 +310,7 @@ fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
     list.sort_by_key(|(_, m)| m.iter().copied().min());
     let tol = 1e-6 * diag.max(1.0);
     let mut out = Vec::new();
-    for ((sid, r_lo, r_hi, tag), members) in list {
+    for ((sid, _r_lo, _r_hi, tag), members) in list {
         let boundary = group_boundary_edges(plc, &members);
         if boundary.is_empty() {
             continue; // closed group: no chart covers it bijectively
@@ -370,8 +356,7 @@ fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
         out.push(ChartGroup {
             surface: sid,
             kind,
-            regions: [RegionTag(r_lo), RegionTag(r_hi)],
-            face_tag: rapidmesh_geom::FaceTag(tag),
+            face_tag: FaceTag(tag),
             members,
             boundary,
             chart,
@@ -457,6 +442,12 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let t_surf = std::time::Instant::now();
     let nb = plc.vertices.len();
     let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
+    // The "tile" each surface site belongs to (a planar patch index, or
+    // `patches.len() + group` for a curved group), for principled face tagging:
+    // a boundary face inherits its surface/tag from its interior vertex's tile.
+    // Corners and shared edge points are on several tiles -> `u32::MAX` (let the
+    // interior vertex decide). Volume sites never tag a boundary face.
+    let mut point_tile: Vec<u32> = vec![u32::MAX; sites.len()];
     let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
     let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
     // Non-chart patches keep their per-patch boundary edges; chart groups use
@@ -474,6 +465,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
         }
     }
+    point_tile.resize(sites.len(), u32::MAX); // edge points: shared -> MAX
 
     // ---- stage 2: per-patch 2D Lloyd (faces), edges fixed ----------------
     // Patches are independent, so they fill in parallel. `cvt_fill` keeps each
@@ -481,7 +473,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // which is the only separation needed: adjacent patches meet only along
     // shared edges, whose points both sides already keep clear of.
     use rayon::prelude::*;
-    let face_sites: Vec<Site> = patches
+    let face_sites: Vec<(u32, Site)> = patches
         .par_iter()
         .enumerate()
         .filter(|(_, patch)| !is_chart_patch(patch))
@@ -518,18 +510,22 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
             cvt_fill(&bnd, lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size)
                 .into_iter()
-                .map(|uv| Site::on_plane(p0, n, lift3(uv, drop, p0, n)))
+                .map(|uv| (pi as u32, Site::on_plane(p0, n, lift3(uv, drop, p0, n))))
                 .collect::<Vec<_>>()
         })
         .collect();
-    sites.extend(face_sites);
+    for (tid, s) in face_sites {
+        sites.push(s);
+        point_tile.push(tid);
+    }
 
     // Curved smooth-groups: relax interior points in the analytic chart and seed
     // them as `on_surface` sites (curvature-graded, EXACTLY on the surface), the
     // curved Lloyd now feeding the volume Delaunay. Boundary is corners + shared
     // edge points (same sites both sides). Oversampled like the planar faces so
     // the restricted Delaunay recovers the curved boundary as tet faces.
-    for g in &cgroups {
+    for (gi, g) in cgroups.iter().enumerate() {
+        let tile = (patches.len() + gi) as u32;
         let mut loc2: Vec<[f64; 2]> = Vec::new();
         let mut seen: DSet<usize> = DSet::default();
         let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
@@ -572,10 +568,18 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         };
         for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size) {
             sites.push(Site::on_surface(g.kind.clone(), g.chart.to_xyz(uv)));
+            point_tile.push(tile);
         }
     }
 
     let n_surf = sites.len();
+    // Surface/tag per tile: planar patches first (tile id = patch index), then
+    // curved groups (tile id = patches.len() + group index).
+    let tiles: Vec<(u32, FaceTag)> = patches
+        .iter()
+        .map(|p| (p.surface, p.face_tag))
+        .chain(cgroups.iter().map(|g| (g.surface, g.face_tag)))
+        .collect();
     rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
 
     // ---- stage 3: interior volume points, graded by the domain octree -----
@@ -738,19 +742,6 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             face_owners.entry(f).or_default().push(ti as u32);
         }
     }
-    // A face tiles a patch only if all three vertices are surface sites.
-    let t_tile = std::time::Instant::now();
-    let coplanar_eps = COPLANAR_EPS_FRAC * diag.max(1.0);
-    let mut tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
-    for key in face_owners.keys() {
-        if key.iter().any(|&v| v >= n_surf) {
-            continue;
-        }
-        if let Some(pi) = patch_of_face(plc, &patches, &sites, *key, coplanar_eps) {
-            tilings[pi].push(*key);
-        }
-    }
-    rmlog::stage("mesh.tilings", t_tile.elapsed().as_secs_f64());
     let t_region = std::time::Instant::now();
     // Classify each tet by its centroid's region in the domain octree: a cached
     // lookup deep inside a region, an exact per-region ray-cast on the boundary
@@ -777,60 +768,65 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stage("mesh.region", t_region.elapsed().as_secs_f64());
     rmlog::stage("mesh.classify", t_classify.elapsed().as_secs_f64());
 
+    // ---- boundary surface = the RESTRICTED DELAUNAY (region interface) ------
+    // A tet face is a boundary/interface face IFF its two incident tets lie in
+    // different regions (outside = region 0). This is principled (no coplanar
+    // epsilon, no proximity tolerance) and manifold BY CONSTRUCTION: every tet
+    // face appears once, shared by its two tets, so an edge carries exactly two
+    // faces per region -- no double-tagging at multi-surface junctions. The
+    // region pair comes from the two tets (exact); the surface/tag is the tile
+    // of an interior surface vertex (`point_tile`), the principled carrier-based
+    // label (shared corner/edge vertices defer to the interior one).
+    let t_faces = std::time::Instant::now();
+    let eps = 1e-9 * diag.max(1.0);
     let mut faces: Vec<SurfaceFace> = Vec::new();
-    for (pi, patch) in patches.iter().enumerate() {
-        for &f in &tilings[pi] {
-            faces.push(SurfaceFace {
-                tri: f,
-                face_tag: patch.face_tag,
-                regions: patch.regions,
-                patch: pi as u32,
-                surface: patch.surface,
-            });
+    for (key, owners) in &face_owners {
+        if key.iter().any(|&v| v >= n_surf) {
+            continue; // a boundary face lives on the seeded surface
         }
-    }
+        let (ra, rb) = match owners.as_slice() {
+            [a, b] => (region[*a as usize], region[*b as usize]),
+            [a] => (region[*a as usize], 0),
+            _ => continue,
+        };
+        // Tile (surface/tag) of the face: an interior surface vertex's carrier,
+        // else the geometric planar patch (coarse all-corner faces, sheets).
+        let tile = key
+            .iter()
+            .map(|&v| point_tile[v])
+            .find(|&t| t != u32::MAX)
+            .or_else(|| patch_of_face(plc, &patches, &pts, *key, eps).map(|pi| pi as u32));
 
-    // Curved-group boundary faces: restricted-Delaunay extraction. A tet face
-    // with all-surface vertices that the planar tilings did not claim, that
-    // separates two distinct regions (or a region from outside), and whose
-    // centroid lies on a chart group's analytic surface, is that group's
-    // boundary face. These ARE tet faces (conformity holds) where coplanar
-    // tiling cannot reach a smoothly curved surface.
-    if !cgroups.is_empty() {
-        let claimed: DSet<[usize; 3]> = tilings.iter().flatten().copied().collect();
-        for (key, owners) in &face_owners {
-            if key.iter().any(|&v| v >= n_surf) || claimed.contains(key) {
-                continue;
-            }
-            let mut rs: Vec<u32> = owners.iter().map(|&ti| region[ti as usize]).collect();
-            if owners.len() == 1 {
-                rs.push(0);
-            }
-            rs.sort_unstable();
-            rs.dedup();
-            if rs.len() < 2 {
-                continue; // interior face (same region both sides)
-            }
-            let tri = [pts[key[0]], pts[key[1]], pts[key[2]]];
-            let c = centroid3(tri);
-            let max_edge = (0..3).map(|k| dist(tri[k], tri[(k + 1) % 3])).fold(0.0, f64::max);
-            for g in &cgroups {
-                let mut grs = vec![g.regions[0].0, g.regions[1].0];
-                grs.sort_unstable();
-                grs.dedup();
-                if grs == rs && dist(c, g.chart.project(c)) < 0.3 * max_edge {
+        if ra != rb {
+            // Region interface (boundary or material interface): manifold by
+            // construction. Region pair from the tets (exact); label from tile.
+            let (surface, face_tag) = tile.map(|t| tiles[t as usize]).unwrap_or((0, FaceTag(0)));
+            faces.push(SurfaceFace {
+                tri: *key,
+                face_tag,
+                regions: [RegionTag(ra.min(rb)), RegionTag(ra.max(rb))],
+                patch: tile.unwrap_or(u32::MAX),
+                surface,
+            });
+        } else if ra != 0 {
+            // Embedded sheet: a tagged internal surface with the SAME region on
+            // both sides (not a region interface) -- recover it where the face
+            // sits on a planar sheet patch (equal regions, tagged).
+            if let Some(pi) = patch_of_face(plc, &patches, &pts, *key, eps) {
+                let p = &patches[pi];
+                if p.regions[0] == p.regions[1] && p.face_tag.0 != 0 {
                     faces.push(SurfaceFace {
                         tri: *key,
-                        face_tag: g.face_tag,
-                        regions: g.regions,
-                        patch: u32::MAX,
-                        surface: g.surface,
+                        face_tag: p.face_tag,
+                        regions: p.regions,
+                        patch: pi as u32,
+                        surface: p.surface,
                     });
-                    break;
                 }
             }
         }
     }
+    rmlog::stage("mesh.faces", t_faces.elapsed().as_secs_f64());
 
     // Per-point local target size (the graded sizing field), so the optimizer
     // coarsens to the LOCAL size, not one region-uniform floor that would erase

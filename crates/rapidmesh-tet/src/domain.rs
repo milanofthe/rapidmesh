@@ -34,7 +34,7 @@ const LFS_FRACTION: f64 = 0.5;
 const LFS_FACING_COS: f64 = 0.3;
 /// LFS refines at most this far below `maxh` (floor = maxh * this), so a tiny
 /// near-closed feature grades to a sane size instead of exploding the tet count.
-const LFS_FLOOR_FRACTION: f64 = 0.3;
+const LFS_FLOOR_FRACTION: f64 = 0.08;
 /// Grading falloff cap distance is implicit in `grading`; the boundary target.
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

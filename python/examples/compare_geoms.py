@@ -428,7 +428,9 @@ def _naca0012_points(chord: float, n: int):
 # with a hole point inside the airfoil column.
 def _r_naca():
     import rapidmesh as rm
-    g = rm.Geometry(maxh=0.4)
+    # grading 1.0: steeper than the 0.5 default so the fine LE/TE bands coarsen
+    # fast into the far field (few tets) instead of a wide fine halo.
+    g = rm.Geometry(maxh=0.4, grading=1.0)
     g.label(g.box(3, 2, 0.5, position=(-1, -1, 0)), "air")
     g.airfoil_naca0012(1.0, 0.5, position=(0, 0, 0), n_seg=140, void=True)
     return g
@@ -470,6 +472,10 @@ class CompareGeom:
     # Enable rapidmesh local-feature-size refinement (thin features like a
     # trailing edge): grades the volume out of the thin part, no sliver fan.
     local_feature_size: bool = False
+    # gmsh curvature-adaptive sizing (elements per 2*pi of curvature; 0 = off,
+    # uniform). The fair counterpart to rapidmesh's adaptive mode for curved
+    # geometry (gmsh's native strength).
+    gmsh_curvature: float = 0.0
 
 
 GEOMS: list[CompareGeom] = [
@@ -487,7 +493,8 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
     CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
     CompareGeom("naca0012", "NACA 0012 Wing", "Organic", 0.4, _r_naca, _g_naca,
-                hole_points=((0.3, 0.0, 0.25),), local_feature_size=True),
+                hole_points=((0.3, 0.0, 0.25),), local_feature_size=True,
+                gmsh_curvature=30.0),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell,
                 region_seeds=((0.8, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2))),

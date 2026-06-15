@@ -159,10 +159,23 @@ def mesh_gmsh(geom: CompareGeom):
         geom.build_gmsh(gmsh.model.occ)
         gmsh.model.occ.synchronize()
         h = geom.target_h
-        gmsh.option.setNumber("Mesh.MeshSizeMin", h)
-        gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        curv = getattr(geom, "gmsh_curvature", 0.0)
+        if curv > 0.0:
+            # Adaptive: let gmsh's curvature sizing resolve the geometry (its
+            # native strength), the fair counterpart to rapidmesh's adaptive
+            # mode. MeshSizeMin must be small so curvature can refine below the
+            # bulk target; Max stays the bulk size for the far field.
+            gmsh.option.setNumber("Mesh.MeshSizeMin", h / 200.0)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", curv)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        else:
+            # Uniform: same target size everywhere (fair apples-to-apples for the
+            # non-curved corpus).
+            gmsh.option.setNumber("Mesh.MeshSizeMin", h)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         t0 = time.perf_counter()
         gmsh.model.mesh.generate(3)
         millis = (time.perf_counter() - t0) * 1e3

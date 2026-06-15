@@ -248,7 +248,6 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let patches = build_patches(plc);
     let sep = SEPARATION_FRAC * spacing;
     let surf_spacing = spacing * SURFACE_OVERSAMPLE;
-    let surf_sep = SEPARATION_FRAC * surf_spacing;
 
     // ---- stage 1: corners + feature edges (1D), fixed --------------------
     let t_surf = std::time::Instant::now();
@@ -274,45 +273,48 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
 
     // ---- stage 2: per-patch 2D Lloyd (faces), edges fixed ----------------
-    for (pi, patch) in patches.iter().enumerate() {
-        let (p0, n) = patch_plane(plc, patch);
-        let drop = drop_axis(n);
-        // Fixed 2D boundary: the patch's boundary corners and edge points.
-        let mut bnd: Vec<[f64; 2]> = Vec::new();
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for &(a, b) in &pbe[pi] {
-            for cv in [a, b] {
-                if seen.insert(cv) {
-                    bnd.push(project2(plc.vertices[cv], drop));
+    // Patches are independent, so they fill in parallel. `cvt_fill` keeps each
+    // patch's interior points clear of its boundary (corners + edge points),
+    // which is the only separation needed: adjacent patches meet only along
+    // shared edges, whose points both sides already keep clear of.
+    use rayon::prelude::*;
+    let face_sites: Vec<Site> = patches
+        .par_iter()
+        .enumerate()
+        .flat_map(|(pi, patch)| {
+            let (p0, n) = patch_plane(plc, patch);
+            let drop = drop_axis(n);
+            let mut bnd: Vec<[f64; 2]> = Vec::new();
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for &(a, b) in &pbe[pi] {
+                for cv in [a, b] {
+                    if seen.insert(cv) {
+                        bnd.push(project2(plc.vertices[cv], drop));
+                    }
+                }
+                for &i in &edge_pts[&sorted2(a, b)] {
+                    bnd.push(project2(sites[i].pos(), drop));
                 }
             }
-            for &i in &edge_pts[&sorted2(a, b)] {
-                bnd.push(project2(sites[i].pos(), drop));
+            if bnd.len() < 3 {
+                return Vec::new();
             }
-        }
-        if bnd.len() < 3 {
-            continue;
-        }
-        let (mut lo2, mut hi2) = (bnd[0], bnd[0]);
-        for &p in &bnd {
-            for k in 0..2 {
-                lo2[k] = lo2[k].min(p[k]);
-                hi2[k] = hi2[k].max(p[k]);
+            let (mut lo2, mut hi2) = (bnd[0], bnd[0]);
+            for &p in &bnd {
+                for k in 0..2 {
+                    lo2[k] = lo2[k].min(p[k]);
+                    hi2[k] = hi2[k].max(p[k]);
+                }
             }
-        }
-        let inside2 =
-            |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
-        let interior = cvt_fill(&bnd, lo2, hi2, surf_spacing, SURF_LLOYD_ITERS, inside2);
-        let pos = positions(&sites);
-        let tree = Octree::build(&pos);
-        for uv in interior {
-            let q = lift3(uv, drop, p0, n);
-            let near = tree.nearest(q).map(|j| dist(q, pos[j as usize]) < surf_sep).unwrap_or(false);
-            if !near {
-                sites.push(Site::on_plane(p0, n, q));
-            }
-        }
-    }
+            let inside2 =
+                |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
+            cvt_fill(&bnd, lo2, hi2, surf_spacing, SURF_LLOYD_ITERS, inside2)
+                .into_iter()
+                .map(|uv| Site::on_plane(p0, n, lift3(uv, drop, p0, n)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    sites.extend(face_sites);
     let n_surf = sites.len();
     rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
 

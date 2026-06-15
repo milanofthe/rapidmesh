@@ -427,6 +427,29 @@ class Geometry:
         )
         return self._solid(region)
 
+    def airfoil_naca0012(
+        self,
+        chord: float,
+        span: float,
+        position: tuple[float, float, float] = (0, 0, 0),
+        span_axis: tuple[float, float, float] = (0, 0, 1),
+        *,
+        n_per_side: int = 40,
+        n_seg: int = 120,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """A NACA 0012 airfoil (chord along +x, leading edge at ``position``)
+        extruded along ``span_axis`` by ``span``. The curved skin is one
+        analytic extruded-spline surface, so the surface mesher places vertices
+        exactly on it and grades by the profile curvature; the trailing edge is
+        a flat blunt face. ``n_per_side`` controls profile control points,
+        ``n_seg`` the facet count along the chord."""
+        region = self._builder.add_naca0012(
+            chord, span, list(position), list(span_axis), n_per_side, n_seg, maxh, void
+        )
+        return self._solid(region)
+
     def cone(
         self,
         r1: float,

@@ -8,9 +8,9 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
-    cylinder, cylinder_iso, extrude_polygon, frustum, frustum_iso, helix, icosphere, loft,
-    mesh_solid, pipe, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere, torus, wedge,
-    FaceTag, Scene,
+    cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
+    icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
+    solid_box, sphere, torus, wedge, FaceTag, Scene,
 };
 use rapidmesh_tet::{
     mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
@@ -82,6 +82,30 @@ impl SceneBuilder {
         void: bool,
     ) -> u32 {
         self.put(sphere(center, radius, segments, rings), maxh, void)
+    }
+
+    /// A NACA 0012 airfoil section (chord along +x, leading edge at `origin`)
+    /// extruded along `span_axis` by `span`: the curved skin is one analytic
+    /// extruded-spline surface (curvature-graded), with a flat blunt trailing
+    /// edge and two end caps.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (chord, span, origin=[0.0, 0.0, 0.0], span_axis=[0.0, 0.0, 1.0], n_per_side=40, n_seg=120, maxh=None, void=false))]
+    fn add_naca0012(
+        &mut self,
+        chord: f64,
+        span: f64,
+        origin: [f64; 3],
+        span_axis: [f64; 3],
+        n_per_side: usize,
+        n_seg: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> u32 {
+        let al = (span_axis[0].powi(2) + span_axis[1].powi(2) + span_axis[2].powi(2)).sqrt();
+        let h = [span_axis[0] / al * span, span_axis[1] / al * span, span_axis[2] / al * span];
+        let profile = naca0012_profile(chord, n_per_side);
+        let solid = extrude_spline_profile(profile, n_seg, origin, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], h);
+        self.put(solid, maxh, void)
     }
 
     #[pyo3(signature = (center, radius, subdivisions, maxh=None, void=false))]

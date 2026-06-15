@@ -406,12 +406,16 @@ def _naca0012_points(chord: float, n: int):
     def yt(x):
         return 0.6 * (0.2969 * x ** 0.5 - 0.1260 * x - 0.3516 * x * x
                       + 0.2843 * x ** 3 - 0.1015 * x ** 4)
+    # LE-only clustering (x = s^2): dense at the high-curvature nose, coarse at
+    # the near-straight tail (cosine would cluster the tail too and fan it).
     pts = []
     for i in range(n + 1):
-        x = 0.5 * (1.0 + math.cos(math.pi * i / n))  # 1 -> 0
+        s = i / n
+        x = (1.0 - s) ** 2  # 1 (TE) -> 0 (LE), dense near LE
         pts.append((x * chord, yt(x) * chord))
     for i in range(1, n + 1):
-        x = 0.5 * (1.0 - math.cos(math.pi * i / n))  # 0 -> 1
+        s = i / n
+        x = s ** 2  # 0 (LE) -> 1 (TE), dense near LE
         pts.append((x * chord, -yt(x) * chord))
     return pts
 

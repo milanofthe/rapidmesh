@@ -514,7 +514,7 @@ fn plc_of(scene: &Scene) -> TaggedPlc {
 /// A CURVED void (cylindrical bore as a void, not a region) stays exact
 /// through meshing and within fidelity tolerance through optimization.
 #[test]
-#[ignore = "CVT rewrite WP4/WP6: concave curved void boundary not yet wired"]
+#[ignore = "passes, but slow in debug (curved + optimize); run with --release --ignored"]
 fn cylinder_void_volume_through_optimize() {
     let close = |have: BigRational, want: BigRational, tol_rel: f64, what: &str| {
         let tol = want.clone() * rat(tol_rel);
@@ -594,7 +594,7 @@ fn torus_meshes_exactly() {
 /// projected quad), the stagnation guard abandoned the patch and region
 /// classification leaked. Region volumes must match the PLC exactly.
 #[test]
-#[ignore = "CVT rewrite WP5/WP6: multi-region loft scene not yet wired"]
+#[ignore = "passes, but slow in debug (large multi-region loft); run with --release --ignored"]
 fn horn_loft_flat_tet_tiling() {
     let mm = 1e-3;
     let c0 = 299_792_458.0_f64;

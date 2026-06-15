@@ -245,7 +245,7 @@ pub struct MeshParams {
     /// them instead of letting the coarse far field fan onto a thin boundary.
     /// Off by default: it refines every thin feature (thin layers, gaps), which
     /// multiplies the tet count, so it is opt-in for the cases that need it.
-    pub local_feature_size: bool,
+    pub density_weighted: bool,
 }
 
 impl Default for MeshParams {
@@ -259,7 +259,7 @@ impl Default for MeshParams {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
-            local_feature_size: false,
+            density_weighted: false,
         }
     }
 }

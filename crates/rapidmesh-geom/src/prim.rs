@@ -409,27 +409,22 @@ pub fn naca0012_profile(chord: f64, n_per_side: usize) -> NurbsCurve {
         0.6 * (0.2969 * x.sqrt() - 0.1260 * x - 0.3516 * x * x + 0.2843 * x * x * x
             - 0.1015 * x * x * x * x)
     };
-    // Control points are clustered toward the LEADING edge only (`x = s^2`):
-    // that is where the curvature is genuinely high (the round nose, with its
-    // sqrt(x) tangent). Cosine spacing would also cluster at the trailing edge,
-    // where tightly packed control points give the B-spline an ARTIFICIAL high
-    // curvature -> the curvature sizing bias would over-refine a nearly straight
-    // tail (a sliver fan). LE-only clustering keeps the tail curvature correct
-    // (low) so it meshes coarse.
-    let mut ctrl: Vec<[f64; 2]> = Vec::new();
-    // Upper surface, trailing edge (x=1) to leading edge (x=0), dense near LE.
+    // INTERPOLATE the analytic NACA points (not use them as control points), so
+    // the curve carries the TRUE NACA curvature: high only at the round leading
+    // edge (sqrt(x) tangent), low along the gently sloping body -> a curvature
+    // sizing field refines just the genuine features, not the whole thin shape.
+    // Cosine x-spacing samples densely where it bends (LE/TE), the open profile
+    // running upper TE -> LE -> lower TE.
+    let mut pts: Vec<[f64; 2]> = Vec::new();
     for i in 0..=n_per_side {
-        let s = i as f64 / n_per_side as f64; // 0..1
-        let x = (1.0 - s) * (1.0 - s); // s=0 -> 1 (TE), s=1 -> 0 (LE), dense near LE
-        ctrl.push([x * chord, yt(x) * chord]);
+        let x = 0.5 * (1.0 + (std::f64::consts::PI * i as f64 / n_per_side as f64).cos()); // 1..0
+        pts.push([x * chord, yt(x) * chord]);
     }
-    // Lower surface, leading edge to trailing edge (skip the shared LE point).
     for i in 1..=n_per_side {
-        let s = i as f64 / n_per_side as f64;
-        let x = s * s; // dense near LE (x=0), coarse toward TE (x=1)
-        ctrl.push([x * chord, -yt(x) * chord]);
+        let x = 0.5 * (1.0 - (std::f64::consts::PI * i as f64 / n_per_side as f64).cos()); // 0..1
+        pts.push([x * chord, -yt(x) * chord]);
     }
-    NurbsCurve::clamped_uniform(3, ctrl)
+    NurbsCurve::interpolate(&pts)
 }
 
 /// UV torus around `center` with the major circle normal to `axis`.

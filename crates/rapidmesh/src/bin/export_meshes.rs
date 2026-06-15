@@ -26,7 +26,7 @@ fn main() {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
-            local_feature_size: false,
+            density_weighted: false,
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
         let opt = OptimizeParams {

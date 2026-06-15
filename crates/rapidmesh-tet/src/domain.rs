@@ -26,15 +26,6 @@ type V3 = [f64; 3];
 
 /// Octree depth cap (a backstop; the sizing field normally stops refinement).
 const MAX_DEPTH: u32 = 18;
-/// Local feature size: target edge length as a fraction of the gap to the
-/// facing wall, so a thin feature gets ~1/this elements across it.
-const LFS_FRACTION: f64 = 0.5;
-/// A facet counts as "facing" for LFS when its normal opposes within this
-/// cosine (`dot < -cos`): excludes same-side neighbors, catches opposite walls.
-const LFS_FACING_COS: f64 = 0.3;
-/// LFS refines at most this far below `maxh` (floor = maxh * this), so a tiny
-/// near-closed feature grades to a sane size instead of exploding the tet count.
-const LFS_FLOOR_FRACTION: f64 = 0.08;
 /// Grading falloff cap distance is implicit in `grading`; the boundary target.
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -177,29 +168,6 @@ impl DomainTree {
         // adjacent regions, else the bulk `maxh`. The sizing field then grows
         // from these wall targets into the interior (Lipschitz with `grading`),
         // so a finely meshed face refines the volume behind it and coarsens away.
-        // Geometry-only BVH over all facets, for the LFS (local feature size)
-        // query: the distance to the nearest FACING facet (a thin slab's other
-        // wall, an airfoil trailing edge, a narrow slot). Built once here from
-        // the bare tris; the sizing BVH below carries the per-facet targets.
-        let geom_bvh = if params.local_feature_size {
-            let geom_facets: Vec<(Tri, f64)> = plc
-                .triangles
-                .iter()
-                .map(|t| {
-                    (
-                        Tri::new(
-                            plc.vertices[t[0] as usize],
-                            plc.vertices[t[1] as usize],
-                            plc.vertices[t[2] as usize],
-                        ),
-                        0.0,
-                    )
-                })
-                .collect();
-            Some(FacetBvh::build(&geom_facets))
-        } else {
-            None
-        };
         let facet_centroid = |i: usize| -> V3 {
             let t = plc.triangles[i];
             std::array::from_fn(|k| {
@@ -208,25 +176,6 @@ impl DomainTree {
                     + plc.vertices[t[2] as usize][k])
                     / 3.0
             })
-        };
-        let facet_normal = |i: usize| -> V3 {
-            let t = plc.triangles[i];
-            let (a, b, c) = (
-                plc.vertices[t[0] as usize],
-                plc.vertices[t[1] as usize],
-                plc.vertices[t[2] as usize],
-            );
-            let n = [
-                (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-                (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-                (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
-            ];
-            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            if l > 0.0 {
-                [n[0] / l, n[1] / l, n[2] / l]
-            } else {
-                [0.0, 0.0, 1.0]
-            }
         };
 
         // Curvature/volume-error target of a curved facet: a facet edge `h` on a
@@ -239,27 +188,6 @@ impl DomainTree {
         let curvature_target = |i: usize| -> f64 {
             let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
             crate::project::surface_curvature_radius(kind, facet_centroid(i)) * chord
-        };
-        // LFS target: a facet `frac` of the local feature thickness (the gap to
-        // the facing wall), so a thin feature gets a few elements ACROSS and the
-        // sizing field grades smoothly out of it (no coarse far-field fan onto a
-        // thin trailing edge). A facet with no facing wall keeps `maxh`.
-        // Floor: LFS may refine at most this far below `maxh`. A genuinely tiny
-        // feature (a near-closed trailing edge ~0.0025 chord) would otherwise
-        // resolve to an explosion of tets; flooring grades the transition to a
-        // sane size (no fan) for FEW tris. Curvature is NOT floored (a tight nose
-        // is real geometry that should be resolved).
-        let lfs_floor = maxh * LFS_FLOOR_FRACTION;
-        let lfs_target = |i: usize| -> f64 {
-            let Some(geom_bvh) = &geom_bvh else {
-                return f64::INFINITY;
-            };
-            let gap = geom_bvh.facing_dist(facet_centroid(i), facet_normal(i), LFS_FACING_COS);
-            if gap.is_finite() {
-                (LFS_FRACTION * gap).max(lfs_floor)
-            } else {
-                f64::INFINITY
-            }
         };
         let facet_target = |i: usize| -> f64 {
             let ft = plc.face_tags[i].0;
@@ -279,7 +207,7 @@ impl DomainTree {
                     h
                 }
             };
-            base.min(curvature_target(i)).min(lfs_target(i))
+            base.min(curvature_target(i))
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles

@@ -168,7 +168,7 @@ fn sized_box_respects_maxh_and_quality() {
         face_maxh: Vec::new(),
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
-        local_feature_size: false,
+        density_weighted: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -223,7 +223,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         face_maxh: Vec::new(),
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
-        local_feature_size: false,
+        density_weighted: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -269,7 +269,7 @@ fn per_region_sizing_creates_density_transition() {
         face_maxh: Vec::new(),
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
-        local_feature_size: false,
+        density_weighted: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(
@@ -472,7 +472,7 @@ fn size_points_refine_locally() {
     let params = MeshParams {
         maxh: 1.5,
         size_points: vec![([2.0, 2.0, 2.0], 0.2)],
-        local_feature_size: false,
+        density_weighted: false,
         grading: 0.5,
         ..MeshParams::default()
     };

@@ -19,19 +19,6 @@ fn sub(a: V3, b: V3) -> V3 {
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-/// Unit normal of a triangle from its winding (zero vector if degenerate).
-fn tri_normal(t: &Tri) -> V3 {
-    let n = cross(sub(t.v[1], t.v[0]), sub(t.v[2], t.v[0]));
-    let l = dot(n, n).sqrt();
-    if l > 0.0 {
-        [n[0] / l, n[1] / l, n[2] / l]
-    } else {
-        [0.0, 0.0, 0.0]
-    }
-}
 
 /// Squared distance from point `p` to triangle `t` (closest-point clamp).
 pub fn point_tri_dist2(p: V3, t: &Tri) -> f64 {
@@ -116,8 +103,6 @@ const LEAF_MAX: usize = 4;
 pub struct FacetBvh {
     tris: Vec<Tri>,
     targets: Vec<f64>,
-    /// Unit normal per facet (parallel to `tris`), for the facing/LFS query.
-    normals: Vec<V3>,
     /// Facet indices grouped by leaf (a permutation of `0..tris.len()`).
     order: Vec<u32>,
     nodes: Vec<Node>,
@@ -129,7 +114,6 @@ impl FacetBvh {
     pub fn build(facets: &[(Tri, f64)]) -> FacetBvh {
         let tris: Vec<Tri> = facets.iter().map(|f| f.0).collect();
         let targets: Vec<f64> = facets.iter().map(|f| f.1).collect();
-        let normals: Vec<V3> = tris.iter().map(tri_normal).collect();
         let centroids: Vec<V3> = tris
             .iter()
             .map(|t| std::array::from_fn(|k| (t.v[0][k] + t.v[1][k] + t.v[2][k]) / 3.0))
@@ -139,50 +123,7 @@ impl FacetBvh {
         if !tris.is_empty() {
             build_node(&tris, &targets, &centroids, &mut order, 0, tris.len(), &mut nodes);
         }
-        FacetBvh { tris, targets, normals, order, nodes }
-    }
-
-    /// Distance from `p` to the nearest facet whose normal OPPOSES `n`
-    /// (`dot(normal, n) < -cos_thresh`) -- the local feature thickness: the gap
-    /// to a facing wall (a thin slab, an airfoil trailing edge, a narrow slot).
-    /// Adjacent same-side facets (similar normals) are excluded, so this is the
-    /// distance ACROSS the feature, not along it. INFINITY if none qualifies.
-    /// `n` should be the facet's own outward unit normal.
-    pub fn facing_dist(&self, p: V3, n: V3, cos_thresh: f64) -> f64 {
-        if self.nodes.is_empty() {
-            return f64::INFINITY;
-        }
-        let mut best2 = f64::INFINITY;
-        self.facing_rec(0, p, n, cos_thresh, &mut best2);
-        best2.sqrt()
-    }
-
-    fn facing_rec(&self, ni: usize, p: V3, n: V3, cos_thresh: f64, best2: &mut f64) {
-        let node = &self.nodes[ni];
-        if box_dist2(node.lo, node.hi, p) >= *best2 {
-            return;
-        }
-        if node.count > 0 {
-            for &fi in &self.order[node.start as usize..(node.start + node.count) as usize] {
-                if dot(self.normals[fi as usize], n) < -cos_thresh {
-                    let d2 = point_tri_dist2(p, &self.tris[fi as usize]);
-                    if d2 < *best2 {
-                        *best2 = d2;
-                    }
-                }
-            }
-            return;
-        }
-        let (l, r) = (node.left as usize, node.right as usize);
-        let dl = box_dist2(self.nodes[l].lo, self.nodes[l].hi, p);
-        let dr = box_dist2(self.nodes[r].lo, self.nodes[r].hi, p);
-        if dl <= dr {
-            self.facing_rec(l, p, n, cos_thresh, best2);
-            self.facing_rec(r, p, n, cos_thresh, best2);
-        } else {
-            self.facing_rec(r, p, n, cos_thresh, best2);
-            self.facing_rec(l, p, n, cos_thresh, best2);
-        }
+        FacetBvh { tris, targets, order, nodes }
     }
 
     pub fn is_empty(&self) -> bool {

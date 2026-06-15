@@ -508,7 +508,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // local target is `SURFACE_OVERSAMPLE * h(lift(uv))` from the octree.
             let step = SURFACE_OVERSAMPLE * domain.finest();
             let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
-            cvt_fill(&bnd, lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size)
+            cvt_fill(&bnd, lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted)
                 .into_iter()
                 .map(|uv| (pi as u32, Site::on_plane(p0, n, lift3(uv, drop, p0, n))))
                 .collect::<Vec<_>>()
@@ -566,7 +566,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let hc = g.chart.curvature_radius(uv) * chord;
             SURFACE_OVERSAMPLE * domain.h_at(g.chart.to_xyz(uv)).min(hc)
         };
-        for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size) {
+        for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             sites.push(Site::on_surface(g.kind.clone(), g.chart.to_xyz(uv)));
             point_tile.push(tile);
         }
@@ -666,11 +666,11 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // volume * rho, with the sizing-field density rho = 1/h^3 (spacing ~
             // h), pulling sites toward finer regions so a graded field relaxes
             // into a SMOOTH gradient instead of fanning at a fine/coarse
-            // transition. Gated with `local_feature_size`: it concentrates sites
+            // transition. Gated with `density_weighted`: it concentrates sites
             // near curved boundaries, which can flip a near-boundary tet's region
             // (the exact-volume fixtures need the plain uniform CVT). Uniform h
             // would make rho constant anyway.
-            let w = if params.local_feature_size {
+            let w = if params.density_weighted {
                 let h = domain.h_at(c).max(1e-9);
                 tet_det(p).abs() / (h * h * h)
             } else {
@@ -1005,7 +1005,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let step = SURFACE_OVERSAMPLE * domain.finest();
         let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
-        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size) {
+        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(lift3(uv, drop, p0, n));
             loc2.push(uv);
             gidx.push(points.len() - 1);
@@ -1125,7 +1125,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             let hc = chart.curvature_radius(uv) * chord;
             SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc)
         };
-        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.local_feature_size) {
+        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(chart.to_xyz(uv));
             loc2.push(uv);
             gidx.push(points.len() - 1);

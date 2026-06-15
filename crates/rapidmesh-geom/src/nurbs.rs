@@ -11,6 +11,45 @@
 
 type P2 = [f64; 2];
 
+/// Solves `A x = b` (two RHS columns) by Gaussian elimination with partial
+/// pivoting. `A` is small and dense (the interpolation collocation matrix).
+fn solve_banded(a: &mut [Vec<f64>], b: &mut [[f64; 2]]) -> Vec<[f64; 2]> {
+    let n = a.len();
+    for col in 0..n {
+        let mut piv = col;
+        for r in (col + 1)..n {
+            if a[r][col].abs() > a[piv][col].abs() {
+                piv = r;
+            }
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        let d = a[col][col];
+        for r in (col + 1)..n {
+            let f = a[r][col] / d;
+            if f == 0.0 {
+                continue;
+            }
+            for c in col..n {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r][0] -= f * b[col][0];
+            b[r][1] -= f * b[col][1];
+        }
+    }
+    let mut x = vec![[0.0; 2]; n];
+    for col in (0..n).rev() {
+        let mut s = b[col];
+        for c in (col + 1)..n {
+            s[0] -= a[col][c] * x[c][0];
+            s[1] -= a[col][c] * x[c][1];
+        }
+        x[col][0] = s[0] / a[col][col];
+        x[col][1] = s[1] / a[col][col];
+    }
+    x
+}
+
 /// A 2D rational B-spline curve.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NurbsCurve {
@@ -50,6 +89,47 @@ impl NurbsCurve {
         knots.extend(std::iter::repeat(1.0).take(p + 1));
         let weights = vec![1.0; n];
         NurbsCurve::new(degree, knots, ctrl, weights)
+    }
+
+    /// Cubic B-spline INTERPOLATING the given points (the curve passes through
+    /// each, unlike `clamped_uniform` which uses them as control points). Gives
+    /// the FAITHFUL curvature of the sampled shape -- no control-polygon
+    /// artifacts -- so a curvature sizing field refines only the genuinely
+    /// curved regions (Piegl & Tiller, global interpolation A9.1: chord-length
+    /// parameters, averaged knots, solve `N P = Q`). Needs >= 4 points.
+    pub fn interpolate(points: &[P2]) -> NurbsCurve {
+        let n = points.len() - 1;
+        assert!(n >= 3, "cubic interpolation needs >= 4 points");
+        let p = 3;
+        let dd = |a: P2, b: P2| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+        // Chord-length parameters.
+        let total: f64 = (1..=n).map(|k| dd(points[k], points[k - 1])).sum();
+        let mut u = vec![0.0; n + 1];
+        for k in 1..n {
+            u[k] = u[k - 1] + dd(points[k], points[k - 1]) / total;
+        }
+        u[n] = 1.0;
+        // Averaged knot vector.
+        let mut knots = vec![0.0; n + p + 2];
+        for j in (n + 1)..(n + p + 2) {
+            knots[j] = 1.0;
+        }
+        for j in 1..=(n - p) {
+            knots[j + p] = (j..j + p).map(|i| u[i]).sum::<f64>() / p as f64;
+        }
+        // Collocation matrix A[k][i] = N_{i,p}(u_k); solve A P = points per coord.
+        let scratch = NurbsCurve::new(p, knots.clone(), points.to_vec(), vec![1.0; n + 1]);
+        let mut a = vec![vec![0.0f64; n + 1]; n + 1];
+        for k in 0..=n {
+            let span = scratch.find_span(u[k]);
+            let basis = scratch.ders_basis(span, u[k], 0);
+            for j in 0..=p {
+                a[k][span - p + j] = basis[0][j];
+            }
+        }
+        let mut rhs: Vec<[f64; 2]> = points.to_vec();
+        let ctrl = solve_banded(&mut a, &mut rhs);
+        NurbsCurve::new(p, knots, ctrl, vec![1.0; n + 1])
     }
 
     /// Parameter domain `[u_min, u_max]` (the clamped end knots).

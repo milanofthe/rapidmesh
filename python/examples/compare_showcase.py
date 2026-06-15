@@ -86,7 +86,7 @@ def mesh_rapidmesh(geom: CompareGeom):
     """(points, tets, tet_regions, millis) from rapidmesh's native pipeline."""
     g = geom.build_rapidmesh()
     t0 = time.perf_counter()
-    m = g.mesh(maxh=geom.target_h, local_feature_size=getattr(geom, "local_feature_size", False))
+    m = g.mesh(maxh=geom.target_h, density_weighted=getattr(geom, "density_weighted", False))
     millis = (time.perf_counter() - t0) * 1e3
     return (np.asarray(m.points), np.asarray(m.tets, dtype=np.int64),
             np.asarray(m.tet_regions, dtype=np.int64), millis)

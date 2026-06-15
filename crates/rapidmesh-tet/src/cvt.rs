@@ -19,7 +19,7 @@
 //! centroid (an exact per-region ray-cast). Out-of-domain volume moves are
 //! rejected (kept).
 
-use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFace, TetMesh};
+use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFace, SurfaceMesh, TetMesh};
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::seed::SizingField;
@@ -609,6 +609,100 @@ fn reflect(p: V3, p0: V3, n: V3) -> V3 {
     sub(p, scale(n, 2.0 * dot(sub(p, p0), n)))
 }
 
+/// Surface-only meshing: the early-exit export path. Runs the hierarchy's
+/// stage 1 (corners + graded feature-edge points) and stage 2 (per-patch 2D
+/// Lloyd), then triangulates each patch (the `delaunay2` that `cvt_fill`
+/// otherwise discards) and lifts it to 3D, giving the conforming boundary mesh
+/// WITHOUT the volume tetrahedralization. Shared edge points (cached) keep the
+/// patch triangulations conforming across seams.
+pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
+    let domain = DomainTree::build(plc, params);
+    let patches = build_patches(plc);
+    let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
+
+    // Global surface points: PLC corners, then graded edge points (shared across
+    // patches via the cache), then per-patch interior points appended below.
+    let mut points: Vec<V3> = plc.vertices.clone();
+    let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
+    for edges in &pbe {
+        for &e in edges {
+            if edge_pts.contains_key(&e) {
+                continue;
+            }
+            let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
+            let idx: Vec<usize> = graded_edge_fracs(va, vb, &domain)
+                .into_iter()
+                .map(|f| {
+                    points.push(std::array::from_fn(|k| va[k] + f * (vb[k] - va[k])));
+                    points.len() - 1
+                })
+                .collect();
+            edge_pts.insert(e, idx);
+        }
+    }
+
+    let mut faces: Vec<SurfaceFace> = Vec::new();
+    for (pi, patch) in patches.iter().enumerate() {
+        let (p0, n) = patch_plane(plc, patch);
+        let drop = drop_axis(n);
+        // Boundary 2D points with their global index.
+        let mut loc2: Vec<[f64; 2]> = Vec::new();
+        let mut gidx: Vec<usize> = Vec::new();
+        let mut seen: DSet<usize> = DSet::default();
+        for &(a, b) in &pbe[pi] {
+            for cv in [a, b] {
+                if seen.insert(cv) {
+                    loc2.push(project2(points[cv], drop));
+                    gidx.push(cv);
+                }
+            }
+            for &gi in &edge_pts[&sorted2(a, b)] {
+                if seen.insert(gi) {
+                    loc2.push(project2(points[gi], drop));
+                    gidx.push(gi);
+                }
+            }
+        }
+        if loc2.len() < 3 {
+            continue;
+        }
+        let nb = loc2.len();
+        let (mut lo2, mut hi2) = (loc2[0], loc2[0]);
+        for &p in &loc2[..nb] {
+            for k in 0..2 {
+                lo2[k] = lo2[k].min(p[k]);
+                hi2[k] = hi2[k].max(p[k]);
+            }
+        }
+        let inside2 =
+            |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
+        let step = SURFACE_OVERSAMPLE * domain.finest();
+        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
+        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2) {
+            let p3 = lift3(uv, drop, p0, n);
+            points.push(p3);
+            loc2.push(uv);
+            gidx.push(points.len() - 1);
+        }
+        for t in crate::surf2d::delaunay2(&loc2) {
+            faces.push(SurfaceFace {
+                tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
+                face_tag: patch.face_tag,
+                regions: patch.regions,
+                patch: pi as u32,
+                surface: patch.surface,
+            });
+        }
+    }
+
+    SurfaceMesh {
+        points,
+        faces,
+        surfaces: plc.surfaces.clone(),
+        surface_owners: plc.surface_owners.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +758,26 @@ mod tests {
         let mesh = mesh(&plc, &MeshParams::default());
         assert_eq!(region_volume6(&mesh, r.0), rat(6.0), "exact unit cube");
         assert!(watertight(&mesh));
+    }
+
+    #[test]
+    fn surface_mesh_box_is_closed_manifold() {
+        // The surface-only export of a closed box is a closed manifold surface:
+        // every edge is shared by exactly two triangles, and it covers all six
+        // faces (well over a dozen triangles at this size).
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
+        let plc = scene.assemble();
+        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.8, ..Default::default() });
+        assert!(sm.faces.len() > 12, "box surface should be tessellated, got {}", sm.faces.len());
+        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+        for f in &sm.faces {
+            for e in 0..3 {
+                let (a, b) = (f.tri[e], f.tri[(e + 1) % 3]);
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        assert!(edges.values().all(|&c| c == 2), "closed manifold: every edge in exactly 2 faces");
     }
 
     #[test]

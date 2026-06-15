@@ -24,6 +24,7 @@ pub mod site;
 pub mod spatial;
 pub mod surf2d;
 
-pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, TetMesh};
+pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, SurfaceMesh, TetMesh};
+pub use cvt::surface_mesh;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};

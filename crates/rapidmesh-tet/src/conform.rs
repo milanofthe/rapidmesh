@@ -18,6 +18,21 @@ use std::hash::BuildHasherDefault;
 type DState = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DState>;
 
+/// A boundary surface mesh: the conforming triangulation of the PLC patches,
+/// produced by the early-exit surface path ([`crate::cvt::surface_mesh`])
+/// without the volume tetrahedralization. Same face schema as [`TetMesh`].
+#[derive(Debug)]
+pub struct SurfaceMesh {
+    /// Surface vertices (PLC corners, graded edge points, patch interior).
+    pub points: Vec<[f64; 3]>,
+    /// The triangulation of every patch, tagged.
+    pub faces: Vec<SurfaceFace>,
+    /// The analytic surfaces referenced by [SurfaceFace::surface].
+    pub surfaces: Vec<SurfaceKind>,
+    /// Per-surface owner solid index, parallel to `surfaces`.
+    pub surface_owners: Vec<u32>,
+}
+
 /// A conforming surface face of the tet mesh, with its PLC tags.
 #[derive(Debug, Clone)]
 pub struct SurfaceFace {

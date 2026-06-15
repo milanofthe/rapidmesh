@@ -280,6 +280,10 @@ impl DomainTree {
     pub fn hi(&self) -> V3 {
         self.hi
     }
+    /// Finest target edge length `s0` anywhere in the domain (the base spacing).
+    pub fn finest(&self) -> f64 {
+        self.finest
+    }
 
     fn leaf_at(&self, p: V3) -> Option<(&Leaf,)> {
         let mut node = &self.root;

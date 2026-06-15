@@ -103,32 +103,45 @@ pub fn delaunay2(points: &[P2]) -> Vec<[usize; 3]> {
     tris.into_iter().filter(|t| t.iter().all(|&v| v < n)).collect()
 }
 
-/// Fills a planar region with Lloyd-relaxed interior points at the target
-/// `spacing`. `boundary` is the set of FIXED boundary points (1D edge points and
-/// corners); `inside` decides patch membership (exact, supplied by the caller).
-/// Interior points are scattered on a grid in `[lo, hi]`, kept inside and clear
-/// of the boundary, then moved toward the area-weighted centroid of their
-/// incident triangles with a separation guard (no collapse / sliver seeding).
+/// Fills a planar region with Lloyd-relaxed interior points at a GRADED local
+/// `target` spacing (`target(q)` is the desired edge length at `q`). `step` is
+/// the finest target on the patch, the grid step of the initial scatter; the
+/// per-point separation is the LOCAL `0.5 * target`, so the density grades:
+/// dense where `target` is small, sparse where it is large. `boundary` is the
+/// set of FIXED boundary points (graded 1D edge points and corners); `inside`
+/// decides patch membership (exact, supplied by the caller). Interior points are
+/// scattered on a grid in `[lo, hi]`, kept inside and clear of the boundary by
+/// the local radius, then moved toward the area-weighted centroid of their
+/// incident triangles with a local separation guard (no collapse / sliver seed).
 pub fn cvt_fill(
     boundary: &[P2],
     lo: P2,
     hi: P2,
-    spacing: f64,
+    step: f64,
+    target: impl Fn(P2) -> f64,
     iters: usize,
     inside: impl Fn(P2) -> bool,
 ) -> Vec<P2> {
-    if !(spacing.is_finite() && spacing > 0.0) {
+    if !(step.is_finite() && step > 0.0) {
         return Vec::new();
     }
-    let min_sep2 = (0.5 * spacing).powi(2);
+    let sep2 = |q: P2| (0.5 * target(q)).powi(2);
     let nb = boundary.len();
-    let nx = (((hi[0] - lo[0]) / spacing).ceil() as usize).max(1);
-    let ny = (((hi[1] - lo[1]) / spacing).ceil() as usize).max(1);
+    let nx = (((hi[0] - lo[0]) / step).ceil() as usize).max(1);
+    let ny = (((hi[1] - lo[1]) / step).ceil() as usize).max(1);
+    // Greedy graded scatter: keep a grid node only if it clears the boundary and
+    // every already-kept interior point by its OWN local radius.
     let mut interior: Vec<P2> = Vec::new();
     for i in 1..nx {
         for j in 1..ny {
-            let q = [lo[0] + i as f64 * spacing, lo[1] + j as f64 * spacing];
-            if inside(q) && boundary.iter().all(|&b| dist2(q, b) >= min_sep2) {
+            let q = [lo[0] + i as f64 * step, lo[1] + j as f64 * step];
+            if !inside(q) {
+                continue;
+            }
+            let r2 = sep2(q);
+            if boundary.iter().all(|&b| dist2(q, b) >= r2)
+                && interior.iter().all(|&p| dist2(q, p) >= r2)
+            {
                 interior.push(q);
             }
         }
@@ -168,11 +181,9 @@ pub fn cvt_fill(
             if !inside(tgt) {
                 continue;
             }
-            let clear = boundary.iter().all(|&b| dist2(tgt, b) >= min_sep2)
-                && interior
-                    .iter()
-                    .enumerate()
-                    .all(|(m, &q)| m == k || dist2(tgt, q) >= min_sep2);
+            let r2 = sep2(tgt);
+            let clear = boundary.iter().all(|&b| dist2(tgt, b) >= r2)
+                && interior.iter().enumerate().all(|(m, &q)| m == k || dist2(tgt, q) >= r2);
             if clear {
                 interior[k] = tgt;
             }
@@ -209,7 +220,7 @@ mod tests {
             boundary.push([0.0, 1.0 - i as f64 / m as f64]);
         }
         let sq = |p: P2| p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 1.0;
-        let interior = cvt_fill(&boundary, [0.0, 0.0], [1.0, 1.0], 0.2, 12, sq);
+        let interior = cvt_fill(&boundary, [0.0, 0.0], [1.0, 1.0], 0.2, |_| 0.2, 12, sq);
         assert!(!interior.is_empty());
         let mut all = boundary.clone();
         all.extend_from_slice(&interior);

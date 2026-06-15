@@ -415,7 +415,6 @@ fn void_carves_exact_volume() {
 /// Per-face-tag sizing: a tagged sheet refines to its own target inside a
 /// coarse region, and the optimizer's face budget keeps it there.
 #[test]
-#[ignore = "CVT rewrite WP5/WP7: embedded sheet + face sizing not yet wired"]
 fn face_maxh_refines_tagged_sheet() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -464,7 +463,6 @@ fn face_maxh_refines_tagged_sheet() {
 /// Point size sources: the target shrinks near the source and recovers
 /// along the grading away from it.
 #[test]
-#[ignore = "CVT rewrite WP7: graded point-source sizing not yet wired"]
 fn size_points_refine_locally() {
     let mut scene = Scene::new();
     let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -672,7 +670,6 @@ fn horn_loft_flat_tet_tiling() {
 /// surface_maxh reaches a VOID's walls (no region, no face tag): the bore
 /// surface meshes at the requested size while the outer box stays coarse.
 #[test]
-#[ignore = "CVT rewrite WP6/WP7: void wall surface sizing not yet wired"]
 fn surface_maxh_refines_void_walls() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));

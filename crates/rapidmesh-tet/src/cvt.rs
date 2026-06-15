@@ -74,6 +74,43 @@ fn dist(a: V3, b: V3) -> f64 {
 fn tet_det(p: [V3; 4]) -> f64 {
     dot(sub(p[1], p[0]), cross(sub(p[2], p[0]), sub(p[3], p[0])))
 }
+/// Parameters `t in (0,1)` for graded points along edge `va->vb`: places points
+/// at equal fractions of the graded integral `∫ ds / (OVERSAMPLE * h)`. For a
+/// constant target this reduces to even `k/n` spacing (so uniform geometry keeps
+/// its old, conformity-safe pattern); where `h` varies, points cluster where the
+/// local size is fine. Symmetric in the endpoints regardless of grading.
+fn graded_edge_fracs(va: V3, vb: V3, domain: &DomainTree) -> Vec<f64> {
+    let len = dist(va, vb);
+    if len <= 0.0 {
+        return Vec::new();
+    }
+    let dir: V3 = std::array::from_fn(|k| (vb[k] - va[k]) / len);
+    // Sample the inverse local spacing finely enough to resolve the grading.
+    let samples = ((len / (SURFACE_OVERSAMPLE * domain.finest())).ceil() as usize * 4).clamp(16, 4096);
+    let dl = len / samples as f64;
+    let mut cum = vec![0.0f64; samples + 1];
+    for i in 0..samples {
+        let s = (i as f64 + 0.5) * dl;
+        let p: V3 = std::array::from_fn(|k| va[k] + dir[k] * s);
+        let spacing = (SURFACE_OVERSAMPLE * domain.h_at(p)).max(len * 1e-3);
+        cum[i + 1] = cum[i] + dl / spacing;
+    }
+    let total = cum[samples];
+    let n = (total.round() as usize).max(1);
+    let mut fracs = Vec::with_capacity(n.saturating_sub(1));
+    let mut i = 0usize;
+    for k in 1..n {
+        let target = k as f64 / n as f64 * total;
+        while i < samples && cum[i + 1] < target {
+            i += 1;
+        }
+        let seg = (cum[i + 1] - cum[i]).max(1e-30);
+        let arc = (i as f64 + (target - cum[i]) / seg) * dl;
+        fracs.push((arc / len).clamp(0.0, 1.0));
+    }
+    fracs
+}
+
 fn centroid4(p: [V3; 4]) -> V3 {
     std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]))
 }
@@ -255,16 +292,19 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut domain = DomainTree::build(plc, params);
 
     let patches = build_patches(plc);
-    // Fixed minimal site separation (surface clearance and volume crowding). It
-    // is deliberately uniform: the grading lives entirely in the seeding density
-    // (the domain octree), and `sep` only has to stay below the fine wall
-    // spacing (`surf_spacing`) so the wall layer survives, while keeping volume
-    // points clear of the fixed surface. A locally-shrinking clearance would let
-    // volume points creep onto a fine interface and straddle it.
+    // Fixed minimal site separation (surface clearance and volume crowding),
+    // scaled by the global finest spacing. The grading lives in the seeding
+    // density (the domain octree); `sep` only has to stay below the finest wall
+    // spacing so the fine wall layer survives, while keeping volume points clear
+    // of the fixed surface. Planar interfaces tile robustly regardless of volume
+    // proximity, so a uniform clearance is safe even where the surface is coarse.
     let sep = SEPARATION_FRAC * spacing;
-    let surf_spacing = spacing * SURFACE_OVERSAMPLE;
 
     // ---- stage 1: corners + feature edges (1D), fixed --------------------
+    // Edge points are placed by GRADED arc length: the local spacing along the
+    // edge is `SURFACE_OVERSAMPLE * h(p)` from the domain octree, so an edge
+    // bordering a finely sized face gets denser points there and coarsens away.
+    // Shared edges are seeded once (cached), so both adjacent patches agree.
     let t_surf = std::time::Instant::now();
     let nb = plc.vertices.len();
     let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
@@ -276,10 +316,10 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 continue;
             }
             let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
-            let n = ((dist(va, vb) / surf_spacing).round() as usize).max(1);
-            let idx: Vec<usize> = (1..n)
-                .map(|k| {
-                    sites.push(Site::on_edge(va, vb, k as f64 / n as f64));
+            let idx: Vec<usize> = graded_edge_fracs(va, vb, &domain)
+                .into_iter()
+                .map(|f| {
+                    sites.push(Site::on_edge(va, vb, f));
                     sites.len() - 1
                 })
                 .collect();
@@ -323,7 +363,11 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
             let inside2 =
                 |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
-            cvt_fill(&bnd, lo2, hi2, surf_spacing, SURF_LLOYD_ITERS, inside2)
+            // Graded fill: grid step is the global finest surface spacing, the
+            // local target is `SURFACE_OVERSAMPLE * h(lift(uv))` from the octree.
+            let step = SURFACE_OVERSAMPLE * domain.finest();
+            let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
+            cvt_fill(&bnd, lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2)
                 .into_iter()
                 .map(|uv| Site::on_plane(p0, n, lift3(uv, drop, p0, n)))
                 .collect::<Vec<_>>()

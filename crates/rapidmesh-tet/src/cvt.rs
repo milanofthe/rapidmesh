@@ -30,9 +30,18 @@ use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
 use rapidmesh_geom::{RegionTag, TaggedPlc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasherDefault;
 
 type V3 = [f64; 3];
+
+/// Deterministic hashing: the mesher iterates these containers (boundary edges,
+/// face owners, tilings), and the result must be reproducible run-to-run, so a
+/// downstream pass (e.g. `optimize`) sees a fixed order. std's RandomState would
+/// make the surface relaxation and the optimize sequence vary per run.
+type DHasher = BuildHasherDefault<rustc_hash::FxHasher>;
+type DMap<K, V> = HashMap<K, V, DHasher>;
+type DSet<T> = HashSet<T, DHasher>;
 
 /// The four vertex-index triples spanning a tet's faces.
 const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
@@ -211,7 +220,7 @@ fn sorted2(a: usize, b: usize) -> (usize, usize) {
 
 /// Boundary edges of a patch: corner pairs appearing once among its facets.
 fn patch_boundary_edges(plc: &TaggedPlc, patch: &Patch) -> Vec<(usize, usize)> {
-    let mut count: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut count: DMap<(usize, usize), usize> = DMap::default();
     for &fi in &patch.member_indices {
         let t = plc.triangles[fi];
         let c = [t[0] as usize, t[1] as usize, t[2] as usize];
@@ -311,7 +320,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let nb = plc.vertices.len();
     let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
     let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
-    let mut edge_pts: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
     for edges in &pbe {
         for &e in edges {
             if edge_pts.contains_key(&e) {
@@ -342,7 +351,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let (p0, n) = patch_plane(plc, patch);
             let drop = drop_axis(n);
             let mut bnd: Vec<[f64; 2]> = Vec::new();
-            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut seen: DSet<usize> = DSet::default();
             for &(a, b) in &pbe[pi] {
                 for cv in [a, b] {
                     if seen.insert(cv) {
@@ -498,7 +507,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
     let all_tets = build(&vol_pos);
     let pts = positions(&sites);
-    let mut face_owners: HashMap<[usize; 3], Vec<u32>> = HashMap::new();
+    let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
     for (ti, t) in all_tets.iter().enumerate() {
         for fv in &TET_FACES {
             let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];

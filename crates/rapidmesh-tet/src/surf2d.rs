@@ -79,8 +79,12 @@ pub fn delaunay2(points: &[P2]) -> Vec<[usize; 3]> {
             continue; // degenerate cocircular case: leave the mesh as is
         }
         // Cavity boundary = directed edges of bad triangles without a reverse.
-        let mut count: std::collections::HashMap<(usize, usize), i32> =
-            std::collections::HashMap::new();
+        // Deterministic hashing: the boundary edge order sets the new-triangle
+        // order, and the surface Lloyd then sums area-weighted centroids over
+        // those triangles (a non-associative float sum), so a random order would
+        // make the relaxed surface points (and the whole mesh) vary run-to-run.
+        let mut count: rustc_hash::FxHashMap<(usize, usize), i32> =
+            rustc_hash::FxHashMap::default();
         for &ti in &bad {
             let t = tris[ti];
             for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {

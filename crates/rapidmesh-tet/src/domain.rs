@@ -20,7 +20,7 @@ use crate::facetbvh::FacetBvh;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
-use rapidmesh_geom::TaggedPlc;
+use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 
 type V3 = [f64; 3];
 
@@ -248,7 +248,7 @@ impl DomainTree {
         //     point-to-segment graded distance). Filled by WP-R3; empty here.
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
-        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc);
+        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.surface_deflection);
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).
@@ -408,13 +408,96 @@ impl DomainTree {
     }
 }
 
-/// Sagitta-bounded sizing targets along curved PLC edges (WP-R3): a curved
-/// feature edge on a known analytic carrier contributes `h(t) = R(t) *
-/// sqrt(8*delta_edge)` as segment targets (a segment = a degenerate tri), so the
-/// edge refines the volume near it under a normalized chord-error bound. Empty
-/// until R3 identifies curved-edge carriers; the graded edge source is wired.
-fn edge_sizing_segments(_plc: &TaggedPlc) -> Vec<(rapidmesh_csg::Tri, f64)> {
-    Vec::new()
+/// Circumradius of the triangle `(a, b, c)` -- the radius of the circle through
+/// the three points, i.e. the osculating-circle radius of the polyline at `b`.
+/// `INFINITY` for collinear points (a straight edge has no curvature).
+fn circumradius(a: V3, b: V3, c: V3) -> f64 {
+    let ab = dist(a, b);
+    let bc = dist(b, c);
+    let ca = dist(c, a);
+    // Twice the triangle area from the cross product of two edges.
+    let u = sub(b, a);
+    let v = sub(c, a);
+    let cr = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let area2 = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+    if area2 <= 1e-300 {
+        f64::INFINITY
+    } else {
+        ab * bc * ca / (2.0 * area2)
+    }
+}
+
+/// Sagitta-bounded sizing targets along curved feature edges (WP-R3), derived
+/// purely from geometry. A feature edge is a PLC edge whose two adjacent facets
+/// belong to DIFFERENT analytic surfaces, at least one of them curved (e.g. the
+/// rim where a cylinder barrel meets a flat cap, or the circle where a plane cuts
+/// a sphere). Such edges are space curves whose own curvature can be TIGHTER than
+/// either bounding surface (a small circle near a sphere's pole), so the per-facet
+/// surface-curvature target under-resolves them. We recover the edge-curve radius
+/// `R_edge` directly as the circumradius of three consecutive edge vertices (three
+/// points on a circle give its exact radius, even from a coarse facet polyline)
+/// and emit segment targets `h = R_edge * sqrt(8*delta)` (a segment = a degenerate
+/// tri, so `FacetBvh` yields the graded point-to-segment distance). Where the edge
+/// curves no tighter than its surface (a cylinder rim), `R_edge` matches the face
+/// target and the MIN composition makes this a harmless no-op.
+fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64) -> Vec<(Tri, f64)> {
+    use std::collections::HashMap;
+    let chord = (8.0 * deflection).sqrt();
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let is_curved = |sid: u32| !matches!(plc.surfaces[sid as usize], SurfaceKind::Plane);
+
+    // Distinct analytic surfaces meeting along each undirected edge.
+    let mut edge_surf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for (fi, t) in plc.triangles.iter().enumerate() {
+        let s = plc.surface_refs[fi].0;
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let v = edge_surf.entry(key(a, b)).or_default();
+            if !v.contains(&s) {
+                v.push(s);
+            }
+        }
+    }
+    // Feature edges: two distinct surfaces meet, at least one curved.
+    let feature: Vec<(u32, u32)> = edge_surf
+        .iter()
+        .filter(|(_, s)| s.len() >= 2 && s.iter().any(|&x| is_curved(x)))
+        .map(|(&e, _)| e)
+        .collect();
+
+    // Edge-curve neighbours of each feature vertex (its polyline link).
+    let mut nbr: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(a, b) in &feature {
+        nbr.entry(a).or_default().push(b);
+        nbr.entry(b).or_default().push(a);
+    }
+    // Osculating radius at a vertex: only where it has exactly two neighbours (a
+    // smooth interior point of the curve). Junctions / endpoints stay INFINITY.
+    let vert_radius = |v: u32| -> f64 {
+        match nbr.get(&v) {
+            Some(ns) if ns.len() == 2 => circumradius(
+                plc.vertices[ns[0] as usize],
+                plc.vertices[v as usize],
+                plc.vertices[ns[1] as usize],
+            ),
+            _ => f64::INFINITY,
+        }
+    };
+
+    let mut out: Vec<(Tri, f64)> = Vec::new();
+    for &(a, b) in &feature {
+        let r = vert_radius(a).min(vert_radius(b));
+        if r.is_finite() {
+            let va = plc.vertices[a as usize];
+            let vb = plc.vertices[b as usize];
+            // A degenerate tri (va, vb, va) is the segment va-vb for the BVH.
+            out.push((Tri::new(va, vb, va), r * chord));
+        }
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

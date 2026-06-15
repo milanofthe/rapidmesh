@@ -73,7 +73,9 @@ impl TetMesh {
     /// surfaces (cylinder barrel) stay smooth.
     pub fn feature_edges(&self) -> Vec<[usize; 2]> {
         // group key per face: planes split by patch, curved by surface
-        let face_key = |sf: &SurfaceFace| -> (u32, u32, u32, u32, u32) {
+        // (surface, smooth-id, face-tag, region-lo, region-hi)
+        type FaceKey = (u32, u32, u32, u32, u32);
+        let face_key = |sf: &SurfaceFace| -> FaceKey {
             let smooth = match self.surfaces[sf.surface as usize] {
                 SurfaceKind::Plane => sf.patch,
                 _ => u32::MAX,
@@ -81,8 +83,8 @@ impl TetMesh {
             let (r0, r1) = (sf.regions[0].0.min(sf.regions[1].0), sf.regions[0].0.max(sf.regions[1].0));
             (sf.surface, smooth, sf.face_tag.0, r0, r1)
         };
-        let mut edges: DMap<(usize, usize), (u32, (u32, u32, u32, u32, u32), bool)> =
-            DMap::default();
+        // edge -> (incidence count, first face key seen, mixed-key flag)
+        let mut edges: DMap<(usize, usize), (u32, FaceKey, bool)> = DMap::default();
         for sf in &self.faces {
             let key = face_key(sf);
             for k in 0..3 {

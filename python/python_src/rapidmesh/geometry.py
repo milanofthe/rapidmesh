@@ -214,6 +214,55 @@ class Mesh:
         return path
 
 
+class SurfaceMesh:
+    """A boundary surface mesh (surface-only export): the conforming surface
+    triangulation without any volume tets.
+
+    Attributes
+    ----------
+    points : (n_points, 3) float64
+        vertex coordinates
+    faces : (n_faces, 3) uint64
+        surface faces (region interfaces, outer boundary, embedded sheets)
+    face_tags : (n_faces,) uint32
+        sheet tag per face (0 for untagged interfaces)
+    face_regions : (n_faces, 2) uint32
+        the regions on the two sides of each face (0 = outside)
+    face_surfaces : (n_faces,) uint32
+        analytic-surface id per face
+    surface_owners : (n_surfaces,) uint32
+        owner solid per surface id; the max uint32 marks embedded sheets
+    stats : dict
+        n_points, n_faces, millis
+    """
+
+    def __init__(
+        self,
+        native,
+        solids: list[dict] | None = None,
+        tag_labels: dict[int, str] | None = None,
+    ) -> None:
+        self._native = native
+        self.solids: list[dict] = solids or []
+        self.tag_labels: dict[int, str] = tag_labels or {}
+        self.points: np.ndarray = native.points()
+        self.faces: np.ndarray = native.faces()
+        self.face_tags: np.ndarray = native.face_tags()
+        self.face_regions: np.ndarray = native.face_regions()
+        self.face_surfaces: np.ndarray = native.face_surfaces()
+        self.surface_owners: np.ndarray = native.surface_owners()
+        self.stats: dict = native.stats()
+        #: per-stage wall-clock seconds, pipeline order
+        self.timings: dict = native.timings()
+
+    def __repr__(self) -> str:
+        s = self.stats
+        return (
+            f"SurfaceMesh({s['n_faces']} faces, {s['n_points']} points, "
+            f"{s['millis']} ms)"
+        )
+
+
 def _refresh_manifest(directory: Path) -> None:
     """Manifest = every geometry with a rapidmesh JSON present, canonical
     comparison scenes first (mirrors the Rust exporter's write_manifest)."""
@@ -750,6 +799,41 @@ class Geometry:
             for i, r in enumerate(self._solid_regions)
         ]
         return Mesh(native, solids=solids, tag_labels=dict(self._tag_labels))
+
+    def surface_mesh(
+        self,
+        *,
+        maxh: float | None = None,
+        grading: float | None = None,
+    ) -> SurfaceMesh:
+        """Surface-only export: assembles the exact arrangement and meshes
+        only its boundary surface (region interfaces, outer boundary, embedded
+        sheets), skipping the volume mesh and quality optimization. Much faster
+        than :meth:`mesh` when only the conforming surface triangulation is
+        needed.
+
+        Parameters
+        ----------
+        maxh : float, optional
+            global target edge length (defaults to the constructor's;
+            unbounded if neither is given)
+        grading : float
+            size-grading Lipschitz constant (see :meth:`mesh`)
+        """
+        h = maxh if maxh is not None else self._maxh
+        g = grading if grading is not None else self._grading
+        native = self._builder.surface_mesh(
+            h if h is not None else math.inf,
+            g,
+            [(t, fh) for t, fh in sorted(self._face_maxh.items())],
+            [(list(pt), ph) for pt, ph in self._size_points],
+            [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
+        )
+        solids = [
+            {"region": r, "label": self._solid_labels.get(i)}
+            for i, r in enumerate(self._solid_regions)
+        ]
+        return SurfaceMesh(native, solids=solids, tag_labels=dict(self._tag_labels))
 
 
 def _unit(v: tuple[float, float, float]) -> list[float]:

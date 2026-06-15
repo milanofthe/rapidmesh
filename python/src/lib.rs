@@ -13,7 +13,8 @@ use rapidmesh_geom::{
     FaceTag, Scene,
 };
 use rapidmesh_tet::{
-    mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, QualityStats, TetMesh,
+    mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
+    QualityStats, SurfaceMesh, TetMesh,
 };
 
 /// Incremental scene builder (one solid/sheet per call); the Python layer
@@ -378,6 +379,45 @@ impl SceneBuilder {
             quality: q,
         }
     }
+
+    /// Surface-only export: runs assembly plus the boundary-conforming surface
+    /// triangulation (stages 1+2), skipping the volume mesh and optimization.
+    /// Returns just the closed boundary surface mesh. Volume-only params
+    /// (`radius_edge`, `max_points`) do not apply.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![]))]
+    fn surface_mesh(
+        &self,
+        py: Python<'_>,
+        maxh: f64,
+        grading: f64,
+        face_maxh: Vec<(u32, f64)>,
+        size_points: Vec<([f64; 3], f64)>,
+        surface_maxh: Vec<(u32, f64)>,
+    ) -> PySurfaceMesh {
+        let t0 = std::time::Instant::now();
+        rapidmesh_exact::log::clear();
+        let mesh = py.allow_threads(|| {
+            let plc = self.scene.assemble();
+            let params = MeshParams {
+                maxh,
+                region_maxh: self.region_maxh.clone(),
+                radius_edge_bound: 0.0,
+                max_points: usize::MAX,
+                grading,
+                face_maxh,
+                surface_maxh,
+                size_points,
+            };
+            surface_mesh(&plc, &params)
+        });
+        let (timings, _stats, _events) = rapidmesh_exact::log::take();
+        PySurfaceMesh {
+            mesh,
+            millis: t0.elapsed().as_millis() as u64,
+            timings,
+        }
+    }
 }
 
 /// A finished tetrahedral mesh. Array properties copy into numpy on access;
@@ -576,9 +616,95 @@ impl PyMesh {
     }
 }
 
+/// A boundary surface mesh (surface-only export): vertices plus the tagged
+/// triangulation, without any volume tets.
+#[pyclass]
+struct PySurfaceMesh {
+    mesh: SurfaceMesh,
+    millis: u64,
+    /// Ordered (stage, seconds) timings collected during meshing.
+    timings: Vec<(String, f64)>,
+}
+
+#[pymethods]
+impl PySurfaceMesh {
+    /// Vertex coordinates, shape (n_points, 3).
+    fn points<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let n = self.mesh.points.len();
+        let flat: Vec<f64> = self.mesh.points.iter().flatten().copied().collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 3), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Surface face connectivity, shape (n_faces, 3).
+    fn faces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
+        let n = self.mesh.faces.len();
+        let flat: Vec<u64> = self
+            .mesh
+            .faces
+            .iter()
+            .flat_map(|f| f.tri.map(|v| v as u64))
+            .collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 3), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Face tag per surface face (sheet tags; 0 = untagged interface).
+    fn face_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+        let v: Vec<u32> = self.mesh.faces.iter().map(|f| f.face_tag.0).collect();
+        v.into_pyarray_bound(py)
+    }
+
+    /// The two region tags adjacent to each surface face, shape (n_faces, 2).
+    fn face_regions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
+        let n = self.mesh.faces.len();
+        let flat: Vec<u32> = self
+            .mesh
+            .faces
+            .iter()
+            .flat_map(|f| [f.regions[0].0, f.regions[1].0])
+            .collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 2), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Analytic-surface id per surface face, shape (n_faces,).
+    fn face_surfaces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+        let v: Vec<u32> = self.mesh.faces.iter().map(|f| f.surface).collect();
+        v.into_pyarray_bound(py)
+    }
+
+    /// Owner solid index per analytic surface, shape (n_surfaces,).
+    fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+        self.mesh.surface_owners.clone().into_pyarray_bound(py)
+    }
+
+    /// Headline counts and wall-clock.
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        d.set_item("n_points", self.mesh.points.len())?;
+        d.set_item("n_faces", self.mesh.faces.len())?;
+        d.set_item("millis", self.millis)?;
+        Ok(d)
+    }
+
+    /// Per-stage wall-clock timings in seconds, in pipeline order.
+    fn timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        for (k, v) in &self.timings {
+            d.set_item(k, v)?;
+        }
+        Ok(d)
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SceneBuilder>()?;
     m.add_class::<PyMesh>()?;
+    m.add_class::<PySurfaceMesh>()?;
     Ok(())
 }

@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-csg"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-exact",
@@ -261,14 +261,14 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-exact"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "geometry-predicates",
 ]
 
 [[package]]
 name = "rapidmesh-geom"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-tet"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-csg",

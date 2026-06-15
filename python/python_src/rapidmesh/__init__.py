@@ -10,7 +10,7 @@
     mesh = g.mesh()
 """
 
-from .geometry import Geometry, Mesh, Solid
+from .geometry import Geometry, Mesh, SurfaceMesh, Solid
 
 __version__ = "0.1.0"
-__all__ = ["Geometry", "Mesh", "Solid"]
+__all__ = ["Geometry", "Mesh", "SurfaceMesh", "Solid"]

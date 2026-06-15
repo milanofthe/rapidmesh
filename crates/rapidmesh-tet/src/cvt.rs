@@ -922,7 +922,7 @@ mod tests {
     use super::*;
     use num_rational::BigRational;
     use num_traits::Zero;
-    use rapidmesh_geom::{icosphere, solid_box, Scene};
+    use rapidmesh_geom::{extrude_spline_profile, icosphere, solid_box, NurbsCurve, Scene};
     use rapidmesh_testutil::rat;
 
     fn region_volume6(m: &TetMesh, r: u32) -> BigRational {
@@ -1053,6 +1053,67 @@ mod tests {
             let bad = edges.values().filter(|&&c| c != 2).count();
             assert_eq!(bad, 0, "region {r} boundary not closed: {bad} edges");
         }
+    }
+
+    #[test]
+    fn extruded_spline_surface_is_on_the_analytic_surface() {
+        // A semicircle profile extruded into a half-cylinder (D-prism). The
+        // curved wall is one Extruded surface; its chart is the developable
+        // (arc length x height) isometric chart. Interior points the curved
+        // Lloyd places land EXACTLY on the cylinder (radial distance == r).
+        let r = 1.0;
+        let w = 0.5_f64.sqrt();
+        let profile = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![[r, 0.0], [r, r], [0.0, r], [-r, r], [-r, 0.0]],
+            vec![1.0, w, 1.0, w, 1.0],
+        );
+        let solid = extrude_spline_profile(
+            profile,
+            24,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 2.0],
+        );
+        let mut scene = Scene::new();
+        scene.add_solid(solid);
+        let plc = scene.assemble();
+        let n_plc = plc.vertices.len();
+        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
+
+        let mut curved = 0usize;
+        let mut exact_on = 0usize;
+        let mut max_dev = 0.0_f64;
+        for f in &sm.faces {
+            if matches!(sm.surfaces[f.surface as usize], SurfaceKind::Extruded { .. }) {
+                curved += 1;
+                for &vtx in &f.tri {
+                    let p = sm.points[vtx];
+                    let rad = (p[0] * p[0] + p[1] * p[1]).sqrt();
+                    let dev = (rad - r).abs();
+                    max_dev = max_dev.max(dev);
+                    if vtx >= n_plc && dev < 1e-7 {
+                        exact_on += 1;
+                    }
+                }
+            }
+        }
+        assert!(curved > 0, "expected extruded curved faces");
+        assert!(exact_on > 0, "curved Lloyd should place interior points on the cylinder");
+        assert!(max_dev < 0.02, "no curved vertex grossly off radius, max_dev {max_dev}");
+
+        // Per-region closure (single solid: region 1 boundary closed).
+        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+        for f in &sm.faces {
+            for e in 0..3 {
+                let (a, b) = (f.tri[e], f.tri[(e + 1) % 3]);
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let bad = edges.values().filter(|&&c| c != 2).count();
+        assert_eq!(bad, 0, "closed manifold, {bad} non-manifold edges");
     }
 
     #[test]

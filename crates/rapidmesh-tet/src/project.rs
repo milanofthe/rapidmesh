@@ -9,9 +9,44 @@
 //! lies exactly on the analytic surface (geometric accuracy for curved boundaries
 //! is a tolerance property, matching the curved-scene fixtures).
 
+use rapidmesh_geom::nurbs::NurbsCurve;
 use rapidmesh_geom::SurfaceKind;
 
 type V3 = [f64; 3];
+
+/// Nearest parameter on a 2D curve to point `q` (the footpoint): a coarse scan
+/// for a basin, then Newton on `g(t) = (C(t) - q) . C'(t) = 0`.
+pub fn curve_footpoint(curve: &NurbsCurve, q: [f64; 2]) -> f64 {
+    let (lo, hi) = curve.domain();
+    let n = 64usize;
+    let mut best_t = lo;
+    let mut best_d2 = f64::INFINITY;
+    for i in 0..=n {
+        let t = lo + (hi - lo) * i as f64 / n as f64;
+        let c = curve.eval(t);
+        let d2 = (c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2);
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best_t = t;
+        }
+    }
+    let mut t = best_t;
+    for _ in 0..24 {
+        let (c, d1, d2) = curve.ders2(t);
+        let r = [c[0] - q[0], c[1] - q[1]];
+        let g = r[0] * d1[0] + r[1] * d1[1];
+        let gp = d1[0] * d1[0] + d1[1] * d1[1] + r[0] * d2[0] + r[1] * d2[1];
+        if gp.abs() < 1e-15 {
+            break;
+        }
+        let step = g / gp;
+        t = (t - step).clamp(lo, hi);
+        if step.abs() < 1e-13 {
+            break;
+        }
+    }
+    t
+}
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -120,6 +155,17 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
             let l = norm(r);
             let dir = if l == 0.0 { pdir } else { scale(r, 1.0 / l) };
             add(tube_center, scale(dir, minor_radius))
+        }
+        SurfaceKind::Extruded { ref profile, base, udir, vdir, axis } => {
+            // Keep the axial coordinate; snap the in-plane part to the curve
+            // footpoint. Lands exactly on the analytic extruded surface.
+            let (u, v, a) = (normalize(udir), normalize(vdir), normalize(axis));
+            let h = dot(sub(p, base), a);
+            let rel = sub(sub(p, base), scale(a, h));
+            let q = [dot(rel, u), dot(rel, v)];
+            let t = curve_footpoint(profile, q);
+            let c = profile.eval(t);
+            add(add(base, scale(a, h)), add(scale(u, c[0]), scale(v, c[1])))
         }
     }
 }

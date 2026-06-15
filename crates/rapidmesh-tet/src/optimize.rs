@@ -2187,6 +2187,7 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
             }
             std::array::from_fn(|k| m[k] + minor_radius * d[k] / dl)
         }
+        SurfaceKind::Extruded { .. } => crate::project::closest_on_surface(kind, p),
     }
 }
 

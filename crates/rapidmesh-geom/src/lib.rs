@@ -20,7 +20,9 @@ pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, Impo
 pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};
+pub use nurbs::NurbsCurve;
 pub use prim::{
-    cylinder, cylinder_iso, extrude_polygon, frustum, frustum_iso, helix, icosphere, loft,
-    mesh_solid, pipe, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere, torus, wedge,
+    cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
+    icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
+    solid_box, sphere, torus, wedge,
 };

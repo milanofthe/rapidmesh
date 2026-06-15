@@ -21,8 +21,10 @@
 //! sagitta `eps ~ h^2/(8R)`, so bounding the deviation bounds the enclosed
 //! volume error.
 
-use crate::project::closest_on_surface;
+use crate::project::{closest_on_surface, curve_footpoint};
+use rapidmesh_geom::nurbs::NurbsCurve;
 use rapidmesh_geom::SurfaceKind;
+use std::sync::Arc;
 
 type V3 = [f64; 3];
 type P2 = [f64; 2];
@@ -51,7 +53,124 @@ pub trait SurfaceChart {
 /// planar path) or a degenerate group. The single factory the mesher calls; new
 /// surface representations extend it with their own [`SurfaceChart`] impls.
 pub fn build_chart(kind: &SurfaceKind, pts: &[V3]) -> Option<Box<dyn SurfaceChart>> {
-    Chart::new(kind, pts).map(|c| Box::new(c) as Box<dyn SurfaceChart>)
+    match kind {
+        SurfaceKind::Extruded { .. } => {
+            ExtrudedChart::new(kind).map(|c| Box::new(c) as Box<dyn SurfaceChart>)
+        }
+        _ => Chart::new(kind, pts).map(|c| Box::new(c) as Box<dyn SurfaceChart>),
+    }
+}
+
+/// Chart of a linearly extruded profile curve: developable, so the chart is
+/// EXACTLY isometric, `u = arc length along the profile`, `v = extrusion
+/// height`. The profile is sampled once into an arc-length table for the
+/// `t <-> s` conversions. A closed (wrapping) profile is not bijective here (the
+/// seam) and is rejected upstream; an open profile strip charts cleanly.
+pub struct ExtrudedChart {
+    kind: SurfaceKind,
+    profile: Arc<NurbsCurve>,
+    base: V3,
+    u: V3,
+    v: V3,
+    a: V3,
+    /// Sorted parameter samples and their cumulative arc length from the start.
+    ts: Vec<f64>,
+    ss: Vec<f64>,
+}
+
+impl ExtrudedChart {
+    fn new(kind: &SurfaceKind) -> Option<ExtrudedChart> {
+        let SurfaceKind::Extruded { profile, base, udir, vdir, axis } = kind else {
+            return None;
+        };
+        let (lo, hi) = profile.domain();
+        let n = 256usize;
+        let mut ts = Vec::with_capacity(n + 1);
+        let mut ss = Vec::with_capacity(n + 1);
+        let mut acc = 0.0;
+        ts.push(lo);
+        ss.push(0.0);
+        let mut prev = lo;
+        for i in 1..=n {
+            let t = lo + (hi - lo) * i as f64 / n as f64;
+            acc += profile.arc_length(prev, t, 2);
+            ts.push(t);
+            ss.push(acc);
+            prev = t;
+        }
+        Some(ExtrudedChart {
+            kind: kind.clone(),
+            profile: profile.clone(),
+            base: *base,
+            u: normalize(*udir),
+            v: normalize(*vdir),
+            a: normalize(*axis),
+            ts,
+            ss,
+        })
+    }
+
+    /// Forward map `t -> s` (arc length), by interpolation in the table.
+    fn t_to_s(&self, t: f64) -> f64 {
+        let (lo, hi) = (self.ts[0], self.ts[self.ts.len() - 1]);
+        let t = t.clamp(lo, hi);
+        let i = self.ts.partition_point(|&x| x < t).clamp(1, self.ts.len() - 1);
+        let (t0, t1) = (self.ts[i - 1], self.ts[i]);
+        let f = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
+        self.ss[i - 1] + f * (self.ss[i] - self.ss[i - 1])
+    }
+
+    /// Inverse map `s -> t`, table interpolation refined by Newton on speed.
+    fn s_to_t(&self, s: f64) -> f64 {
+        let s = s.clamp(0.0, self.ss[self.ss.len() - 1]);
+        let i = self.ss.partition_point(|&x| x < s).clamp(1, self.ss.len() - 1);
+        let (s0, s1) = (self.ss[i - 1], self.ss[i]);
+        let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
+        let mut t = self.ts[i - 1] + f * (self.ts[i] - self.ts[i - 1]);
+        let (lo, hi) = self.profile.domain();
+        for _ in 0..3 {
+            let (_, d1, _) = self.profile.ders2(t);
+            let speed = (d1[0] * d1[0] + d1[1] * d1[1]).sqrt();
+            if speed < 1e-15 {
+                break;
+            }
+            t = (t + (s - self.t_to_s(t)) / speed).clamp(lo, hi);
+        }
+        t
+    }
+}
+
+impl SurfaceChart for ExtrudedChart {
+    fn to_uv(&self, p: V3) -> P2 {
+        let h = dot(sub(p, self.base), self.a);
+        let rel = sub(sub(p, self.base), scale(self.a, h));
+        let q = [dot(rel, self.u), dot(rel, self.v)];
+        let t = curve_footpoint(&self.profile, q);
+        [self.t_to_s(t), h]
+    }
+
+    fn to_xyz(&self, uv: P2) -> V3 {
+        let t = self.s_to_t(uv[0]);
+        let c = self.profile.eval(t);
+        add(
+            add(self.base, scale(self.a, uv[1])),
+            add(scale(self.u, c[0]), scale(self.v, c[1])),
+        )
+    }
+
+    fn curvature_radius(&self, uv: P2) -> f64 {
+        let t = self.s_to_t(uv[0]);
+        let k = self.profile.curvature(t);
+        if k > 1e-12 {
+            1.0 / k
+        } else {
+            1e12
+        }
+    }
+
+    fn project(&self, p: V3) -> V3 {
+        closest_on_surface(&self.kind, p)
+    }
 }
 
 fn sub(a: V3, b: V3) -> V3 {
@@ -144,6 +263,8 @@ impl Chart {
         }
         let inner = match *kind {
             SurfaceKind::Plane => return None,
+            // Extruded profiles use `ExtrudedChart` (see `build_chart`).
+            SurfaceKind::Extruded { .. } => return None,
             SurfaceKind::Sphere { center, radius } => {
                 let mut acc = [0.0; 3];
                 for &p in pts {

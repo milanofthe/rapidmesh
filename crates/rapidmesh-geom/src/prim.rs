@@ -6,9 +6,11 @@
 //! orientation; sheet builders guarantee consistent winding.
 
 use crate::faceted::{Faceted, SurfaceKind};
+use crate::nurbs::NurbsCurve;
 use crate::polygon::{polygon_orientation, triangulate_polygon};
 use rapidmesh_csg::{PlanarFacet, Tri};
 use rapidmesh_exact::Sign;
+use std::sync::Arc;
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -315,6 +317,112 @@ pub fn extrude_polygon(
         }
     }
     f
+}
+
+/// Extrudes an OPEN 2D profile curve along `h` into a closed solid: the swept
+/// curve becomes one [`SurfaceKind::Extruded`] wall (the analytic curved face),
+/// the chord that closes the open profile becomes a flat wall, and the two
+/// cross-section caps are flat. `n_seg` facets sample the curve along its
+/// parameter domain. `(u, v, h)` must be right-handed; the profile lives in the
+/// `(u, v)` plane. A profile whose endpoints coincide (a closed loop) gets no
+/// closing wall (the whole side is curved).
+pub fn extrude_spline_profile(
+    profile: NurbsCurve,
+    n_seg: usize,
+    base: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    h: [f64; 3],
+) -> Faceted {
+    assert!(dot3(cross3(u, v), h) > 0.0, "extrusion frame must be right-handed");
+    assert!(n_seg >= 2, "need at least 2 segments");
+    let (lo, hi) = profile.domain();
+    let mut pts2: Vec<[f64; 2]> = (0..=n_seg)
+        .map(|i| profile.eval(lo + (hi - lo) * i as f64 / n_seg as f64))
+        .collect();
+    // The cross-section is the sampled polyline closed end->start. Want CCW so
+    // walls face outward; reverse the SAMPLES if the loop is CW (the curve in
+    // the surface metadata is unaffected -- projection snaps to nearest point).
+    if polygon_orientation(&pts2) == Sign::Negative {
+        pts2.reverse();
+    }
+    let cap = triangulate_polygon(&pts2, &[]);
+    let top_base = add(base, h);
+    let hl = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+    let axis = [h[0] / hl, h[1] / hl, h[2] / hl];
+
+    let mut f = Faceted::new();
+    // Bottom cap: reverse winding for the outward -(uxv) normal.
+    let bottom = f.add_surface(SurfaceKind::Plane);
+    let bottom_tris: Vec<Tri> = cap
+        .iter()
+        .map(|t| Tri::new(embed(base, u, v, t[0]), embed(base, u, v, t[2]), embed(base, u, v, t[1])))
+        .collect();
+    let bottom_loop: Vec<[f64; 3]> = pts2.iter().rev().map(|&p| embed(base, u, v, p)).collect();
+    f.push_flat(PlanarFacet::new(bottom_loop), &bottom_tris, bottom);
+
+    let top = f.add_surface(SurfaceKind::Plane);
+    let top_tris: Vec<Tri> = cap
+        .iter()
+        .map(|t| Tri::new(embed(top_base, u, v, t[0]), embed(top_base, u, v, t[1]), embed(top_base, u, v, t[2])))
+        .collect();
+    let top_loop: Vec<[f64; 3]> = pts2.iter().map(|&p| embed(top_base, u, v, p)).collect();
+    f.push_flat(PlanarFacet::new(top_loop), &top_tris, top);
+
+    // Curved wall: the swept profile, one Extruded surface (first-class tris).
+    let ext = f.add_surface(SurfaceKind::Extruded {
+        profile: Arc::new(profile),
+        base,
+        udir: u,
+        vdir: v,
+        axis,
+    });
+    for i in 0..n_seg {
+        let a = embed(base, u, v, pts2[i]);
+        let b = embed(base, u, v, pts2[i + 1]);
+        let (at, bt) = (add(a, h), add(b, h));
+        f.push_tri(Tri::new(a, b, bt), ext);
+        f.push_tri(Tri::new(a, bt, at), ext);
+    }
+    // Closing flat wall (chord end->start) for an open profile.
+    let (q0, qn) = (pts2[0], pts2[n_seg]);
+    if (q0[0] - qn[0]).hypot(q0[1] - qn[1]) > 1e-12 {
+        let flat = f.add_surface(SurfaceKind::Plane);
+        let a = embed(base, u, v, qn);
+        let b = embed(base, u, v, q0);
+        let (at, bt) = (add(a, h), add(b, h));
+        let tris = [Tri::new(a, b, bt), Tri::new(a, bt, at)];
+        f.push_flat(PlanarFacet::new(vec![a, b, bt, at]), &tris, flat);
+    }
+    f
+}
+
+/// The NACA 0012 airfoil section as a 2D profile curve (chord along +x, span
+/// `chord`), an OPEN B-spline from the (blunt) upper trailing edge around the
+/// leading edge to the lower trailing edge. Cosine x-spacing concentrates
+/// control points at the high-curvature leading edge. The standard 4-digit
+/// thickness law with the `-0.1015` term leaves a small finite trailing-edge
+/// thickness, so the profile is open (a blunt TE), which charts without a seam.
+pub fn naca0012_profile(chord: f64, n_per_side: usize) -> NurbsCurve {
+    assert!(n_per_side >= 4);
+    let yt = |x: f64| {
+        0.6 * (0.2969 * x.sqrt() - 0.1260 * x - 0.3516 * x * x + 0.2843 * x * x * x
+            - 0.1015 * x * x * x * x)
+    };
+    let mut ctrl: Vec<[f64; 2]> = Vec::new();
+    // Upper surface, trailing edge (x=1) to leading edge (x=0).
+    for i in 0..=n_per_side {
+        let beta = std::f64::consts::PI * i as f64 / n_per_side as f64; // 0..pi
+        let x = 0.5 * (1.0 + beta.cos()); // 1..0
+        ctrl.push([x * chord, yt(x) * chord]);
+    }
+    // Lower surface, leading edge to trailing edge (skip the shared LE point).
+    for i in 1..=n_per_side {
+        let beta = std::f64::consts::PI * i as f64 / n_per_side as f64;
+        let x = 0.5 * (1.0 - beta.cos()); // 0..1
+        ctrl.push([x * chord, -yt(x) * chord]);
+    }
+    NurbsCurve::clamped_uniform(3, ctrl)
 }
 
 /// UV torus around `center` with the major circle normal to `axis`.

@@ -1,7 +1,9 @@
 //! Faceted shapes: tessellated triangle meshes with analytic surface
 //! back-references.
 
+use crate::nurbs::NurbsCurve;
 use rapidmesh_csg::{PlanarFacet, Solid, Tri};
+use std::sync::Arc;
 
 /// A flat (planar) face carried both as its helper triangulation (the range of
 /// `Faceted::tris` that tiles it) and as its first-class boundary polygon. The
@@ -63,6 +65,24 @@ pub enum SurfaceKind {
         major_radius: f64,
         /// Minor radius (tube radius).
         minor_radius: f64,
+    },
+    /// A 2D profile curve linearly extruded along `axis` (a developable swept
+    /// surface): the surface point is
+    /// `base + cx*udir + cy*vdir + h*axis`, where `(cx, cy) = profile(t)` and
+    /// `h` is the extrusion height. `udir`/`vdir`/`axis` are an orthonormal
+    /// frame (profile-x, profile-y, extrusion). Covers airfoils and any swept
+    /// section; the curve carries the exact curvature for the sizing bias.
+    Extruded {
+        /// The 2D profile curve (in `(udir, vdir)` coordinates).
+        profile: Arc<NurbsCurve>,
+        /// Origin of the profile plane (the `h = 0` plane).
+        base: [f64; 3],
+        /// Unit profile-x direction in 3D.
+        udir: [f64; 3],
+        /// Unit profile-y direction in 3D.
+        vdir: [f64; 3],
+        /// Unit extrusion direction in 3D.
+        axis: [f64; 3],
     },
 }
 
@@ -210,6 +230,17 @@ impl Faceted {
                         major_radius: *major_radius,
                         minor_radius: *minor_radius,
                     },
+                    SurfaceKind::Extruded { profile, base, udir, vdir, axis } => {
+                        // Rigid map: the 2D profile is unchanged; its frame and
+                        // origin move with the shape.
+                        SurfaceKind::Extruded {
+                            profile: profile.clone(),
+                            base: map(*base),
+                            udir: map_dir(*udir),
+                            vdir: map_dir(*vdir),
+                            axis: map_dir(*axis),
+                        }
+                    }
                 })
                 .collect(),
         }
@@ -280,6 +311,10 @@ impl Faceted {
                         *major_radius *= s;
                         *minor_radius *= s;
                     }
+                    // `transformed` already scaled the (meant-to-be-unit) frame
+                    // vectors, so the analytic extrusion no longer holds; keep
+                    // the facets but drop the back-reference.
+                    SurfaceKind::Extruded { .. } => *kind = SurfaceKind::Plane,
                 }
             }
         } else {

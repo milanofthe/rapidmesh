@@ -46,8 +46,13 @@ type DSet<T> = HashSet<T, DHasher>;
 /// The four vertex-index triples spanning a tet's faces.
 const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
 
-/// Volume (3D) Lloyd relaxation passes.
+/// Volume (3D) Lloyd relaxation passes (the cap; the loop stops earlier when it
+/// converges, see `LLOYD_CONVERGE_FRAC`).
 const LLOYD_ITERS: usize = 8;
+/// Lloyd convergence: stop once the largest site move in a pass falls below this
+/// fraction of the finest spacing. Each saved pass is a saved Delaunay rebuild
+/// (the dominant cost), and late passes that barely move sites add little.
+const LLOYD_CONVERGE_FRAC: f64 = 0.02;
 /// Surface (2D) Lloyd passes (a planar grid scatter needs little relaxation).
 const SURF_LLOYD_ITERS: usize = 4;
 /// Bounding-box subdivisions for the default spacing when no `maxh` is given.
@@ -449,10 +454,12 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     };
 
     let t_lloyd = std::time::Instant::now();
+    let mut lloyd_passes = 0usize;
     for _ in 0..LLOYD_ITERS {
         if !sites.iter().any(|s| s.is_volume()) {
             break;
         }
+        lloyd_passes += 1;
         let pos = positions(&sites);
         let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
         let tets = build(&vol_pos);
@@ -472,6 +479,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // Crowding neighbor search runs on the central domain octree: refill its
         // per-leaf site buckets with this pass's positions, then query a radius.
         domain.rebucket(&pos);
+        let mut max_move = 0.0f64;
         for i in 0..sites.len() {
             if !sites[i].is_volume() || den[i] == 0.0 {
                 continue;
@@ -497,10 +505,17 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let crowded = domain.neighbors(tgt, sep).into_iter().any(|j| j as usize != i);
             if !crowded {
                 sites[i].move_to(tgt);
+                max_move = max_move.max(dist(pos[i], sites[i].pos()));
             }
+        }
+        // Converged: the largest move this pass is a tiny fraction of the finest
+        // spacing, so further passes (and their Delaunay rebuilds) buy little.
+        if max_move < LLOYD_CONVERGE_FRAC * spacing {
+            break;
         }
     }
     rmlog::stage("mesh.lloyd", t_lloyd.elapsed().as_secs_f64());
+    rmlog::stat("mesh.lloyd_passes", lloyd_passes as f64);
 
     // ---- final triangulation, tilings, region classification --------------
     let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();

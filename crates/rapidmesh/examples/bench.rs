@@ -42,7 +42,7 @@ fn run(name: &str, plc: &TaggedPlc, maxh: f64) -> Sample {
     let n_tets = val(&stats, "mesh.tets");
     println!(
         "{:<10} h{:>5.3} | {:>7} pts {:>8} tets | dom {:>6.1} surf {:>7.1} seed {:>6.1} \
-         lloyd {:>8.1} cls {:>6.1} | tot {:>8.1} | mindih {:>4.1}",
+         lloyd {:>8.1} ({:>2}p) cls {:>6.1} | tot {:>8.1} | mindih {:>4.1}",
         name,
         maxh,
         val(&stats, "mesh.points") as usize,
@@ -51,6 +51,7 @@ fn run(name: &str, plc: &TaggedPlc, maxh: f64) -> Sample {
         ms[1],
         ms[2],
         ms[3],
+        val(&stats, "mesh.lloyd_passes") as usize,
         ms[4],
         ms[5],
         val(&stats, "mesh.min_dihedral_deg"),
@@ -93,6 +94,22 @@ fn box_plc(s: f64) -> TaggedPlc {
     scene.assemble()
 }
 
+/// A box rotated off-axis: the axis-aligned BCC seed no longer aligns with the
+/// faces, so Lloyd must actually relax (unlike an axis-aligned box, whose BCC
+/// seed is already the CVT optimum and needs zero Lloyd work). The honest Lloyd
+/// stress test.
+fn rotated_box_plc(s: f64) -> TaggedPlc {
+    let mut plc = box_plc(s);
+    let (ca, sa) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let (cb, sb) = (20f64.to_radians().cos(), 20f64.to_radians().sin());
+    for v in &mut plc.vertices {
+        let [x, y, z] = *v;
+        let (x1, y1, z1) = (ca * x - sa * y, sa * x + ca * y, z); // Rz(30)
+        *v = [x1, cb * y1 - sb * z1, sb * y1 + cb * z1]; // Rx(20)
+    }
+    plc
+}
+
 fn nested_plc() -> TaggedPlc {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -111,6 +128,7 @@ fn main() {
     // Shrinking h ~ factor 1.4 per step: each step ~2.7x more tets, ~5 doublings
     // total, enough to fit a clean scaling exponent.
     sweep("box", &box_plc(4.0), &[0.7, 0.5, 0.36, 0.26, 0.18, 0.13]);
+    sweep("rot-box", &rotated_box_plc(4.0), &[0.7, 0.5, 0.36, 0.26, 0.18]);
     sweep("air+diel", &nested_plc(), &[0.7, 0.5, 0.36, 0.26, 0.18]);
     sweep("cylinder", &cylinder_plc(24), &[0.7, 0.5, 0.36, 0.26, 0.18]);
 }

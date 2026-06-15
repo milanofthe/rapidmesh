@@ -168,22 +168,43 @@ impl DomainTree {
         // adjacent regions, else the bulk `maxh`. The sizing field then grows
         // from these wall targets into the interior (Lipschitz with `grading`),
         // so a finely meshed face refines the volume behind it and coarsens away.
+        // Curvature/volume-error target of a curved facet: a facet edge `h` on a
+        // surface of principal radius `R` deviates by sagitta ~ h^2/(8R), so
+        // bounding the relative sagitta gives `h_curv = R * sqrt(8 * frac)`. This
+        // refines the VOLUME near tightly curved boundaries (an airfoil nose), so
+        // the surrounding region holds the fine on-surface nodes; the grading
+        // term then coarsens away. A gentle curve (R large) leaves `maxh` intact.
+        let chord = (8.0 * crate::cvt::SURF_CHORD_FRAC).sqrt();
+        let curvature_target = |i: usize| -> f64 {
+            let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
+            let t = plc.triangles[i];
+            let c: V3 = std::array::from_fn(|k| {
+                (plc.vertices[t[0] as usize][k]
+                    + plc.vertices[t[1] as usize][k]
+                    + plc.vertices[t[2] as usize][k])
+                    / 3.0
+            });
+            crate::project::surface_curvature_radius(kind, c) * chord
+        };
         let facet_target = |i: usize| -> f64 {
             let ft = plc.face_tags[i].0;
-            if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
-                return h.min(maxh);
-            }
-            let owner = plc.surface_owners[plc.surface_refs[i].0 as usize];
-            if let Some(&(_, h)) = params.surface_maxh.iter().find(|(o, _)| *o == owner) {
-                return h.min(maxh);
-            }
-            let mut h = maxh;
-            for r in plc.region_tags[i] {
-                if r.0 != 0 {
-                    h = h.min(region_cap(r.0));
+            let base = if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
+                h.min(maxh)
+            } else {
+                let owner = plc.surface_owners[plc.surface_refs[i].0 as usize];
+                if let Some(&(_, h)) = params.surface_maxh.iter().find(|(o, _)| *o == owner) {
+                    h.min(maxh)
+                } else {
+                    let mut h = maxh;
+                    for r in plc.region_tags[i] {
+                        if r.0 != 0 {
+                            h = h.min(region_cap(r.0));
+                        }
+                    }
+                    h
                 }
-            }
-            h
+            };
+            base.min(curvature_target(i))
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles

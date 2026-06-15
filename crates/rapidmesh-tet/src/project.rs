@@ -170,6 +170,39 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
     }
 }
 
+/// Local tightest principal radius of curvature `R = 1/kappa_max` of the
+/// analytic surface at (or nearest) `p`. Drives the curvature/volume-error
+/// sizing bias so the VOLUME refines near tightly curved boundaries. `Plane`
+/// is flat (infinite radius).
+pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
+    match *kind {
+        SurfaceKind::Plane => f64::INFINITY,
+        SurfaceKind::Sphere { radius, .. } => radius,
+        SurfaceKind::Cylinder { radius, .. } => radius,
+        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            // The tightest radius is the local cross-section radius (the cone is
+            // flat along the generator): perpendicular distance to the axis.
+            let a = normalize(axis);
+            let h = dot(sub(p, apex), a).max(0.0);
+            (h * tan_half_angle).max(1e-12)
+        }
+        SurfaceKind::Torus { minor_radius, .. } => minor_radius,
+        SurfaceKind::Extruded { ref profile, base, udir, vdir, axis } => {
+            let (u, v, a) = (normalize(udir), normalize(vdir), normalize(axis));
+            let h = dot(sub(p, base), a);
+            let rel = sub(sub(p, base), scale(a, h));
+            let q = [dot(rel, u), dot(rel, v)];
+            let t = curve_footpoint(profile, q);
+            let k = profile.curvature(t);
+            if k > 1e-12 {
+                1.0 / k
+            } else {
+                f64::INFINITY
+            }
+        }
+    }
+}
+
 /// Signed distance of `p` to the analytic surface (positive outside for the
 /// convex kinds), via the closest-surface point. `Plane` returns 0.
 pub fn distance_to_surface(kind: &SurfaceKind, p: V3) -> f64 {

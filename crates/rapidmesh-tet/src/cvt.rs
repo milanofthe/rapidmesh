@@ -71,7 +71,7 @@ pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
 /// sagitta `eps ~ h^2/(8R)`. Bounding the relative sagitta `eps/R <= this` caps
 /// the faceting (and thus the enclosed-volume error) independent of `maxh`:
 /// `h_curv = R * sqrt(8 * frac)`. 0.02 gives ~16 facets around a full circle.
-const SURF_CHORD_FRAC: f64 = 0.02;
+pub(crate) const SURF_CHORD_FRAC: f64 = 0.02;
 /// A face is coplanar with a patch if all its vertices are within this fraction
 /// of the scene diagonal of the patch plane (f64 surface points sit on tilted
 /// planes only to ~1e-15; the precise assignment is the exact containment test).
@@ -444,13 +444,10 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let cgroups = chart_groups(plc, diag);
     let chart_facets: DSet<usize> = cgroups.iter().flat_map(|g| g.members.iter().copied()).collect();
     let is_chart_patch = |p: &Patch| p.member_indices.iter().any(|fi| chart_facets.contains(fi));
-    // Fixed minimal site separation (surface clearance and volume crowding),
-    // scaled by the global finest spacing. The grading lives in the seeding
-    // density (the domain octree); `sep` only has to stay below the finest wall
-    // spacing so the fine wall layer survives, while keeping volume points clear
-    // of the fixed surface. Planar interfaces tile robustly regardless of volume
-    // proximity, so a uniform clearance is safe even where the surface is coarse.
-    let sep = SEPARATION_FRAC * spacing;
+    // Site separation (surface clearance, volume crowding) is LOCAL: a fraction
+    // of `domain.h_at(p)`, computed at each seed/move below. A global value from
+    // the coarse bulk size would reject seeds near fine curved features and
+    // orphan their surface nodes; grading lives in the octree's density.
 
     // ---- stage 1: corners + feature edges (1D), fixed --------------------
     // Edge points are placed by GRADED arc length: the local spacing along the
@@ -598,7 +595,12 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if !inside(p) {
                 continue;
             }
-            let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < sep).unwrap_or(false);
+            // LOCAL clearance: the surface is graded (fine at a curved nose,
+            // coarse elsewhere), so a global `sep` from the coarse bulk size
+            // would reject every seed near a fine feature and orphan its surface
+            // nodes. Scale the clearance by the local sizing field.
+            let lsep = SEPARATION_FRAC * domain.h_at(p);
+            let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < lsep).unwrap_or(false);
             if !near {
                 sites.push(Site::free(p));
                 added += 1;
@@ -690,7 +692,10 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     None => continue,
                 }
             }
-            let crowded = domain.neighbors(tgt, sep).into_iter().any(|j| j as usize != i);
+            let crowded = domain
+                .neighbors(tgt, SEPARATION_FRAC * domain.h_at(tgt))
+                .into_iter()
+                .any(|j| j as usize != i);
             if !crowded {
                 sites[i].move_to(tgt);
                 max_move = max_move.max(dist(pos[i], sites[i].pos()));

@@ -301,17 +301,14 @@ pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
 /// Region of every tet by FLOOD FILL through shared faces: crossing a
 /// constraint face flips to the face's other region, free faces keep it.
-/// Parity ray casting runs once per CONNECTED COMPONENT.
-///
-/// Revived for multi-region CVT (WP5); the single-region WP3 path classifies
-/// by centroid inside-test directly.
-#[allow(dead_code)]
+/// Parity ray casting runs once per CONNECTED COMPONENT. `face_owners` is only
+/// keyed (never iterated for decisions), so its hasher is unconstrained.
 pub(crate) fn classify_tet_regions(
     points: &[[f64; 3]],
     tets: &[[usize; 4]],
     patches: &[Patch],
     tilings: &[Vec<[usize; 3]>],
-    face_owners: &DMap<[usize; 3], Vec<u32>>,
+    face_owners: &HashMap<[usize; 3], Vec<u32>, impl std::hash::BuildHasher>,
     bbox: ([f64; 3], [f64; 3]),
 ) -> Vec<u32> {
     let mut face_regions: DMap<[usize; 3], [u32; 2]> = DMap::default();

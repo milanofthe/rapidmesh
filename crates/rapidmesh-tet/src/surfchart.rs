@@ -21,10 +21,38 @@
 //! sagitta `eps ~ h^2/(8R)`, so bounding the deviation bounds the enclosed
 //! volume error.
 
+use crate::project::closest_on_surface;
 use rapidmesh_geom::SurfaceKind;
 
 type V3 = [f64; 3];
 type P2 = [f64; 2];
+
+/// A 2D chart of a curved surface for the curved CVT: a (near) distance-faithful
+/// parametrization plus the surface constraint. The curved-Lloyd engine talks to
+/// surfaces ONLY through this trait, so any representation (the analytic kinds,
+/// later trimmed NURBS patches, discrete meshes) plugs in by implementing it:
+/// `to_uv`/`to_xyz` give the chart the planar relaxation runs in, `project` is
+/// the on-surface constraint, and `curvature_radius` feeds the sizing bias.
+pub trait SurfaceChart {
+    /// Projects an on- or near-surface point into the chart.
+    fn to_uv(&self, p: V3) -> P2;
+    /// Lifts a chart point onto the surface (lands exactly on it).
+    fn to_xyz(&self, uv: P2) -> V3;
+    /// Local principal radius of curvature `R = 1/kappa_max` at chart point
+    /// `uv`, the input to the chord/volume-error sizing bias.
+    fn curvature_radius(&self, uv: P2) -> f64;
+    /// Closest point on the underlying surface (the carrier constraint), used to
+    /// validate the chart is a bijection over a group.
+    fn project(&self, p: V3) -> V3;
+}
+
+/// Builds a chart for the analytic `kind`, fixing the frame/branch from
+/// representative on-surface points of the group. `None` for `Plane` (use the
+/// planar path) or a degenerate group. The single factory the mesher calls; new
+/// surface representations extend it with their own [`SurfaceChart`] impls.
+pub fn build_chart(kind: &SurfaceKind, pts: &[V3]) -> Option<Box<dyn SurfaceChart>> {
+    Chart::new(kind, pts).map(|c| Box::new(c) as Box<dyn SurfaceChart>)
+}
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -90,6 +118,7 @@ fn unwrap(theta: f64, center: f64) -> f64 {
 /// A 2D chart of one analytic curved surface, with a fixed frame.
 #[derive(Clone, Debug)]
 pub struct Chart {
+    kind: SurfaceKind,
     inner: Inner,
 }
 
@@ -181,11 +210,16 @@ impl Chart {
                 }
             }
         };
-        Some(Chart { inner })
+        Some(Chart { kind: kind.clone(), inner })
+    }
+}
+
+impl SurfaceChart for Chart {
+    fn project(&self, p: V3) -> V3 {
+        closest_on_surface(&self.kind, p)
     }
 
-    /// Projects an on-surface (or near-surface) point into the chart.
-    pub fn to_uv(&self, p: V3) -> P2 {
+    fn to_uv(&self, p: V3) -> P2 {
         match &self.inner {
             Inner::Sphere { center, radius, c, e1, e2 } => {
                 let d = normalize(sub(p, *center));
@@ -228,8 +262,7 @@ impl Chart {
         }
     }
 
-    /// Lifts a chart point onto the analytic surface (lands exactly on it).
-    pub fn to_xyz(&self, uv: P2) -> V3 {
+    fn to_xyz(&self, uv: P2) -> V3 {
         match &self.inner {
             Inner::Sphere { center, radius, c, e1, e2 } => {
                 let rho = (uv[0] * uv[0] + uv[1] * uv[1]).sqrt();
@@ -266,9 +299,7 @@ impl Chart {
         }
     }
 
-    /// Local principal radius of curvature `R = 1/kappa_max` at chart point
-    /// `uv`, the input to the chord/volume-error sizing bias.
-    pub fn curvature_radius(&self, uv: P2) -> f64 {
+    fn curvature_radius(&self, uv: P2) -> f64 {
         match &self.inner {
             Inner::Sphere { radius, .. } => *radius,
             Inner::Cylinder { radius, .. } => *radius,
@@ -287,6 +318,7 @@ impl Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surfchart::SurfaceChart;
 
     fn dist(a: V3, b: V3) -> f64 {
         norm(sub(a, b))

@@ -26,7 +26,7 @@ use crate::seed::SizingField;
 use crate::site::{Carrier, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
-use crate::surfchart::Chart;
+use crate::surfchart::build_chart;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
@@ -812,7 +812,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             .collect();
         gverts.sort_unstable();
         gverts.dedup();
-        let chart = match Chart::new(&kind, &gverts.iter().map(|&v| points[v]).collect::<Vec<_>>()) {
+        let chart = match build_chart(&kind, &gverts.iter().map(|&v| points[v]).collect::<Vec<_>>()) {
             Some(c) => c,
             None => {
                 emit_input(&mut faces);
@@ -821,16 +821,13 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         };
         // Validate the chart is a bijection over the group. A boundary vertex on
         // the chord-approximated intersection curve sits slightly off the
-        // analytic surface, so compare the chart round-trip against the surface
-        // PROJECTION (both land on the surface): they agree iff the chart did not
-        // fold (a singular point, e.g. the sphere antipode in the group, fails).
+        // surface, so compare the chart round-trip against the surface PROJECTION
+        // (both land on the surface): they agree iff the chart did not fold (a
+        // singular point, e.g. the sphere antipode in the group, fails).
         let tol = 1e-6 * diag.max(1.0);
         let bijective = gverts.iter().all(|&v| {
             let p = points[v];
-            dist(
-                crate::project::closest_on_surface(&kind, p),
-                chart.to_xyz(chart.to_uv(p)),
-            ) < tol
+            dist(chart.project(p), chart.to_xyz(chart.to_uv(p))) < tol
         });
         if !bijective {
             emit_input(&mut faces);

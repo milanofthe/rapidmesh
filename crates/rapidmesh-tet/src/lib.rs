@@ -15,6 +15,7 @@
 pub mod conform;
 pub mod cvt;
 pub mod delaunay;
+pub mod domain;
 pub mod optimize;
 pub mod project;
 pub mod seed;

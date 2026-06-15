@@ -5,11 +5,9 @@
 //! is produced upstream and meshed here into a conforming, region-tagged tet
 //! mesh. This module owns the output types (`TetMesh`, `SurfaceFace`), the mesh
 //! parameters (`MeshParams`), the coplanar-patch grouping reused for boundary
-//! tagging, the flood-fill region classifier (revived for multi-region CVT),
-//! and the quality statistics.
+//! tagging, and the quality statistics. (Tet region classification now lives in
+//! the central [`crate::domain::DomainTree`], by per-region ray-cast.)
 
-use rapidmesh_csg::classify::point_inside_solid;
-use rapidmesh_csg::Tri;
 use rapidmesh_exact::{orient3d, Point3, Sign};
 use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::HashMap;
@@ -119,15 +117,6 @@ pub(crate) struct Patch {
 
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
-}
-
-/// The four vertex-index triples spanning a tet's faces (unoriented).
-const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
-
-fn sorted3(f: [usize; 3]) -> [usize; 3] {
-    let mut s = f;
-    s.sort_unstable();
-    s
 }
 
 /// Builds the maximal coplanar same-tag patches by union-find over facets
@@ -297,89 +286,6 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
 /// `params.max_points`). Delegates to the CVT mesher.
 pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     crate::cvt::mesh(plc, params)
-}
-
-/// Region of every tet by FLOOD FILL through shared faces: crossing a
-/// constraint face flips to the face's other region, free faces keep it.
-/// Parity ray casting runs once per CONNECTED COMPONENT. `face_owners` is only
-/// keyed (never iterated for decisions), so its hasher is unconstrained.
-pub(crate) fn classify_tet_regions(
-    points: &[[f64; 3]],
-    tets: &[[usize; 4]],
-    patches: &[Patch],
-    tilings: &[Vec<[usize; 3]>],
-    face_owners: &HashMap<[usize; 3], Vec<u32>, impl std::hash::BuildHasher>,
-    bbox: ([f64; 3], [f64; 3]),
-) -> Vec<u32> {
-    let mut face_regions: DMap<[usize; 3], [u32; 2]> = DMap::default();
-    let mut region_bounds: DMap<u32, Vec<Tri>> = DMap::default();
-    for (pi, patch) in patches.iter().enumerate() {
-        for f in &tilings[pi] {
-            face_regions.insert(sorted3(*f), [patch.regions[0].0, patch.regions[1].0]);
-            if patch.regions[0] != patch.regions[1] {
-                let t = Tri::new(points[f[0]], points[f[1]], points[f[2]]);
-                for tag in patch.regions {
-                    if tag.0 != 0 {
-                        region_bounds.entry(tag.0).or_default().push(t);
-                    }
-                }
-            }
-        }
-    }
-    let mut region_ids: Vec<u32> = region_bounds.keys().copied().collect();
-    region_ids.sort_unstable();
-    let margin = 1e-6 * (0..3).map(|k| bbox.1[k] - bbox.0[k]).fold(1.0_f64, f64::max);
-    let region_boxes: DMap<u32, rapidmesh_csg::TriBoxes> = region_bounds
-        .iter()
-        .map(|(&r, tris)| (r, rapidmesh_csg::TriBoxes::build(tris, margin)))
-        .collect();
-
-    let mut region_of: Vec<Option<u32>> = vec![None; tets.len()];
-    let mut stack: Vec<usize> = Vec::new();
-    for seed in 0..tets.len() {
-        if region_of[seed].is_some() {
-            continue;
-        }
-        let t = tets[seed];
-        let c: [f64; 3] = std::array::from_fn(|k| {
-            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
-        });
-        let rep = Point3::Explicit(c);
-        let seed_region = region_ids
-            .iter()
-            .copied()
-            .find(|r| point_inside_solid(&rep, c, &region_bounds[r], &region_boxes[r], bbox))
-            .unwrap_or(0);
-        region_of[seed] = Some(seed_region);
-        stack.push(seed);
-        while let Some(ti) = stack.pop() {
-            let cur = region_of[ti].expect("set before push");
-            let t = tets[ti];
-            for fi in TET_FACES {
-                let key = sorted3(fi.map(|k| t[k]));
-                let next_region = match face_regions.get(&key) {
-                    Some(&[a, b]) => {
-                        if a == cur {
-                            b
-                        } else if b == cur {
-                            a
-                        } else {
-                            continue;
-                        }
-                    }
-                    None => cur,
-                };
-                for &nb in &face_owners[&key] {
-                    let nb = nb as usize;
-                    if nb != ti && region_of[nb].is_none() {
-                        region_of[nb] = Some(next_region);
-                        stack.push(nb);
-                    }
-                }
-            }
-        }
-    }
-    region_of.into_iter().map(|r| r.unwrap_or(0)).collect()
 }
 
 /// Quality summary of a tet mesh, with WHERE the worst element is and a

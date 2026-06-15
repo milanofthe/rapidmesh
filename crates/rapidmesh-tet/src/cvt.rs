@@ -14,12 +14,15 @@
 //! feature edges (1D, uniform = the 1D CVT optimum) -> faces (2D Lloyd in
 //! `surf2d`) -> volume (3D Lloyd). Conformity comes from seeding the surface
 //! FINER than the volume (oversampling: the restricted Delaunay then recovers
-//! the boundary as tet faces); regions are assigned by raytracing
-//! (`classify_tet_regions`). Out-of-domain volume moves are rejected (kept).
+//! the boundary as tet faces); the volume is seeded as a graded BCC lattice from
+//! the central [`DomainTree`], which also assigns each tet's region by its
+//! centroid (an exact per-region ray-cast). Out-of-domain volume moves are
+//! rejected (kept).
 
-use crate::conform::{build_patches, classify_tet_regions, quality_stats, MeshParams, Patch, SurfaceFace, TetMesh};
+use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFace, TetMesh};
 use crate::delaunay::DelaunayBuilder;
-use crate::seed::{bcc_lattice, SizingField};
+use crate::domain::DomainTree;
+use crate::seed::SizingField;
 use crate::site::{Carrier, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
@@ -47,7 +50,7 @@ const SEPARATION_FRAC: f64 = 0.45;
 /// The surface (edges + faces) is seeded finer than the volume by this factor so
 /// the restricted Delaunay recovers the boundary without explicit recovery.
 /// 0.5 is the conformity threshold here; coarser (0.7) reintroduces straddlers.
-const SURFACE_OVERSAMPLE: f64 = 0.5;
+pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
 /// A face is coplanar with a patch if all its vertices are within this fraction
 /// of the scene diagonal of the patch plane (f64 surface points sit on tilted
 /// planes only to ~1e-15; the precise assignment is the exact containment test).
@@ -245,7 +248,19 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let boxes = TriBoxes::build(&soup, BOX_PAD_FRAC * diag.max(1.0));
     let inside = |p: V3| point_inside_solid(&Point3::Explicit(p), p, &soup, &boxes, (lo, hi));
 
+    // The central domain octree: refined to the local sizing field h(x). It
+    // drives graded volume seeding, the Lloyd crowding neighbor search (its
+    // per-leaf site buckets, re-filled each pass), and tet region classification,
+    // so the interior coarsens away from the fine, fixed boundary.
+    let mut domain = DomainTree::build(plc, params);
+
     let patches = build_patches(plc);
+    // Fixed minimal site separation (surface clearance and volume crowding). It
+    // is deliberately uniform: the grading lives entirely in the seeding density
+    // (the domain octree), and `sep` only has to stay below the fine wall
+    // spacing (`surf_spacing`) so the wall layer survives, while keeping volume
+    // points clear of the fixed surface. A locally-shrinking clearance would let
+    // volume points creep onto a fine interface and straddle it.
     let sep = SEPARATION_FRAC * spacing;
     let surf_spacing = spacing * SURFACE_OVERSAMPLE;
 
@@ -318,18 +333,27 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let n_surf = sites.len();
     rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
 
-    // ---- stage 3: interior volume points, free ---------------------------
+    // ---- stage 3: interior volume points, graded by the domain octree -----
+    // One seed per interior leaf center: dense near the fine boundary, coarse in
+    // the bulk (the octree is refined to h(x)). Keep each seed clear of the
+    // fixed surface by the LOCAL spacing, and respect `max_points`.
     let t_seed = std::time::Instant::now();
-    if spacing.is_finite() && spacing > 0.0 {
+    {
         let pos = positions(&sites);
         let surf_tree = Octree::build(&pos);
-        for p in bcc_lattice(lo, hi, spacing) {
+        let budget = params.max_points.saturating_sub(sites.len());
+        let mut added = 0usize;
+        for p in domain.seed_points() {
+            if added >= budget {
+                break;
+            }
             if !inside(p) {
                 continue;
             }
             let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < sep).unwrap_or(false);
             if !near {
                 sites.push(Site::free(p));
+                added += 1;
             }
         }
     }
@@ -390,7 +414,9 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 den[i] += w;
             }
         }
-        let tree = Octree::build(&pos);
+        // Crowding neighbor search runs on the central domain octree: refill its
+        // per-leaf site buckets with this pass's positions, then query a radius.
+        domain.rebucket(&pos);
         for i in 0..sites.len() {
             if !sites[i].is_volume() || den[i] == 0.0 {
                 continue;
@@ -413,7 +439,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     None => continue,
                 }
             }
-            let crowded = tree.within_radius(tgt, sep).into_iter().any(|j| j as usize != i);
+            let crowded = domain.neighbors(tgt, sep).into_iter().any(|j| j as usize != i);
             if !crowded {
                 sites[i].move_to(tgt);
             }
@@ -445,28 +471,20 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             tilings[pi].push(*key);
         }
     }
-    // Single region: classify each tet by its centroid against the COMPLETE PLC
-    // boundary (the `inside` ray-cast), which is robust on concave/curved domains
-    // where the tilings can be incomplete (a tet face spanning two facets is not
-    // tagged) and a flood-fill would leak through the gap, keeping bridge tets
-    // across concavities. Multi-region keeps the flood (planar interfaces tile
-    // completely, and the flood resolves which region each tet belongs to).
-    let region: Vec<u32> = if regions.len() == 1 {
-        let primary = regions[0];
-        all_tets
-            .par_iter()
-            .map(|t| {
-                let c = centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]]);
-                if inside(c) {
-                    primary
-                } else {
-                    0
-                }
-            })
-            .collect()
-    } else {
-        classify_tet_regions(&pts, &all_tets, &patches, &tilings, &face_owners, (lo, hi))
-    };
+    // Classify each tet by its centroid's region in the domain octree: a cached
+    // lookup deep inside a region, an exact per-region ray-cast on the boundary
+    // leaves. This is robust where the surface tilings are incomplete (a tet
+    // face spanning two facets of a curved or concave boundary is untagged), so
+    // it does not leak across the gap the way a face-crossing flood-fill does,
+    // and it resolves the right region directly for nested/multi-material
+    // domains without walking the dual graph.
+    let region: Vec<u32> = all_tets
+        .par_iter()
+        .map(|t| {
+            let c = centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]]);
+            domain.region_at(c)
+        })
+        .collect();
     let mut kept: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     for (t, &r) in all_tets.iter().zip(&region) {

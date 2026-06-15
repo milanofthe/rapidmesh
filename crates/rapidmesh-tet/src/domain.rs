@@ -16,6 +16,7 @@
 //! boundary into the coarse interior.
 
 use crate::conform::MeshParams;
+use crate::facetbvh::FacetBvh;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
@@ -34,55 +35,6 @@ fn dot(a: V3, b: V3) -> f64 {
 }
 fn dist(a: V3, b: V3) -> f64 {
     dot(sub(a, b), sub(a, b)).sqrt()
-}
-
-/// Squared distance from point `p` to triangle `t` (closest-point clamp).
-fn point_tri_dist2(p: V3, t: &Tri) -> f64 {
-    let (a, b, c) = (t.v[0], t.v[1], t.v[2]);
-    let ab = sub(b, a);
-    let ac = sub(c, a);
-    let ap = sub(p, a);
-    let d1 = dot(ab, ap);
-    let d2 = dot(ac, ap);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return dot(ap, ap);
-    }
-    let bp = sub(p, b);
-    let d3 = dot(ab, bp);
-    let d4 = dot(ac, bp);
-    if d3 >= 0.0 && d4 <= d3 {
-        return dot(bp, bp);
-    }
-    let cp = sub(p, c);
-    let d5 = dot(ab, cp);
-    let d6 = dot(ac, cp);
-    if d6 >= 0.0 && d5 <= d6 {
-        return dot(cp, cp);
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        let q: V3 = std::array::from_fn(|k| a[k] + v * ab[k]);
-        return dot(sub(p, q), sub(p, q));
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        let q: V3 = std::array::from_fn(|k| a[k] + w * ac[k]);
-        return dot(sub(p, q), sub(p, q));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        let q: V3 = std::array::from_fn(|k| b[k] + w * (c[k] - b[k]));
-        return dot(sub(p, q), sub(p, q));
-    }
-    // Inside the face region: project onto the plane.
-    let denom = 1.0 / (va + vb + vc);
-    let v = vb * denom;
-    let w = vc * denom;
-    let q: V3 = std::array::from_fn(|k| a[k] + ab[k] * v + ac[k] * w);
-    dot(sub(p, q), sub(p, q))
 }
 
 enum Node {
@@ -253,17 +205,16 @@ impl DomainTree {
         let spacing = if s0.is_finite() && s0 > 0.0 { s0 } else { diag / 8.0 };
         let min_half = (0.5 * spacing).max(1e-9 * diag.max(1.0));
 
+        // Facet BVH: O(log F) nearest-facet distance and graded-min, replacing
+        // the O(F) brute scans that dominated the build on high-facet meshes.
+        let bvh = FacetBvh::build(&facets);
+
         // Nearest-facet distance (for the uniform-leaf region cache).
-        let dist_to_boundary = |p: V3| -> f64 {
-            facets.iter().map(|(t, _)| point_tri_dist2(p, t)).fold(f64::MAX, f64::min).sqrt()
-        };
+        let dist_to_boundary = |p: V3| -> f64 { bvh.nearest_dist(p) };
         let h_of = |p: V3, region: u32| -> f64 {
             // Bulk/region cap, lowered by the graded envelope of every wall
-            // target and every point source (each Lipschitz with `grading`).
-            let mut h = region_cap(region).min(maxh);
-            for (t, tgt) in &facets {
-                h = h.min(tgt + grading * point_tri_dist2(p, t).sqrt());
-            }
+            // target (BVH branch-and-bound) and every point source (Lipschitz).
+            let mut h = region_cap(region).min(maxh).min(bvh.graded_min(p, grading));
             for (sp, sh) in &params.size_points {
                 h = h.min(sh + grading * dist(p, *sp));
             }

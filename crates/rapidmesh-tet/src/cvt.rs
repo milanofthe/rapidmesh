@@ -503,9 +503,11 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stage("mesh.lloyd", t_lloyd.elapsed().as_secs_f64());
 
     // ---- final triangulation, tilings, region classification --------------
-    let t_classify = std::time::Instant::now();
     let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
+    let t_build = std::time::Instant::now();
     let all_tets = build(&vol_pos);
+    rmlog::stage("mesh.build_final", t_build.elapsed().as_secs_f64());
+    let t_classify = std::time::Instant::now();
     let pts = positions(&sites);
     let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
     for (ti, t) in all_tets.iter().enumerate() {
@@ -516,6 +518,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
     // A face tiles a patch only if all three vertices are surface sites.
+    let t_tile = std::time::Instant::now();
     let coplanar_eps = COPLANAR_EPS_FRAC * diag.max(1.0);
     let mut tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
     for key in face_owners.keys() {
@@ -526,6 +529,8 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             tilings[pi].push(*key);
         }
     }
+    rmlog::stage("mesh.tilings", t_tile.elapsed().as_secs_f64());
+    let t_region = std::time::Instant::now();
     // Classify each tet by its centroid's region in the domain octree: a cached
     // lookup deep inside a region, an exact per-region ray-cast on the boundary
     // leaves. This is robust where the surface tilings are incomplete (a tet
@@ -548,6 +553,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             tet_regions.push(RegionTag(r));
         }
     }
+    rmlog::stage("mesh.region", t_region.elapsed().as_secs_f64());
     rmlog::stage("mesh.classify", t_classify.elapsed().as_secs_f64());
 
     let mut faces: Vec<SurfaceFace> = Vec::new();

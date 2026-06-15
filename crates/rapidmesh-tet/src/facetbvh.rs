@@ -207,6 +207,30 @@ impl FacetBvh {
             self.graded_rec(l, p, grading, best);
         }
     }
+
+    /// Facet indices whose AABB overlaps the infinite x-column `[y +/- m] x
+    /// [z +/- m]` around `p` (x ignored): the candidate set for an axis-aligned
+    /// +x parity ray-cast. `m` must cover the ray-cast's y,z jitter band, so the
+    /// excluded facets cannot be crossed by any cast and parity stays exact.
+    pub fn column_yz(&self, p: V3, m: f64, out: &mut Vec<u32>) {
+        out.clear();
+        if !self.nodes.is_empty() {
+            self.column_rec(0, p, m, out);
+        }
+    }
+
+    fn column_rec(&self, ni: usize, p: V3, m: f64, out: &mut Vec<u32>) {
+        let n = &self.nodes[ni];
+        if n.hi[1] < p[1] - m || n.lo[1] > p[1] + m || n.hi[2] < p[2] - m || n.lo[2] > p[2] + m {
+            return;
+        }
+        if n.count > 0 {
+            out.extend_from_slice(&self.order[n.start as usize..(n.start + n.count) as usize]);
+            return;
+        }
+        self.column_rec(n.left as usize, p, m, out);
+        self.column_rec(n.right as usize, p, m, out);
+    }
 }
 
 /// Builds the node spanning `order[start..end]`, returns its node index. Splits
@@ -358,6 +382,38 @@ mod tests {
                 (bvh.graded_min(p, 0.5) - brute_graded(&f, p, 0.5)).abs() < 1e-9,
                 "graded at {p:?}"
             );
+        }
+    }
+
+    #[test]
+    fn column_yz_is_a_superset() {
+        let mut f = Vec::new();
+        for i in 0..7 {
+            for j in 0..7 {
+                let (x, y) = (i as f64 * 0.5, j as f64 * 0.5);
+                f.push(tri([x, y, 0.0], [x + 0.4, y, 0.3], [x, y + 0.4, 0.0], 0.1));
+            }
+        }
+        let bvh = FacetBvh::build(&f);
+        let m = 0.3;
+        for p in [[1.3, 1.7, 0.1], [0.0, 3.0, 0.2], [3.0, 0.0, -0.1]] {
+            let mut got = Vec::new();
+            bvh.column_yz(p, m, &mut got);
+            let got: std::collections::HashSet<u32> = got.into_iter().collect();
+            // Every facet whose own AABB overlaps the y,z column must be returned.
+            for (i, (t, _)) in f.iter().enumerate() {
+                let (mut lo, mut hi) = (t.v[0], t.v[0]);
+                for v in &t.v {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(v[k]);
+                        hi[k] = hi[k].max(v[k]);
+                    }
+                }
+                let overlaps = hi[1] >= p[1] - m && lo[1] <= p[1] + m && hi[2] >= p[2] - m && lo[2] <= p[2] + m;
+                if overlaps {
+                    assert!(got.contains(&(i as u32)), "facet {i} in column missing at {p:?}");
+                }
+            }
         }
     }
 

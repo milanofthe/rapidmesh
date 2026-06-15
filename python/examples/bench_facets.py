@@ -16,7 +16,7 @@ from compare_geoms import GEOMS
 # High-facet / organic models from the showcase corpus.
 HIGH_F = ["bunny", "blob", "gear", "fused_spheres", "nested_spheres"]
 
-STAGES = ["mesh.domain", "mesh.surface", "mesh.seed", "mesh.lloyd", "mesh.classify"]
+STAGES = ["mesh.domain", "mesh.surface", "mesh.seed", "mesh.lloyd", "mesh.build_final", "mesh.tilings", "mesh.region"]
 
 
 def main():

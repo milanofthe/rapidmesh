@@ -60,6 +60,9 @@ struct RegionSoup {
     region: u32,
     tris: Vec<Tri>,
     boxes: TriBoxes,
+    /// BVH over `tris` for the y,z-column prefilter of the parity ray-cast, so a
+    /// boundary-leaf classification tests O(column) facets, not all of them.
+    bvh: FacetBvh,
 }
 
 pub struct DomainTree {
@@ -125,7 +128,9 @@ impl DomainTree {
                     })
                     .collect();
                 let boxes = TriBoxes::build(&tris, pad);
-                RegionSoup { region: r, tris, boxes }
+                let facets: Vec<(Tri, f64)> = tris.iter().map(|&t| (t, 0.0)).collect();
+                let bvh = FacetBvh::build(&facets);
+                RegionSoup { region: r, tris, boxes, bvh }
             })
             .collect();
 
@@ -276,9 +281,21 @@ impl DomainTree {
                 return 0;
             }
         }
+        // Exact parity ray-cast, but only against the facets in the y,z-column
+        // the +x ray can cross (BVH prefilter): O(column) per region, not O(F).
+        // The margin covers `point_inside_solid`'s y,z jitter band (diag * 0.02),
+        // so excluded facets are never crossed and the parity stays exact.
         let exact = || {
+            let (lo, hi) = self.bbox;
+            let diag = (0..3).map(|k| hi[k] - lo[k]).fold(1.0_f64, f64::max);
+            let margin = 0.021 * diag;
+            let pad = 1e-6 * diag;
+            let mut cand: Vec<u32> = Vec::new();
             for rs in &self.regions {
-                if point_inside_solid(&Point3::Explicit(p), p, &rs.tris, &rs.boxes, self.bbox) {
+                rs.bvh.column_yz(p, margin, &mut cand);
+                let sub: Vec<Tri> = cand.iter().map(|&i| rs.tris[i as usize]).collect();
+                let sub_boxes = TriBoxes::build(&sub, pad);
+                if point_inside_solid(&Point3::Explicit(p), p, &sub, &sub_boxes, self.bbox) {
                     return rs.region;
                 }
             }

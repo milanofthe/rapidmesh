@@ -116,6 +116,7 @@ fn main() {
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
             density_weighted: false,
+            surface_deflection: 0.02,
         };
         records.push(run_one(
             bs.name,
@@ -190,6 +191,7 @@ fn main() {
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
             density_weighted: false,
+            surface_deflection: 0.02,
         };
         records.push(run_one(
             &name,

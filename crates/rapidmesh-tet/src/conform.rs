@@ -240,12 +240,17 @@ pub struct MeshParams {
     /// (rapidfem's refine_near_points; the hook for error-driven adaptive
     /// refinement).
     pub size_points: Vec<([f64; 3], f64)>,
-    /// Local feature size: refine the volume near THIN features (a near-closed
-    /// trailing edge, narrow slots) so the sizing field grades smoothly out of
-    /// them instead of letting the coarse far field fan onto a thin boundary.
-    /// Off by default: it refines every thin feature (thin layers, gaps), which
-    /// multiplies the tet count, so it is opt-in for the cases that need it.
+    /// Density-weighted CVT (Lloyd weighted by `rho = 1/h^d`): sites migrate
+    /// toward finer regions so a graded sizing field relaxes into a smooth
+    /// gradient. Off by default (it shifts sites near curved boundaries, which
+    /// the exact-volume fixtures cannot absorb); on for adaptive meshes.
     pub density_weighted: bool,
+    /// Surface sagitta deflection bound (relative): a curved facet edge of
+    /// length `h` on a surface of principal radius `R` deviates by `~ h^2/(8R)`;
+    /// bounding the RELATIVE sagitta `eps/R <= this` sizes curved surfaces by
+    /// `h = R * sqrt(8 * this)`, scale-invariant (constant facets per arc). The
+    /// normalized error knob replacing the old magic chord fraction.
+    pub surface_deflection: f64,
 }
 
 impl Default for MeshParams {
@@ -260,6 +265,7 @@ impl Default for MeshParams {
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
             density_weighted: false,
+            surface_deflection: 0.02,
         }
     }
 }

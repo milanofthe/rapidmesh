@@ -184,7 +184,7 @@ impl DomainTree {
         // refines the VOLUME near tightly curved boundaries (an airfoil nose), so
         // the surrounding region holds the fine on-surface nodes; the grading
         // term then coarsens away. A gentle curve (R large) leaves `maxh` intact.
-        let chord = (8.0 * crate::cvt::SURF_CHORD_FRAC).sqrt();
+        let chord = (8.0 * params.surface_deflection).sqrt();
         let curvature_target = |i: usize| -> f64 {
             let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
             crate::project::surface_curvature_radius(kind, facet_centroid(i)) * chord

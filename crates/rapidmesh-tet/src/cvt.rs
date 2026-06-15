@@ -66,13 +66,6 @@ const SEPARATION_FRAC: f64 = 0.45;
 /// the restricted Delaunay recovers the boundary without explicit recovery.
 /// 0.5 is the conformity threshold here; coarser (0.7) reintroduces straddlers.
 pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
-/// Chord/volume-error sizing bias for curved surfaces: a facet edge of length
-/// `h` on a surface of principal radius `R` deviates from the true surface by a
-/// sagitta `eps ~ h^2/(8R)`. Bounding the relative sagitta `eps/R <= this` caps
-/// the faceting (and thus the enclosed-volume error) independent of `maxh`:
-/// `h_curv = R * sqrt(8 * frac)`. 0.02 gives ~16 facets around a full circle.
-pub(crate) const SURF_CHORD_FRAC: f64 = 0.02;
-/// A face is coplanar with a patch if all its vertices are within this fraction
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -559,7 +552,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // the analytic surface. `min_radius` (over the whole group, not just the
         // boundary loop) sets the finest grid step so the high-curvature interior
         // is resolved. The chart is isometric, so the target is a true length.
-        let chord = (8.0 * SURF_CHORD_FRAC).sqrt();
+        let chord = (8.0 * params.surface_deflection).sqrt();
         let step = SURFACE_OVERSAMPLE * domain.finest().min(g.min_radius * chord);
         let inside2 = |uv: [f64; 2]| in_loops(uv, &segs);
         let target = |uv: [f64; 2]| {
@@ -1112,7 +1105,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // Curvature/volume-error bias: the finest curvature radius over the group
         // sets the grid step (so the scatter is fine enough to honor it); the
         // per-point target is the finer of the domain field and the curvature cap.
-        let chord = (8.0 * SURF_CHORD_FRAC).sqrt();
+        let chord = (8.0 * params.surface_deflection).sqrt();
         let hc_min = gverts
             .iter()
             .map(|&v| chart.curvature_radius(chart.to_uv(points[v])))

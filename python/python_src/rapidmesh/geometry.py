@@ -787,6 +787,7 @@ class Geometry:
         max_points: int = 500_000,
         grading: float | None = None,
         density_weighted: bool = False,
+        surface_deflection: float = 0.02,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -807,11 +808,15 @@ class Geometry:
             (0.5 means neighbor elements grow by roughly 1.5x; math.inf
             disables grading and sizes jump at region interfaces)
         density_weighted : bool
-            refine the volume near THIN features (a near-closed trailing
-            edge, narrow slots) so the sizing field grades smoothly out of
-            them instead of the coarse far field fanning onto a thin
-            boundary. Off by default (it multiplies the tet count by
-            refining every thin feature); enable for thin-feature geometries.
+            density-weighted CVT: relax sites weighted by ``1/h^d`` so a graded
+            sizing field settles into a smooth gradient. Off by default (it
+            shifts sites near curved boundaries, which the exact-volume path
+            cannot absorb); enable for adaptive (curvature/error-bound) meshes.
+        surface_deflection : float
+            relative sagitta error bound for curved surfaces: a curved facet of
+            radius ``R`` is sized ``h = R * sqrt(8 * surface_deflection)``, so
+            the chord deviates by at most ``surface_deflection * R``. Smaller =
+            finer curved surfaces (scale-invariant, ~constant facets per arc).
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -824,6 +829,7 @@ class Geometry:
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
             density_weighted,
+            surface_deflection,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

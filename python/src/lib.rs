@@ -308,7 +308,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, surface_deflection=0.02))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -320,6 +320,7 @@ impl SceneBuilder {
         size_points: Vec<([f64; 3], f64)>,
         surface_maxh: Vec<(u32, f64)>,
         density_weighted: bool,
+        surface_deflection: f64,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -340,6 +341,7 @@ impl SceneBuilder {
                 surface_maxh,
                 size_points,
                 density_weighted,
+                surface_deflection,
             };
             let tm = std::time::Instant::now();
             let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
@@ -437,6 +439,7 @@ impl SceneBuilder {
                 surface_maxh,
                 size_points,
                 density_weighted: false,
+                surface_deflection: 0.02,
             };
             surface_mesh(&plc, &params)
         });

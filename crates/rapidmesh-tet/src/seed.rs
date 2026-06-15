@@ -129,6 +129,7 @@ mod tests {
             surface_maxh: Vec::new(),
             size_points,
             density_weighted: false,
+            surface_deflection: 0.02,
         }
     }
 

@@ -504,13 +504,13 @@
     "rapidmesh": {
      "file": "meshes/compare/naca0012.rapidmesh.json",
      "stats": {
-      "n_points": 854,
-      "n_tets": 2355,
+      "n_points": 4878,
+      "n_tets": 23448,
       "n_regions": 1,
       "min_dihedral_deg": 8.584010105495452,
-      "max_radius_edge": 60.86824217848249,
-      "max_edge": 0.599999999999991,
-      "millis": 13385
+      "max_radius_edge": 28.832820795491056,
+      "max_edge": 0.5515412655343358,
+      "millis": 5728
      }
     },
     "gmsh": {
@@ -522,7 +522,7 @@
       "min_dihedral_deg": 0.4333379749383539,
       "max_radius_edge": 110.7562230752458,
       "max_edge": 0.6862186256198164,
-      "millis": 28
+      "millis": 10
      }
     },
     "tetgen": {
@@ -534,7 +534,7 @@
       "min_dihedral_deg": 0.30064508579590665,
       "max_radius_edge": 132.70547358118358,
       "max_edge": 0.6862186256198164,
-      "millis": 9,
+      "millis": 5,
       "on_surface_of": "gmsh"
      }
     }

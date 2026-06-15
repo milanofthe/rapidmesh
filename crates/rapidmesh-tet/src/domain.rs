@@ -334,42 +334,19 @@ impl DomainTree {
             return Vec::new();
         }
         let u = 0.5 * s0; // half-spacing grid unit
-        let lmax = if self.maxh > s0 {
-            (self.maxh / s0).log2().ceil() as i64 + 1
-        } else {
-            0
-        }
-        .clamp(0, 30);
-        // Index range over the bbox (half-spacing units), padded by one cell.
-        let n: [i64; 3] = std::array::from_fn(|k| (((self.hi[k] - self.lo[k]) / u).ceil() as i64) + 2);
+        let lmax = (if self.maxh > s0 { (self.maxh / s0).log2().ceil() as i64 + 1 } else { 0 })
+            .clamp(0, 30);
+        // Walk the octree and emit, per leaf, only the level-L BCC nodes inside
+        // it (its `h` sets L). Each leaf spans ~one level-L cell, so this is
+        // O(leaves) = O(output) instead of iterating the whole finest grid over
+        // the bbox (which exploded when a fine size source made `s0` tiny). A
+        // node on a leaf boundary is emitted by both leaves, so dedup on the
+        // integer half-unit index.
+        let center: V3 = std::array::from_fn(|k| 0.5 * (self.lo[k] + self.hi[k]));
+        let half = (0..3).map(|k| self.hi[k] - self.lo[k]).fold(0.0, f64::max) * 0.5 * 1.0001;
+        let mut seen: std::collections::HashSet<[i64; 3]> = std::collections::HashSet::new();
         let mut out = Vec::new();
-        for a in 0..=n[0] {
-            for b in 0..=n[1] {
-                for c in 0..=n[2] {
-                    // BCC membership: all three indices share a parity.
-                    let par = a & 1;
-                    if (b & 1) != par || (c & 1) != par {
-                        continue;
-                    }
-                    let p: V3 = [
-                        self.lo[0] + a as f64 * u,
-                        self.lo[1] + b as f64 * u,
-                        self.lo[2] + c as f64 * u,
-                    ];
-                    // Level from the local target size, then the level-L parity.
-                    let h = self.h_at(p);
-                    let l = if h > s0 { (h / s0).log2().floor() as i64 } else { 0 }.clamp(0, lmax);
-                    let m = 1i64 << (l + 1); // 2^{L+1}
-                    let want = 1i64 << l; // 2^L  (body offset; corner offset 0)
-                    let off = a.rem_euclid(m);
-                    let keep = (off == 0 && b.rem_euclid(m) == 0 && c.rem_euclid(m) == 0)
-                        || (off == want && b.rem_euclid(m) == want && c.rem_euclid(m) == want);
-                    if keep {
-                        out.push(p);
-                    }
-                }
-            }
-        }
+        collect_leaf_bcc(&self.root, center, half, self.lo, u, s0, lmax, &mut seen, &mut out);
         out
     }
 
@@ -419,6 +396,65 @@ fn build_node(
         // the boundary than the leaf circumradius (half * sqrt(3)).
         let uniform = d > half * SQRT3;
         Node::Leaf(Leaf { h, region, uniform, sites: Vec::new() })
+    }
+}
+
+/// Emits the level-L BCC nodes inside each leaf (L from the leaf's `h`), the
+/// graded-seed generator. `lo` is the lattice origin, `u = s0/2` the half-unit;
+/// `seen` dedups nodes shared on leaf boundaries by their integer index.
+#[allow(clippy::too_many_arguments)]
+fn collect_leaf_bcc(
+    node: &Node,
+    center: V3,
+    half: f64,
+    lo: V3,
+    u: f64,
+    s0: f64,
+    lmax: i64,
+    seen: &mut std::collections::HashSet<[i64; 3]>,
+    out: &mut Vec<V3>,
+) {
+    match node {
+        Node::Leaf(l) => {
+            let lvl =
+                (if l.h > s0 { (l.h / s0).log2().floor() as i64 } else { 0 }).clamp(0, lmax);
+            let m = 1i64 << (lvl + 1); // index period of the level-L lattice
+            let want = 1i64 << lvl; // body-sublattice offset (corner offset 0)
+            // Half-open index range [a_lo, a_hi) covering the leaf box per axis.
+            let idx_lo: [i64; 3] =
+                std::array::from_fn(|k| ((center[k] - half - lo[k]) / u).ceil() as i64);
+            let idx_hi: [i64; 3] =
+                std::array::from_fn(|k| ((center[k] + half - lo[k]) / u).ceil() as i64);
+            // First index >= lo with `idx % m == off`.
+            let first = |a_lo: i64, off: i64| a_lo + (off - a_lo).rem_euclid(m);
+            for off in [0, want] {
+                let mut a = first(idx_lo[0], off);
+                while a < idx_hi[0] {
+                    let mut b = first(idx_lo[1], off);
+                    while b < idx_hi[1] {
+                        let mut c = first(idx_lo[2], off);
+                        while c < idx_hi[2] {
+                            if seen.insert([a, b, c]) {
+                                out.push([
+                                    lo[0] + a as f64 * u,
+                                    lo[1] + b as f64 * u,
+                                    lo[2] + c as f64 * u,
+                                ]);
+                            }
+                            c += m;
+                        }
+                        b += m;
+                    }
+                    a += m;
+                }
+            }
+        }
+        Node::Inner(ch) => {
+            for (oct, c) in ch.iter().enumerate() {
+                let (cc, hh) = child_box(center, half, oct);
+                collect_leaf_bcc(c, cc, hh, lo, u, s0, lmax, seen, out);
+            }
+        }
     }
 }
 

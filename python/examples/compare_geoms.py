@@ -416,27 +416,31 @@ def _naca0012_points(chord: float, n: int):
     return pts
 
 
-# A NACA 0012 wing section, centered on the origin (chord 1 along x, span 0.6
-# along z). rapidmesh sweeps its analytic spline profile; gmsh builds the same
-# outline as an OCC spline, extrudes, and meshes -- tetgen meshes gmsh's surface.
+# A NACA 0012 wing as a through-hole in an air box (the external-aero / wind-
+# tunnel setup): the air is meshed AROUND the airfoil, whose curved skin is the
+# internal boundary. rapidmesh sweeps its analytic spline profile and refines the
+# air by the profile curvature (fine nose, coarse far field); gmsh cuts the same
+# OCC-spline airfoil from the box at a uniform size; tetgen meshes gmsh's surface
+# with a hole point inside the airfoil column.
 def _r_naca():
     import rapidmesh as rm
-    g = rm.Geometry(maxh=0.12)
-    g.label(
-        g.airfoil_naca0012(1.0, 0.6, position=(-0.5, 0.0, -0.3), n_seg=120),
-        "airfoil",
-    )
+    g = rm.Geometry(maxh=0.4)
+    g.label(g.box(3, 2, 0.5, position=(-1, -1, 0)), "air")
+    g.airfoil_naca0012(1.0, 0.5, position=(0, 0, 0), n_seg=140, void=True)
     return g
 
 
 def _g_naca(occ):
+    box = occ.addBox(-1, -1, 0, 3, 2, 0.5)
     pts = _naca0012_points(1.0, 40)
-    ptags = [occ.addPoint(x - 0.5, y, -0.3) for (x, y) in pts]
+    ptags = [occ.addPoint(x, y, 0.0) for (x, y) in pts]
     spline = occ.addSpline(ptags)
     close = occ.addLine(ptags[-1], ptags[0])
     loop = occ.addCurveLoop([spline, close])
     surf = occ.addPlaneSurface([loop])
-    occ.extrude([(2, surf)], 0, 0, 0.6)
+    ext = occ.extrude([(2, surf)], 0, 0, 0.5)
+    vol = [d for d in ext if d[0] == 3]
+    occ.cut([(3, box)], vol)
 
 
 # ----------------------------------------------------------------- registry
@@ -456,6 +460,9 @@ class CompareGeom:
     # conductor is 3 separate OCC solids after fragment but one material).
     # Empty tuple means single-region geometry: all tets get label 1.
     region_seeds: tuple = ()
+    # Hole points (one inside each cavity to be EXCLUDED), for tetgen's
+    # add_hole: an airfoil-shaped void in an air box is a hole, not a region.
+    hole_points: tuple = ()
 
 
 GEOMS: list[CompareGeom] = [
@@ -472,7 +479,8 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
     CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
-    CompareGeom("naca0012", "NACA 0012 Wing", "Organic", 0.12, _r_naca, _g_naca),
+    CompareGeom("naca0012", "NACA 0012 Wing", "Organic", 0.4, _r_naca, _g_naca,
+                hole_points=((0.3, 0.0, 0.25),)),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell,
                 region_seeds=((0.8, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2))),

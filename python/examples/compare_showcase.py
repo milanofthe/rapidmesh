@@ -190,6 +190,9 @@ def mesh_tetgen(geom: CompareGeom, surface):
     use_regions = bool(geom.region_seeds)
     for x, y, z, mat_id in geom.region_seeds:
         tg.add_region(mat_id, (x, y, z))
+    # Cavities to exclude (e.g. an airfoil-shaped void): a hole point per cavity.
+    for hx, hy, hz in getattr(geom, "hole_points", ()):
+        tg.add_hole((hx, hy, hz))
     t0 = time.perf_counter()
     _, _, attr, _ = tg.tetrahedralize(
         order=1, mindihedral=0.0, minratio=1.2,

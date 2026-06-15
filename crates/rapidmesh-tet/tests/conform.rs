@@ -98,7 +98,6 @@ fn check_structure(m: &TetMesh) {
 }
 
 #[test]
-#[ignore = "CVT rewrite WP5: multi-region interface conformity not yet wired"]
 fn air_dielectric_pec_scene_meshes_exactly() {
     let mut scene = Scene::new();
     let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -255,7 +254,6 @@ fn sized_em_scene_stays_exact_and_conforming() {
 }
 
 #[test]
-#[ignore = "CVT rewrite WP5/WP7: multi-region + graded sizing not yet wired"]
 fn per_region_sizing_creates_density_transition() {
     let mut scene = Scene::new();
     let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -385,7 +383,6 @@ fn resonator_cylinder_tessellations_stay_conforming() {
 /// The cut boolean: a void carves its volume out of the mesh; the remaining
 /// region volume is exact and the void walls survive as boundary patches.
 #[test]
-#[ignore = "CVT rewrite WP4: concave (void-wall) boundary recovery not yet wired"]
 fn void_carves_exact_volume() {
     let mut scene = Scene::new();
     let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
@@ -743,7 +740,6 @@ fn surface_maxh_refines_void_walls() {
 /// repair could tile it (stagnation guard abandoned it at 19% uncovered).
 /// Batch repair with a spatial gate must close it: nothing abandoned.
 #[test]
-#[ignore = "CVT rewrite WP5/WP7: multi-region trace sheets + face sizing not yet wired"]
 fn trace_face_maxh_does_not_starve_interface_tiling() {
     let mm = 1e-3;
     let mil = 0.0254 * mm;
@@ -865,7 +861,6 @@ fn cylinder_feature_edges_are_the_rims() {
 /// its owner solid (insertion order, voids included). The walls of a void
 /// bore are owned by the void, not by the solid it cuts.
 #[test]
-#[ignore = "CVT rewrite WP4/WP6: void bore walls not yet wired"]
 fn surface_owners_track_solids_and_voids() {
     let mut scene = Scene::new();
     let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));

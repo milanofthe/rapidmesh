@@ -445,7 +445,28 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             tilings[pi].push(*key);
         }
     }
-    let region = classify_tet_regions(&pts, &all_tets, &patches, &tilings, &face_owners, (lo, hi));
+    // Single region: classify each tet by its centroid against the COMPLETE PLC
+    // boundary (the `inside` ray-cast), which is robust on concave/curved domains
+    // where the tilings can be incomplete (a tet face spanning two facets is not
+    // tagged) and a flood-fill would leak through the gap, keeping bridge tets
+    // across concavities. Multi-region keeps the flood (planar interfaces tile
+    // completely, and the flood resolves which region each tet belongs to).
+    let region: Vec<u32> = if regions.len() == 1 {
+        let primary = regions[0];
+        all_tets
+            .par_iter()
+            .map(|t| {
+                let c = centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]]);
+                if inside(c) {
+                    primary
+                } else {
+                    0
+                }
+            })
+            .collect()
+    } else {
+        classify_tet_regions(&pts, &all_tets, &patches, &tilings, &face_owners, (lo, hi))
+    };
     let mut kept: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     for (t, &r) in all_tets.iter().zip(&region) {

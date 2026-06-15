@@ -334,16 +334,47 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stage("mesh.seed", t_seed.elapsed().as_secs_f64());
 
     // ---- 3D Lloyd on the volume sites (surface fixed) --------------------
-    // The surface is fixed now, so its octree (for mirror-in) is built once.
+    // The surface is fixed now. Build its Delaunay ONCE; each pass clones it and
+    // inserts only the moving volume points (incremental: no surface re-insert).
+    // Its octree (for mirror-in) is built once too.
     let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
     let surf_tree = Octree::build(&surf_pos);
+    let order_surf = crate::spatial::morton_order(&surf_pos);
+    let mut surf_db = DelaunayBuilder::enclosing(lo, hi);
+    for &si in &order_surf {
+        surf_db.insert(surf_pos[si]);
+    }
+    // Full Delaunay = surface clone + Morton-ordered volume inserts; returns tets
+    // remapped from insertion indices back to site indices.
+    let build = |vol_pos: &[V3]| -> Vec<[usize; 4]> {
+        let order_vol = crate::spatial::morton_order(vol_pos);
+        let mut db = surf_db.clone();
+        for &vi in &order_vol {
+            db.insert(vol_pos[vi]);
+        }
+        db.tets()
+            .into_iter()
+            .map(|t| {
+                std::array::from_fn(|j| {
+                    let p = t[j];
+                    if p < n_surf {
+                        order_surf[p]
+                    } else {
+                        n_surf + order_vol[p - n_surf]
+                    }
+                })
+            })
+            .collect()
+    };
+
     let t_lloyd = std::time::Instant::now();
     for _ in 0..LLOYD_ITERS {
         if !sites.iter().any(|s| s.is_volume()) {
             break;
         }
         let pos = positions(&sites);
-        let tets = delaunay_of(&sites, lo, hi);
+        let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
+        let tets = build(&vol_pos);
         let mut num = vec![[0.0f64; 3]; sites.len()];
         let mut den = vec![0.0f64; sites.len()];
         for t in &tets {
@@ -390,7 +421,8 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- final triangulation, tilings, region classification --------------
     let t_classify = std::time::Instant::now();
-    let all_tets = delaunay_of(&sites, lo, hi);
+    let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
+    let all_tets = build(&vol_pos);
     let pts = positions(&sites);
     let mut face_owners: HashMap<[usize; 3], Vec<u32>> = HashMap::new();
     for (ti, t) in all_tets.iter().enumerate() {
@@ -453,24 +485,6 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stat("mesh.min_dihedral_deg", q.min_dihedral_deg);
     rmlog::stage("mesh.total", t_start.elapsed().as_secs_f64());
     mesh
-}
-
-/// A fresh Delaunay over the current site positions; returns real tets in site
-/// indices. Points are inserted in Morton (space-filling) order so the builder's
-/// location walk stays short (near-linear construction); the returned tets are
-/// remapped from insertion order back to site indices.
-fn delaunay_of(sites: &[Site], lo: V3, hi: V3) -> Vec<[usize; 4]> {
-    let pos: Vec<V3> = sites.iter().map(|s| s.pos()).collect();
-    let order = crate::spatial::morton_order(&pos);
-    let mut db = DelaunayBuilder::enclosing(lo, hi);
-    for &si in &order {
-        db.insert(pos[si]);
-    }
-    // Insertion index k corresponds to site `order[k]`.
-    db.tets()
-        .into_iter()
-        .map(|t| std::array::from_fn(|j| order[t[j]]))
-        .collect()
 }
 
 /// Reflection of `p` across the plane (`p0`, unit `n`).

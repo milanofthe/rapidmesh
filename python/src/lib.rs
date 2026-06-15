@@ -351,7 +351,9 @@ impl SceneBuilder {
                 ..OptimizeParams::default()
             };
             let to = std::time::Instant::now();
-            optimize(&mut mesh, &opt);
+            if std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none() {
+                optimize(&mut mesh, &opt);
+            }
             // Quality (with the worst element's location/region), logged so a
             // verbose run reports not just timings but where the mesh is worst.
             let q = quality_stats(&mesh);

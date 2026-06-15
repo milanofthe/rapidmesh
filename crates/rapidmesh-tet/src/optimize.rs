@@ -249,6 +249,31 @@ fn sorted3(f: [usize; 3]) -> [usize; 3] {
 /// candidate with an unchanged neighborhood would be re-rejected verbatim.
 /// The fixed point is therefore identical to full sweeps, at a per-pass cost
 /// that scales with the remaining work.
+/// Local "too short" squared floor for coarsening: derived from the finest
+/// per-point target size in the tet (the GRADED sizing field), so the optimizer
+/// coarsens to the local size and never erases curvature-fine detail (an airfoil
+/// nose). Falls back to the region-uniform floor when no per-point sizes exist.
+fn local_coarsen_floor2(
+    mesh: &TetMesh,
+    ti: usize,
+    region_floor: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+) -> f64 {
+    if mesh.point_size.is_empty() {
+        return region_floor(mesh.tet_regions[ti]);
+    }
+    // Points the optimizer added (refinement) have no recorded size; ignore them
+    // (INFINITY), so the floor follows the finest KNOWN target in the tet.
+    let t = mesh.tets[ti];
+    let s = (0..4)
+        .map(|k| mesh.point_size.get(t[k]).copied().unwrap_or(f64::INFINITY))
+        .fold(f64::INFINITY, f64::min);
+    if s.is_finite() {
+        (COARSEN_FRACTION * s) * (COARSEN_FRACTION * s)
+    } else {
+        0.0
+    }
+}
+
 pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     let trace = std::env::var("RAPIDMESH_OPT_TRACE").is_ok();
     let opt_t0 = std::time::Instant::now();
@@ -678,7 +703,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
                     continue;
                 }
-                let floor2 = coarsen_floor2(mesh.tet_regions[ti as usize]);
+                let floor2 = local_coarsen_floor2(mesh, ti as usize, &coarsen_floor2);
                 if floor2 <= 0.0 {
                     continue;
                 }
@@ -699,7 +724,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 if !alive[ti] {
                     continue; // rewritten by an earlier collapse
                 }
-                let floor2 = coarsen_floor2(mesh.tet_regions[ti]);
+                let floor2 = local_coarsen_floor2(mesh, ti, &coarsen_floor2);
                 if try_edge_collapse(
                     mesh,
                     &mut g_incident,

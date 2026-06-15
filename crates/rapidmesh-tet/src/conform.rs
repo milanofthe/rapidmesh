@@ -72,6 +72,12 @@ pub struct TetMesh {
     /// `points[..plc_points]` are the PLC's own vertices (the geometry);
     /// everything after is an interior point the mesher added.
     pub plc_points: usize,
+    /// Local target edge length at each point (the sizing field `h(x)` at seed
+    /// time), parallel to `points`. Lets the optimizer respect a GRADED size
+    /// (e.g. curvature-fine at an airfoil nose) instead of one region-uniform
+    /// floor, so it does not coarsen away fine, intentional detail. Empty or
+    /// `INFINITY` means "no local target" (no size-driven coarsening there).
+    pub point_size: Vec<f64>,
 }
 
 impl TetMesh {

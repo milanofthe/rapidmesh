@@ -819,6 +819,10 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
 
+    // Per-point local target size (the graded sizing field), so the optimizer
+    // coarsens to the LOCAL size, not one region-uniform floor that would erase
+    // curvature-fine detail.
+    let point_size: Vec<f64> = pts.iter().map(|&p| domain.h_at(p)).collect();
     let mesh = TetMesh {
         points: pts,
         tets: kept,
@@ -828,6 +832,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         surface_owners: plc.surface_owners.clone(),
         abandoned_patches: Vec::new(),
         plc_points: nb,
+        point_size,
     };
 
     let q = quality_stats(&mesh);

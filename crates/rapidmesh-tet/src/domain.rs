@@ -16,7 +16,6 @@
 //! boundary into the coarse interior.
 
 use crate::conform::MeshParams;
-use crate::seed::SizingField;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
@@ -146,19 +145,6 @@ impl DomainTree {
         let half = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f64::max) * 0.5 * 1.0001;
         let bbox = (lo, hi);
 
-        // All boundary facets, for the distance-to-boundary grading term.
-        let all_tris: Vec<Tri> = plc
-            .triangles
-            .iter()
-            .map(|t| {
-                Tri::new(
-                    plc.vertices[t[0] as usize],
-                    plc.vertices[t[1] as usize],
-                    plc.vertices[t[2] as usize],
-                )
-            })
-            .collect();
-
         // Per-region closed boundary soups (facets where the region appears).
         let mut region_ids: Vec<u32> = Vec::new();
         for rt in &plc.region_tags {
@@ -198,20 +184,6 @@ impl DomainTree {
             diag / 8.0
         };
         let grading = if params.grading > 0.0 { params.grading } else { 0.5 };
-        // Boundary element target = the bulk finest spacing (NOT the finer
-        // `surf_spacing`). The surfaces are oversampled to `surf_spacing =
-        // SURFACE_OVERSAMPLE * spacing`, so they stay ~2x finer than the
-        // near-wall volume and the surface tiling dominates the restricted
-        // Delaunay (conforming, even on faceted/curved interfaces). Seeding the
-        // near-wall volume as dense as the surface instead makes the two compete
-        // and breaks the tiling. The grading then coarsens region interiors up
-        // to their caps; `finest_cap` folds in region_maxh and size_points.
-        let field = SizingField::new(params);
-        let cap = field.finest_cap(&region_ids);
-        let spacing = if cap.is_finite() && cap > 0.0 { cap } else { diag / 8.0 };
-        let bh = spacing;
-        // Smallest allowed leaf resolves the finest target.
-        let min_half = (0.5 * bh).max(1e-9 * diag.max(1.0));
 
         let region_of = |p: V3| -> u32 {
             for rs in &regions {
@@ -232,19 +204,66 @@ impl DomainTree {
                 .map(|&(_, h)| h)
                 .unwrap_or(maxh)
         };
-        let dist_to_boundary = |p: V3| -> f64 {
-            // Brute over facets (v1); the octree-accelerated version comes with
-            // the 1M+ scaling work.
-            all_tris
-                .iter()
-                .map(|t| point_tri_dist2(p, t))
-                .fold(f64::MAX, f64::min)
-                .sqrt()
+
+        // The SURFACE drives the interior grading. Each boundary facet carries a
+        // target edge length `h_target`, the finest of: its face tag's
+        // `face_maxh`, its owning solid's `surface_maxh`, the caps of its
+        // adjacent regions, else the bulk `maxh`. The sizing field then grows
+        // from these wall targets into the interior (Lipschitz with `grading`),
+        // so a finely meshed face refines the volume behind it and coarsens away.
+        let facet_target = |i: usize| -> f64 {
+            let ft = plc.face_tags[i].0;
+            if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
+                return h.min(maxh);
+            }
+            let owner = plc.surface_owners[plc.surface_refs[i].0 as usize];
+            if let Some(&(_, h)) = params.surface_maxh.iter().find(|(o, _)| *o == owner) {
+                return h.min(maxh);
+            }
+            let mut h = maxh;
+            for r in plc.region_tags[i] {
+                if r.0 != 0 {
+                    h = h.min(region_cap(r.0));
+                }
+            }
+            h
         };
-        let h_of = |p: V3, region: u32, d: f64| -> f64 {
-            // Bulk cap, lowered per-region; graded up from the fine wall target.
+        let facets: Vec<(Tri, f64)> = plc
+            .triangles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let tri = Tri::new(
+                    plc.vertices[t[0] as usize],
+                    plc.vertices[t[1] as usize],
+                    plc.vertices[t[2] as usize],
+                );
+                (tri, facet_target(i))
+            })
+            .collect();
+
+        // The finest volume target anywhere: the base BCC spacing `s0`. The
+        // surface is oversampled finer than this; the BCC only has to resolve the
+        // finest VOLUME size so it stays ~2x coarser than the surface and the
+        // surface tiling dominates the restricted Delaunay (conformity).
+        let mut s0 = facets.iter().map(|&(_, h)| h).fold(f64::MAX, f64::min);
+        for &(_, sh) in &params.size_points {
+            s0 = s0.min(sh);
+        }
+        let spacing = if s0.is_finite() && s0 > 0.0 { s0 } else { diag / 8.0 };
+        let min_half = (0.5 * spacing).max(1e-9 * diag.max(1.0));
+
+        // Nearest-facet distance (for the uniform-leaf region cache).
+        let dist_to_boundary = |p: V3| -> f64 {
+            facets.iter().map(|(t, _)| point_tri_dist2(p, t)).fold(f64::MAX, f64::min).sqrt()
+        };
+        let h_of = |p: V3, region: u32| -> f64 {
+            // Bulk/region cap, lowered by the graded envelope of every wall
+            // target and every point source (each Lipschitz with `grading`).
             let mut h = region_cap(region).min(maxh);
-            h = h.min(bh + grading * d);
+            for (t, tgt) in &facets {
+                h = h.min(tgt + grading * point_tri_dist2(p, t).sqrt());
+            }
             for (sp, sh) in &params.size_points {
                 h = h.min(sh + grading * dist(p, *sp));
             }
@@ -409,12 +428,12 @@ fn build_node(
     depth: u32,
     region_of: &dyn Fn(V3) -> u32,
     dist_of: &dyn Fn(V3) -> f64,
-    h_of: &dyn Fn(V3, u32, f64) -> f64,
+    h_of: &dyn Fn(V3, u32) -> f64,
     min_half: f64,
 ) -> Node {
     let region = region_of(center);
     let d = dist_of(center);
-    let h = h_of(center, region, d);
+    let h = h_of(center, region);
     // Subdivide while the cell is bigger than its target size (and not too deep
     // / too small). 2*half is the cell side.
     if 2.0 * half > h && depth < MAX_DEPTH && half > min_half {

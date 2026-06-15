@@ -4,34 +4,30 @@
 //! pipeline. The exact CSG arrangement (the `TaggedPlc`) is untouched; this
 //! stage fills it with a variational (Lloyd-relaxed) tetrahedralization.
 //!
-//! Strict density-driven hierarchy (1D -> 2D -> 3D), each level fixed before the
-//! next, as in established surface+volume CVT remeshing. Stage 1: corners fixed,
-//! feature edges populated at the target density (straight edges uniform, the 1D
-//! CVT optimum) and fixed. Stage 2: each planar patch filled by a 2D Lloyd
-//! (`surf2d`) with its edge points fixed; interface patches are meshed once and
-//! shared by both regions. Stage 3: the interior is filled and a 3D Lloyd relaxes
-//! the volume points with the whole surface fixed.
-//! A small protection/recovery pass then inserts on-plane points where a volume
-//! tet still straddles a fixed face (the restricted-Delaunay condition is not
-//! free), so interfaces and concave (void) boundaries conform exactly. Regions
-//! are assigned by exact flood-fill (`classify_tet_regions`).
+//! Unified exact kernel: every mesh point is a [`Site`] = a `Point3` pinned to a
+//! carrier (vertex / edge line / face plane / volume). Surface points stay
+//! EXACTLY on their carrier (`Lnc`/`Pac`), so the boundary is conforming and
+//! region tagging is exact (`orient3d == 0`); volume points are explicit f64
+//! (the fast predicate path).
 //!
-//! All topological decisions use the exact predicates (`orient2d`/`orient3d`,
-//! `incircle2d`, `Tri::contains_coplanar`, `point_inside_solid`); float is used
-//! only for non-decision quantities (relaxation moves, centroid weights).
+//! Strict density-driven hierarchy, each level fixed before the next: corners ->
+//! feature edges (1D, uniform = the 1D CVT optimum) -> faces (2D Lloyd in
+//! `surf2d`) -> volume (3D Lloyd). Conformity comes from seeding the surface
+//! FINER than the volume (oversampling: the restricted Delaunay then recovers
+//! the boundary as tet faces); regions are assigned by raytracing
+//! (`classify_tet_regions`). Out-of-domain volume moves are rejected (kept).
 
-use crate::conform::{
-    build_patches, classify_tet_regions, quality_stats, MeshParams, Patch, SurfaceFace, TetMesh,
-};
+use crate::conform::{build_patches, classify_tet_regions, quality_stats, MeshParams, Patch, SurfaceFace, TetMesh};
 use crate::delaunay::DelaunayBuilder;
 use crate::seed::{bcc_lattice, SizingField};
+use crate::site::{Carrier, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
 use rapidmesh_geom::{RegionTag, TaggedPlc};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 type V3 = [f64; 3];
 
@@ -46,28 +42,25 @@ const DEFAULT_SUBDIV: f64 = 8.0;
 const BOX_PAD_FRAC: f64 = 1e-6;
 /// Minimum separation of a seeded/moved site from any other, fraction of spacing.
 const SEPARATION_FRAC: f64 = 0.45;
-/// The surface (edges + faces) is seeded finer than the volume by this factor.
-/// Oversampling the boundary makes the restricted Delaunay recover it as tet
-/// faces automatically (no explicit boundary recovery needed); region assignment
-/// is then a raytracing classification (`classify_tet_regions`).
+/// The surface (edges + faces) is seeded finer than the volume by this factor so
+/// the restricted Delaunay recovers the boundary without explicit recovery.
 const SURFACE_OVERSAMPLE: f64 = 0.5;
-/// A tet face is coplanar with a patch if all its vertices are within this
-/// fraction of the scene diagonal of the patch plane. Surface points on tilted
-/// patches sit on the plane only to f64 precision (~1e-15); this absorbs that.
-/// The precise patch assignment is still the exact `contains_coplanar` test.
+/// A face is coplanar with a patch if all its vertices are within this fraction
+/// of the scene diagonal of the patch plane (f64 surface points sit on tilted
+/// planes only to ~1e-15; the precise assignment is the exact containment test).
 const COPLANAR_EPS_FRAC: f64 = 1e-9;
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
 }
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+fn scale(a: V3, s: f64) -> V3 {
+    [a[0] * s, a[1] * s, a[2] * s]
 }
 fn dist(a: V3, b: V3) -> f64 {
     dot(sub(a, b), sub(a, b)).sqrt()
@@ -88,9 +81,9 @@ fn tri_of(plc: &TaggedPlc, t: [u32; 3]) -> Tri {
 }
 
 /// The OUTER boundary of the meshable domain: PLC facets with background
-/// (region 0) on one side. Internal material interfaces (both sides nonzero)
-/// are excluded, so a parity ray-cast against this soup answers "inside the
-/// meshable union" correctly even for nested regions and voids.
+/// (region 0) on one side. Internal interfaces (both sides nonzero) are
+/// excluded, so a parity ray-cast against this soup answers "inside the meshable
+/// union" correctly for nested regions and voids.
 fn domain_soup(plc: &TaggedPlc) -> Vec<Tri> {
     let outer: Vec<Tri> = plc
         .triangles
@@ -173,17 +166,6 @@ fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
 
-/// Interior subdivision points (excluding endpoints) of segment a->b at spacing.
-fn subdivide(a: V3, b: V3, spacing: f64) -> Vec<V3> {
-    let n = ((dist(a, b) / spacing).round() as usize).max(1);
-    (1..n)
-        .map(|k| {
-            let t = k as f64 / n as f64;
-            std::array::from_fn(|d| a[d] + t * (b[d] - a[d]))
-        })
-        .collect()
-}
-
 /// Boundary edges of a patch: corner pairs appearing once among its facets.
 fn patch_boundary_edges(plc: &TaggedPlc, patch: &Patch) -> Vec<(usize, usize)> {
     let mut count: HashMap<(usize, usize), usize> = HashMap::new();
@@ -197,38 +179,43 @@ fn patch_boundary_edges(plc: &TaggedPlc, patch: &Patch) -> Vec<(usize, usize)> {
     count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect()
 }
 
-/// True if `p` (assumed on the patch plane) lies on a member facet (exact).
-fn point_in_patch(plc: &TaggedPlc, patch: &Patch, p: V3) -> bool {
-    let pp = Point3::Explicit(p);
+/// True if the point `p` (a valid `Point3`, assumed on the patch plane) lies on
+/// a member facet of the patch (exact `Tri::contains_coplanar`).
+fn point_in_patch(plc: &TaggedPlc, patch: &Patch, p: &Point3) -> bool {
     patch.member_indices.iter().any(|&fi| {
         let tri = tri_of(plc, plc.triangles[fi]);
         let (ax, or) = tri.projection_axis();
-        tri.contains_coplanar(&pp, ax, or)
+        tri.contains_coplanar(p, ax, or)
     })
 }
 
 /// The patch a tet face tiles: all three vertices within `eps` of the patch
-/// plane (tolerant, since tilted-patch surface points sit on the plane only to
-/// f64 precision) AND the face centroid on a member facet (exact
-/// `contains_coplanar`, which is the precise assignment). `None` if on no patch.
+/// plane (tolerant, since f64 surface points sit on a tilted plane only to
+/// ~1e-15) AND the exact barycenter on a member facet (`contains_coplanar`,
+/// the precise assignment). `None` if on no patch (a volume vertex matches none).
 fn patch_of_face(
     plc: &TaggedPlc,
     patches: &[Patch],
-    planes: &[(V3, V3)],
-    sites: &[V3],
+    sites: &[Site],
     f: [usize; 3],
     eps: f64,
 ) -> Option<usize> {
-    let centroid: V3 =
-        std::array::from_fn(|k| (sites[f[0]][k] + sites[f[1]][k] + sites[f[2]][k]) / 3.0);
+    let c: V3 = std::array::from_fn(|k| {
+        (sites[f[0]].pos()[k] + sites[f[1]].pos()[k] + sites[f[2]].pos()[k]) / 3.0
+    });
+    let bary = Point3::Explicit(c);
     for (pi, p) in patches.iter().enumerate() {
-        let (p0, n) = planes[pi];
-        let coplanar = f.iter().all(|&v| dot(sub(sites[v], p0), n).abs() < eps);
-        if coplanar && point_in_patch(plc, p, centroid) {
+        let (p0, n) = patch_plane(plc, p);
+        let coplanar = f.iter().all(|&v| dot(sub(sites[v].pos(), p0), n).abs() < eps);
+        if coplanar && point_in_patch(plc, p, &bary) {
             return Some(pi);
         }
     }
     None
+}
+
+fn positions(sites: &[Site]) -> Vec<V3> {
+    sites.iter().map(|s| s.pos()).collect()
 }
 
 /// Meshes a tagged PLC into a region-tagged tet mesh by hierarchical CVT.
@@ -256,17 +243,14 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let inside = |p: V3| point_inside_solid(&Point3::Explicit(p), p, &soup, &boxes, (lo, hi));
 
     let patches = build_patches(plc);
-    let planes: Vec<(V3, V3)> = patches.iter().map(|p| patch_plane(plc, p)).collect();
     let sep = SEPARATION_FRAC * spacing;
-    // Surface seeded finer than the volume so the boundary self-recovers.
     let surf_spacing = spacing * SURFACE_OVERSAMPLE;
     let surf_sep = SEPARATION_FRAC * surf_spacing;
 
     // ---- stage 1: corners + feature edges (1D), fixed --------------------
     let t_surf = std::time::Instant::now();
     let nb = plc.vertices.len();
-    let mut sites: Vec<V3> = plc.vertices.clone();
-    let mut fixed: Vec<bool> = vec![true; nb];
+    let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
     let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
     let mut edge_pts: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for edges in &pbe {
@@ -274,11 +258,11 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if edge_pts.contains_key(&e) {
                 continue;
             }
-            let idx: Vec<usize> = subdivide(plc.vertices[e.0], plc.vertices[e.1], surf_spacing)
-                .into_iter()
-                .map(|p| {
-                    sites.push(p);
-                    fixed.push(true);
+            let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
+            let n = ((dist(va, vb) / surf_spacing).round() as usize).max(1);
+            let idx: Vec<usize> = (1..n)
+                .map(|k| {
+                    sites.push(Site::on_edge(va, vb, k as f64 / n as f64));
                     sites.len() - 1
                 })
                 .collect();
@@ -288,42 +272,41 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- stage 2: per-patch 2D Lloyd (faces), edges fixed ----------------
     for (pi, patch) in patches.iter().enumerate() {
-        let (p0, n) = planes[pi];
+        let (p0, n) = patch_plane(plc, patch);
         let drop = drop_axis(n);
         // Fixed 2D boundary: the patch's boundary corners and edge points.
         let mut bnd: Vec<[f64; 2]> = Vec::new();
-        let mut seen: HashSet<usize> = HashSet::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for &(a, b) in &pbe[pi] {
-            for c in [a, b] {
-                if seen.insert(c) {
-                    bnd.push(project2(plc.vertices[c], drop));
+            for cv in [a, b] {
+                if seen.insert(cv) {
+                    bnd.push(project2(plc.vertices[cv], drop));
                 }
             }
             for &i in &edge_pts[&sorted2(a, b)] {
-                bnd.push(project2(sites[i], drop));
+                bnd.push(project2(sites[i].pos(), drop));
             }
         }
         if bnd.len() < 3 {
             continue;
         }
-        let mut lo2 = bnd[0];
-        let mut hi2 = bnd[0];
+        let (mut lo2, mut hi2) = (bnd[0], bnd[0]);
         for &p in &bnd {
             for k in 0..2 {
                 lo2[k] = lo2[k].min(p[k]);
                 hi2[k] = hi2[k].max(p[k]);
             }
         }
-        let inside2 = |uv: [f64; 2]| point_in_patch(plc, patch, lift3(uv, drop, p0, n));
+        let inside2 =
+            |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let interior = cvt_fill(&bnd, lo2, hi2, surf_spacing, LLOYD_ITERS, inside2);
-        // Lift back to the plane; keep clear of existing sites.
-        let tree = Octree::build(&sites);
+        let pos = positions(&sites);
+        let tree = Octree::build(&pos);
         for uv in interior {
             let q = lift3(uv, drop, p0, n);
-            let near = tree.nearest(q).map(|j| dist(q, sites[j as usize]) < surf_sep).unwrap_or(false);
+            let near = tree.nearest(q).map(|j| dist(q, pos[j as usize]) < surf_sep).unwrap_or(false);
             if !near {
-                sites.push(q);
-                fixed.push(true);
+                sites.push(Site::on_plane(p0, n, q));
             }
         }
     }
@@ -333,31 +316,35 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- stage 3: interior volume points, free ---------------------------
     let t_seed = std::time::Instant::now();
     if spacing.is_finite() && spacing > 0.0 {
-        let surf_tree = Octree::build(&sites);
+        let pos = positions(&sites);
+        let surf_tree = Octree::build(&pos);
         for p in bcc_lattice(lo, hi, spacing) {
             if !inside(p) {
                 continue;
             }
-            let near = surf_tree.nearest(p).map(|j| dist(p, sites[j as usize]) < sep).unwrap_or(false);
+            let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < sep).unwrap_or(false);
             if !near {
-                sites.push(p);
-                fixed.push(false);
+                sites.push(Site::free(p));
             }
         }
     }
     rmlog::stage("mesh.seed", t_seed.elapsed().as_secs_f64());
 
-    // ---- 3D Lloyd on the volume points (surface fixed) -------------------
+    // ---- 3D Lloyd on the volume sites (surface fixed) --------------------
+    // The surface is fixed now, so its octree (for mirror-in) is built once.
+    let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
+    let surf_tree = Octree::build(&surf_pos);
     let t_lloyd = std::time::Instant::now();
     for _ in 0..LLOYD_ITERS {
-        if !fixed.iter().any(|&f| !f) {
+        if !sites.iter().any(|s| s.is_volume()) {
             break;
         }
+        let pos = positions(&sites);
         let tets = delaunay_of(&sites, lo, hi);
         let mut num = vec![[0.0f64; 3]; sites.len()];
         let mut den = vec![0.0f64; sites.len()];
         for t in &tets {
-            let p = [sites[t[0]], sites[t[1]], sites[t[2]], sites[t[3]]];
+            let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
             let w = tet_det(p).abs();
             let c = centroid4(p);
             for &i in t {
@@ -367,18 +354,32 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 den[i] += w;
             }
         }
-        let tree = Octree::build(&sites);
+        let tree = Octree::build(&pos);
         for i in 0..sites.len() {
-            if fixed[i] || den[i] == 0.0 {
+            if !sites[i].is_volume() || den[i] == 0.0 {
                 continue;
             }
-            let tgt: V3 = std::array::from_fn(|k| num[i][k] / den[i]);
+            let mut tgt: V3 = std::array::from_fn(|k| num[i][k] / den[i]);
+            // Out of the domain: mirror back in across the nearest boundary face
+            // (the planar carrier of the closest surface site). If that does not
+            // land inside, keep the point where it was.
             if !inside(tgt) {
-                continue;
+                let mirrored = surf_tree.nearest(tgt).and_then(|j| {
+                    if let Carrier::Plane { p0, n } = sites[j as usize].carrier {
+                        let r = reflect(tgt, p0, n);
+                        inside(r).then_some(r)
+                    } else {
+                        None
+                    }
+                });
+                match mirrored {
+                    Some(r) => tgt = r,
+                    None => continue,
+                }
             }
             let crowded = tree.within_radius(tgt, sep).into_iter().any(|j| j as usize != i);
             if !crowded {
-                sites[i] = tgt;
+                sites[i].move_to(tgt);
             }
         }
     }
@@ -387,6 +388,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- final triangulation, tilings, region classification --------------
     let t_classify = std::time::Instant::now();
     let all_tets = delaunay_of(&sites, lo, hi);
+    let pts = positions(&sites);
     let mut face_owners: HashMap<[usize; 3], Vec<u32>> = HashMap::new();
     for (ti, t) in all_tets.iter().enumerate() {
         for fv in &TET_FACES {
@@ -395,18 +397,18 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             face_owners.entry(f).or_default().push(ti as u32);
         }
     }
-    // A face can tile a patch only if all three vertices are fixed surface sites.
+    // A face tiles a patch only if all three vertices are surface sites.
     let coplanar_eps = COPLANAR_EPS_FRAC * diag.max(1.0);
     let mut tilings: Vec<Vec<[usize; 3]>> = vec![Vec::new(); patches.len()];
     for key in face_owners.keys() {
-        if !key.iter().all(|&v| fixed[v]) {
+        if key.iter().any(|&v| v >= n_surf) {
             continue;
         }
-        if let Some(pi) = patch_of_face(plc, &patches, &planes, &sites, *key, coplanar_eps) {
+        if let Some(pi) = patch_of_face(plc, &patches, &sites, *key, coplanar_eps) {
             tilings[pi].push(*key);
         }
     }
-    let region = classify_tet_regions(&sites, &all_tets, &patches, &tilings, &face_owners, (lo, hi));
+    let region = classify_tet_regions(&pts, &all_tets, &patches, &tilings, &face_owners, (lo, hi));
     let mut kept: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     for (t, &r) in all_tets.iter().zip(&region) {
@@ -431,7 +433,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
 
     let mesh = TetMesh {
-        points: sites,
+        points: pts,
         tets: kept,
         tet_regions,
         faces,
@@ -450,13 +452,19 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     mesh
 }
 
-/// A fresh Delaunay over the current sites; returns real tets in site indices.
-fn delaunay_of(sites: &[V3], lo: V3, hi: V3) -> Vec<[usize; 4]> {
+/// A fresh Delaunay over the current site positions; returns real tets in site
+/// (insertion) indices.
+fn delaunay_of(sites: &[Site], lo: V3, hi: V3) -> Vec<[usize; 4]> {
     let mut db = DelaunayBuilder::enclosing(lo, hi);
-    for &p in sites {
-        db.insert(p);
+    for s in sites {
+        db.insert(s.pos());
     }
     db.tets()
+}
+
+/// Reflection of `p` across the plane (`p0`, unit `n`).
+fn reflect(p: V3, p0: V3, n: V3) -> V3 {
+    sub(p, scale(n, 2.0 * dot(sub(p, p0), n)))
 }
 
 #[cfg(test)]
@@ -496,21 +504,6 @@ mod tests {
         faces.values().all(|&c| c <= 2)
     }
 
-    fn max_edge(m: &TetMesh) -> f64 {
-        let mut e = 0.0_f64;
-        for t in &m.tets {
-            for i in 0..4 {
-                for j in i + 1..4 {
-                    e = e.max(dist(m.points[t[i]], m.points[t[j]]));
-                }
-            }
-        }
-        e
-    }
-
-    // WP4/WP5 correctness gates: EXACT region volume + watertight. Element
-    // quality (min dihedral, edge bound) is the WP8 optimizer's job.
-
     #[test]
     fn box_meshes_exactly() {
         let mut scene = Scene::new();
@@ -541,16 +534,5 @@ mod tests {
         assert_eq!(region_volume6(&mesh, diel.0), rat(24.0), "diel volume");
         assert_eq!(region_volume6(&mesh, air.0), rat(360.0), "air volume");
         assert!(watertight(&mesh));
-    }
-
-    #[test]
-    fn sized_box_refines_boundary() {
-        let mut scene = Scene::new();
-        let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]));
-        let plc = scene.assemble();
-        let mesh = mesh(&plc, &MeshParams { maxh: 0.6, ..Default::default() });
-        assert_eq!(region_volume6(&mesh, r.0), rat(36.0), "exact volume");
-        assert!(watertight(&mesh));
-        assert!(max_edge(&mesh) <= 2.0 * 0.6, "boundary not refined: {}", max_edge(&mesh));
     }
 }

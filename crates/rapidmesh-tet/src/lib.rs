@@ -18,6 +18,7 @@ pub mod delaunay;
 pub mod optimize;
 pub mod project;
 pub mod seed;
+pub mod site;
 pub mod spatial;
 pub mod surf2d;
 

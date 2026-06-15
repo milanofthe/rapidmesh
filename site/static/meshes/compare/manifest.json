@@ -504,13 +504,13 @@
     "rapidmesh": {
      "file": "meshes/compare/naca0012.rapidmesh.json",
      "stats": {
-      "n_points": 5550,
-      "n_tets": 25949,
+      "n_points": 5558,
+      "n_tets": 25973,
       "n_regions": 1,
       "min_dihedral_deg": 2.9050927979592984,
-      "max_radius_edge": 18.217944340226445,
+      "max_radius_edge": 18.21824704834547,
       "max_edge": 0.5539165699382147,
-      "millis": 6179
+      "millis": 5425
      }
     },
     "gmsh": {

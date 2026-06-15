@@ -136,6 +136,10 @@ fn centroid4(p: [V3; 4]) -> V3 {
     std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]))
 }
 
+fn centroid3(p: [V3; 3]) -> V3 {
+    std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0)
+}
+
 fn tri_of(plc: &TaggedPlc, t: [u32; 3]) -> Tri {
     Tri::new(
         plc.vertices[t[0] as usize],
@@ -282,6 +286,115 @@ fn positions(sites: &[Site]) -> Vec<V3> {
     sites.iter().map(|s| s.pos()).collect()
 }
 
+/// A bounded, chart-meshable curved surface group for the VOLUME path: all
+/// facets of one analytic curved surface + region pair + face tag whose chart
+/// is a bijection (an open/bounded patch). These get on-surface, curvature-
+/// graded seeding and restricted-Delaunay face recovery; closed or wrapping
+/// curved groups are absent here and stay on the per-facet planar path.
+struct ChartGroup {
+    surface: u32,
+    kind: SurfaceKind,
+    regions: [RegionTag; 2],
+    face_tag: rapidmesh_geom::FaceTag,
+    members: Vec<usize>,
+    boundary: Vec<(usize, usize)>,
+    chart: Box<dyn crate::surfchart::SurfaceChart>,
+}
+
+/// The bounded curved smooth-groups of the PLC suitable for chart-based volume
+/// seeding (the same grouping `surface_mesh` uses, minus the closed/wrapping
+/// ones, which fail the bijectivity round-trip and fall back).
+fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
+    type GKey = (u32, u32, u32, u32);
+    let is_curved = |sid: u32| !matches!(plc.surfaces[sid as usize], SurfaceKind::Plane);
+    let mut groups: DMap<GKey, Vec<usize>> = DMap::default();
+    for i in 0..plc.triangles.len() {
+        let sid = plc.surface_refs[i].0;
+        if is_curved(sid) {
+            let r = plc.region_tags[i];
+            let key = (sid, r[0].0.min(r[1].0), r[0].0.max(r[1].0), plc.face_tags[i].0);
+            groups.entry(key).or_default().push(i);
+        }
+    }
+    let mut list: Vec<(GKey, Vec<usize>)> = groups.into_iter().collect();
+    list.sort_by_key(|(_, m)| m.iter().copied().min());
+    let tol = 1e-6 * diag.max(1.0);
+    let mut out = Vec::new();
+    for ((sid, r_lo, r_hi, tag), members) in list {
+        let boundary = group_boundary_edges(plc, &members);
+        if boundary.is_empty() {
+            continue; // closed group: no chart covers it bijectively
+        }
+        let kind = plc.surfaces[sid as usize].clone();
+        let mut gverts: Vec<usize> = members
+            .iter()
+            .flat_map(|&fi| plc.triangles[fi].iter().map(|&v| v as usize).collect::<Vec<_>>())
+            .collect();
+        gverts.sort_unstable();
+        gverts.dedup();
+        let pts: Vec<V3> = gverts.iter().map(|&v| plc.vertices[v]).collect();
+        let chart = match build_chart(&kind, &pts) {
+            Some(c) => c,
+            None => continue,
+        };
+        let bijective = gverts.iter().all(|&v| {
+            let p = plc.vertices[v];
+            dist(chart.project(p), chart.to_xyz(chart.to_uv(p))) < tol
+        });
+        if !bijective {
+            continue; // folding chart: stay on the faceted path
+        }
+        // Per-vertex round-trip passes even for a chart that WRAPS (a full
+        // cylinder/torus barrel): each vertex maps consistently, but the chart
+        // tears at the seam. Detect it: a boundary edge that straddles the seam
+        // maps to a huge chart segment (~2*pi*R) while its 3D length is one
+        // facet. If any boundary edge's chart length far exceeds its 3D length,
+        // the chart is not a global bijection over the group -> fall back.
+        let seam = boundary.iter().any(|&(a, b)| {
+            let (ca, cb) = (chart.to_uv(plc.vertices[a]), chart.to_uv(plc.vertices[b]));
+            let chart_len = ((ca[0] - cb[0]).powi(2) + (ca[1] - cb[1]).powi(2)).sqrt();
+            let real_len = dist(plc.vertices[a], plc.vertices[b]);
+            chart_len > 4.0 * real_len + tol
+        });
+        if seam {
+            continue; // wrapping chart: stay on the faceted path
+        }
+        out.push(ChartGroup {
+            surface: sid,
+            kind,
+            regions: [RegionTag(r_lo), RegionTag(r_hi)],
+            face_tag: rapidmesh_geom::FaceTag(tag),
+            members,
+            boundary,
+            chart,
+        });
+    }
+    out
+}
+
+/// Adds graded edge points for boundary edge `e` (once, cached) as `on_edge`
+/// sites; shared by the planar patches and the curved groups.
+fn ensure_edge(
+    plc: &TaggedPlc,
+    domain: &DomainTree,
+    sites: &mut Vec<Site>,
+    edge_pts: &mut DMap<(usize, usize), Vec<usize>>,
+    e: (usize, usize),
+) {
+    if edge_pts.contains_key(&e) {
+        return;
+    }
+    let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
+    let idx: Vec<usize> = graded_edge_fracs(va, vb, domain)
+        .into_iter()
+        .map(|f| {
+            sites.push(Site::on_edge(va, vb, f));
+            sites.len() - 1
+        })
+        .collect();
+    edge_pts.insert(e, idx);
+}
+
 /// Meshes a tagged PLC into a region-tagged tet mesh by hierarchical CVT.
 pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
@@ -315,6 +428,13 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stage("mesh.domain", t_domain.elapsed().as_secs_f64());
 
     let patches = build_patches(plc);
+    // Bounded curved groups meshed on their analytic surface (the curved Lloyd,
+    // now in the volume path); their facets are excluded from the per-facet
+    // planar path. Closed/wrapping curved surfaces produce no chart group and
+    // stay on the faceted path, so every planar/faceted fixture is unchanged.
+    let cgroups = chart_groups(plc, diag);
+    let chart_facets: DSet<usize> = cgroups.iter().flat_map(|g| g.members.iter().copied()).collect();
+    let is_chart_patch = |p: &Patch| p.member_indices.iter().any(|fi| chart_facets.contains(fi));
     // Fixed minimal site separation (surface clearance and volume crowding),
     // scaled by the global finest spacing. The grading lives in the seeding
     // density (the domain octree); `sep` only has to stay below the finest wall
@@ -333,20 +453,19 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
     let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
     let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
-    for edges in &pbe {
-        for &e in edges {
-            if edge_pts.contains_key(&e) {
-                continue;
-            }
-            let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
-            let idx: Vec<usize> = graded_edge_fracs(va, vb, &domain)
-                .into_iter()
-                .map(|f| {
-                    sites.push(Site::on_edge(va, vb, f));
-                    sites.len() - 1
-                })
-                .collect();
-            edge_pts.insert(e, idx);
+    // Non-chart patches keep their per-patch boundary edges; chart groups use
+    // their GROUP boundary (no points on internal curved facet seams).
+    for (pi, patch) in patches.iter().enumerate() {
+        if is_chart_patch(patch) {
+            continue;
+        }
+        for &e in &pbe[pi] {
+            ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+        }
+    }
+    for g in &cgroups {
+        for &e in &g.boundary {
+            ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
         }
     }
 
@@ -359,6 +478,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let face_sites: Vec<Site> = patches
         .par_iter()
         .enumerate()
+        .filter(|(_, patch)| !is_chart_patch(patch))
         .flat_map(|(pi, patch)| {
             let (p0, n) = patch_plane(plc, patch);
             let drop = drop_axis(n);
@@ -397,6 +517,69 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
         .collect();
     sites.extend(face_sites);
+
+    // Curved smooth-groups: relax interior points in the analytic chart and seed
+    // them as `on_surface` sites (curvature-graded, EXACTLY on the surface), the
+    // curved Lloyd now feeding the volume Delaunay. Boundary is corners + shared
+    // edge points (same sites both sides). Oversampled like the planar faces so
+    // the restricted Delaunay recovers the curved boundary as tet faces.
+    for g in &cgroups {
+        let mut loc2: Vec<[f64; 2]> = Vec::new();
+        let mut seen: DSet<usize> = DSet::default();
+        let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
+        for &(a, b) in &g.boundary {
+            segs.push((g.chart.to_uv(plc.vertices[a]), g.chart.to_uv(plc.vertices[b])));
+            for cv in [a, b] {
+                if seen.insert(cv) {
+                    loc2.push(g.chart.to_uv(plc.vertices[cv]));
+                }
+            }
+            for &gj in &edge_pts[&sorted2(a, b)] {
+                if seen.insert(gj) {
+                    loc2.push(g.chart.to_uv(sites[gj].pos()));
+                }
+            }
+        }
+        if loc2.len() < 3 {
+            continue;
+        }
+        let nb2 = loc2.len();
+        let (mut lo2, mut hi2) = (loc2[0], loc2[0]);
+        for &p in &loc2[..nb2] {
+            for k in 0..2 {
+                lo2[k] = lo2[k].min(p[k]);
+                hi2[k] = hi2[k].max(p[k]);
+            }
+        }
+        // The boundary density follows the VOLUME sizing field (graded), NOT the
+        // curvature bias: refining the surface finer than the volume can support
+        // would seed slivers. The curvature/volume-error bias stays a surface-
+        // export feature (`surface_mesh`); here the win is that the boundary
+        // nodes sit EXACTLY on the analytic surface instead of on chord facets.
+        let step = SURFACE_OVERSAMPLE * domain.finest();
+        let inside2 = |uv: [f64; 2]| in_loops(uv, &segs);
+        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(g.chart.to_xyz(uv));
+        // The chart separation is in ARC LENGTH (isometric); across a tightly
+        // curved region (an airfoil nose) two points on opposite sides are far
+        // in arc length but close in 3D, which would seed slivers. Enforce 3D
+        // clearance (`sep`) against the existing surface and the accepted curved
+        // points -- the same guard the volume seeding uses.
+        let pos_now = positions(&sites);
+        let tree = Octree::build(&pos_now);
+        let mut accepted: Vec<V3> = Vec::new();
+        for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2) {
+            let p = g.chart.to_xyz(uv);
+            let near = tree.nearest(p).map(|j| dist(p, pos_now[j as usize]) < sep).unwrap_or(false);
+            if near || accepted.iter().any(|q| dist(p, *q) < sep) {
+                continue;
+            }
+            accepted.push(p);
+        }
+        for p in accepted {
+            sites.push(Site::on_surface(g.kind.clone(), p));
+        }
+    }
+
     let n_surf = sites.len();
     rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
 
@@ -588,6 +771,48 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 patch: pi as u32,
                 surface: patch.surface,
             });
+        }
+    }
+
+    // Curved-group boundary faces: restricted-Delaunay extraction. A tet face
+    // with all-surface vertices that the planar tilings did not claim, that
+    // separates two distinct regions (or a region from outside), and whose
+    // centroid lies on a chart group's analytic surface, is that group's
+    // boundary face. These ARE tet faces (conformity holds) where coplanar
+    // tiling cannot reach a smoothly curved surface.
+    if !cgroups.is_empty() {
+        let claimed: DSet<[usize; 3]> = tilings.iter().flatten().copied().collect();
+        for (key, owners) in &face_owners {
+            if key.iter().any(|&v| v >= n_surf) || claimed.contains(key) {
+                continue;
+            }
+            let mut rs: Vec<u32> = owners.iter().map(|&ti| region[ti as usize]).collect();
+            if owners.len() == 1 {
+                rs.push(0);
+            }
+            rs.sort_unstable();
+            rs.dedup();
+            if rs.len() < 2 {
+                continue; // interior face (same region both sides)
+            }
+            let tri = [pts[key[0]], pts[key[1]], pts[key[2]]];
+            let c = centroid3(tri);
+            let max_edge = (0..3).map(|k| dist(tri[k], tri[(k + 1) % 3])).fold(0.0, f64::max);
+            for g in &cgroups {
+                let mut grs = vec![g.regions[0].0, g.regions[1].0];
+                grs.sort_unstable();
+                grs.dedup();
+                if grs == rs && dist(c, g.chart.project(c)) < 0.3 * max_edge {
+                    faces.push(SurfaceFace {
+                        tri: *key,
+                        face_tag: g.face_tag,
+                        regions: g.regions,
+                        patch: u32::MAX,
+                        surface: g.surface,
+                    });
+                    break;
+                }
+            }
         }
     }
 
@@ -1114,6 +1339,70 @@ mod tests {
         }
         let bad = edges.values().filter(|&&c| c != 2).count();
         assert_eq!(bad, 0, "closed manifold, {bad} non-manifold edges");
+    }
+
+    #[test]
+    fn extruded_spline_surface_in_volume_is_on_the_analytic_surface() {
+        // The curved Lloyd now feeds the VOLUME path: a half-cylinder (semicircle
+        // profile extruded) gets curved boundary faces whose interior vertices
+        // land EXACTLY on the cylinder, recovered as real tet faces.
+        let r = 1.0;
+        let w = 0.5_f64.sqrt();
+        let profile = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![[r, 0.0], [r, r], [0.0, r], [-r, r], [-r, 0.0]],
+            vec![1.0, w, 1.0, w, 1.0],
+        );
+        let solid = extrude_spline_profile(
+            profile,
+            24,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 2.0],
+        );
+        let mut scene = Scene::new();
+        let reg = scene.add_solid(solid);
+        let plc = scene.assemble();
+        let n_plc = plc.vertices.len();
+        let mesh = mesh(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
+
+        let mut curved = 0usize;
+        let mut exact_on = 0usize;
+        let mut max_dev = 0.0_f64;
+        for f in &mesh.faces {
+            if matches!(mesh.surfaces[f.surface as usize], SurfaceKind::Extruded { .. }) {
+                curved += 1;
+                for &v in &f.tri {
+                    let p = mesh.points[v];
+                    let dev = ((p[0] * p[0] + p[1] * p[1]).sqrt() - r).abs();
+                    max_dev = max_dev.max(dev);
+                    if v >= n_plc && dev < 1e-7 {
+                        exact_on += 1;
+                    }
+                }
+            }
+        }
+        assert!(curved > 0, "expected curved boundary faces in the volume mesh");
+        assert!(exact_on > 0, "curved volume boundary vertices should be exactly on the cylinder");
+        assert!(max_dev < 0.02, "no curved vertex grossly off radius, max_dev {max_dev}");
+        // every output face is a tet face (conformity) and the boundary is closed.
+        let mut tet_faces: HashMap<[usize; 3], usize> = HashMap::new();
+        for t in &mesh.tets {
+            for fv in &TET_FACES {
+                let mut k = [t[fv[0]], t[fv[1]], t[fv[2]]];
+                k.sort_unstable();
+                *tet_faces.entry(k).or_default() += 1;
+            }
+        }
+        for f in &mesh.faces {
+            let mut k = f.tri;
+            k.sort_unstable();
+            assert!(tet_faces.contains_key(&k), "surface face is not a tet face");
+        }
+        assert!(tet_faces.values().all(|&c| c <= 2), "non-manifold tet face");
+        assert!(region_volume6(&mesh, reg.0) > rat(0.0), "nonempty region");
     }
 
     #[test]

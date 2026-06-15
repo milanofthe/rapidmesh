@@ -189,6 +189,7 @@ impl DomainTree {
             let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
             crate::project::surface_curvature_radius(kind, facet_centroid(i)) * chord
         };
+
         let facet_target = |i: usize| -> f64 {
             let ft = plc.face_tags[i].0;
             let base = if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {

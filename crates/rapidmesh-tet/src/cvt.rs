@@ -26,10 +26,11 @@ use crate::seed::SizingField;
 use crate::site::{Carrier, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
+use crate::surfchart::Chart;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
-use rapidmesh_geom::{RegionTag, TaggedPlc};
+use rapidmesh_geom::{RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
@@ -65,6 +66,12 @@ const SEPARATION_FRAC: f64 = 0.45;
 /// the restricted Delaunay recovers the boundary without explicit recovery.
 /// 0.5 is the conformity threshold here; coarser (0.7) reintroduces straddlers.
 pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
+/// Chord/volume-error sizing bias for curved surfaces: a facet edge of length
+/// `h` on a surface of principal radius `R` deviates from the true surface by a
+/// sagitta `eps ~ h^2/(8R)`. Bounding the relative sagitta `eps/R <= this` caps
+/// the faceting (and thus the enclosed-volume error) independent of `maxh`:
+/// `h_curv = R * sqrt(8 * frac)`. 0.02 gives ~16 facets around a full circle.
+const SURF_CHORD_FRAC: f64 = 0.02;
 /// A face is coplanar with a patch if all its vertices are within this fraction
 /// of the scene diagonal of the patch plane (f64 surface points sit on tilted
 /// planes only to ~1e-15; the precise assignment is the exact containment test).
@@ -609,47 +616,125 @@ fn reflect(p: V3, p0: V3, n: V3) -> V3 {
     sub(p, scale(n, 2.0 * dot(sub(p, p0), n)))
 }
 
+/// Boundary edges of a curved smooth group: corner pairs appearing once across
+/// all its member facets (interior facet seams appear twice).
+fn group_boundary_edges(plc: &TaggedPlc, members: &[usize]) -> Vec<(usize, usize)> {
+    let mut count: DMap<(usize, usize), usize> = DMap::default();
+    for &fi in members {
+        let t = plc.triangles[fi];
+        let c = [t[0] as usize, t[1] as usize, t[2] as usize];
+        for e in 0..3 {
+            *count.entry(sorted2(c[e], c[(e + 1) % 3])).or_insert(0) += 1;
+        }
+    }
+    let mut out: Vec<(usize, usize)> = count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect();
+    out.sort_unstable();
+    out
+}
+
+/// Even-odd point-in-region test for a chart point against the group's boundary
+/// loops (corner-to-corner segments in chart coordinates). Handles holes (a
+/// sphere with several caps removed) via the parity rule.
+fn in_loops(uv: [f64; 2], segs: &[([f64; 2], [f64; 2])]) -> bool {
+    let mut c = false;
+    for &(a, b) in segs {
+        if (a[1] > uv[1]) != (b[1] > uv[1]) {
+            let xint = a[0] + (uv[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if uv[0] < xint {
+                c = !c;
+            }
+        }
+    }
+    c
+}
+
 /// Surface-only meshing: the early-exit export path. Runs the hierarchy's
-/// stage 1 (corners + graded feature-edge points) and stage 2 (per-patch 2D
-/// Lloyd), then triangulates each patch (the `delaunay2` that `cvt_fill`
-/// otherwise discards) and lifts it to 3D, giving the conforming boundary mesh
-/// WITHOUT the volume tetrahedralization. Shared edge points (cached) keep the
-/// patch triangulations conforming across seams.
+/// stage 1 (corners + graded feature-edge points) and stage 2 (2D Lloyd per
+/// tile), triangulates each tile and lifts it to 3D, giving the conforming
+/// boundary mesh WITHOUT the volume tetrahedralization. Shared edge points
+/// (cached) keep the tile triangulations conforming across seams.
+///
+/// A tile is either a planar patch (relaxed in its own plane, the classic path)
+/// or a curved SMOOTH GROUP: all facets of one analytic surface + region pair +
+/// face tag, meshed in a distance-faithful chart ([`Chart`]) with interior
+/// points placed by a curvature/volume-error sizing bias and lifted EXACTLY onto
+/// the analytic surface. A closed group (no boundary loop) or one whose chart is
+/// not a bijection (round-trip check fails) falls back to emitting its input
+/// facets unchanged.
 pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
     let domain = DomainTree::build(plc, params);
     let patches = build_patches(plc);
-    let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
 
-    // Global surface points: PLC corners, then graded edge points (shared across
-    // patches via the cache), then per-patch interior points appended below.
+    let mut diag = 0.0_f64;
+    {
+        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+        for p in &plc.vertices {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        diag = (0..3).map(|k| hi[k] - lo[k]).fold(diag, f64::max);
+    }
+
+    let is_curved = |sid: u32| !matches!(plc.surfaces[sid as usize], SurfaceKind::Plane);
+
+    // Planar patches keep the per-patch plane path; curved facets regroup into
+    // smooth groups keyed by (surface, region-lo, region-hi, face tag).
+    type GKey = (u32, u32, u32, u32);
+    let mut groups: DMap<GKey, Vec<usize>> = DMap::default();
+    for i in 0..plc.triangles.len() {
+        let sid = plc.surface_refs[i].0;
+        if is_curved(sid) {
+            let r = plc.region_tags[i];
+            let key = (sid, r[0].0.min(r[1].0), r[0].0.max(r[1].0), plc.face_tags[i].0);
+            groups.entry(key).or_default().push(i);
+        }
+    }
+    let mut group_list: Vec<(GKey, Vec<usize>)> = groups.into_iter().collect();
+    group_list.sort_by_key(|(_, m)| m.iter().copied().min());
+
+    // Boundary edges per planar patch and per curved group (true feature edges).
+    let planar: Vec<usize> = patches
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !is_curved(p.surface))
+        .map(|(pi, _)| pi)
+        .collect();
+    let pbe: Vec<Vec<(usize, usize)>> = planar.iter().map(|&pi| patch_boundary_edges(plc, &patches[pi])).collect();
+    let gbe: Vec<Vec<(usize, usize)>> =
+        group_list.iter().map(|(_, m)| group_boundary_edges(plc, m)).collect();
+
+    // Global surface points: PLC corners, then graded points on every boundary
+    // edge (shared across tiles via the cache), then per-tile interior points.
     let mut points: Vec<V3> = plc.vertices.clone();
     let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
-    for edges in &pbe {
-        for &e in edges {
-            if edge_pts.contains_key(&e) {
-                continue;
-            }
-            let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
-            let idx: Vec<usize> = graded_edge_fracs(va, vb, &domain)
-                .into_iter()
-                .map(|f| {
-                    points.push(std::array::from_fn(|k| va[k] + f * (vb[k] - va[k])));
-                    points.len() - 1
-                })
-                .collect();
-            edge_pts.insert(e, idx);
+    for e in pbe.iter().flatten().chain(gbe.iter().flatten()) {
+        if edge_pts.contains_key(e) {
+            continue;
         }
+        let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
+        let idx: Vec<usize> = graded_edge_fracs(va, vb, &domain)
+            .into_iter()
+            .map(|f| {
+                points.push(std::array::from_fn(|k| va[k] + f * (vb[k] - va[k])));
+                points.len() - 1
+            })
+            .collect();
+        edge_pts.insert(*e, idx);
     }
 
     let mut faces: Vec<SurfaceFace> = Vec::new();
-    for (pi, patch) in patches.iter().enumerate() {
+
+    // ---- planar patches: relax + triangulate in the patch plane -------------
+    for (li, &pi) in planar.iter().enumerate() {
+        let patch = &patches[pi];
         let (p0, n) = patch_plane(plc, patch);
         let drop = drop_axis(n);
-        // Boundary 2D points with their global index.
         let mut loc2: Vec<[f64; 2]> = Vec::new();
         let mut gidx: Vec<usize> = Vec::new();
         let mut seen: DSet<usize> = DSet::default();
-        for &(a, b) in &pbe[pi] {
+        for &(a, b) in &pbe[li] {
             for cv in [a, b] {
                 if seen.insert(cv) {
                     loc2.push(project2(points[cv], drop));
@@ -679,8 +764,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let step = SURFACE_OVERSAMPLE * domain.finest();
         let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
         for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2) {
-            let p3 = lift3(uv, drop, p0, n);
-            points.push(p3);
+            points.push(lift3(uv, drop, p0, n));
             loc2.push(uv);
             gidx.push(points.len() - 1);
         }
@@ -691,6 +775,139 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
                 regions: patch.regions,
                 patch: pi as u32,
                 surface: patch.surface,
+            });
+        }
+    }
+
+    // ---- curved smooth groups: chart-based curved Lloyd, with fallback ------
+    for (gi, (key, members)) in group_list.iter().enumerate() {
+        let (sid, r_lo, r_hi, tag) = *key;
+        let kind = plc.surfaces[sid as usize].clone();
+        let regions = [RegionTag(r_lo), RegionTag(r_hi)];
+        let face_tag = rapidmesh_geom::FaceTag(tag);
+        let patch_id = (patches.len() + gi) as u32;
+        let emit_input = |faces: &mut Vec<SurfaceFace>| {
+            for &fi in members {
+                let t = plc.triangles[fi];
+                faces.push(SurfaceFace {
+                    tri: [t[0] as usize, t[1] as usize, t[2] as usize],
+                    face_tag,
+                    regions,
+                    patch: patch_id,
+                    surface: sid,
+                });
+            }
+        };
+
+        let bedges = &gbe[gi];
+        if bedges.is_empty() {
+            // Closed group (a full sphere): no chart covers it bijectively.
+            emit_input(&mut faces);
+            continue;
+        }
+        // Chart frame from the group's (on-surface) vertices.
+        let mut gverts: Vec<usize> = members
+            .iter()
+            .flat_map(|&fi| plc.triangles[fi].iter().map(|&v| v as usize).collect::<Vec<_>>())
+            .collect();
+        gverts.sort_unstable();
+        gverts.dedup();
+        let chart = match Chart::new(&kind, &gverts.iter().map(|&v| points[v]).collect::<Vec<_>>()) {
+            Some(c) => c,
+            None => {
+                emit_input(&mut faces);
+                continue;
+            }
+        };
+        // Validate the chart is a bijection over the group. A boundary vertex on
+        // the chord-approximated intersection curve sits slightly off the
+        // analytic surface, so compare the chart round-trip against the surface
+        // PROJECTION (both land on the surface): they agree iff the chart did not
+        // fold (a singular point, e.g. the sphere antipode in the group, fails).
+        let tol = 1e-6 * diag.max(1.0);
+        let bijective = gverts.iter().all(|&v| {
+            let p = points[v];
+            dist(
+                crate::project::closest_on_surface(&kind, p),
+                chart.to_xyz(chart.to_uv(p)),
+            ) < tol
+        });
+        if !bijective {
+            emit_input(&mut faces);
+            continue;
+        }
+
+        // Boundary loop points in chart coordinates, plus corner-to-corner
+        // segments for the inside test.
+        let mut loc2: Vec<[f64; 2]> = Vec::new();
+        let mut gidx: Vec<usize> = Vec::new();
+        let mut seen: DSet<usize> = DSet::default();
+        let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
+        for &(a, b) in bedges {
+            segs.push((chart.to_uv(points[a]), chart.to_uv(points[b])));
+            for cv in [a, b] {
+                if seen.insert(cv) {
+                    loc2.push(chart.to_uv(points[cv]));
+                    gidx.push(cv);
+                }
+            }
+            for &gj in &edge_pts[&sorted2(a, b)] {
+                if seen.insert(gj) {
+                    loc2.push(chart.to_uv(points[gj]));
+                    gidx.push(gj);
+                }
+            }
+        }
+        if loc2.len() < 3 {
+            emit_input(&mut faces);
+            continue;
+        }
+        let nb = loc2.len();
+        let (mut lo2, mut hi2) = (loc2[0], loc2[0]);
+        for &p in &loc2[..nb] {
+            for k in 0..2 {
+                lo2[k] = lo2[k].min(p[k]);
+                hi2[k] = hi2[k].max(p[k]);
+            }
+        }
+        // Curvature/volume-error bias: the finest curvature radius over the group
+        // sets the grid step (so the scatter is fine enough to honor it); the
+        // per-point target is the finer of the domain field and the curvature cap.
+        let chord = (8.0 * SURF_CHORD_FRAC).sqrt();
+        let hc_min = gverts
+            .iter()
+            .map(|&v| chart.curvature_radius(chart.to_uv(points[v])))
+            .fold(f64::INFINITY, f64::min)
+            * chord;
+        let step = SURFACE_OVERSAMPLE * domain.finest().min(hc_min);
+        let inside2 = |uv: [f64; 2]| in_loops(uv, &segs);
+        let target = |uv: [f64; 2]| {
+            let xyz = chart.to_xyz(uv);
+            let hc = chart.curvature_radius(uv) * chord;
+            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc)
+        };
+        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2) {
+            points.push(chart.to_xyz(uv));
+            loc2.push(uv);
+            gidx.push(points.len() - 1);
+        }
+        // `delaunay2` triangulates the convex hull; the curved group's boundary
+        // (a chord-approximated intersection curve) is not exactly convex in the
+        // chart, so keep only the triangles whose centroid is inside the region.
+        for t in crate::surf2d::delaunay2(&loc2) {
+            let c = [
+                (loc2[t[0]][0] + loc2[t[1]][0] + loc2[t[2]][0]) / 3.0,
+                (loc2[t[0]][1] + loc2[t[1]][1] + loc2[t[2]][1]) / 3.0,
+            ];
+            if !in_loops(c, &segs) {
+                continue;
+            }
+            faces.push(SurfaceFace {
+                tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
+                face_tag,
+                regions,
+                patch: patch_id,
+                surface: sid,
             });
         }
     }
@@ -708,7 +925,7 @@ mod tests {
     use super::*;
     use num_rational::BigRational;
     use num_traits::Zero;
-    use rapidmesh_geom::{solid_box, Scene};
+    use rapidmesh_geom::{icosphere, solid_box, Scene};
     use rapidmesh_testutil::rat;
 
     fn region_volume6(m: &TetMesh, r: u32) -> BigRational {
@@ -778,6 +995,67 @@ mod tests {
             }
         }
         assert!(edges.values().all(|&c| c == 2), "closed manifold: every edge in exactly 2 faces");
+    }
+
+    #[test]
+    fn curved_surface_points_lie_on_sphere() {
+        // Two overlapping spheres: the curved boundary groups are meshed in the
+        // analytic chart and lifted onto the sphere, so every vertex of a Sphere
+        // face sits EXACTLY on its sphere (radius), and the result is a closed
+        // 2-manifold (every edge shared by two faces).
+        let mut scene = Scene::new();
+        scene.add_solid(icosphere([0.0, 0.0, 0.0], 1.0, 2));
+        scene.add_solid(icosphere([1.2, 0.0, 0.0], 1.0, 2));
+        let plc = scene.assemble();
+        let n_plc = plc.vertices.len();
+        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.5, ..Default::default() });
+
+        // Curved Lloyd added interior points; those the chart placed lie EXACTLY
+        // on the analytic sphere. Boundary points sit on the chord-approximated
+        // intersection curve (shared with the other sphere), off the sphere by at
+        // most the facet sagitta, so the max deviation stays small. Verify both.
+        let mut curved_faces = 0usize;
+        let mut exact_on = 0usize;
+        let mut max_dev = 0.0_f64;
+        for f in &sm.faces {
+            if let SurfaceKind::Sphere { center, radius } = sm.surfaces[f.surface as usize] {
+                curved_faces += 1;
+                for &v in &f.tri {
+                    let p = sm.points[v];
+                    let d = ((p[0] - center[0]).powi(2)
+                        + (p[1] - center[1]).powi(2)
+                        + (p[2] - center[2]).powi(2))
+                    .sqrt();
+                    let dev = (d - radius).abs();
+                    max_dev = max_dev.max(dev);
+                    if v >= n_plc && dev < 1e-9 {
+                        exact_on += 1;
+                    }
+                }
+            }
+        }
+        assert!(curved_faces > 0, "expected curved faces");
+        assert!(exact_on > 0, "curved Lloyd should place interior points exactly on the sphere");
+        assert!(max_dev < 0.05, "no vertex grossly off the sphere, max_dev {max_dev}");
+
+        // Per-region closure: the boundary of each region is a closed 2-manifold
+        // (every edge shared by exactly two of that region's faces). Edges on the
+        // triple curve where three regions meet are manifold within each region
+        // but carry three faces overall, which a global 2-manifold test rejects.
+        let mut regions: Vec<u32> = sm.faces.iter().flat_map(|f| [f.regions[0].0, f.regions[1].0]).collect();
+        regions.sort_unstable();
+        regions.dedup();
+        for r in regions.into_iter().filter(|&r| r != 0) {
+            let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+            for f in sm.faces.iter().filter(|f| f.regions[0].0 == r || f.regions[1].0 == r) {
+                for e in 0..3 {
+                    let (a, b) = (f.tri[e], f.tri[(e + 1) % 3]);
+                    *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+                }
+            }
+            let bad = edges.values().filter(|&&c| c != 2).count();
+            assert_eq!(bad, 0, "region {r} boundary not closed: {bad} edges");
+        }
     }
 
     #[test]

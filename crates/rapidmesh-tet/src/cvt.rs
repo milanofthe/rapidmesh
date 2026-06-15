@@ -289,7 +289,9 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // drives graded volume seeding, the Lloyd crowding neighbor search (its
     // per-leaf site buckets, re-filled each pass), and tet region classification,
     // so the interior coarsens away from the fine, fixed boundary.
+    let t_domain = std::time::Instant::now();
     let mut domain = DomainTree::build(plc, params);
+    rmlog::stage("mesh.domain", t_domain.elapsed().as_secs_f64());
 
     let patches = build_patches(plc);
     // Fixed minimal site separation (surface clearance and volume crowding),

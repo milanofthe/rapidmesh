@@ -238,12 +238,25 @@ impl DomainTree {
         // the O(F) brute scans that dominated the build on high-facet meshes.
         let bvh = FacetBvh::build(&facets);
 
+        // ---- feature sizing framework (WP-R1) -------------------------------
+        // The sizing field is the MIN over graded FEATURE sources, each a
+        // Lipschitz lower bound `target + grading * dist`:
+        //   - faces:  per-facet targets above (caps + sagitta curvature), `bvh`.
+        //   - curved EDGES: sagitta targets on the analytic edge curve, sampled
+        //     as segments (a degenerate tri = a segment, so `FacetBvh` gives the
+        //     point-to-segment graded distance). Filled by WP-R3; empty here.
+        //   - point sources: `size_points`.
+        // Adding a feature kind is just another graded source in `h_of`.
+        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc);
+        let edge_bvh = FacetBvh::build(&edge_segments);
+
         // Nearest-facet distance (for the uniform-leaf region cache).
         let dist_to_boundary = |p: V3| -> f64 { bvh.nearest_dist(p) };
         let h_of = |p: V3, region: u32| -> f64 {
-            // Bulk/region cap, lowered by the graded envelope of every wall
-            // target (BVH branch-and-bound) and every point source (Lipschitz).
-            let mut h = region_cap(region).min(maxh).min(bvh.graded_min(p, grading));
+            let mut h = region_cap(region)
+                .min(maxh)
+                .min(bvh.graded_min(p, grading))
+                .min(edge_bvh.graded_min(p, grading));
             for (sp, sh) in &params.size_points {
                 h = h.min(sh + grading * dist(p, *sp));
             }
@@ -392,6 +405,15 @@ impl DomainTree {
         gather(&self.root, center, half, p, r * r, &mut out);
         out
     }
+}
+
+/// Sagitta-bounded sizing targets along curved PLC edges (WP-R3): a curved
+/// feature edge on a known analytic carrier contributes `h(t) = R(t) *
+/// sqrt(8*delta_edge)` as segment targets (a segment = a degenerate tri), so the
+/// edge refines the volume near it under a normalized chord-error bound. Empty
+/// until R3 identifies curved-edge carriers; the graded edge source is wired.
+fn edge_sizing_segments(_plc: &TaggedPlc) -> Vec<(rapidmesh_csg::Tri, f64)> {
+    Vec::new()
 }
 
 #[allow(clippy::too_many_arguments)]

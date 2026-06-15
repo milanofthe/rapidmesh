@@ -9,6 +9,7 @@
 
 pub mod faceted;
 pub mod import;
+pub mod nurbs;
 pub mod plc;
 pub mod polygon;
 pub mod prim;

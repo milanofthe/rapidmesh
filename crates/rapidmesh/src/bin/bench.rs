@@ -115,6 +115,7 @@ fn main() {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
+            local_feature_size: false,
         };
         records.push(run_one(
             bs.name,
@@ -188,6 +189,7 @@ fn main() {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
+            local_feature_size: false,
         };
         records.push(run_one(
             &name,

@@ -786,6 +786,7 @@ class Geometry:
         radius_edge: float = 2.0,
         max_points: int = 500_000,
         grading: float | None = None,
+        local_feature_size: bool = False,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -805,6 +806,12 @@ class Geometry:
             by at most this factor per unit distance from finer features
             (0.5 means neighbor elements grow by roughly 1.5x; math.inf
             disables grading and sizes jump at region interfaces)
+        local_feature_size : bool
+            refine the volume near THIN features (a near-closed trailing
+            edge, narrow slots) so the sizing field grades smoothly out of
+            them instead of the coarse far field fanning onto a thin
+            boundary. Off by default (it multiplies the tet count by
+            refining every thin feature); enable for thin-feature geometries.
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -816,6 +823,7 @@ class Geometry:
             [(t, fh) for t, fh in sorted(self._face_maxh.items())],
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
+            local_feature_size,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

@@ -128,6 +128,7 @@ mod tests {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points,
+            local_feature_size: false,
         }
     }
 

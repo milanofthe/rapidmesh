@@ -463,6 +463,9 @@ class CompareGeom:
     # Hole points (one inside each cavity to be EXCLUDED), for tetgen's
     # add_hole: an airfoil-shaped void in an air box is a hole, not a region.
     hole_points: tuple = ()
+    # Enable rapidmesh local-feature-size refinement (thin features like a
+    # trailing edge): grades the volume out of the thin part, no sliver fan.
+    local_feature_size: bool = False
 
 
 GEOMS: list[CompareGeom] = [
@@ -480,7 +483,7 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),
     CompareGeom("bunny", "Stanford Bunny", "Organic", 0.14, _r_bunny, _g_bunny),
     CompareGeom("naca0012", "NACA 0012 Wing", "Organic", 0.4, _r_naca, _g_naca,
-                hole_points=((0.3, 0.0, 0.25),)),
+                hole_points=((0.3, 0.0, 0.25),), local_feature_size=True),
     CompareGeom("core_shell", "Core + Shell", "Multi-Region", 0.28,
                 _r_core_shell, _g_core_shell,
                 region_seeds=((0.8, 0.0, 0.0, 1), (0.0, 0.0, 0.0, 2))),

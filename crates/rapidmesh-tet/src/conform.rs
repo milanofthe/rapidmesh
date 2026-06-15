@@ -240,6 +240,12 @@ pub struct MeshParams {
     /// (rapidfem's refine_near_points; the hook for error-driven adaptive
     /// refinement).
     pub size_points: Vec<([f64; 3], f64)>,
+    /// Local feature size: refine the volume near THIN features (a near-closed
+    /// trailing edge, narrow slots) so the sizing field grades smoothly out of
+    /// them instead of letting the coarse far field fan onto a thin boundary.
+    /// Off by default: it refines every thin feature (thin layers, gaps), which
+    /// multiplies the tet count, so it is opt-in for the cases that need it.
+    pub local_feature_size: bool,
 }
 
 impl Default for MeshParams {
@@ -253,6 +259,7 @@ impl Default for MeshParams {
             face_maxh: Vec::new(),
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
+            local_feature_size: false,
         }
     }
 }

@@ -42,8 +42,66 @@ fn dist2(a: P2, b: P2) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
 
-/// Bowyer-Watson 2D Delaunay; triangles as CCW index triples into `points`,
-/// super-triangle removed. Exact predicates.
+const NONE2: usize = usize::MAX;
+
+/// Walks from triangle `start` to the (CCW) triangle containing `p`, stepping
+/// across any edge that `p` lies strictly to the right of. Falls back to a
+/// linear scan if the walk does not converge (degenerate connectivity).
+fn locate2(start: usize, p: P2, tris: &[[usize; 3]], nbr: &[[usize; 3]], alive: &[bool], pts: &[P2]) -> usize {
+    let mut t = start;
+    for _ in 0..tris.len() * 2 + 16 {
+        let tv = tris[t];
+        let mut step = NONE2;
+        for e in 0..3 {
+            let (a, b) = (tv[e], tv[(e + 1) % 3]);
+            // CCW triangle: its interior is left of each directed edge a->b, so
+            // `p` strictly right (orient negative) means it lies across edge e.
+            if orient(pts[a], pts[b], p) == Sign::Negative && nbr[t][e] != NONE2 {
+                step = nbr[t][e];
+                break;
+            }
+        }
+        if step == NONE2 {
+            return t;
+        }
+        t = step;
+    }
+    (0..tris.len())
+        .find(|&t| {
+            alive[t]
+                && (0..3).all(|e| {
+                    let (a, b) = (tris[t][e], tris[t][(e + 1) % 3]);
+                    orient(pts[a], pts[b], p) != Sign::Negative
+                })
+        })
+        .unwrap_or(start)
+}
+
+/// Links the directed p-edge `(u, v)` at edge slot `es` of triangle `slot` to
+/// the neighbouring new triangle that owns the reverse edge `(v, u)`.
+fn link_pedge(
+    map: &mut rustc_hash::FxHashMap<(usize, usize), (usize, usize)>,
+    nbr: &mut [[usize; 3]],
+    slot: usize,
+    es: usize,
+    u: usize,
+    v: usize,
+) {
+    if let Some((other, oes)) = map.remove(&(v, u)) {
+        nbr[slot][es] = other;
+        nbr[other][oes] = slot;
+    } else {
+        map.insert((u, v), (slot, es));
+    }
+}
+
+/// Incremental 2D Delaunay (Bowyer-Watson) with triangle adjacency: each point
+/// is located by a visibility walk (O(log n) amortized on the grid-ordered
+/// scatter the caller feeds) and its cavity is grown by a flood-fill through
+/// neighbour links, rather than scanning every triangle (the old O(n^2)).
+/// Triangles are CCW index triples into `points`, super-triangle removed; exact
+/// predicates throughout. The flood-fill order is deterministic (a LIFO over
+/// fixed adjacency), so the caller's centroid sums stay reproducible.
 pub fn delaunay2(points: &[P2]) -> Vec<[usize; 3]> {
     let n = points.len();
     if n < 3 {
@@ -65,46 +123,94 @@ pub fn delaunay2(points: &[P2]) -> Vec<[usize; 3]> {
     pts.push([mid[0] - big, mid[1] - big]);
     pts.push([mid[0] + big, mid[1] - big]);
     pts.push([mid[0], mid[1] + big]);
+
     let mut tris: Vec<[usize; 3]> = vec![ccw([s0, s1, s2], &pts)];
+    let mut nbr: Vec<[usize; 3]> = vec![[NONE2; 3]];
+    let mut alive: Vec<bool> = vec![true];
+    let mut free: Vec<usize> = Vec::new();
+    let mut mark: Vec<u32> = vec![0];
+    let mut epoch = 0u32;
+    let mut last = 0usize;
+    let mut edge_map: rustc_hash::FxHashMap<(usize, usize), (usize, usize)> =
+        rustc_hash::FxHashMap::default();
 
     for i in 0..n {
         let p = pts[i];
-        let mut bad: Vec<usize> = Vec::new();
-        for (ti, t) in tris.iter().enumerate() {
-            if in_circumcircle(pts[t[0]], pts[t[1]], pts[t[2]], p) {
-                bad.push(ti);
+        let start = locate2(last, p, &tris, &nbr, &alive, &pts);
+        let tv = tris[start];
+        if !in_circumcircle(pts[tv[0]], pts[tv[1]], pts[tv[2]], p) {
+            continue; // cocircular: leave the mesh as is (consistent choice)
+        }
+        epoch += 1;
+        mark[start] = epoch;
+        let mut cavity = vec![start];
+        let mut stack = vec![start];
+        // Boundary edges (a, b, external triangle) found during the flood-fill.
+        let mut boundary: Vec<(usize, usize, usize)> = Vec::new();
+        while let Some(t) = stack.pop() {
+            let tv = tris[t];
+            for e in 0..3 {
+                let nb = nbr[t][e];
+                let bad = nb != NONE2 && {
+                    let v = tris[nb];
+                    in_circumcircle(pts[v[0]], pts[v[1]], pts[v[2]], p)
+                };
+                if bad {
+                    if mark[nb] != epoch {
+                        mark[nb] = epoch;
+                        cavity.push(nb);
+                        stack.push(nb);
+                    }
+                } else {
+                    boundary.push((tv[e], tv[(e + 1) % 3], nb));
+                }
             }
         }
-        if bad.is_empty() {
-            continue; // degenerate cocircular case: leave the mesh as is
+        for &t in &cavity {
+            alive[t] = false;
+            free.push(t);
         }
-        // Cavity boundary = directed edges of bad triangles without a reverse.
-        // Deterministic hashing: the boundary edge order sets the new-triangle
-        // order, and the surface Lloyd then sums area-weighted centroids over
-        // those triangles (a non-associative float sum), so a random order would
-        // make the relaxed surface points (and the whole mesh) vary run-to-run.
-        let mut count: rustc_hash::FxHashMap<(usize, usize), i32> =
-            rustc_hash::FxHashMap::default();
-        for &ti in &bad {
-            let t = tris[ti];
-            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                *count.entry(e).or_insert(0) += 1;
+        // Fan p to each boundary edge; link to the external triangle across that
+        // edge and (via edge_map) to the adjacent new triangles along the p-edges.
+        edge_map.clear();
+        let mut last_new = start;
+        for (a, b, x) in boundary {
+            let slot = match free.pop() {
+                Some(s) => {
+                    tris[s] = [a, b, i];
+                    nbr[s] = [NONE2; 3];
+                    alive[s] = true;
+                    s
+                }
+                None => {
+                    tris.push([a, b, i]);
+                    nbr.push([NONE2; 3]);
+                    alive.push(true);
+                    mark.push(0);
+                    tris.len() - 1
+                }
+            };
+            // edge 0 = (a,b) faces the external triangle x (which holds (b,a)).
+            nbr[slot][0] = x;
+            if x != NONE2 {
+                for e in 0..3 {
+                    if tris[x][e] == b && tris[x][(e + 1) % 3] == a {
+                        nbr[x][e] = slot;
+                    }
+                }
             }
+            // edge 1 = (b,i), edge 2 = (i,a): internal cavity edges.
+            link_pedge(&mut edge_map, &mut nbr, slot, 1, b, i);
+            link_pedge(&mut edge_map, &mut nbr, slot, 2, i, a);
+            last_new = slot;
         }
-        let boundary: Vec<(usize, usize)> = count
-            .keys()
-            .copied()
-            .filter(|&(a, b)| !count.contains_key(&(b, a)))
-            .collect();
-        bad.sort_unstable_by(|x, y| y.cmp(x));
-        for ti in bad {
-            tris.swap_remove(ti);
-        }
-        for (a, b) in boundary {
-            tris.push(ccw([a, b, i], &pts));
-        }
+        last = last_new;
     }
-    tris.into_iter().filter(|t| t.iter().all(|&v| v < n)).collect()
+    tris.iter()
+        .enumerate()
+        .filter(|&(t, _)| alive[t] && tris[t].iter().all(|&v| v < n))
+        .map(|(_, t)| *t)
+        .collect()
 }
 
 /// Fills a planar region with Lloyd-relaxed interior points at a GRADED local

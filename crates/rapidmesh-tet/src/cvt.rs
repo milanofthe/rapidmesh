@@ -23,7 +23,7 @@ use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFac
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::seed::SizingField;
-use crate::site::{Carrier, Site};
+use crate::site::{Carrier, EdgeFace, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
 use crate::surfchart::build_chart;
@@ -382,6 +382,176 @@ fn ensure_edge(
     edge_pts.insert(e, idx);
 }
 
+/// WP-R3: a curved boundary chain of a chart group -- an ordered run of PLC
+/// boundary vertices between two hard corners (a trailing-edge cusp, a junction),
+/// lying on the intersection curve of the chart surface (`fa`) and the adjacent
+/// face (`fb`). Its interior input vertices are dropped and replaced by geometry-
+/// derived `CurvedEdge` points, so the boundary distribution follows the curve's
+/// own curvature, not the input sampling.
+struct CurvedChain {
+    ordered: Vec<usize>, // PLC vertices ea, interior.., eb (eb == ea for a loop)
+    fa: EdgeFace,
+    fb: EdgeFace,
+}
+
+impl CurvedChain {
+    fn interior(&self) -> &[usize] {
+        &self.ordered[1..self.ordered.len() - 1]
+    }
+    fn edges(&self) -> Vec<(usize, usize)> {
+        self.ordered.windows(2).map(|w| sorted2(w[0], w[1])).collect()
+    }
+}
+
+/// Identifies the curved boundary chains of all chart groups (see [`CurvedChain`]).
+/// A group's boundary is split at hard corners (degree != 2, or a turn sharper
+/// than 45 deg); each smooth run between corners is one chain. Fully smooth loops
+/// (no corner, e.g. a circular rim) are left to the pinned faceted path.
+fn curved_chains(plc: &TaggedPlc, cgroups: &[ChartGroup]) -> Vec<CurvedChain> {
+    use std::collections::{HashMap, HashSet};
+    const CORNER_COS: f64 = 0.707; // turn > 45 deg -> a hard corner
+    let unit = |a: V3| {
+        let l = dot(a, a).sqrt();
+        if l > 0.0 { scale(a, 1.0 / l) } else { a }
+    };
+    let mut e2f: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (fi, t) in plc.triangles.iter().enumerate() {
+        let v = [t[0] as usize, t[1] as usize, t[2] as usize];
+        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            e2f.entry(sorted2(a, b)).or_default().push(fi);
+        }
+    }
+    let face_of = |fi: usize| -> EdgeFace {
+        let kind = plc.surfaces[plc.surface_refs[fi].0 as usize].clone();
+        if matches!(kind, SurfaceKind::Plane) {
+            let t = plc.triangles[fi];
+            let (a, b, c) =
+                (plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]);
+            EdgeFace::Plane { p0: a, n: unit(cross(sub(b, a), sub(c, a))) }
+        } else {
+            EdgeFace::Surface(kind)
+        }
+    };
+
+    let mut out = Vec::new();
+    for g in cgroups {
+        let members: HashSet<usize> = g.members.iter().copied().collect();
+        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut node_face: HashMap<usize, EdgeFace> = HashMap::new();
+        for &(a, b) in &g.boundary {
+            let other = match e2f
+                .get(&sorted2(a, b))
+                .and_then(|fs| fs.iter().find(|&&fi| !members.contains(&fi)))
+            {
+                Some(&fi) => face_of(fi),
+                None => continue,
+            };
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+            node_face.entry(a).or_insert_with(|| other.clone());
+            node_face.entry(b).or_insert_with(|| other.clone());
+        }
+        if adj.is_empty() {
+            continue;
+        }
+        let is_corner = |n: usize| -> bool {
+            let ns = &adj[&n];
+            if ns.len() != 2 {
+                return true;
+            }
+            let d0 = unit(sub(plc.vertices[n], plc.vertices[ns[0]]));
+            let d1 = unit(sub(plc.vertices[ns[1]], plc.vertices[n]));
+            dot(d0, d1) < CORNER_COS
+        };
+        let mut corners: Vec<usize> = adj.keys().copied().filter(|&n| is_corner(n)).collect();
+        corners.sort_unstable();
+        if corners.is_empty() {
+            continue; // smooth closed loop: leave it on the pinned faceted path
+        }
+        let fa = EdgeFace::Surface(g.kind.clone());
+        let mut done: HashSet<usize> = HashSet::new();
+        for &c0 in &corners {
+            for &start in &adj[&c0].clone() {
+                if done.contains(&start) || is_corner(start) {
+                    continue;
+                }
+                let mut ordered = vec![c0];
+                let (mut prev, mut cur) = (c0, start);
+                loop {
+                    ordered.push(cur);
+                    done.insert(cur);
+                    if is_corner(cur) {
+                        break;
+                    }
+                    let ns = &adj[&cur];
+                    let nxt = if ns[0] == prev { ns[1] } else { ns[0] };
+                    prev = cur;
+                    cur = nxt;
+                    if ordered.len() > adj.len() + 2 {
+                        break;
+                    }
+                }
+                if ordered.len() < 3 {
+                    continue; // no interior vertices to replace
+                }
+                let fb = node_face.get(&start).cloned().unwrap_or_else(|| fa.clone());
+                out.push(CurvedChain { ordered, fa: fa.clone(), fb });
+            }
+        }
+    }
+    out
+}
+
+/// Geometry-derived interior points for a chain: placed at equal steps of the
+/// cumulative density `1/h` along the chain polyline, `h` the GRADED sizing field
+/// (curvature target made Lipschitz by `grading`), so the count is the curvature-
+/// graded ideal (coarse where flat, fine where it bends) -- a true RESAMPLE, not
+/// a redistribution of the input count. Positions are on the chord; the
+/// `CurvedEdge` carrier projects them onto the true curve when the site is built.
+fn generate_chain_points(c: &CurvedChain, plc: &TaggedPlc, domain: &DomainTree) -> Vec<V3> {
+    let poly: Vec<V3> = c.ordered.iter().map(|&v| plc.vertices[v]).collect();
+    let mut cum = vec![0.0f64; poly.len()];
+    for i in 1..poly.len() {
+        let len = dist(poly[i], poly[i - 1]);
+        let mid = scale([poly[i][0] + poly[i - 1][0], poly[i][1] + poly[i - 1][1], poly[i][2] + poly[i - 1][2]], 0.5);
+        // Match the 2D surface fill's local spacing (`SURFACE_OVERSAMPLE * h`), so
+        // the boundary and the patch interior have compatible density and the seam
+        // triangulates without slivers.
+        cum[i] = cum[i - 1] + len / (SURFACE_OVERSAMPLE * domain.h_at(mid)).max(1e-9);
+    }
+    let total = cum[poly.len() - 1];
+    let m = (total.round() as usize).max(1);
+    let (ea, eb) = (poly[0], poly[poly.len() - 1]);
+    let mut out: Vec<V3> = Vec::with_capacity(m.saturating_sub(1));
+    let mut i = 1usize;
+    for k in 1..m {
+        let target = k as f64 / m as f64 * total;
+        while i < cum.len() && cum[i] < target {
+            i += 1;
+        }
+        let i = i.min(cum.len() - 1);
+        let seg = (cum[i] - cum[i - 1]).max(1e-30);
+        let f = ((target - cum[i - 1]) / seg).clamp(0.0, 1.0);
+        let p = [
+            poly[i - 1][0] + f * (poly[i][0] - poly[i - 1][0]),
+            poly[i - 1][1] + f * (poly[i][1] - poly[i - 1][1]),
+            poly[i - 1][2] + f * (poly[i][2] - poly[i - 1][2]),
+        ];
+        // Min-separation guard: keep a point only if it clears the corners and the
+        // last kept point by half the local spacing. A blunt cusp (an airfoil
+        // trailing edge, ~0.0025 thick) has a tiny local `h` that would otherwise
+        // place points atop a corner -> a near-duplicate the Delaunay rejects.
+        let sep = 0.5 * (SURFACE_OVERSAMPLE * domain.h_at(p)).max(1e-9);
+        let clear = dist(p, ea) >= sep
+            && dist(p, eb) >= sep
+            && out.last().map(|&q| dist(p, q) >= sep).unwrap_or(true);
+        if clear {
+            out.push(p);
+        }
+    }
+    out
+}
+
 /// Meshes a tagged PLC into a region-tagged tet mesh by hierarchical CVT.
 pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
@@ -433,32 +603,110 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // bordering a finely sized face gets denser points there and coarsens away.
     // Shared edges are seeded once (cached), so both adjacent patches agree.
     let t_surf = std::time::Instant::now();
-    let nb = plc.vertices.len();
-    let mut sites: Vec<Site> = plc.vertices.iter().map(|&v| Site::vertex(v)).collect();
+    // WP-R3: curved chart-group boundary chains. Their interior input vertices are
+    // dropped and replaced by geometry-derived `CurvedEdge` points (the curve
+    // resampled by its own curvature), shared by both adjacent patches so the seam
+    // stays conforming. Planar-only PLCs have no chart group -> no chain -> the
+    // faceted path (and the exact-volume fixtures) is byte-for-byte unchanged.
+    let chains = curved_chains(plc, &cgroups);
+    let skip: DSet<usize> = chains.iter().flat_map(|c| c.interior().iter().copied()).collect();
+    let edge2chain: DMap<(usize, usize), usize> = chains
+        .iter()
+        .enumerate()
+        .flat_map(|(ci, c)| c.edges().into_iter().map(move |e| (e, ci)))
+        .collect();
+
+    // Pinned PLC vertices, MINUS the chain interiors (replaced below). Nothing
+    // indexes `sites` by raw PLC-vertex id (corners are read from `plc.vertices`),
+    // so dropping vertices is safe; `plc_points` is the pinned-vertex prefix.
+    let mut sites: Vec<Site> = plc
+        .vertices
+        .iter()
+        .enumerate()
+        .filter(|(v, _)| !skip.contains(v))
+        .map(|(_, &p)| Site::vertex(p))
+        .collect();
+    let plc_points = sites.len();
     // The "tile" each surface site belongs to (a planar patch index, or
     // `patches.len() + group` for a curved group), for principled face tagging:
     // a boundary face inherits its surface/tag from its interior vertex's tile.
     // Corners and shared edge points are on several tiles -> `u32::MAX` (let the
     // interior vertex decide). Volume sites never tag a boundary face.
     let mut point_tile: Vec<u32> = vec![u32::MAX; sites.len()];
+
+    // Generate the chain points (CurvedEdge sites), shared by both adjacent
+    // patches via `chain_sites`.
+    let mut chain_sites: Vec<Vec<usize>> = Vec::with_capacity(chains.len());
+    for c in &chains {
+        let (ea, eb) = (plc.vertices[c.ordered[0]], plc.vertices[*c.ordered.last().unwrap()]);
+        let mut idx = Vec::new();
+        for p in generate_chain_points(c, plc, &domain) {
+            sites.push(Site::on_curved_edge(c.fa.clone(), c.fb.clone(), ea, eb, p));
+            point_tile.push(u32::MAX);
+            idx.push(sites.len() - 1);
+        }
+        chain_sites.push(idx);
+    }
+    rmlog::stat("mesh.curved_edge_chains", chains.len() as f64);
+    rmlog::stat("mesh.curved_edge_points", chain_sites.iter().map(|v| v.len()).sum::<usize>() as f64);
+
     let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
     let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
     // Non-chart patches keep their per-patch boundary edges; chart groups use
-    // their GROUP boundary (no points on internal curved facet seams).
+    // their GROUP boundary (no points on internal curved facet seams). Chain edges
+    // are skipped here -- the chain points already cover them.
     for (pi, patch) in patches.iter().enumerate() {
         if is_chart_patch(patch) {
             continue;
         }
         for &e in &pbe[pi] {
-            ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+            if !edge2chain.contains_key(&e) {
+                ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+            }
         }
     }
     for g in &cgroups {
         for &e in &g.boundary {
-            ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+            if !edge2chain.contains_key(&sorted2(e.0, e.1)) {
+                ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+            }
         }
     }
     point_tile.resize(sites.len(), u32::MAX); // edge points: shared -> MAX
+
+    // Boundary point positions for a patch's edges, substituting chain points for
+    // chain edges (added once per chain). Both the planar and chart fills consume
+    // this, so the shared seam uses identical points on both sides.
+    let boundary_pts = |edges: &[(usize, usize)], sites: &[Site]| -> Vec<V3> {
+        let mut out: Vec<V3> = Vec::new();
+        let mut seen_v: DSet<usize> = DSet::default();
+        let mut seen_chain: DSet<usize> = DSet::default();
+        for &(a, b) in edges {
+            if let Some(&ci) = edge2chain.get(&sorted2(a, b)) {
+                if seen_chain.insert(ci) {
+                    let ch = &chains[ci];
+                    for &cv in [ch.ordered[0], *ch.ordered.last().unwrap()].iter() {
+                        if seen_v.insert(cv) {
+                            out.push(plc.vertices[cv]);
+                        }
+                    }
+                    for &si in &chain_sites[ci] {
+                        out.push(sites[si].pos());
+                    }
+                }
+            } else {
+                for cv in [a, b] {
+                    if seen_v.insert(cv) {
+                        out.push(plc.vertices[cv]);
+                    }
+                }
+                for &i in &edge_pts[&sorted2(a, b)] {
+                    out.push(sites[i].pos());
+                }
+            }
+        }
+        out
+    };
 
     // ---- stage 2: per-patch 2D Lloyd (faces), edges fixed ----------------
     // Patches are independent, so they fill in parallel. `cvt_fill` keeps each
@@ -473,18 +721,10 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         .flat_map(|(pi, patch)| {
             let (p0, n) = patch_plane(plc, patch);
             let drop = drop_axis(n);
-            let mut bnd: Vec<[f64; 2]> = Vec::new();
-            let mut seen: DSet<usize> = DSet::default();
-            for &(a, b) in &pbe[pi] {
-                for cv in [a, b] {
-                    if seen.insert(cv) {
-                        bnd.push(project2(plc.vertices[cv], drop));
-                    }
-                }
-                for &i in &edge_pts[&sorted2(a, b)] {
-                    bnd.push(project2(sites[i].pos(), drop));
-                }
-            }
+            // Boundary points (corners + edge points, chain points substituted on
+            // curved chart-group seams), projected to the patch plane.
+            let bnd: Vec<[f64; 2]> =
+                boundary_pts(&pbe[pi], &sites).into_iter().map(|p| project2(p, drop)).collect();
             if bnd.len() < 3 {
                 return Vec::new();
             }
@@ -519,22 +759,18 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // the restricted Delaunay recovers the curved boundary as tet faces.
     for (gi, g) in cgroups.iter().enumerate() {
         let tile = (patches.len() + gi) as u32;
-        let mut loc2: Vec<[f64; 2]> = Vec::new();
-        let mut seen: DSet<usize> = DSet::default();
-        let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
-        for &(a, b) in &g.boundary {
-            segs.push((g.chart.to_uv(plc.vertices[a]), g.chart.to_uv(plc.vertices[b])));
-            for cv in [a, b] {
-                if seen.insert(cv) {
-                    loc2.push(g.chart.to_uv(plc.vertices[cv]));
-                }
-            }
-            for &gj in &edge_pts[&sorted2(a, b)] {
-                if seen.insert(gj) {
-                    loc2.push(g.chart.to_uv(sites[gj].pos()));
-                }
-            }
-        }
+        // `segs`: the ORIGINAL fine boundary polygon, for the exact in-loop
+        // membership test (curve fidelity for the interior scatter). `loc2`: the
+        // fixed boundary POINTS, with chain points substituted on curved seams so
+        // they match the adjacent planar patch. The two serve different roles, so
+        // the membership stays accurate while the boundary is geometry-resampled.
+        let segs: Vec<([f64; 2], [f64; 2])> = g
+            .boundary
+            .iter()
+            .map(|&(a, b)| (g.chart.to_uv(plc.vertices[a]), g.chart.to_uv(plc.vertices[b])))
+            .collect();
+        let loc2: Vec<[f64; 2]> =
+            boundary_pts(&g.boundary, &sites).into_iter().map(|p| g.chart.to_uv(p)).collect();
         if loc2.len() < 3 {
             continue;
         }
@@ -833,7 +1069,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         surfaces: plc.surfaces.clone(),
         surface_owners: plc.surface_owners.clone(),
         abandoned_patches: Vec::new(),
-        plc_points: nb,
+        plc_points,
         point_size,
     };
 

@@ -26,6 +26,25 @@ fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// One side of a curved feature edge: the analytic geometry a point on the edge
+/// also lies on. A feature edge is the intersection of TWO such faces.
+#[derive(Clone, Debug)]
+pub enum EdgeFace {
+    /// A plane (point `p0`, unit normal `n`).
+    Plane { p0: V3, n: V3 },
+    /// An analytic surface.
+    Surface(SurfaceKind),
+}
+
+impl EdgeFace {
+    fn project(&self, p: V3) -> V3 {
+        match self {
+            EdgeFace::Plane { p0, n } => sub(p, scale(*n, dot(sub(p, *p0), *n))),
+            EdgeFace::Surface(k) => project::closest_on_surface(k, p),
+        }
+    }
+}
+
 /// What a site is constrained to and how it moves.
 #[derive(Clone, Debug)]
 pub enum Carrier {
@@ -33,6 +52,12 @@ pub enum Carrier {
     Vertex,
     /// On the segment through `a`, `b` (moves along it, clamped to the segment).
     Edge { a: V3, b: V3 },
+    /// On the analytic CURVE where two faces meet (a cylinder rim, an airfoil
+    /// profile outline). Moves along it via alternating projection onto both
+    /// faces; `ea`/`eb` are the bounding corners (skipped for a closed loop where
+    /// they coincide). The geometry-derived 1D carrier: points are distributed by
+    /// relaxation on the true curve, not frozen to the input tessellation.
+    CurvedEdge { fa: EdgeFace, fb: EdgeFace, ea: V3, eb: V3 },
     /// On the plane (point `p0`, unit normal `n`); moves in the plane.
     Plane { p0: V3, n: V3 },
     /// On an analytic surface; moves on it via closest-point projection.
@@ -71,6 +96,12 @@ impl Site {
         s.pos = s.project(pos);
         s
     }
+    /// A point on the curve where `fa` and `fb` meet, between corners `ea`/`eb`.
+    pub fn on_curved_edge(fa: EdgeFace, fb: EdgeFace, ea: V3, eb: V3, pos: V3) -> Site {
+        let mut s = Site { carrier: Carrier::CurvedEdge { fa, fb, ea, eb }, pos };
+        s.pos = s.project(pos);
+        s
+    }
 
     pub fn pos(&self) -> V3 {
         self.pos
@@ -91,6 +122,29 @@ impl Site {
             }
             Carrier::Plane { p0, n } => sub(tgt, scale(*n, dot(sub(tgt, *p0), *n))),
             Carrier::Surface(kind) => project::closest_on_surface(kind, tgt),
+            Carrier::CurvedEdge { fa, fb, ea, eb } => {
+                // Alternating projection (POCS) onto both faces converges to their
+                // intersection curve; from a target near the curve it lands on the
+                // nearest curve point.
+                let mut q = tgt;
+                for _ in 0..16 {
+                    q = fa.project(q);
+                    q = fb.project(q);
+                }
+                // Clamp inside the corner span on an OPEN arc (skip on a closed
+                // loop where `ea == eb` and the chord parameter is degenerate).
+                let ab = sub(*eb, *ea);
+                let ab2 = dot(ab, ab);
+                if ab2 > 1e-24 {
+                    let t = dot(sub(q, *ea), ab) / ab2;
+                    if t <= 0.0 {
+                        return *ea;
+                    } else if t >= 1.0 {
+                        return *eb;
+                    }
+                }
+                q
+            }
         }
     }
 

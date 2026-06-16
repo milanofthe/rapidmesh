@@ -449,6 +449,94 @@ def _g_naca(occ):
     occ.cut([(3, box)], vol)
 
 
+# ----------------------------------------- additional edge / curved examples
+# Chosen to stress the boundary representation the mesher consumes: a circular
+# intersection edge (hemisphere), nested barrels with ring edges (tube), tangent
+# curved patches (capsule), a concave planar edge (L-bracket), and sharp dihedral
+# edges (wedge).
+
+
+def _r_hemisphere():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.2)
+    g.label(g.icosphere(1.0, subdivisions=3), "dome")
+    # carve the lower half: a circular edge appears between cap and flat disk
+    g.box(3, 3, 1.2, position=(-1.5, -1.5, -1.2), void=True)
+    return g
+
+
+def _g_hemisphere(occ):
+    s = occ.addSphere(0, 0, 0, 1.0)
+    b = occ.addBox(-1.5, -1.5, -1.2, 3, 3, 1.2)
+    occ.cut([(3, s)], [(3, b)])
+
+
+def _r_tube():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.18)
+    g.label(g.cylinder(0.8, 2.0, position=(0, 0, -1.0), segments=32, uniform=True), "tube")
+    g.cylinder(0.45, 2.2, position=(0, 0, -1.1), segments=28, uniform=True, void=True)
+    return g
+
+
+def _g_tube(occ):
+    o = occ.addCylinder(0, 0, -1.0, 0, 0, 2.0, 0.8)
+    i = occ.addCylinder(0, 0, -1.1, 0, 0, 2.2, 0.45)
+    occ.cut([(3, o)], [(3, i)])
+
+
+def _r_capsule():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.2)
+    g.label(g.cylinder(0.6, 1.2, position=(0, 0, -0.6), segments=28, uniform=True), "cap")
+    g.icosphere(0.6, position=(0, 0, -0.6), subdivisions=3)
+    g.icosphere(0.6, position=(0, 0, 0.6), subdivisions=3)
+    return g
+
+
+def _g_capsule(occ):
+    c = occ.addCylinder(0, 0, -0.6, 0, 0, 1.2, 0.6)
+    s1 = occ.addSphere(0, 0, -0.6, 0.6)
+    s2 = occ.addSphere(0, 0, 0.6, 0.6)
+    occ.fuse([(3, c)], [(3, s1), (3, s2)])
+
+
+_L_POLY = [(0.0, 0.0), (2.0, 0.0), (2.0, 0.6), (0.6, 0.6), (0.6, 2.0), (0.0, 2.0)]
+
+
+def _r_l_bracket():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.13)
+    g.label(g.prism(_L_POLY, 0.6, position=(-1.0, -1.0, 0.0)), "lbracket")
+    return g
+
+
+def _g_l_bracket(occ):
+    ptags = [occ.addPoint(x - 1.0, y - 1.0, 0.0) for (x, y) in _L_POLY]
+    ltags = [occ.addLine(ptags[i], ptags[(i + 1) % len(ptags)]) for i in range(len(ptags))]
+    loop = occ.addCurveLoop(ltags)
+    surf = occ.addPlaneSurface([loop])
+    occ.extrude([(2, surf)], 0, 0, 0.6)
+
+
+def _r_wedge():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.16)
+    g.label(g.wedge(2.0, 1.0, 1.0, position=(-1.0, -0.5, 0.0), top_x=0.0), "wedge")
+    return g
+
+
+def _g_wedge(occ):
+    # triangular cross-section in xz at y=-0.5, extruded +y by 1.0
+    p0 = occ.addPoint(-1.0, -0.5, 0.0)
+    p1 = occ.addPoint(1.0, -0.5, 0.0)
+    p2 = occ.addPoint(-1.0, -0.5, 1.0)
+    ls = [occ.addLine(p0, p1), occ.addLine(p1, p2), occ.addLine(p2, p0)]
+    loop = occ.addCurveLoop(ls)
+    surf = occ.addPlaneSurface([loop])
+    occ.extrude([(2, surf)], 0, 1.0, 0)
+
+
 # ----------------------------------------------------------------- registry
 
 
@@ -484,6 +572,15 @@ GEOMS: list[CompareGeom] = [
     CompareGeom("box", "Box", "Primitives", 0.30, _r_box, _g_box),
     CompareGeom("cone", "Cone", "Primitives", 0.25, _r_cone, _g_cone),
     CompareGeom("torus", "Torus", "Primitives", 0.25, _r_torus, _g_torus),
+    CompareGeom("wedge", "Wedge", "Primitives", 0.16, _r_wedge, _g_wedge),
+    CompareGeom("hemisphere", "Hemisphere", "Booleans", 0.2,
+                _r_hemisphere, _g_hemisphere, gmsh_curvature=30.0),
+    CompareGeom("tube", "Hollow Tube", "Booleans", 0.18,
+                _r_tube, _g_tube, gmsh_curvature=30.0),
+    CompareGeom("capsule", "Capsule", "Booleans", 0.2,
+                _r_capsule, _g_capsule, gmsh_curvature=30.0),
+    CompareGeom("l_bracket", "L-Bracket", "Mechanical", 0.13,
+                _r_l_bracket, _g_l_bracket),
     CompareGeom("drilled_block", "Drilled Block", "Booleans", 0.25,
                 _r_drilled_block, _g_drilled_block),
     CompareGeom("fused_spheres", "Fused Spheres", "Booleans", 0.30,

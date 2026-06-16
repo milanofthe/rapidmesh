@@ -226,6 +226,231 @@
    }
   },
   {
+   "id": "wedge",
+   "name": "Wedge",
+   "category": "Primitives",
+   "target_h": 0.16,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/wedge.rapidmesh.json",
+     "stats": {
+      "n_points": 452,
+      "n_tets": 1676,
+      "n_regions": 1,
+      "min_dihedral_deg": 19.776680099319748,
+      "max_radius_edge": 1.66651559869125,
+      "max_edge": 0.3169440078915,
+      "millis": 24
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/wedge.gmsh.json",
+     "stats": {
+      "n_points": 455,
+      "n_tets": 1475,
+      "n_regions": 1,
+      "min_dihedral_deg": 13.7905334171393,
+      "max_radius_edge": 1.9075622979441582,
+      "max_edge": 0.32940216414867557,
+      "millis": 25
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/wedge.tetgen.json",
+     "stats": {
+      "n_points": 521,
+      "n_tets": 1658,
+      "n_regions": 1,
+      "min_dihedral_deg": 2.741371636867143,
+      "max_radius_edge": 2.3565966910835687,
+      "max_edge": 0.38100706780437826,
+      "millis": 7,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "hemisphere",
+   "name": "Hemisphere",
+   "category": "Booleans",
+   "target_h": 0.2,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/hemisphere.rapidmesh.json",
+     "stats": {
+      "n_points": 478,
+      "n_tets": 1913,
+      "n_regions": 1,
+      "min_dihedral_deg": 19.427815201565778,
+      "max_radius_edge": 1.5224792507674856,
+      "max_edge": 0.36295832992229576,
+      "millis": 72
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/hemisphere.gmsh.json",
+     "stats": {
+      "n_points": 419,
+      "n_tets": 1496,
+      "n_regions": 1,
+      "min_dihedral_deg": 14.364585201487785,
+      "max_radius_edge": 1.4920892214245882,
+      "max_edge": 0.39359115920641496,
+      "millis": 19
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/hemisphere.tetgen.json",
+     "stats": {
+      "n_points": 396,
+      "n_tets": 1333,
+      "n_regions": 1,
+      "min_dihedral_deg": 2.3066195440253523,
+      "max_radius_edge": 1.349607526597475,
+      "max_edge": 0.5059867607630335,
+      "millis": 4,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "tube",
+   "name": "Hollow Tube",
+   "category": "Booleans",
+   "target_h": 0.18,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/tube.rapidmesh.json",
+     "stats": {
+      "n_points": 1119,
+      "n_tets": 3279,
+      "n_regions": 1,
+      "min_dihedral_deg": 12.384135333423103,
+      "max_radius_edge": 3.465924218712099,
+      "max_edge": 0.38920756300945264,
+      "millis": 150
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/tube.gmsh.json",
+     "stats": {
+      "n_points": 1992,
+      "n_tets": 7802,
+      "n_regions": 1,
+      "min_dihedral_deg": 13.118958353118757,
+      "max_radius_edge": 1.544233975506829,
+      "max_edge": 0.2820531048041167,
+      "millis": 99
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/tube.tetgen.json",
+     "stats": {
+      "n_points": 1993,
+      "n_tets": 7627,
+      "n_regions": 1,
+      "min_dihedral_deg": 1.982905771625468,
+      "max_radius_edge": 1.4140159979041438,
+      "max_edge": 0.2851166740181726,
+      "millis": 33,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "capsule",
+   "name": "Capsule",
+   "category": "Booleans",
+   "target_h": 0.2,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/capsule.rapidmesh.json",
+     "stats": {
+      "n_points": 2812,
+      "n_tets": 9111,
+      "n_regions": 3,
+      "min_dihedral_deg": 0.03129707839772777,
+      "max_radius_edge": 23923.88906780681,
+      "max_edge": 0.3447673280372214,
+      "millis": 2018
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/capsule.gmsh.json",
+     "stats": {
+      "n_points": 1280,
+      "n_tets": 5525,
+      "n_regions": 1,
+      "min_dihedral_deg": 11.941190085786303,
+      "max_radius_edge": 1.5157158712823458,
+      "max_edge": 0.2651331083788143,
+      "millis": 75
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/capsule.tetgen.json",
+     "stats": {
+      "n_points": 1009,
+      "n_tets": 3769,
+      "n_regions": 1,
+      "min_dihedral_deg": 2.3370090719963343,
+      "max_radius_edge": 6.790015465297016,
+      "max_edge": 0.4531262228055406,
+      "millis": 42,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
+   "id": "l_bracket",
+   "name": "L-Bracket",
+   "category": "Mechanical",
+   "target_h": 0.13,
+   "meshers": {
+    "rapidmesh": {
+     "file": "meshes/compare/l_bracket.rapidmesh.json",
+     "stats": {
+      "n_points": 1061,
+      "n_tets": 4283,
+      "n_regions": 1,
+      "min_dihedral_deg": 15.077274152254233,
+      "max_radius_edge": 1.4615669791850752,
+      "max_edge": 0.24916818618615028,
+      "millis": 55
+     }
+    },
+    "gmsh": {
+     "file": "meshes/compare/l_bracket.gmsh.json",
+     "stats": {
+      "n_points": 920,
+      "n_tets": 3238,
+      "n_regions": 1,
+      "min_dihedral_deg": 11.95451360722842,
+      "max_radius_edge": 1.4233355487023933,
+      "max_edge": 0.2600485685744404,
+      "millis": 59
+     }
+    },
+    "tetgen": {
+     "file": "meshes/compare/l_bracket.tetgen.json",
+     "stats": {
+      "n_points": 874,
+      "n_tets": 2891,
+      "n_regions": 1,
+      "min_dihedral_deg": 2.548099058352477,
+      "max_radius_edge": 1.2736703902656588,
+      "max_edge": 0.31664518100440414,
+      "millis": 11,
+      "on_surface_of": "gmsh"
+     }
+    }
+   }
+  },
+  {
    "id": "drilled_block",
    "name": "Drilled Block",
    "category": "Booleans",

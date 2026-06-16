@@ -190,6 +190,7 @@ dependencies = [
  "geometry-predicates",
  "num-rational",
  "num-traits",
+ "rapidmesh-brep",
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",

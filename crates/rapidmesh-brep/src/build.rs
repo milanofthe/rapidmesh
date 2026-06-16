@@ -11,7 +11,11 @@
 //! Both the CSG path and the STEP-import path converge on `TaggedPlc`, so this
 //! one function covers both.
 
-use crate::{Brep, Curve, Edge, Face, FaceId, Loop, SurfaceId, Vertex, VertexId};
+use crate::chart::Chart;
+use crate::{
+    Brep, CoEdge, CoEdgeId, Curve, Edge, EdgeId, Face, FaceId, Loop, PCurve, Surface, SurfaceId,
+    Vertex, VertexId,
+};
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 use std::collections::HashMap;
 
@@ -256,8 +260,9 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         })
     };
 
-    // ---- B3 cont.: build Edge records (curve recovery + radial faces) --------
+    // ---- B3 cont.: build Edge records (curve recovery), keep radial faces ----
     let mut edges: Vec<Edge> = Vec::new();
+    let mut edge_faces: Vec<Vec<FaceId>> = Vec::new();
     for ch in &chains {
         let a = ch[0];
         let b = *ch.last().unwrap();
@@ -269,29 +274,78 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         let mut rad: Vec<FaceId> = fset(ch[0], ch[1]).iter().map(|&f| FaceId(f as u32)).collect();
         rad.sort_unstable();
         let curve = recover_curve(&chain_pts, &rad, &faces, plc, tol);
-        edges.push(Edge { ends: [va, vb], chain: chain_pts, curve, faces: rad });
+        edges.push(Edge { ends: [va, vb], chain: chain_pts, curve, coedges: Vec::new() });
+        edge_faces.push(rad);
     }
 
-    // ---- B5/B4: per face, gather its edges and order them into loops ---------
+    // Analytic surfaces wrapped as B-rep surfaces (a NURBS face would carry a real
+    // NurbsSurface here instead).
+    let surfaces: Vec<Surface> = plc.surfaces.iter().cloned().map(Surface::Analytic).collect();
+
+    // ---- B4/B5: order each face's edges into loops; build co-edges + PCurves -
+    // Per face: order its boundary edges into oriented loops, build the chart
+    // (a plane needs the outer-loop frame), then make one co-edge per (edge,
+    // loop-direction) carrying the edge's PCurve in this face's (u,v).
     let mut face_edges: Vec<Vec<usize>> = vec![Vec::new(); faces.len()];
-    for (ei, e) in edges.iter().enumerate() {
-        for f in &e.faces {
+    for (ei, ef) in edge_faces.iter().enumerate() {
+        for f in ef {
             face_edges[f.0 as usize].push(ei);
         }
     }
-    for (fid, eids) in face_edges.iter().enumerate() {
-        faces[fid].loops = order_loops(eids, &edges);
+    let mut coedges: Vec<CoEdge> = Vec::new();
+    for fid in 0..faces.len() {
+        let signed = order_loops(&face_edges[fid], &edges);
+        let frame_pts = signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default();
+        let chart = Chart::build(&surfaces[faces[fid].surface.0 as usize], &frame_pts);
+        let mut loops_out: Vec<Loop> = Vec::new();
+        for sl in &signed {
+            let mut lp = Loop::default();
+            for &(ei, fwd) in sl {
+                let chain = &edges[ei].chain;
+                let uv: Vec<[f64; 2]> = if fwd {
+                    chain.iter().map(|&p| chart.to_uv(p)).collect()
+                } else {
+                    chain.iter().rev().map(|&p| chart.to_uv(p)).collect()
+                };
+                let cid = CoEdgeId(coedges.len() as u32);
+                coedges.push(CoEdge {
+                    edge: EdgeId(ei as u32),
+                    face: FaceId(fid as u32),
+                    forward: fwd,
+                    pcurve: PCurve { uv },
+                });
+                edges[ei].coedges.push(cid);
+                lp.coedges.push(cid);
+            }
+            loops_out.push(lp);
+        }
+        faces[fid].loops = loops_out;
     }
 
-    let surfaces = plc.surfaces.iter().cloned().map(crate::Surface::Analytic).collect();
-    Brep { vertices, edges, faces, surfaces }
+    Brep { vertices, edges, coedges, faces, surfaces }
 }
 
-/// Orders a face's edges into oriented loops by walking shared endpoints. The
-/// `forward` flag is true when the loop traverses an edge from `ends[0]` to
-/// `ends[1]`. The largest-perimeter loop is placed first (the outer boundary).
-fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Loop> {
-    // vertex -> incident (edge index, the edge's two end VertexIds)
+/// Ordered 3D points along a signed-edge loop (chains concatenated, reversed where
+/// the loop runs backward), used to fit a planar face's chart frame.
+fn loop_points(sl: &[(usize, bool)], edges: &[Edge]) -> Vec<V3> {
+    let mut pts: Vec<V3> = Vec::new();
+    for &(ei, fwd) in sl {
+        let ch = &edges[ei].chain;
+        let seq: Vec<V3> = if fwd { ch.clone() } else { ch.iter().rev().cloned().collect() };
+        for p in seq {
+            if pts.last().map(|&q| dist(q, p) > 1e-12).unwrap_or(true) {
+                pts.push(p);
+            }
+        }
+    }
+    pts
+}
+
+/// Orders a face's edges into oriented loops by walking shared endpoints, as
+/// sequences of `(edge index, forward)`. `forward` is true when the loop
+/// traverses the edge from `ends[0]` to `ends[1]`. The largest-perimeter loop is
+/// placed first (the outer boundary; the rest are holes).
+fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Vec<(usize, bool)>> {
     let mut adj: HashMap<u32, Vec<usize>> = HashMap::new();
     for &ei in eids {
         let [a, b] = edges[ei].ends;
@@ -301,12 +355,12 @@ fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Loop> {
         }
     }
     let mut used = vec![false; edges.len()];
-    let mut loops: Vec<(f64, Loop)> = Vec::new();
+    let mut loops: Vec<(f64, Vec<(usize, bool)>)> = Vec::new();
     for &start in eids {
         if used[start] {
             continue;
         }
-        let mut lp = Loop::default();
+        let mut seq: Vec<(usize, bool)> = Vec::new();
         let mut perim = 0.0f64;
         let mut cur = start;
         let mut at = edges[start].ends[0].0; // walk leaving from ends[0]
@@ -318,12 +372,9 @@ fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Loop> {
             let [a, b] = edges[cur].ends;
             let forward = at == a.0;
             let next_v = if forward { b.0 } else { a.0 };
-            lp.edges.push((crate::EdgeId(cur as u32), forward));
+            seq.push((cur, forward));
             perim += arc_len(&edges[cur].chain);
-            // pick the next unused edge incident to next_v
-            let nxt = adj
-                .get(&next_v)
-                .and_then(|inc| inc.iter().copied().find(|&e| !used[e]));
+            let nxt = adj.get(&next_v).and_then(|inc| inc.iter().copied().find(|&e| !used[e]));
             match nxt {
                 Some(e) => {
                     cur = e;
@@ -332,7 +383,7 @@ fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Loop> {
                 None => break,
             }
         }
-        loops.push((perim, lp));
+        loops.push((perim, seq));
     }
     loops.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
     loops.into_iter().map(|(_, l)| l).collect()

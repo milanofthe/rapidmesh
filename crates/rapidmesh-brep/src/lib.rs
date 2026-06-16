@@ -23,8 +23,10 @@ use rapidmesh_geom::{FaceTag, NurbsSurface, RegionTag, SurfaceKind};
 use std::sync::Arc;
 
 pub mod build;
+pub mod chart;
 
 type V3 = [f64; 3];
+type P2 = [f64; 2];
 
 // ---- surface geometry (analytic primitive OR free-form NURBS) ------------
 
@@ -49,6 +51,7 @@ macro_rules! id {
 }
 id!(VertexId);
 id!(EdgeId);
+id!(CoEdgeId);
 id!(FaceId);
 id!(SurfaceId);
 
@@ -84,27 +87,47 @@ pub struct Vertex {
 }
 
 /// A B-rep edge: a maximal chain of PLC boundary edges between two corners, with
-/// its recovered analytic `curve` and the radial list of all faces meeting it.
+/// its recovered analytic `curve` and the radial list of all uses meeting it.
 #[derive(Debug, Clone)]
 pub struct Edge {
-    /// The corner endpoints (`verts.first()` / `verts.last()`).
+    /// The corner endpoints (`ends[0]` = `chain.first()`, `ends[1]` = `chain.last()`).
     pub ends: [VertexId; 2],
     /// The ordered on-PLC vertex chain (the polyline the edge follows); the curve
     /// runs from `chain[0]` to `chain[last]`.
     pub chain: Vec<V3>,
     /// The recovered analytic curve.
     pub curve: Curve,
-    /// All faces meeting along this edge -- radial cycle (non-manifold): 2 for a
-    /// box edge, 3+ at a multi-material interface or a sheet rim.
-    pub faces: Vec<FaceId>,
+    /// All uses (co-edges) around this edge -- the radial cycle (non-manifold): 2
+    /// for a box edge, 3+ at a multi-material interface or a sheet rim. Each
+    /// co-edge ties the edge to one adjacent face with its parameter-space trim.
+    pub coedges: Vec<CoEdgeId>,
 }
 
-/// An oriented boundary cycle of a face: signed edges (`forward = true` traverses
-/// the edge from `ends[0]` to `ends[1]`). `loops[0]` of a face is the outer
-/// boundary, the rest are holes.
+/// A directed use of an edge by one face's loop (a "co-edge"). Carries the
+/// edge's trim curve in THAT face's (u,v) parameter space -- the PCurve -- so the
+/// face can be meshed and trimmed parametrically (the native NURBS path).
+#[derive(Debug, Clone)]
+pub struct CoEdge {
+    pub edge: EdgeId,
+    pub face: FaceId,
+    /// True if the loop traverses the edge from `ends[0]` to `ends[1]`.
+    pub forward: bool,
+    /// The edge in this face's parameter space (sampled (u,v) polyline, oriented
+    /// with the loop). Empty if the face has no chart yet.
+    pub pcurve: PCurve,
+}
+
+/// An edge curve in a face's (u,v) parameter space, for trimming + 2D meshing.
+#[derive(Debug, Clone, Default)]
+pub struct PCurve {
+    pub uv: Vec<P2>,
+}
+
+/// An oriented boundary cycle of a face, as co-edges. `loops[0]` of a face is the
+/// outer boundary, the rest are holes.
 #[derive(Debug, Clone, Default)]
 pub struct Loop {
-    pub edges: Vec<(EdgeId, bool)>,
+    pub coedges: Vec<CoEdgeId>,
 }
 
 /// A trimmed analytic surface. `regions` are the materials on the front
@@ -127,6 +150,7 @@ pub struct Face {
 pub struct Brep {
     pub vertices: Vec<Vertex>,
     pub edges: Vec<Edge>,
+    pub coedges: Vec<CoEdge>,
     pub faces: Vec<Face>,
     pub surfaces: Vec<Surface>,
 }
@@ -140,6 +164,9 @@ impl Brep {
     }
     pub fn edge(&self, e: EdgeId) -> &Edge {
         &self.edges[e.0 as usize]
+    }
+    pub fn coedge(&self, c: CoEdgeId) -> &CoEdge {
+        &self.coedges[c.0 as usize]
     }
     pub fn face(&self, f: FaceId) -> &Face {
         &self.faces[f.0 as usize]

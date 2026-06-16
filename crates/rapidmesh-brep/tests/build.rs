@@ -20,15 +20,30 @@ fn box_has_6_faces_12_edges_8_corners() {
     for f in &b.faces {
         assert!(matches!(b.surface(f.surface), Surface::Analytic(SurfaceKind::Plane)));
         assert_eq!(f.loops.len(), 1, "a box face has one loop");
-        assert_eq!(f.loops[0].edges.len(), 4, "a box face loop has 4 edges");
+        assert_eq!(f.loops[0].coedges.len(), 4, "a box face loop has 4 co-edges");
         // one side is a region, the other background (0)
         let (a, c) = (f.regions[0].0, f.regions[1].0);
         assert!((a == 0) ^ (c == 0), "box wall separates region from background");
+        // the loop's PCurves map to a proper 2D region in the face (u,v): a
+        // nonzero-area bounding box, proving the planar chart is well-posed
+        let mut lo = [f64::MAX; 2];
+        let mut hi = [f64::MIN; 2];
+        for &cid in &f.loops[0].coedges {
+            let uv = &b.coedge(cid).pcurve.uv;
+            assert!(uv.len() >= 2, "co-edge PCurve has >= 2 samples");
+            for p in uv {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+        }
+        assert!(hi[0] - lo[0] > 1e-9 && hi[1] - lo[1] > 1e-9, "face (u,v) region has area");
     }
-    // every edge is a straight line, shared by exactly two faces
+    // every edge is a straight line, shared by exactly two co-edges (two faces)
     for e in &b.edges {
         assert!(matches!(e.curve, Curve::Line { .. }), "box edge is a Line");
-        assert_eq!(e.faces.len(), 2, "box edge is shared by two faces");
+        assert_eq!(e.coedges.len(), 2, "box edge is used by two faces");
     }
 }
 
@@ -75,4 +90,20 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     let n_profile = b.edges.iter().filter(|e| matches!(e.curve, Curve::Profile { .. })).count();
     assert!(n_profile >= 1, "at least one profile edge, got {n_profile}");
     assert!(!b.edges.is_empty(), "airfoil has feature edges");
+
+    // the extruded mantle face has loops whose co-edges carry PCurves in its
+    // (t, h) parameter space (the parametric trim, the native NURBS path)
+    let mantle = b
+        .faces
+        .iter()
+        .find(|f| matches!(b.surface(f.surface), Surface::Analytic(SurfaceKind::Extruded { .. })))
+        .unwrap();
+    let mut n_uv = 0;
+    for lp in &mantle.loops {
+        for &cid in &lp.coedges {
+            assert!(b.coedge(cid).pcurve.uv.len() >= 2, "mantle co-edge has a PCurve");
+            n_uv += b.coedge(cid).pcurve.uv.len();
+        }
+    }
+    assert!(n_uv > 0, "mantle has parametric trim curves");
 }

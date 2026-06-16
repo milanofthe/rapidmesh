@@ -648,30 +648,95 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     {
         let pos = positions(&sites);
         let surf_tree = Octree::build(&pos);
-        let budget = params.max_points.saturating_sub(sites.len());
+        let budget_pts = params.max_points.saturating_sub(sites.len());
+        // Local size at a point: the volume field (grown from the surface points),
+        // capped by the region size.
+        let hloc = |p: V3| vol_field.at(p).min(region_cap(domain.region_at(p))).max(1e-9);
+        // Dart budget = the density integral integral(1/h^3) dV over a coarse
+        // sample of the inside, so the count matches the graded target (a sharp
+        // feature does not inflate it). Randomized darts then pack uniformly at
+        // that density -- the size-field BCC alone is ~1.5x coarser than the
+        // (oversampled) surface, leaving the interior visibly under-seeded.
+        let span: V3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        let ns = 24usize;
+        let cellvol = (span[0] * span[1] * span[2]).max(0.0) / (ns * ns * ns) as f64;
+        let mut density = 0.0f64;
+        for i in 0..ns {
+            for j in 0..ns {
+                for k in 0..ns {
+                    let p: V3 = [
+                        lo[0] + (i as f64 + 0.5) / ns as f64 * span[0],
+                        lo[1] + (j as f64 + 0.5) / ns as f64 * span[1],
+                        lo[2] + (k as f64 + 0.5) / ns as f64 * span[2],
+                    ];
+                    if inside(p) {
+                        let h = hloc(p);
+                        density += cellvol / (h * h * h);
+                    }
+                }
+            }
+        }
+        let budget = ((density * 6.0) as usize).min(budget_pts);
+        // Spatial hash for interior separation; cell >= the largest separation
+        // radius (0.65*maxh) so a +-1 cell query is exact.
+        let cell = (0.65 * params.maxh).max(1e-9);
+        let ckey = |p: V3| {
+            ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64, (p[2] / cell).floor() as i64)
+        };
+        let mut igrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64) / ((1u64 << 53) as f64)
+        };
         let mut added = 0usize;
-        for p in domain.seed_points() {
-            if added >= budget {
+        let attempts = (budget * 6).max(64);
+        for _ in 0..attempts {
+            if added >= budget_pts {
                 break;
             }
+            let p: V3 = [lo[0] + next() * span[0], lo[1] + next() * span[1], lo[2] + next() * span[2]];
             if !inside(p) {
                 continue;
             }
-            // LOCAL clearance: the surface is graded (fine at a curved nose,
-            // coarse elsewhere), so a global `sep` from the coarse bulk size
-            // would reject every seed near a fine feature and orphan its surface
-            // nodes. Scale the clearance by the local sizing field.
-            // Clearance = the FULL local size: a volume seed within one element of
-            // the surface would create a boundary tet with a volume vertex, which
-            // the restricted-Delaunay boundary (surface-only faces) cannot emit ->
-            // a hole. One full spacing keeps the boundary tets surface-only.
-            let lsep = vol_field.at(p).min(region_cap(domain.region_at(p)));
-            let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < lsep).unwrap_or(false);
-            if !near {
+            let h = hloc(p);
+            // Surface clearance = the FULL local size: a volume seed within one
+            // element of the surface makes a boundary tet with a volume vertex,
+            // which the restricted-Delaunay boundary cannot emit -> a hole (breaks
+            // watertightness / exact volumes). Non-negotiable.
+            if surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < h).unwrap_or(false) {
+                continue;
+            }
+            // Interior separation.
+            let r = 0.65 * h;
+            let (kx, ky, kz) = ckey(p);
+            let r2 = r * r;
+            let mut clear = true;
+            'scan: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        if let Some(v) = igrid.get(&(kx + dx, ky + dy, kz + dz)) {
+                            for &q in v {
+                                if dot(sub(p, q), sub(p, q)) < r2 {
+                                    clear = false;
+                                    break 'scan;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if clear {
+                igrid.entry((kx, ky, kz)).or_default().push(p);
                 sites.push(Site::free(p));
                 added += 1;
             }
         }
+        rmlog::stat("mesh.vol_seeds", added as f64);
     }
     rmlog::stage("mesh.seed", t_seed.elapsed().as_secs_f64());
 

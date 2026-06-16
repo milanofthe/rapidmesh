@@ -23,7 +23,7 @@ use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFac
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::seed::SizingField;
-use crate::site::{Carrier, EdgeFace, Site};
+use crate::site::{Carrier, Site};
 use crate::spatial::Octree;
 use crate::surf2d::cvt_fill;
 use crate::surfchart::build_chart;
@@ -359,354 +359,200 @@ fn chart_groups(plc: &TaggedPlc, diag: f64) -> Vec<ChartGroup> {
     out
 }
 
-/// Adds graded edge points for boundary edge `e` (once, cached) as `on_edge`
-/// sites; shared by the planar patches and the curved groups.
-fn ensure_edge(
-    plc: &TaggedPlc,
-    domain: &DomainTree,
-    sites: &mut Vec<Site>,
-    edge_pts: &mut DMap<(usize, usize), Vec<usize>>,
-    e: (usize, usize),
-) {
-    if edge_pts.contains_key(&e) {
-        return;
-    }
-    let (va, vb) = (plc.vertices[e.0], plc.vertices[e.1]);
-    let idx: Vec<usize> = graded_edge_fracs(va, vb, domain)
-        .into_iter()
-        .map(|f| {
-            sites.push(Site::on_edge(va, vb, f));
-            sites.len() - 1
+
+/// NURBS-native edge curve: the analytic profile of an `Extruded` surface,
+/// mapped to 3D at a fixed extrusion height `z`. Points distributed on THIS (via
+/// `curve::distribute`) come from the exact profile curvature, independent of the
+/// input facet tessellation -- the principled way to consume the geometry, vs
+/// re-sampling a faceted polyline. The trailing edge falls out as the profile's
+/// own parameter endpoints.
+struct ExtrudedEdgeCurve {
+    profile: std::sync::Arc<rapidmesh_geom::nurbs::NurbsCurve>,
+    base: V3,
+    u: V3,
+    v: V3,
+    a: V3,
+    z: f64,
+    ts: Vec<f64>,
+    ss: Vec<f64>,
+}
+
+impl ExtrudedEdgeCurve {
+    /// Builds the edge curve over the profile parameter range `[t0, t1]` (the part
+    /// the chain covers) at extrusion height `z`. Distributing the FULL profile for
+    /// every chain would duplicate points where the profile is split into chains.
+    fn new(kind: &SurfaceKind, z: f64, t0: f64, t1: f64) -> Option<ExtrudedEdgeCurve> {
+        let SurfaceKind::Extruded { profile, base, udir, vdir, axis } = kind else {
+            return None;
+        };
+        let norm = |a: V3| {
+            let l = dot(a, a).sqrt();
+            if l > 0.0 { scale(a, 1.0 / l) } else { a }
+        };
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        if !(hi > lo) {
+            return None;
+        }
+        let n = 256usize;
+        let (mut ts, mut ss) = (vec![lo], vec![0.0f64]);
+        let mut prev = lo;
+        let mut acc = 0.0;
+        for i in 1..=n {
+            let t = lo + (hi - lo) * i as f64 / n as f64;
+            acc += profile.arc_length(prev, t, 2);
+            ts.push(t);
+            ss.push(acc);
+            prev = t;
+        }
+        Some(ExtrudedEdgeCurve {
+            profile: profile.clone(),
+            base: *base,
+            u: norm(*udir),
+            v: norm(*vdir),
+            a: norm(*axis),
+            z,
+            ts,
+            ss,
         })
-        .collect();
-    edge_pts.insert(e, idx);
-}
-
-/// WP-R3: a curved boundary chain of a chart group -- an ordered run of PLC
-/// boundary vertices between two hard corners (a trailing-edge cusp, a junction),
-/// lying on the intersection curve of the chart surface (`fa`) and the adjacent
-/// face (`fb`). Its interior input vertices are dropped and replaced by geometry-
-/// derived `CurvedEdge` points, so the boundary distribution follows the curve's
-/// own curvature, not the input sampling.
-struct CurvedChain {
-    ordered: Vec<usize>, // PLC vertices ea, interior.., eb (eb == ea for a loop)
-    fa: EdgeFace,
-    fb: EdgeFace,
-}
-
-impl CurvedChain {
-    fn interior(&self) -> &[usize] {
-        &self.ordered[1..self.ordered.len() - 1]
     }
-    fn edges(&self) -> Vec<(usize, usize)> {
-        self.ordered.windows(2).map(|w| sorted2(w[0], w[1])).collect()
+    fn s_to_t(&self, s: f64) -> f64 {
+        let s = s.clamp(0.0, self.ss[self.ss.len() - 1]);
+        let i = self.ss.partition_point(|&x| x < s).clamp(1, self.ss.len() - 1);
+        let (s0, s1) = (self.ss[i - 1], self.ss[i]);
+        let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
+        self.ts[i - 1] + f * (self.ts[i] - self.ts[i - 1])
+    }
+    fn at3(&self, t: f64) -> V3 {
+        let c = self.profile.eval(t);
+        let mut p = self.base;
+        for k in 0..3 {
+            p[k] += self.a[k] * self.z + self.u[k] * c[0] + self.v[k] * c[1];
+        }
+        p
     }
 }
 
-/// Corner vertices of the chart groups' boundaries: a boundary vertex with a
-/// junction (degree != 2) or a turn sharper than 45 deg. These mark hard creases
-/// (a trailing-edge cusp). WP-R7c welds spatially close corner PAIRS so a blunt
-/// cap closes to a sharp edge; the smooth body has no corners and is untouched.
-fn boundary_corners(plc: &TaggedPlc, cgroups: &[ChartGroup]) -> Vec<usize> {
+impl crate::curve::Curve for ExtrudedEdgeCurve {
+    fn length(&self) -> f64 {
+        self.ss[self.ss.len() - 1]
+    }
+    fn point_at(&self, s: f64) -> V3 {
+        self.at3(self.s_to_t(s))
+    }
+    fn radius_at(&self, s: f64) -> f64 {
+        let k = self.profile.curvature(self.s_to_t(s));
+        if k > 1e-12 { 1.0 / k } else { f64::INFINITY }
+    }
+}
+
+/// Chains the PLC's feature edges (the boundary edges of all surface patches and
+/// curved groups) into ordered curves, split at corners (a junction, degree != 2,
+/// or a turn sharper than 45 deg). A corner-less loop (a circular rim) is anchored
+/// at its lowest-index vertex. Each chain is one curve for the 1D distributor; the
+/// chains tile every feature edge once, so adjacent patches share edge points.
+fn feature_edge_chains(
+    plc: &TaggedPlc,
+    pbe: &[Vec<(usize, usize)>],
+    cgroups: &[ChartGroup],
+    skip_edges: &DSet<(usize, usize)>,
+) -> Vec<Vec<usize>> {
     use std::collections::{HashMap, HashSet};
     const CORNER_COS: f64 = 0.707;
     let unit = |a: V3| {
         let l = dot(a, a).sqrt();
         if l > 0.0 { scale(a, 1.0 / l) } else { a }
     };
-    let mut out: HashSet<usize> = HashSet::new();
+    // `skip_edges` are not chained: edges interior to a chart group (its vertical
+    // facet seams -- they would give every outline vertex degree 3 and split the
+    // smooth profile into 1-edge chains, killing the curvature grading) and edges
+    // of a faceted closed-curved surface (kept as input tessellation).
+    let mut eset: HashSet<(usize, usize)> = HashSet::new();
+    for p in pbe {
+        for &(a, b) in p {
+            if !skip_edges.contains(&sorted2(a, b)) {
+                eset.insert(sorted2(a, b));
+            }
+        }
+    }
     for g in cgroups {
-        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
         for &(a, b) in &g.boundary {
-            adj.entry(a).or_default().push(b);
-            adj.entry(b).or_default().push(a);
-        }
-        for (&n, ns) in &adj {
-            let is_corner = if ns.len() != 2 {
-                true
-            } else {
-                let d0 = unit(sub(plc.vertices[n], plc.vertices[ns[0]]));
-                let d1 = unit(sub(plc.vertices[ns[1]], plc.vertices[n]));
-                dot(d0, d1) < CORNER_COS
-            };
-            if is_corner {
-                out.insert(n);
+            if !skip_edges.contains(&sorted2(a, b)) {
+                eset.insert(sorted2(a, b));
             }
         }
     }
-    let mut v: Vec<usize> = out.into_iter().collect();
-    v.sort_unstable();
-    v
-}
-
-/// WP-R7c: weld the given vertex pairs (PLC indices) into one, each cluster's
-/// representative being the member centroid. Triangles that degenerate (two
-/// welded corners) are dropped; tags ride along per surviving triangle. Closes a
-/// near-closed feature loop (a blunt trailing edge) into a single sharp edge.
-fn weld_vertices(plc: &TaggedPlc, pairs: &[(usize, usize)]) -> TaggedPlc {
-    fn find(parent: &mut [usize], x: usize) -> usize {
-        let mut r = x;
-        while parent[r] != r {
-            r = parent[r];
-        }
-        let mut c = x;
-        while parent[c] != c {
-            let nx = parent[c];
-            parent[c] = r;
-            c = nx;
-        }
-        r
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &(a, b) in &eset {
+        adj.entry(a).or_default().push(b);
+        adj.entry(b).or_default().push(a);
     }
-    let n = plc.vertices.len();
-    let mut parent: Vec<usize> = (0..n).collect();
-    for &(a, b) in pairs {
-        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-        if ra != rb {
-            parent[ra.max(rb)] = ra.min(rb);
-        }
+    if adj.is_empty() {
+        return Vec::new();
     }
-    let root: Vec<usize> = (0..n).map(|v| find(&mut parent, v)).collect();
-    let mut sum = vec![[0.0f64; 3]; n];
-    let mut cnt = vec![0u32; n];
-    for v in 0..n {
-        let r = root[v];
-        for k in 0..3 {
-            sum[r][k] += plc.vertices[v][k];
+    let is_corner = |n: usize, adj: &HashMap<usize, Vec<usize>>| -> bool {
+        let ns = &adj[&n];
+        if ns.len() != 2 {
+            return true;
         }
-        cnt[r] += 1;
-    }
-    let mut new_idx = vec![u32::MAX; n];
-    let mut vertices: Vec<[f64; 3]> = Vec::new();
-    for v in 0..n {
-        let r = root[v];
-        if new_idx[r] == u32::MAX {
-            new_idx[r] = vertices.len() as u32;
-            vertices.push(std::array::from_fn(|k| sum[r][k] / cnt[r] as f64));
-        }
-    }
-    let mut out = TaggedPlc {
-        vertices,
-        triangles: Vec::new(),
-        face_tags: Vec::new(),
-        surface_refs: Vec::new(),
-        region_tags: Vec::new(),
-        surfaces: plc.surfaces.clone(),
-        surface_owners: plc.surface_owners.clone(),
+        let d0 = unit(sub(plc.vertices[n], plc.vertices[ns[0]]));
+        let d1 = unit(sub(plc.vertices[ns[1]], plc.vertices[n]));
+        dot(d0, d1) < CORNER_COS
     };
-    for (ti, t) in plc.triangles.iter().enumerate() {
-        let nt = [
-            new_idx[root[t[0] as usize]],
-            new_idx[root[t[1] as usize]],
-            new_idx[root[t[2] as usize]],
-        ];
-        if nt[0] == nt[1] || nt[1] == nt[2] || nt[2] == nt[0] {
-            continue;
-        }
-        out.triangles.push(nt);
-        out.face_tags.push(plc.face_tags[ti]);
-        out.surface_refs.push(plc.surface_refs[ti]);
-        out.region_tags.push(plc.region_tags[ti]);
-    }
-    out
-}
-
-/// Identifies the curved boundary chains of all chart groups (see [`CurvedChain`]).
-/// A group's boundary is split at hard corners (degree != 2, or a turn sharper
-/// than 45 deg); each smooth run between corners is one chain. Fully smooth loops
-/// (no corner, e.g. a circular rim) are left to the pinned faceted path.
-fn curved_chains(plc: &TaggedPlc, cgroups: &[ChartGroup]) -> Vec<CurvedChain> {
-    use std::collections::{HashMap, HashSet};
-    const CORNER_COS: f64 = 0.707; // turn > 45 deg -> a hard corner
-    let unit = |a: V3| {
-        let l = dot(a, a).sqrt();
-        if l > 0.0 { scale(a, 1.0 / l) } else { a }
-    };
-    let mut e2f: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-    for (fi, t) in plc.triangles.iter().enumerate() {
-        let v = [t[0] as usize, t[1] as usize, t[2] as usize];
-        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
-            e2f.entry(sorted2(a, b)).or_default().push(fi);
-        }
-    }
-    let face_of = |fi: usize| -> EdgeFace {
-        let kind = plc.surfaces[plc.surface_refs[fi].0 as usize].clone();
-        if matches!(kind, SurfaceKind::Plane) {
-            let t = plc.triangles[fi];
-            let (a, b, c) =
-                (plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]);
-            EdgeFace::Plane { p0: a, n: unit(cross(sub(b, a), sub(c, a))) }
-        } else {
-            EdgeFace::Surface(kind)
-        }
-    };
-
-    let mut out = Vec::new();
-    for g in cgroups {
-        let members: HashSet<usize> = g.members.iter().copied().collect();
-        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut node_face: HashMap<usize, EdgeFace> = HashMap::new();
-        for &(a, b) in &g.boundary {
-            let other = match e2f
-                .get(&sorted2(a, b))
-                .and_then(|fs| fs.iter().find(|&&fi| !members.contains(&fi)))
-            {
-                Some(&fi) => face_of(fi),
-                None => continue,
-            };
-            adj.entry(a).or_default().push(b);
-            adj.entry(b).or_default().push(a);
-            node_face.entry(a).or_insert_with(|| other.clone());
-            node_face.entry(b).or_insert_with(|| other.clone());
-        }
-        if adj.is_empty() {
-            continue;
-        }
-        let is_corner = |n: usize| -> bool {
-            let ns = &adj[&n];
-            if ns.len() != 2 {
-                return true;
+    let mut corners: Vec<usize> = adj.keys().copied().filter(|&n| is_corner(n, &adj)).collect();
+    corners.sort_unstable();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut done: HashSet<(usize, usize)> = HashSet::new();
+    let walk = |c0: usize, start: usize, adj: &HashMap<usize, Vec<usize>>, done: &mut HashSet<(usize, usize)>| -> Vec<usize> {
+        let mut chain = vec![c0];
+        let (mut prev, mut cur) = (c0, start);
+        loop {
+            chain.push(cur);
+            done.insert((prev, cur));
+            done.insert((cur, prev));
+            if is_corner(cur, adj) || cur == c0 {
+                break;
             }
-            let d0 = unit(sub(plc.vertices[n], plc.vertices[ns[0]]));
-            let d1 = unit(sub(plc.vertices[ns[1]], plc.vertices[n]));
-            dot(d0, d1) < CORNER_COS
-        };
-        let mut corners: Vec<usize> = adj.keys().copied().filter(|&n| is_corner(n)).collect();
-        corners.sort_unstable();
-        if corners.is_empty() {
-            continue; // smooth closed loop: leave it on the pinned faceted path
+            let ns = &adj[&cur];
+            let nxt = if ns[0] == prev { ns[1] } else { ns[0] };
+            prev = cur;
+            cur = nxt;
+            if chain.len() > adj.len() + 2 {
+                break;
+            }
         }
-        let fa = EdgeFace::Surface(g.kind.clone());
-        let mut done: HashSet<usize> = HashSet::new();
-        for &c0 in &corners {
-            for &start in &adj[&c0].clone() {
-                if done.contains(&start) || is_corner(start) {
-                    continue;
+        chain
+    };
+    for &c0 in &corners {
+        for &start in &adj[&c0].clone() {
+            if !done.contains(&(c0, start)) {
+                out.push(walk(c0, start, &adj, &mut done));
+            }
+        }
+    }
+    let mut keys: Vec<usize> = adj.keys().copied().collect();
+    keys.sort_unstable();
+    for &a in &keys {
+        for &b in &adj[&a].clone() {
+            if !done.contains(&(a, b)) {
+                let mut ch = walk(a, b, &adj, &mut done);
+                if ch.last() != Some(&a) {
+                    ch.push(a);
                 }
-                let mut ordered = vec![c0];
-                let (mut prev, mut cur) = (c0, start);
-                loop {
-                    ordered.push(cur);
-                    done.insert(cur);
-                    if is_corner(cur) {
-                        break;
-                    }
-                    let ns = &adj[&cur];
-                    let nxt = if ns[0] == prev { ns[1] } else { ns[0] };
-                    prev = cur;
-                    cur = nxt;
-                    if ordered.len() > adj.len() + 2 {
-                        break;
-                    }
-                }
-                if ordered.len() < 3 {
-                    continue; // no interior vertices to replace
-                }
-                let fb = node_face.get(&start).cloned().unwrap_or_else(|| fa.clone());
-                out.push(CurvedChain { ordered, fa: fa.clone(), fb });
+                out.push(ch);
             }
         }
     }
     out
 }
 
-/// Geometry-derived interior points for a chain: placed at equal steps of the
-/// cumulative density `1/h` along the chain polyline, `h` the GRADED sizing field
-/// (curvature target made Lipschitz by `grading`), so the count is the curvature-
-/// graded ideal (coarse where flat, fine where it bends) -- a true RESAMPLE, not
-/// a redistribution of the input count. Positions are on the chord; the
-/// `CurvedEdge` carrier projects them onto the true curve when the site is built.
-fn generate_chain_points(c: &CurvedChain, plc: &TaggedPlc, domain: &DomainTree) -> Vec<V3> {
-    let poly: Vec<V3> = c.ordered.iter().map(|&v| plc.vertices[v]).collect();
-    let mut cum = vec![0.0f64; poly.len()];
-    for i in 1..poly.len() {
-        let len = dist(poly[i], poly[i - 1]);
-        let mid = scale([poly[i][0] + poly[i - 1][0], poly[i][1] + poly[i - 1][1], poly[i][2] + poly[i - 1][2]], 0.5);
-        // Match the 2D surface fill's local spacing (`SURFACE_OVERSAMPLE * h`), so
-        // the boundary and the patch interior have compatible density and the seam
-        // triangulates without slivers.
-        cum[i] = cum[i - 1] + len / (SURFACE_OVERSAMPLE * domain.h_at(mid)).max(1e-9);
-    }
-    let total = cum[poly.len() - 1];
-    let m = (total.round() as usize).max(1);
-    let (ea, eb) = (poly[0], poly[poly.len() - 1]);
-    let mut out: Vec<V3> = Vec::with_capacity(m.saturating_sub(1));
-    let mut i = 1usize;
-    for k in 1..m {
-        let target = k as f64 / m as f64 * total;
-        while i < cum.len() && cum[i] < target {
-            i += 1;
-        }
-        let i = i.min(cum.len() - 1);
-        let seg = (cum[i] - cum[i - 1]).max(1e-30);
-        let f = ((target - cum[i - 1]) / seg).clamp(0.0, 1.0);
-        let p = [
-            poly[i - 1][0] + f * (poly[i][0] - poly[i - 1][0]),
-            poly[i - 1][1] + f * (poly[i][1] - poly[i - 1][1]),
-            poly[i - 1][2] + f * (poly[i][2] - poly[i - 1][2]),
-        ];
-        // Min-separation guard: keep a point only if it clears the corners and the
-        // last kept point by half the local spacing. A blunt cusp (an airfoil
-        // trailing edge, ~0.0025 thick) has a tiny local `h` that would otherwise
-        // place points atop a corner -> a near-duplicate the Delaunay rejects.
-        let sep = 0.5 * (SURFACE_OVERSAMPLE * domain.h_at(p)).max(1e-9);
-        let clear = dist(p, ea) >= sep
-            && dist(p, eb) >= sep
-            && out.last().map(|&q| dist(p, q) >= sep).unwrap_or(true);
-        if clear {
-            out.push(p);
-        }
-    }
-    out
-}
-
-/// Meshes a tagged PLC into a region-tagged tet mesh by hierarchical CVT.
+/// Meshes a tagged PLC into a region-tagged tet mesh by the bottom-up sizing
+/// hierarchy: feature edges (`curve.rs`) seed the surface size field, the surface
+/// points seed the volume size field, each driving a weighted Lloyd. The size
+/// field is gradient-limited (`sizefield.rs`) -- smooth and narrow, no heuristic
+/// grading. Region classification and the restricted-Delaunay boundary are kept.
 pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
     let t_start = std::time::Instant::now();
-
-    // WP-R7c: collapse a sub-resolution blunt edge (an airfoil trailing edge) into
-    // a sharp one. Such a cap is two CORNERS (sharp turns of the boundary loop) a
-    // gap apart that is below the local TARGET size we mesh at. Welding the close
-    // corner pair closes the cap to a single sharp edge instead of a sliver fan.
-    // Scoping to CORNERS keeps the smooth body untouched (it has none); the scale
-    // is the target `h` (input-independent, unlike the input edge spacing, which
-    // shrinks with `n_seg` below the fixed geometric gap). No chart group (the
-    // planar/wrapping exact fixtures) -> no corner pairs -> no-op.
-    const MERGE_FRAC: f64 = 0.5;
-    let welded;
-    let plc: &TaggedPlc = {
-        let d = {
-            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
-            for p in &plc.vertices {
-                for k in 0..3 {
-                    lo[k] = lo[k].min(p[k]);
-                    hi[k] = hi[k].max(p[k]);
-                }
-            }
-            (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max)
-        };
-        let pre = DomainTree::build(plc, params);
-        let corners = boundary_corners(plc, &chart_groups(plc, d));
-        let cpos: Vec<V3> = corners.iter().map(|&v| plc.vertices[v]).collect();
-        let tree = Octree::build(&cpos);
-        let mut weld_pairs: Vec<(usize, usize)> = Vec::new();
-        for (i, &v) in corners.iter().enumerate() {
-            let tol = MERGE_FRAC * pre.h_at(cpos[i]).max(1e-12);
-            for j in tree.within_radius(cpos[i], tol) {
-                let u = corners[j as usize];
-                if u > v && dist(plc.vertices[v], plc.vertices[u]) < tol {
-                    weld_pairs.push((v, u));
-                }
-            }
-        }
-        if weld_pairs.is_empty() {
-            plc
-        } else {
-            rmlog::stat("mesh.welded_pairs", weld_pairs.len() as f64);
-            welded = weld_vertices(plc, &weld_pairs);
-            &welded
-        }
-    };
 
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
@@ -743,6 +589,21 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let cgroups = chart_groups(plc, diag);
     let chart_facets: DSet<usize> = cgroups.iter().flat_map(|g| g.members.iter().copied()).collect();
     let is_chart_patch = |p: &Patch| p.member_indices.iter().any(|fi| chart_facets.contains(fi));
+    // Closed/wrapping curved surfaces (a sphere, a full cylinder/torus barrel) are
+    // neither planar nor a chart group: they are kept FACETED (the input
+    // tessellation is the surface). Their vertices are pinned and their edges are
+    // NOT redistributed -- the bottom-up curve/field path needs an open chart; the
+    // analytic atlas for these is future work.
+    let is_curved = |fi: usize| !matches!(plc.surfaces[plc.surface_refs[fi].0 as usize], SurfaceKind::Plane);
+    let faceted_facets: DSet<usize> =
+        (0..plc.triangles.len()).filter(|&fi| is_curved(fi) && !chart_facets.contains(&fi)).collect();
+    let faceted_verts: DSet<usize> = faceted_facets
+        .iter()
+        .flat_map(|&fi| (0..3).map(move |k| plc.triangles[fi][k] as usize))
+        .collect();
+    let is_faceted_patch = |p: &Patch| p.member_indices.iter().any(|fi| faceted_facets.contains(fi));
+    rmlog::stat("mesh.chart_groups", cgroups.len() as f64);
+    rmlog::stat("mesh.faceted_facets", faceted_facets.len() as f64);
     // Site separation (surface clearance, volume crowding) is LOCAL: a fraction
     // of `domain.h_at(p)`, computed at each seed/move below. A global value from
     // the coarse bulk size would reject seeds near fine curved features and
@@ -754,94 +615,193 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // bordering a finely sized face gets denser points there and coarsens away.
     // Shared edges are seeded once (cached), so both adjacent patches agree.
     let t_surf = std::time::Instant::now();
-    // WP-R3: curved chart-group boundary chains. Their interior input vertices are
-    // dropped and replaced by geometry-derived `CurvedEdge` points (the curve
-    // resampled by its own curvature), shared by both adjacent patches so the seam
-    // stays conforming. Planar-only PLCs have no chart group -> no chain -> the
-    // faceted path (and the exact-volume fixtures) is byte-for-byte unchanged.
-    let chains = curved_chains(plc, &cgroups);
-    let skip: DSet<usize> = chains.iter().flat_map(|c| c.interior().iter().copied()).collect();
-    let edge2chain: DMap<(usize, usize), usize> = chains
-        .iter()
-        .enumerate()
-        .flat_map(|(ci, c)| c.edges().into_iter().map(move |e| (e, ci)))
-        .collect();
+    // ---- stage 1: distribute points on every feature-edge curve -----------
+    // Each feature edge is a curve (`feature_edge_chains`); `curve::distribute`
+    // places points under the sagitta error bound + multiplicative-gradient
+    // smoothing. Corners and the distributed interior points are the fixed 1D
+    // boundary, shared by adjacent patches. A user size cap (face/region/surface)
+    // is applied per chain, so a finely sized face also refines its bounding edges.
+    let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
+    let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
 
-    // Pinned PLC vertices, MINUS the chain interiors (replaced below). Nothing
-    // indexes `sites` by raw PLC-vertex id (corners are read from `plc.vertices`),
-    // so dropping vertices is safe; `plc_points` is the pinned-vertex prefix.
-    let mut sites: Vec<Site> = plc
-        .vertices
+    // edge -> adjacent facets.
+    let mut e2f: DMap<(usize, usize), Vec<usize>> = DMap::default();
+    for (fi, t) in plc.triangles.iter().enumerate() {
+        let v = [t[0] as usize, t[1] as usize, t[2] as usize];
+        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            e2f.entry(sorted2(a, b)).or_default().push(fi);
+        }
+    }
+    // Edges NOT to chain: interior to a chart group (all adjacent facets are chart
+    // -> a vertical seam, which would split the smooth profile), or touching a
+    // faceted closed-curved surface (kept as input tessellation).
+    let skip_edges: DSet<(usize, usize)> = e2f
         .iter()
-        .enumerate()
-        .filter(|(v, _)| !skip.contains(v))
-        .map(|(_, &p)| Site::vertex(p))
+        .filter(|(_, fs)| {
+            fs.iter().all(|fi| chart_facets.contains(fi)) || fs.iter().any(|fi| faceted_facets.contains(fi))
+        })
+        .map(|(&e, _)| e)
         .collect();
+    let chains = feature_edge_chains(plc, &pbe, &cgroups, &skip_edges);
+
+    // Merge the endpoints of a NEAR-CLOSED chain (a blunt trailing edge: the two
+    // profile endpoints sit a sub-arc-length gap apart) into one representative
+    // corner, so the loop closes to a single sharp edge. Done at the corner level
+    // (a vertex remap, not a PLC weld), so the analytic chart group is untouched.
+    let mut rep: Vec<usize> = (0..plc.vertices.len()).collect();
+    fn rfind(rep: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while rep[r] != r {
+            r = rep[r];
+        }
+        let mut c = x;
+        while rep[c] != c {
+            let nx = rep[c];
+            rep[c] = r;
+            c = nx;
+        }
+        r
+    }
+    for ch in &chains {
+        let (a, b) = (ch[0], *ch.last().unwrap());
+        let arc: f64 = ch.windows(2).map(|w| dist(plc.vertices[w[0]], plc.vertices[w[1]])).sum();
+        if a != b && arc > 0.0 && dist(plc.vertices[a], plc.vertices[b]) < 0.05 * arc {
+            let (ra, rb) = (rfind(&mut rep, a), rfind(&mut rep, b));
+            if ra != rb {
+                rep[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    for v in 0..rep.len() {
+        rfind(&mut rep, v); // resolve every vertex to its representative (path-compressed)
+    }
+
+    let facet_cap = |fi: usize| -> f64 {
+        let ft = plc.face_tags[fi].0;
+        if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
+            return h.min(params.maxh);
+        }
+        let owner = plc.surface_owners[plc.surface_refs[fi].0 as usize];
+        if let Some(&(_, h)) = params.surface_maxh.iter().find(|(o, _)| *o == owner) {
+            return h.min(params.maxh);
+        }
+        let mut h = params.maxh;
+        for r in plc.region_tags[fi] {
+            if r.0 != 0 {
+                if let Some(&(_, rh)) = params.region_maxh.iter().find(|(rr, _)| *rr == r.0) {
+                    h = h.min(rh);
+                }
+            }
+        }
+        h
+    };
+    let edge_cap = |a: usize, b: usize| -> f64 {
+        e2f.get(&sorted2(a, b))
+            .map(|fs| fs.iter().map(|&fi| facet_cap(fi)).fold(f64::INFINITY, f64::min))
+            .unwrap_or(params.maxh)
+            .min(params.maxh)
+    };
+
+    // Pinned points: chain endpoints (corners, through the near-closed merge) plus
+    // every vertex of a faceted (closed-curved) surface.
+    let mut pinned: DSet<usize> = DSet::default();
+    for ch in &chains {
+        pinned.insert(rep[ch[0]]);
+        pinned.insert(rep[*ch.last().unwrap()]);
+    }
+    for &v in &faceted_verts {
+        pinned.insert(v);
+    }
+    let mut sites: Vec<Site> = pinned.iter().map(|&v| Site::vertex(plc.vertices[v])).collect();
     let plc_points = sites.len();
-    // The "tile" each surface site belongs to (a planar patch index, or
-    // `patches.len() + group` for a curved group), for principled face tagging:
-    // a boundary face inherits its surface/tag from its interior vertex's tile.
-    // Corners and shared edge points are on several tiles -> `u32::MAX` (let the
-    // interior vertex decide). Volume sites never tag a boundary face.
+    // Tile of each surface site (planar patch index, or patches.len()+group). A
+    // boundary face inherits its surface/tag from its interior vertex's tile;
+    // corners/edge points are shared -> u32::MAX.
     let mut point_tile: Vec<u32> = vec![u32::MAX; sites.len()];
 
-    // Generate the chain points (CurvedEdge sites), shared by both adjacent
-    // patches via `chain_sites`.
-    let mut chain_sites: Vec<Vec<usize>> = Vec::with_capacity(chains.len());
-    for c in &chains {
-        let (ea, eb) = (plc.vertices[c.ordered[0]], plc.vertices[*c.ordered.last().unwrap()]);
+    let mut chain_pts: Vec<Vec<usize>> = Vec::with_capacity(chains.len());
+    let mut edge2chain: DMap<(usize, usize), usize> = DMap::default();
+    let mut edge_sources: Vec<(V3, f64)> = Vec::new();
+    for (ci, ch) in chains.iter().enumerate() {
+        for w in ch.windows(2) {
+            edge2chain.insert(sorted2(w[0], w[1]), ci);
+        }
+        let poly: Vec<V3> = ch.iter().map(|&v| plc.vertices[v]).collect();
+        let cap = ch.windows(2).map(|w| edge_cap(w[0], w[1])).fold(params.maxh, f64::min);
         let mut idx = Vec::new();
-        for p in generate_chain_points(c, plc, &domain) {
-            sites.push(Site::on_curved_edge(c.fa.clone(), c.fb.clone(), ea, eb, p));
-            point_tile.push(u32::MAX);
-            idx.push(sites.len() - 1);
+        // NURBS-native: if the chain lies on an Extruded surface, distribute on its
+        // analytic profile curve (exact curvature, tessellation-independent); else
+        // fall back to the faceted polyline.
+        let ext_kind = ch.windows(2).find_map(|w| {
+            e2f.get(&sorted2(w[0], w[1])).and_then(|fs| {
+                fs.iter().find_map(|&fi| {
+                    let k = &plc.surfaces[plc.surface_refs[fi].0 as usize];
+                    matches!(k, SurfaceKind::Extruded { .. }).then(|| k.clone())
+                })
+            })
+        });
+        let curve: Option<Box<dyn crate::curve::Curve>> = match &ext_kind {
+            Some(SurfaceKind::Extruded { profile, base, udir, vdir, axis }) => {
+                let norm = |a: V3| {
+                    let l = dot(a, a).sqrt();
+                    if l > 0.0 { scale(a, 1.0 / l) } else { a }
+                };
+                let (un, vn, an) = (norm(*udir), norm(*vdir), norm(*axis));
+                let z = dot(sub(plc.vertices[ch[0]], *base), an);
+                let foot = |v: usize| {
+                    let rel = sub(plc.vertices[v], *base);
+                    crate::project::curve_footpoint(profile, [dot(rel, un), dot(rel, vn)])
+                };
+                ExtrudedEdgeCurve::new(ext_kind.as_ref().unwrap(), z, foot(ch[0]), foot(*ch.last().unwrap()))
+                    .map(|c| Box::new(c) as Box<dyn crate::curve::Curve>)
+            }
+            _ => None,
         }
-        chain_sites.push(idx);
-    }
-    rmlog::stat("mesh.curved_edge_chains", chains.len() as f64);
-    rmlog::stat("mesh.curved_edge_points", chain_sites.iter().map(|v| v.len()).sum::<usize>() as f64);
-
-    let pbe: Vec<Vec<(usize, usize)>> = patches.iter().map(|p| patch_boundary_edges(plc, p)).collect();
-    let mut edge_pts: DMap<(usize, usize), Vec<usize>> = DMap::default();
-    // Non-chart patches keep their per-patch boundary edges; chart groups use
-    // their GROUP boundary (no points on internal curved facet seams). Chain edges
-    // are skipped here -- the chain points already cover them.
-    for (pi, patch) in patches.iter().enumerate() {
-        if is_chart_patch(patch) {
-            continue;
-        }
-        for &e in &pbe[pi] {
-            if !edge2chain.contains_key(&e) {
-                ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
+        .or_else(|| crate::curve::PolylineCurve::new(&poly).map(|c| Box::new(c) as Box<dyn crate::curve::Curve>));
+        if let Some(curve) = curve {
+            let ps = crate::curve::distribute(&*curve, params.surface_deflection, cap, grad);
+            let pts3: Vec<V3> = ps.iter().map(|&s| curve.point_at(s)).collect();
+            for k in 0..pts3.len() {
+                let mut sp = cap;
+                if k > 0 {
+                    sp = sp.min(dist(pts3[k], pts3[k - 1]));
+                }
+                if k + 1 < pts3.len() {
+                    sp = sp.min(dist(pts3[k], pts3[k + 1]));
+                }
+                edge_sources.push((pts3[k], sp));
+            }
+            for &p in &pts3[1..pts3.len().saturating_sub(1)] {
+                sites.push(Site::vertex(p));
+                point_tile.push(u32::MAX);
+                idx.push(sites.len() - 1);
             }
         }
+        chain_pts.push(idx);
     }
-    for g in &cgroups {
-        for &e in &g.boundary {
-            if !edge2chain.contains_key(&sorted2(e.0, e.1)) {
-                ensure_edge(plc, &domain, &mut sites, &mut edge_pts, e);
-            }
-        }
+    for &(p, h) in &params.size_points {
+        edge_sources.push((p, h));
     }
-    point_tile.resize(sites.len(), u32::MAX); // edge points: shared -> MAX
+    // ---- stage 2 input: the SURFACE size field, grown from the edge points ---
+    let surf_min_h = edge_sources.iter().map(|s| s.1).fold(params.maxh, f64::min).max(1e-9);
+    let surf_field = crate::sizefield::SizeField::new(edge_sources, grad, params.maxh);
+    rmlog::stat("mesh.edge_chains", chains.len() as f64);
+    rmlog::stat("mesh.edge_points", (sites.len() - plc_points) as f64);
 
-    // Boundary point positions for a patch's edges, substituting chain points for
-    // chain edges (added once per chain). Both the planar and chart fills consume
-    // this, so the shared seam uses identical points on both sides.
     let boundary_pts = |edges: &[(usize, usize)], sites: &[Site]| -> Vec<V3> {
         let mut out: Vec<V3> = Vec::new();
         let mut seen_v: DSet<usize> = DSet::default();
-        let mut seen_chain: DSet<usize> = DSet::default();
+        let mut seen_c: DSet<usize> = DSet::default();
         for &(a, b) in edges {
             if let Some(&ci) = edge2chain.get(&sorted2(a, b)) {
-                if seen_chain.insert(ci) {
+                if seen_c.insert(ci) {
                     let ch = &chains[ci];
-                    for &cv in [ch.ordered[0], *ch.ordered.last().unwrap()].iter() {
+                    for &cv in &[rep[ch[0]], rep[*ch.last().unwrap()]] {
                         if seen_v.insert(cv) {
                             out.push(plc.vertices[cv]);
                         }
                     }
-                    for &si in &chain_sites[ci] {
+                    for &si in &chain_pts[ci] {
                         out.push(sites[si].pos());
                     }
                 }
@@ -850,9 +810,6 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     if seen_v.insert(cv) {
                         out.push(plc.vertices[cv]);
                     }
-                }
-                for &i in &edge_pts[&sorted2(a, b)] {
-                    out.push(sites[i].pos());
                 }
             }
         }
@@ -868,7 +825,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let face_sites: Vec<(u32, Site)> = patches
         .par_iter()
         .enumerate()
-        .filter(|(_, patch)| !is_chart_patch(patch))
+        .filter(|(_, patch)| !is_chart_patch(patch) && !is_faceted_patch(patch))
         .flat_map(|(pi, patch)| {
             let (p0, n) = patch_plane(plc, patch);
             let drop = drop_axis(n);
@@ -888,10 +845,13 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
             let inside2 =
                 |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
-            // Graded fill: grid step is the global finest surface spacing, the
-            // local target is `SURFACE_OVERSAMPLE * h(lift(uv))` from the octree.
-            let step = SURFACE_OVERSAMPLE * domain.finest();
-            let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
+            // Stage 2: local target = the surface size field (grown from the edge
+            // points), capped by this face's user size. The field is smooth
+            // (multiplicative gradient), so the fill grades cleanly from the fine
+            // edges into the interior -- no density jump, no sliver fan.
+            let pcap = facet_cap(patch.member_indices[0]);
+            let step = surf_min_h;
+            let target = |uv: [f64; 2]| surf_field.at(lift3(uv, drop, p0, n)).min(pcap);
             cvt_fill(&bnd, lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted)
                 .into_iter()
                 .map(|uv| (pi as u32, Site::on_plane(p0, n, lift3(uv, drop, p0, n))))
@@ -940,11 +900,15 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // boundary loop) sets the finest grid step so the high-curvature interior
         // is resolved. The chart is isometric, so the target is a true length.
         let chord = (8.0 * params.surface_deflection).sqrt();
-        let step = SURFACE_OVERSAMPLE * domain.finest().min(g.min_radius * chord);
+        let gcap = facet_cap(g.members[0]);
+        let step = surf_min_h.min(g.min_radius * chord);
         let inside2 = |uv: [f64; 2]| in_loops(uv, &segs);
+        // Surface field (from the edges) capped by the surface's OWN curvature
+        // (the interior of a curved patch is not seen by its boundary edges) and
+        // this group's user size.
         let target = |uv: [f64; 2]| {
             let hc = g.chart.curvature_radius(uv) * chord;
-            SURFACE_OVERSAMPLE * domain.h_at(g.chart.to_xyz(uv)).min(hc)
+            surf_field.at(g.chart.to_xyz(uv)).min(hc).min(gcap)
         };
         for uv in cvt_fill(&loc2[..nb2], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             sites.push(Site::on_surface(g.kind.clone(), g.chart.to_xyz(uv)));
@@ -962,6 +926,40 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         .collect();
     rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
 
+    // ---- stage 3 input: the VOLUME size field, grown from the surface points --
+    // Each surface point's source size is its actual local spacing (nearest other
+    // surface point), so the field carries the true surface density (fine at a
+    // curved nose) into the interior, gradient-limited like the surface field.
+    let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
+    let stree = Octree::build(&surf_pos);
+    let vol_sources: Vec<(V3, f64)> = (0..n_surf)
+        .map(|i| {
+            let mut best = params.maxh;
+            for j in stree.within_radius(surf_pos[i], params.maxh) {
+                let j = j as usize;
+                if j != i {
+                    let d = dist(surf_pos[i], surf_pos[j]);
+                    if d > 1e-12 && d < best {
+                        best = d;
+                    }
+                }
+            }
+            (surf_pos[i], best)
+        })
+        .collect();
+    let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.maxh);
+    // A per-region size cap: `region_maxh` is a region-WIDE size that the surface
+    // field (which grows coarse from the boundary inward) does not enforce in the
+    // interior, so cap the volume size by the region of the query point.
+    let region_cap = |r: u32| -> f64 {
+        params
+            .region_maxh
+            .iter()
+            .find(|(rr, _)| *rr == r)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh)
+            .min(params.maxh)
+    };
     // ---- stage 3: interior volume points, graded by the domain octree -----
     // One seed per interior leaf center: dense near the fine boundary, coarse in
     // the bulk (the octree is refined to h(x)). Keep each seed clear of the
@@ -983,7 +981,11 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // coarse elsewhere), so a global `sep` from the coarse bulk size
             // would reject every seed near a fine feature and orphan its surface
             // nodes. Scale the clearance by the local sizing field.
-            let lsep = SEPARATION_FRAC * domain.h_at(p);
+            // Clearance = the FULL local size: a volume seed within one element of
+            // the surface would create a boundary tet with a volume vertex, which
+            // the restricted-Delaunay boundary (surface-only faces) cannot emit ->
+            // a hole. One full spacing keeps the boundary tets surface-only.
+            let lsep = vol_field.at(p).min(region_cap(domain.region_at(p)));
             let near = surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < lsep).unwrap_or(false);
             if !near {
                 sites.push(Site::free(p));
@@ -1051,7 +1053,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             // (the exact-volume fixtures need the plain uniform CVT). Uniform h
             // would make rho constant anyway.
             let w = if params.density_weighted {
-                let h = domain.h_at(c).max(1e-9);
+                let h = vol_field.at(c).min(region_cap(domain.region_at(c))).max(1e-9);
                 tet_det(p).abs() / (h * h * h)
             } else {
                 tet_det(p).abs()
@@ -1090,7 +1092,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
             let crowded = domain
-                .neighbors(tgt, SEPARATION_FRAC * domain.h_at(tgt))
+                .neighbors(tgt, SEPARATION_FRAC * vol_field.at(tgt).min(region_cap(domain.region_at(tgt))))
                 .into_iter()
                 .any(|j| j as usize != i);
             if !crowded {
@@ -1211,7 +1213,8 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // Per-point local target size (the graded sizing field), so the optimizer
     // coarsens to the LOCAL size, not one region-uniform floor that would erase
     // curvature-fine detail.
-    let point_size: Vec<f64> = pts.iter().map(|&p| domain.h_at(p)).collect();
+    let point_size: Vec<f64> =
+        pts.iter().map(|&p| vol_field.at(p).min(region_cap(domain.region_at(p)))).collect();
     let mesh = TetMesh {
         points: pts,
         tets: kept,

@@ -10,6 +10,7 @@
 pub mod faceted;
 pub mod import;
 pub mod nurbs;
+pub mod nurbs_surface;
 pub mod plc;
 pub mod polygon;
 pub mod prim;
@@ -21,6 +22,7 @@ pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};
 pub use nurbs::NurbsCurve;
+pub use nurbs_surface::NurbsSurface;
 pub use prim::{
     cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
     icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,

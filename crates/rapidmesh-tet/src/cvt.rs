@@ -403,6 +403,113 @@ impl CurvedChain {
     }
 }
 
+/// Corner vertices of the chart groups' boundaries: a boundary vertex with a
+/// junction (degree != 2) or a turn sharper than 45 deg. These mark hard creases
+/// (a trailing-edge cusp). WP-R7c welds spatially close corner PAIRS so a blunt
+/// cap closes to a sharp edge; the smooth body has no corners and is untouched.
+fn boundary_corners(plc: &TaggedPlc, cgroups: &[ChartGroup]) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+    const CORNER_COS: f64 = 0.707;
+    let unit = |a: V3| {
+        let l = dot(a, a).sqrt();
+        if l > 0.0 { scale(a, 1.0 / l) } else { a }
+    };
+    let mut out: HashSet<usize> = HashSet::new();
+    for g in cgroups {
+        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &(a, b) in &g.boundary {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+        for (&n, ns) in &adj {
+            let is_corner = if ns.len() != 2 {
+                true
+            } else {
+                let d0 = unit(sub(plc.vertices[n], plc.vertices[ns[0]]));
+                let d1 = unit(sub(plc.vertices[ns[1]], plc.vertices[n]));
+                dot(d0, d1) < CORNER_COS
+            };
+            if is_corner {
+                out.insert(n);
+            }
+        }
+    }
+    let mut v: Vec<usize> = out.into_iter().collect();
+    v.sort_unstable();
+    v
+}
+
+/// WP-R7c: weld the given vertex pairs (PLC indices) into one, each cluster's
+/// representative being the member centroid. Triangles that degenerate (two
+/// welded corners) are dropped; tags ride along per surviving triangle. Closes a
+/// near-closed feature loop (a blunt trailing edge) into a single sharp edge.
+fn weld_vertices(plc: &TaggedPlc, pairs: &[(usize, usize)]) -> TaggedPlc {
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while parent[r] != r {
+            r = parent[r];
+        }
+        let mut c = x;
+        while parent[c] != c {
+            let nx = parent[c];
+            parent[c] = r;
+            c = nx;
+        }
+        r
+    }
+    let n = plc.vertices.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for &(a, b) in pairs {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            parent[ra.max(rb)] = ra.min(rb);
+        }
+    }
+    let root: Vec<usize> = (0..n).map(|v| find(&mut parent, v)).collect();
+    let mut sum = vec![[0.0f64; 3]; n];
+    let mut cnt = vec![0u32; n];
+    for v in 0..n {
+        let r = root[v];
+        for k in 0..3 {
+            sum[r][k] += plc.vertices[v][k];
+        }
+        cnt[r] += 1;
+    }
+    let mut new_idx = vec![u32::MAX; n];
+    let mut vertices: Vec<[f64; 3]> = Vec::new();
+    for v in 0..n {
+        let r = root[v];
+        if new_idx[r] == u32::MAX {
+            new_idx[r] = vertices.len() as u32;
+            vertices.push(std::array::from_fn(|k| sum[r][k] / cnt[r] as f64));
+        }
+    }
+    let mut out = TaggedPlc {
+        vertices,
+        triangles: Vec::new(),
+        face_tags: Vec::new(),
+        surface_refs: Vec::new(),
+        region_tags: Vec::new(),
+        surfaces: plc.surfaces.clone(),
+        surface_owners: plc.surface_owners.clone(),
+    };
+    for (ti, t) in plc.triangles.iter().enumerate() {
+        let nt = [
+            new_idx[root[t[0] as usize]],
+            new_idx[root[t[1] as usize]],
+            new_idx[root[t[2] as usize]],
+        ];
+        if nt[0] == nt[1] || nt[1] == nt[2] || nt[2] == nt[0] {
+            continue;
+        }
+        out.triangles.push(nt);
+        out.face_tags.push(plc.face_tags[ti]);
+        out.surface_refs.push(plc.surface_refs[ti]);
+        out.region_tags.push(plc.region_tags[ti]);
+    }
+    out
+}
+
 /// Identifies the curved boundary chains of all chart groups (see [`CurvedChain`]).
 /// A group's boundary is split at hard corners (degree != 2, or a turn sharper
 /// than 45 deg); each smooth run between corners is one chain. Fully smooth loops
@@ -556,6 +663,50 @@ fn generate_chain_points(c: &CurvedChain, plc: &TaggedPlc, domain: &DomainTree) 
 pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
     let t_start = std::time::Instant::now();
+
+    // WP-R7c: collapse a sub-resolution blunt edge (an airfoil trailing edge) into
+    // a sharp one. Such a cap is two CORNERS (sharp turns of the boundary loop) a
+    // gap apart that is below the local TARGET size we mesh at. Welding the close
+    // corner pair closes the cap to a single sharp edge instead of a sliver fan.
+    // Scoping to CORNERS keeps the smooth body untouched (it has none); the scale
+    // is the target `h` (input-independent, unlike the input edge spacing, which
+    // shrinks with `n_seg` below the fixed geometric gap). No chart group (the
+    // planar/wrapping exact fixtures) -> no corner pairs -> no-op.
+    const MERGE_FRAC: f64 = 0.5;
+    let welded;
+    let plc: &TaggedPlc = {
+        let d = {
+            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for p in &plc.vertices {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+            (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max)
+        };
+        let pre = DomainTree::build(plc, params);
+        let corners = boundary_corners(plc, &chart_groups(plc, d));
+        let cpos: Vec<V3> = corners.iter().map(|&v| plc.vertices[v]).collect();
+        let tree = Octree::build(&cpos);
+        let mut weld_pairs: Vec<(usize, usize)> = Vec::new();
+        for (i, &v) in corners.iter().enumerate() {
+            let tol = MERGE_FRAC * pre.h_at(cpos[i]).max(1e-12);
+            for j in tree.within_radius(cpos[i], tol) {
+                let u = corners[j as usize];
+                if u > v && dist(plc.vertices[v], plc.vertices[u]) < tol {
+                    weld_pairs.push((v, u));
+                }
+            }
+        }
+        if weld_pairs.is_empty() {
+            plc
+        } else {
+            rmlog::stat("mesh.welded_pairs", weld_pairs.len() as f64);
+            welded = weld_vertices(plc, &weld_pairs);
+            &welded
+        }
+    };
 
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];

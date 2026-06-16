@@ -1,9 +1,7 @@
 //! Builder tests: TaggedPlc -> Brep on the canonical shapes.
 
 use rapidmesh_brep::{build::from_plc, Curve, Surface};
-use rapidmesh_geom::{
-    extrude_spline_profile, icosphere, naca0012_profile, solid_box, Scene, SurfaceKind,
-};
+use rapidmesh_geom::{extrude_spline_profile, icosphere, naca0012_profile, solid_box, Scene};
 
 #[test]
 fn box_has_6_faces_12_edges_8_corners() {
@@ -18,7 +16,7 @@ fn box_has_6_faces_12_edges_8_corners() {
 
     // every face is planar with a single outer loop of 4 edges
     for f in &b.faces {
-        assert!(matches!(b.surface(f.surface), Surface::Analytic(SurfaceKind::Plane)));
+        assert!(matches!(b.surface(f.surface), Surface::Plane { .. }));
         assert_eq!(f.loops.len(), 1, "a box face has one loop");
         assert_eq!(f.loops[0].coedges.len(), 4, "a box face loop has 4 co-edges");
         // one side is a region, the other background (0)
@@ -56,7 +54,7 @@ fn sphere_is_one_closed_face_no_edges() {
 
     // one analytic sphere surface, no feature edges, no corners (closed smooth)
     assert_eq!(b.faces.len(), 1, "sphere is one face");
-    assert!(matches!(b.surface(b.faces[0].surface), Surface::Analytic(SurfaceKind::Sphere { .. })));
+    assert!(matches!(b.surface(b.faces[0].surface), Surface::Sphere { .. }));
     assert_eq!(b.edges.len(), 0, "closed sphere has no feature edges");
     assert_eq!(b.vertices.len(), 0, "closed sphere has no corners");
 }
@@ -81,7 +79,7 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     let n_ext = b
         .faces
         .iter()
-        .filter(|f| matches!(b.surface(f.surface), Surface::Analytic(SurfaceKind::Extruded { .. })))
+        .filter(|f| matches!(b.surface(f.surface), Surface::Extruded { .. }))
         .count();
     assert_eq!(n_ext, 1, "one extruded mantle face");
     assert!(b.faces.len() >= 3, "mantle + caps, got {}", b.faces.len());
@@ -96,7 +94,7 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     let mantle = b
         .faces
         .iter()
-        .find(|f| matches!(b.surface(f.surface), Surface::Analytic(SurfaceKind::Extruded { .. })))
+        .find(|f| matches!(b.surface(f.surface), Surface::Extruded { .. }))
         .unwrap();
     let mut n_uv = 0;
     for lp in &mantle.loops {

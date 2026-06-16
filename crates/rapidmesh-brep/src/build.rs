@@ -11,7 +11,6 @@
 //! Both the CSG path and the STEP-import path converge on `TaggedPlc`, so this
 //! one function covers both.
 
-use crate::chart::Chart;
 use crate::{
     Brep, CoEdge, CoEdgeId, Curve, Edge, EdgeId, Face, FaceId, Loop, PCurve, Surface, SurfaceId,
     Vertex, VertexId,
@@ -278,34 +277,36 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         edge_faces.push(rad);
     }
 
-    // Analytic surfaces wrapped as B-rep surfaces (a NURBS face would carry a real
-    // NurbsSurface here instead).
-    let surfaces: Vec<Surface> = plc.surfaces.iter().cloned().map(Surface::Analytic).collect();
-
-    // ---- B4/B5: order each face's edges into loops; build co-edges + PCurves -
-    // Per face: order its boundary edges into oriented loops, build the chart
-    // (a plane needs the outer-loop frame), then make one co-edge per (edge,
-    // loop-direction) carrying the edge's PCurve in this face's (u,v).
+    // ---- B4/B5: per face, build its self-contained surface, order loops, and
+    // make one co-edge per (edge, loop-direction) carrying the edge's PCurve in
+    // this face's (u,v). A plane gets its frame from the outer loop's points;
+    // every other kind is self-contained from its parameters.
     let mut face_edges: Vec<Vec<usize>> = vec![Vec::new(); faces.len()];
     for (ei, ef) in edge_faces.iter().enumerate() {
         for f in ef {
             face_edges[f.0 as usize].push(ei);
         }
     }
+    let mut surfaces: Vec<Surface> = Vec::new();
     let mut coedges: Vec<CoEdge> = Vec::new();
     for fid in 0..faces.len() {
         let signed = order_loops(&face_edges[fid], &edges);
         let frame_pts = signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default();
-        let chart = Chart::build(&surfaces[faces[fid].surface.0 as usize], &frame_pts);
+        // Build this face's self-contained surface and point the face at it.
+        let kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
+        let sid = SurfaceId(surfaces.len() as u32);
+        surfaces.push(Surface::from_kind(&kind, &frame_pts));
+        faces[fid].surface = sid;
+        let surf = &surfaces[sid.0 as usize];
         let mut loops_out: Vec<Loop> = Vec::new();
         for sl in &signed {
             let mut lp = Loop::default();
             for &(ei, fwd) in sl {
                 let chain = &edges[ei].chain;
                 let uv: Vec<[f64; 2]> = if fwd {
-                    chain.iter().map(|&p| chart.to_uv(p)).collect()
+                    chain.iter().map(|&p| surf.project_uv(p)).collect()
                 } else {
-                    chain.iter().rev().map(|&p| chart.to_uv(p)).collect()
+                    chain.iter().rev().map(|&p| surf.project_uv(p)).collect()
                 };
                 let cid = CoEdgeId(coedges.len() as u32);
                 coedges.push(CoEdge {

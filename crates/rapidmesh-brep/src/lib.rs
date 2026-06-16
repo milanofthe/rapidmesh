@@ -19,27 +19,16 @@
 //! (`curve`), region classification (`region_at`), volume filling -- so there is
 //! no half-edge/pcurve/shell/region machinery here.
 
-use rapidmesh_geom::{FaceTag, NurbsSurface, RegionTag, SurfaceKind};
+use rapidmesh_geom::{FaceTag, RegionTag};
 use std::sync::Arc;
 
 pub mod build;
-pub mod chart;
+pub mod surface;
+
+pub use surface::Surface;
 
 type V3 = [f64; 3];
 type P2 = [f64; 2];
-
-// ---- surface geometry (analytic primitive OR free-form NURBS) ------------
-
-/// A B-rep face's underlying surface. Analytic primitives keep the lightweight
-/// [`SurfaceKind`]; general CAD/boolean output is a trimmed [`NurbsSurface`]. The
-/// enum is the extension point that makes the geometry layer NURBS-native -- a
-/// face references a `Surface` by [`SurfaceId`] regardless of which it is, and the
-/// mesher's parameter mapping branches here.
-#[derive(Debug, Clone)]
-pub enum Surface {
-    Analytic(SurfaceKind),
-    Nurbs(Arc<NurbsSurface>),
-}
 
 // ---- ids -----------------------------------------------------------------
 

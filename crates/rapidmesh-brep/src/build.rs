@@ -30,6 +30,9 @@ fn sub(a: V3, b: V3) -> V3 {
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
 fn norm(a: V3) -> V3 {
     let l = dot(a, a).sqrt();
     if l > 0.0 {
@@ -424,6 +427,20 @@ fn recover_curve(
         }
     }
 
+    // Circular arc / full circle: a sphere/plane or cylinder/plane intersection, a
+    // sphere-sphere intersection, a barrel rim. Only attempted when the edge bounds
+    // a CURVED face (so a planar polygon is never mistaken for a circle); the fit
+    // tolerance is loose enough to accept a faceted polygon's vertices, which lie
+    // approximately on the true circle.
+    let curved_adj = rad.iter().any(|f| {
+        !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+    });
+    if curved_adj {
+        if let Some((center, axis, radius, x)) = fit_circle(chain) {
+            return Curve::Circle { center, axis, radius, x };
+        }
+    }
+
     // On an extruded surface at constant height: the analytic profile curve.
     for f in rad {
         let sid = faces[f.0 as usize].surface;
@@ -453,6 +470,59 @@ fn recover_curve(
     }
 
     Curve::Polyline
+}
+
+/// Fits a circle to a vertex chain (3-point circumcircle of well-separated
+/// samples) and returns `(center, unit axis, radius, unit in-plane x)` if EVERY
+/// chain point lies on it within ~5% of the radius -- loose enough to accept a
+/// faceted polygon's vertices (which sit a chord-sagitta inside the true circle),
+/// tight enough that a non-circular chain (an airfoil profile) is rejected. Needs
+/// >= 4 points; the caller gates this on curved-face adjacency.
+fn fit_circle(chain: &[V3]) -> Option<(V3, V3, f64, V3)> {
+    let n = chain.len();
+    if n < 4 {
+        return None;
+    }
+    let (a, b, c) = (chain[0], chain[n / 3], chain[2 * n / 3]);
+    let (av, bv) = (sub(b, a), sub(c, a));
+    let nrm = cross(av, bv);
+    let n2 = dot(nrm, nrm);
+    if n2 < 1e-24 {
+        return None; // collinear sample
+    }
+    let axis = norm(nrm);
+    // circumcenter relative to `a`: (|A|^2 (B x n) + |B|^2 (n x A)) / (2|n|^2)
+    let (a2, b2) = (dot(av, av), dot(bv, bv));
+    let term: V3 =
+        std::array::from_fn(|k| (a2 * cross(bv, nrm)[k] + b2 * cross(nrm, av)[k]) / (2.0 * n2));
+    let center: V3 = std::array::from_fn(|k| a[k] + term[k]);
+    let radius = dot(term, term).sqrt();
+    if !(radius > 1e-12) {
+        return None;
+    }
+    // Reject a near-straight / gently-curved chain: a real circle's radius is
+    // comparable to its own extent, but three near-collinear samples fit a huge
+    // circle that a loose tolerance would wrongly accept (an airfoil arc).
+    let mut ext = 0.0f64;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            ext = ext.max(dist(chain[i], chain[j]));
+        }
+    }
+    if radius > 3.0 * ext {
+        return None;
+    }
+    // ~4% of the radius: accepts a faceted polygon's vertices (chord sagitta),
+    // rejects a non-circular profile (deviation is far larger).
+    let rtol = 0.04 * radius;
+    let on_circle = chain.iter().all(|&p| {
+        let d = sub(p, center);
+        dot(d, axis).abs() < rtol && (dot(d, d).sqrt() - radius).abs() < rtol
+    });
+    if !on_circle {
+        return None;
+    }
+    Some((center, axis, radius, norm(sub(a, center))))
 }
 
 /// Parameter on `profile` nearest to the 2D point `c` (dense sample + refine).

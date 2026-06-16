@@ -4,6 +4,24 @@ use rapidmesh_brep::{build::from_plc, Curve, Surface};
 use rapidmesh_geom::{extrude_spline_profile, icosphere, naca0012_profile, solid_box, Scene};
 
 #[test]
+fn hemisphere_recovers_circle_edge() {
+    // a sphere cut by z<0: the equator is a sphere/plane intersection -> a Circle
+    let mut scene = Scene::new();
+    scene.add_solid(icosphere([0.0, 0.0, 0.0], 1.0, 3));
+    scene.add_void(solid_box([-2.0, -2.0, -2.0], [2.0, 2.0, 0.0]));
+    let b = from_plc(&scene.assemble());
+    let r = b
+        .edges
+        .iter()
+        .find_map(|e| match e.curve {
+            Curve::Circle { radius, .. } => Some(radius),
+            _ => None,
+        })
+        .expect("equator recovered as a Circle");
+    assert!((r - 1.0).abs() < 0.06, "circle radius {r} ~ 1.0");
+}
+
+#[test]
 fn box_has_6_faces_12_edges_8_corners() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));

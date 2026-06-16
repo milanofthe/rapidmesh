@@ -36,6 +36,15 @@ fn scale(a: V3, s: f64) -> V3 {
 fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
 
 /// Arc-length-parametrised analytic curve for a [`BCurve::Profile`] edge: the 2D
 /// profile lifted to 3D on its extrusion frame at height `z`, over the parameter
@@ -100,13 +109,70 @@ impl Curve for ProfileCurve {
     }
 }
 
+/// A circular arc (or full circle) parametrised by arc length. Radius is constant,
+/// so the sagitta sizing places uniform points; the arc range is taken from the
+/// edge's chain endpoints (a closed rim spans the full `2*pi`).
+struct CircleCurve {
+    center: V3,
+    x: V3,
+    y: V3,
+    radius: f64,
+    a0: f64,
+    span: f64,
+}
+
+impl CircleCurve {
+    fn new(center: V3, axis: V3, x: V3, radius: f64, chain: &[V3]) -> Option<CircleCurve> {
+        if !(radius > 0.0) || chain.len() < 2 {
+            return None;
+        }
+        let y = cross(axis, x);
+        let ang = |p: V3| {
+            let d = sub(p, center);
+            dot(d, y).atan2(dot(d, x))
+        };
+        // Total signed swept angle = sum of per-segment increments (each in
+        // (-pi, pi]); robust for an arc (partial) and a closed rim (sums to +-2*pi).
+        let pi = std::f64::consts::PI;
+        let wrap = |a: f64| (a + pi).rem_euclid(2.0 * pi) - pi;
+        let a0 = ang(chain[0]);
+        let mut span = 0.0;
+        for w in chain.windows(2) {
+            span += wrap(ang(w[1]) - ang(w[0]));
+        }
+        if span.abs() < 1e-9 {
+            return None;
+        }
+        Some(CircleCurve { center, x, y, radius, a0, span })
+    }
+}
+
+impl Curve for CircleCurve {
+    fn length(&self) -> f64 {
+        self.radius * self.span.abs()
+    }
+    fn point_at(&self, s: f64) -> V3 {
+        let f = (s / self.length()).clamp(0.0, 1.0);
+        let t = self.a0 + self.span * f;
+        let (st, ct) = t.sin_cos();
+        std::array::from_fn(|k| self.center[k] + self.radius * (ct * self.x[k] + st * self.y[k]))
+    }
+    fn radius_at(&self, _s: f64) -> f64 {
+        self.radius
+    }
+}
+
 /// The analytic curve to distribute points on for a B-rep edge: the exact profile
-/// where recovered, else the faceted chain polyline (a straight `Line` is exactly
-/// a 2-point polyline, so it reduces to uniform spacing).
+/// or circle where recovered, else the faceted chain polyline (a straight `Line`
+/// is exactly a 2-point polyline, so it reduces to uniform spacing).
 pub fn edge_curve(edge: &BEdge) -> Option<Box<dyn Curve>> {
     match &edge.curve {
         BCurve::Profile { profile, base, u, v, axis, t, z } => {
             ProfileCurve::new(profile.clone(), *base, *u, *v, *axis, *t, *z)
+                .map(|c| Box::new(c) as Box<dyn Curve>)
+        }
+        BCurve::Circle { center, axis, radius, x } => {
+            CircleCurve::new(*center, *axis, *x, *radius, &edge.chain)
                 .map(|c| Box::new(c) as Box<dyn Curve>)
         }
         _ => PolylineCurve::new(&edge.chain).map(|c| Box::new(c) as Box<dyn Curve>),

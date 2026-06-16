@@ -537,6 +537,68 @@ def _g_wedge(occ):
     occ.extrude([(2, surf)], 0, 1.0, 0)
 
 
+# ------------------------------------------------- more fused-sphere variants
+# Sphere-sphere intersections (circular intersection edges, recovered analytically
+# by the B-rep): different counts, sizes and overlaps.
+
+
+def _r_fused_unequal():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.18)
+    g.label(g.icosphere(0.8, position=(-0.4, 0, 0), subdivisions=3), "a")
+    g.icosphere(0.5, position=(0.55, 0, 0), subdivisions=3)
+    return g
+
+
+def _g_fused_unequal(occ):
+    a = occ.addSphere(-0.4, 0, 0, 0.8)
+    b = occ.addSphere(0.55, 0, 0, 0.5)
+    occ.fuse([(3, a)], [(3, b)])
+
+
+def _r_tri_fused():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.18)
+    g.label(g.icosphere(0.7, position=(0.0, 0.0, 0), subdivisions=3), "a")
+    g.icosphere(0.7, position=(0.9, 0.0, 0), subdivisions=3)
+    g.icosphere(0.7, position=(0.45, 0.78, 0), subdivisions=3)
+    return g
+
+
+def _g_tri_fused(occ):
+    s = [occ.addSphere(0.0, 0.0, 0, 0.7), occ.addSphere(0.9, 0.0, 0, 0.7),
+         occ.addSphere(0.45, 0.78, 0, 0.7)]
+    occ.fuse([(3, s[0])], [(3, s[1]), (3, s[2])])
+
+
+def _r_fused_chain():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.16)
+    g.label(g.icosphere(0.6, position=(0.0, 0, 0), subdivisions=3), "a")
+    for x in (0.8, 1.6, 2.4):
+        g.icosphere(0.6, position=(x, 0, 0), subdivisions=3)
+    return g
+
+
+def _g_fused_chain(occ):
+    s = [occ.addSphere(x, 0, 0, 0.6) for x in (0.0, 0.8, 1.6, 2.4)]
+    occ.fuse([(3, s[0])], [(3, s[i]) for i in (1, 2, 3)])
+
+
+def _r_fused_deep():
+    import rapidmesh as rm
+    g = rm.Geometry(maxh=0.16)
+    g.label(g.icosphere(0.8, position=(-0.3, 0, 0), subdivisions=3), "a")
+    g.icosphere(0.8, position=(0.3, 0, 0), subdivisions=3)
+    return g
+
+
+def _g_fused_deep(occ):
+    a = occ.addSphere(-0.3, 0, 0, 0.8)
+    b = occ.addSphere(0.3, 0, 0, 0.8)
+    occ.fuse([(3, a)], [(3, b)])
+
+
 # ----------------------------------------------------------------- registry
 
 
@@ -585,6 +647,14 @@ GEOMS: list[CompareGeom] = [
                 _r_drilled_block, _g_drilled_block),
     CompareGeom("fused_spheres", "Fused Spheres", "Booleans", 0.30,
                 _r_fused_spheres, _g_fused_spheres),
+    CompareGeom("fused_unequal", "Fused (unequal)", "Booleans", 0.18,
+                _r_fused_unequal, _g_fused_unequal, gmsh_curvature=30.0),
+    CompareGeom("tri_fused", "Three Fused", "Booleans", 0.18,
+                _r_tri_fused, _g_tri_fused, gmsh_curvature=30.0),
+    CompareGeom("fused_chain", "Fused Chain", "Booleans", 0.16,
+                _r_fused_chain, _g_fused_chain, gmsh_curvature=30.0),
+    CompareGeom("fused_deep", "Fused (deep overlap)", "Booleans", 0.16,
+                _r_fused_deep, _g_fused_deep, gmsh_curvature=30.0),
     CompareGeom("bracket", "Bracket", "Mechanical", 0.15, _r_bracket, _g_bracket),
     CompareGeom("gear", "Spur Gear", "Mechanical", 0.16, _r_gear, _g_gear),
     CompareGeom("blob", "Organic Blob", "Organic", 0.16, _r_blob, _g_blob),

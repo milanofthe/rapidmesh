@@ -144,6 +144,11 @@ pub struct Face {
     pub plc_surface: u32,
     /// Scene-solid owner (parallel to `TaggedPlc::surface_owners`).
     pub owner: u32,
+    /// Indices of the source `TaggedPlc` triangles that make up this face. The
+    /// mesher uses them to seed on-surface points and as a parameter-free
+    /// inside/ownership test (a point belongs to the face whose triangle it is
+    /// nearest to).
+    pub facets: Vec<u32>,
 }
 
 /// The boundary-representation model: arena-allocated topology + geometry, linked

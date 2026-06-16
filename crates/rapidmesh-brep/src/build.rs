@@ -132,10 +132,12 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
                 face_tag: plc.face_tags[i],
                 plc_surface: sid,
                 owner: plc.surface_owners[sid as usize],
+                facets: Vec::new(),
             });
             faces.len() - 1
         });
         tri_face[i] = fid;
+        faces[fid].facets.push(i as u32);
     }
 
     // ---- boundary edges per face, and the radial face set per edge -----------
@@ -432,13 +434,20 @@ fn recover_curve(
     // a CURVED face (so a planar polygon is never mistaken for a circle); the fit
     // tolerance is loose enough to accept a faceted polygon's vertices, which lie
     // approximately on the true circle.
-    let curved_adj = rad.iter().any(|f| {
-        !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
-    });
-    if curved_adj {
-        if let Some((center, axis, radius, x)) = fit_circle(chain) {
-            return Curve::Circle { center, axis, radius, x };
-        }
+    let circ = rad
+        .iter()
+        .find_map(|f| {
+            let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
+            analytic_circle(chain, kind)
+        })
+        .or_else(|| {
+            let curved = rad.iter().any(|f| {
+                !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+            });
+            curved.then(|| fit_circle(chain)).flatten()
+        });
+    if let Some((center, axis, radius, x)) = circ {
+        return Curve::Circle { center, axis, radius, x };
     }
 
     // On an extruded surface at constant height: the analytic profile curve.
@@ -470,6 +479,78 @@ fn recover_curve(
     }
 
     Curve::Polyline
+}
+
+fn scale(a: V3, s: f64) -> V3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+fn add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// The chain's best-fit plane `(centroid, unit Newell normal)`; `None` if degenerate.
+fn chain_plane(chain: &[V3]) -> Option<(V3, V3)> {
+    if chain.len() < 3 {
+        return None;
+    }
+    let n = chain.len() as f64;
+    let o: V3 = std::array::from_fn(|k| chain.iter().map(|p| p[k]).sum::<f64>() / n);
+    let mut nrm = [0.0f64; 3];
+    for i in 0..chain.len() {
+        let a = chain[i];
+        let b = chain[(i + 1) % chain.len()];
+        nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if dot(nrm, nrm) < 1e-24 {
+        return None;
+    }
+    Some((o, norm(nrm)))
+}
+
+/// Recovers an edge's circle EXACTLY from an adjacent analytic curved surface and
+/// the chain's plane: `(center, unit axis, radius, unit in-plane x)`. This keeps
+/// the edge on the same analytic radius as the face's surface points (a fitted
+/// circle would sit a chord-sagitta inside, mismatching the barrel at the rim).
+fn analytic_circle(chain: &[V3], kind: &SurfaceKind) -> Option<(V3, V3, f64, V3)> {
+    let (o, n) = chain_plane(chain)?;
+    let xref = |c: V3, axis: V3| {
+        let d = sub(chain[0], c);
+        norm(std::array::from_fn(|k| d[k] - axis[k] * dot(d, axis)))
+    };
+    match kind {
+        SurfaceKind::Sphere { center, radius } => {
+            let d = dot(sub(o, *center), n);
+            let r2 = radius * radius - d * d;
+            if r2 <= 1e-18 {
+                return None;
+            }
+            let c = add(*center, scale(n, d));
+            Some((c, n, r2.sqrt(), xref(c, n)))
+        }
+        SurfaceKind::Cylinder { center, axis, radius } => {
+            let a = norm(*axis);
+            if dot(n, a).abs() < 0.99 {
+                return None; // the plane must cut perpendicular to the axis
+            }
+            let c = add(*center, scale(a, dot(sub(o, *center), a)));
+            Some((c, a, *radius, xref(c, a)))
+        }
+        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            let a = norm(*axis);
+            if dot(n, a).abs() < 0.99 {
+                return None;
+            }
+            let r = dot(sub(o, *apex), a) * tan_half_angle;
+            if r <= 1e-9 {
+                return None;
+            }
+            let c = add(*apex, scale(a, dot(sub(o, *apex), a)));
+            Some((c, a, r, xref(c, a)))
+        }
+        _ => None,
+    }
 }
 
 /// Fits a circle to a vertex chain (3-point circumcircle of well-separated

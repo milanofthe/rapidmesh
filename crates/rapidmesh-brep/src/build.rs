@@ -127,6 +127,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
                 loops: Vec::new(),
                 regions: rt,
                 face_tag: plc.face_tags[i],
+                plc_surface: sid,
                 owner: plc.surface_owners[sid as usize],
             });
             faces.len() - 1
@@ -440,7 +441,10 @@ fn recover_curve(
                 };
                 return Curve::Profile {
                     profile: profile.clone(),
-                    surface: sid,
+                    base: *base,
+                    u,
+                    v,
+                    axis: a,
                     t: [foot(p0), foot(pn)],
                     z: z0,
                 };

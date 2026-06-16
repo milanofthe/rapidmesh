@@ -12,6 +12,7 @@
 //! 4. Optional order-2 midside snapping onto the analytic surface via the
 //!    PLC surface back-references (`project`), for curved boundaries.
 
+pub mod brep_mesh;
 pub mod conform;
 pub mod curve;
 pub mod cvt;

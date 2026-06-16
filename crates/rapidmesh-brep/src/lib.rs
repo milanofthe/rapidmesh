@@ -56,9 +56,19 @@ pub enum Curve {
     Line { p0: V3, dir: V3 },
     /// Circle: center, unit `axis` (normal), `radius`, in-plane unit `x` axis.
     Circle { center: V3, axis: V3, radius: f64, x: V3 },
-    /// A 2D profile NURBS (an `Extruded` surface's profile) over `t`, lifted to 3D
-    /// at extrusion height `z` on the surface frame. The airfoil outline edge.
-    Profile { profile: Arc<rapidmesh_geom::nurbs::NurbsCurve>, surface: SurfaceId, t: [f64; 2], z: f64 },
+    /// A 2D profile NURBS lifted to 3D on an extrusion frame at height `z` over the
+    /// parameter range `t`: point = `base + axis*z + u*profile(t).x + v*profile(t).y`.
+    /// Self-contained (the airfoil outline edge); the analytic curvature drives the
+    /// sizing, tessellation-independent.
+    Profile {
+        profile: Arc<rapidmesh_geom::nurbs::NurbsCurve>,
+        base: V3,
+        u: V3,
+        v: V3,
+        axis: V3,
+        t: [f64; 2],
+        z: f64,
+    },
     /// Intersection of two surfaces, evaluated lazily by projecting the vertex
     /// chain onto both (the mesher reuses its surface projections).
     Intersection { a: SurfaceId, b: SurfaceId },
@@ -128,6 +138,10 @@ pub struct Face {
     pub loops: Vec<Loop>,
     pub regions: [RegionTag; 2],
     pub face_tag: FaceTag,
+    /// Index of the originating analytic surface in the source `TaggedPlc`
+    /// (`plc.surfaces` / `TetMesh.surfaces`): the mesher tags output faces by it
+    /// and reads the `SurfaceKind` for on-surface carriers.
+    pub plc_surface: u32,
     /// Scene-solid owner (parallel to `TaggedPlc::surface_owners`).
     pub owner: u32,
 }

@@ -4,9 +4,8 @@
 //! Each source `(p_s, h_s)` is a point that wants element size `h_s` there (a
 //! distributed edge point with its local 1D spacing for the surface field; a
 //! distributed surface point with its local 2D spacing for the volume field). The
-//! field at any query point is
-//!
-//!     h(x) = min( maxh, min over sources [ h_s * (1+grad)^( dist(x,s) / h_s ) ] ).
+//! field at any query point is `h(x) = min( maxh, min over sources of h_s *
+//! (1+grad)^( dist(x,s) / h_s ) )`.
 //!
 //! The growth is MULTIPLICATIVE (geometric): along any ray from a source the size
 //! grows by the ratio `1+grad` per element of its own length, so the field

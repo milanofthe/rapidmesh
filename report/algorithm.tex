@@ -144,6 +144,7 @@ and give pseudocode for each stage.
 \end{abstract}
 
 \tableofcontents
+\listoffigures
 \listoftables
 
 % ============================================================================
@@ -203,7 +204,47 @@ are trimmed analytic (or NURBS) surfaces, edges are analytic curves (including
 the intersection curves booleans create), vertices are corner points, and the
 radial-edge topology records which faces meet along each edge and the material
 region on each side. The mesh is built \emph{from this geometry}, independent of
-any input tessellation.
+any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
+
+\begin{figure}[H]\centering
+\begin{tikzpicture}[font=\small, node distance=5.5mm,
+   stg/.style={rm stage, text width=58mm, align=center},
+   pre/.style={draw=rmop, fill=rmop!18, rounded corners=3pt, text width=58mm,
+     align=center, minimum height=9mm, font=\small, line width=0.8pt}]
+ \node[pre] (csg) {exact CSG arrangement $+$ region predicate \\ (\emph{booleans})};
+ \node[pre, below=of csg] (brep) {B-Rep: vertices $\cdot$ edges $\cdot$ faces $\cdot$ region tags};
+ \node[stg, below=of brep, fill=rmop!18, draw=rmop] (s0)
+   {\textbf{Stage 0} — corners (pinned)};
+ \node[stg, below=7mm of s0] (s1)
+   {\textbf{Stage 1} — all \emph{edges} in parallel\\[1pt]
+    {\footnotesize 1D CVT $+$ error/$h_{\max}$ adaptivity}};
+ \node[stg, below=7mm of s1] (s2)
+   {\textbf{Stage 2} — all \emph{faces} in parallel\\[1pt]
+    {\footnotesize chart CVT $+$ error/$h_{\max}$ adaptivity}};
+ \node[stg, below=7mm of s2] (s3)
+   {\textbf{Stage 3} — all \emph{regions} in parallel\\[1pt]
+    {\footnotesize constrained Delaunay $+$ 3D CVT}};
+ \node[rm out, below=of s3, text width=58mm, align=center] (mesh)
+   {conforming tetrahedral mesh};
+ \begin{scope}[on background layer]
+   \foreach \n in {s1,s2,s3}{
+     \node[stg, draw=rmblue!55, fill=rmblue!9] at ([shift={(1.6mm,1.6mm)}]\n.center){};
+     \node[stg, draw=rmblue!35, fill=rmblue!5] at ([shift={(3.2mm,3.2mm)}]\n.center){};
+   }
+ \end{scope}
+ \draw[rm flow] (csg)--(brep);
+ \draw[rm flow] (brep)--(s0);
+ \draw[rm flow] (s0)--(s1) node[midway,right,font=\scriptsize]{barrier};
+ \draw[rm flow] (s1)--(s2) node[midway,right,font=\scriptsize]{barrier};
+ \draw[rm flow] (s2)--(s3) node[midway,right,font=\scriptsize]{barrier};
+ \draw[rm flow] (s3)--(mesh);
+\end{tikzpicture}
+\caption{The bottom-up pipeline. Exact booleans produce the B-Rep; the mesher
+then meshes $0$-, $1$-, $2$-, $3$-cells in order. Within each of stages 1--3 the
+entities are independent and run in parallel (the stacked boxes); the only
+synchronisation is the barrier between levels (\cref{prin:parallel}).}
+\label{fig:pipeline}
+\end{figure}
 
 % ============================================================================
 \section{Notation and preliminaries}
@@ -379,7 +420,33 @@ s_i \;\leftarrow\;
 \end{equation}
 which equidistributes spacing $\propto h$. Adaptivity wraps the relaxation
 (\cref{alg:edge}): relax for quality, then split wherever the chord deflection
-exceeds $\varepsilon$ \emph{or} a segment exceeds $h_{\max}$.
+exceeds $\varepsilon$ \emph{or} a segment exceeds $h_{\max}$. All three meshing
+stages share this single relax--insert loop (\cref{fig:adaptive}); only the
+error measure and the centroid rule change with the dimension.
+
+\begin{figure}[H]\centering
+\begin{tikzpicture}[font=\small, node distance=7mm and 13mm]
+ \node[rm stage, text width=24mm] (seed) {seed at spacing $h$};
+ \node[rm state, text width=22mm, right=of seed] (relax) {relax\\(CVT / Lloyd)};
+ \node[rm sel, aspect=2.2, text width=24mm, align=center, right=of relax] (dec)
+   {$e^\star{>}\varepsilon$ \emph{or} $\ell^\star{>}h_{\max}$?};
+ \node[rm out, text width=20mm, right=18mm of dec] (freeze) {freeze\\(level done)};
+ \node[rm stage, text width=26mm, below=10mm of relax] (ins)
+   {insert a point at the worst-error location};
+ \draw[rm flow] (seed)--(relax);
+ \draw[rm flow] (relax)--(dec);
+ \draw[rm flow] (dec)--node[above,font=\scriptsize]{no} (freeze);
+ \draw[rm flow] (dec.south) |- node[pos=0.25,right,font=\scriptsize]{yes} (ins.east);
+ \draw[rm flow] (ins.west) -| (relax.south);
+\end{tikzpicture}
+\caption{The relax--insert--relax scheme shared by all stages
+(\cref{prin:parallel}, mechanism (i)+(ii)). The error measure $e^\star$ is the
+chord deflection (edges), the triangle--surface deflection (faces) or the
+element quality (volume); $\ell^\star$ is the longest edge for the $h_{\max}$
+bound. Iterate until both the tolerance and $h_{\max}$ hold and the sites stop
+moving, then freeze.}
+\label{fig:adaptive}
+\end{figure}
 
 \begin{algorithm}[H]
 \caption{\textsc{MeshEdge}$(\vv{C},h,\varepsilon)$}
@@ -507,8 +574,25 @@ h_{\text{face}}(\vv{x}) \;=\;
 \subsection{Distance-faithful charts}
 \label{sec:charts}
 A chart $\Phi:\,\text{face}\to\R^2$ lets the planar CVT machinery act on the
-surface. We want $\Phi$ as close to an \emph{isometry} as possible so Euclidean
-2D distance equals surface arc length.
+surface (\cref{fig:chart}). We want $\Phi$ as close to an \emph{isometry} as
+possible so Euclidean 2D distance equals surface arc length.
+
+\begin{figure}[H]\centering
+\begin{tikzpicture}[font=\small, node distance=16mm]
+ \node[rm stage, text width=27mm] (S) {curved face $\vv{S}(u,v)$ $+$ frozen edge loops};
+ \node[rm state, text width=34mm, right=of S] (chart)
+   {distance-faithful chart $\Phi$: boundary fixed, interior CVT-relaxed (2D)};
+ \node[rm out, text width=29mm, right=of chart] (lift)
+   {points on $\vv{S}$ via $\Phi^{-1}$, lifted exactly (conforming triangles)};
+ \draw[rm flow] (S)--node[above,font=\scriptsize]{$\Phi$} (chart);
+ \draw[rm flow] (chart)--node[above,font=\scriptsize]{$\Phi^{-1}$, lift} (lift);
+\end{tikzpicture}
+\caption{Surface meshing through a chart: relax in a (near-)isometric 2D
+parameterization with the frozen edge points as fixed boundary, then lift every
+chart point back onto the analytic surface. Exact on developables, bounded
+distortion on the sphere (\cref{eq:azeq}).}
+\label{fig:chart}
+\end{figure}
 
 \paragraph{Developables (cylinder, cone, extruded): exact isometry.}
 A surface with $K\equiv0$ unrolls into the plane without distortion.

@@ -71,7 +71,12 @@
 		layer_tets = $bindable(true),
 		clip_enable = $bindable(true),
 		clip_axis = $bindable(1 as 0 | 1 | 2),
-		clip_t = $bindable(0.6)
+		clip_t = $bindable(0.6),
+		// REPORT SEAM: transparent canvas for headless figure export. When on,
+		// the WebGL clear alpha drops to 0 and the .viewer fill is removed so a
+		// screenshot with omit_background yields a real alpha channel. Default
+		// off → the live showcase is byte-for-byte unaffected.
+		transparentBackground = false
 	}: {
 		mesh?: MeshData | null;
 		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines?: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
@@ -100,6 +105,7 @@
 		clip_enable?: boolean;
 		clip_axis?: 0 | 1 | 2;
 		clip_t?: number;
+		transparentBackground?: boolean;
 	} = $props();
 
 	// Channel metadata for the colourbar — title + SI unit per channel.
@@ -112,6 +118,9 @@
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let container = $state<HTMLDivElement | null>(null);
 	let gl_state: GLState | null = null;
+	// REPORT SEAM: reactive flag so the clear-alpha $effect re-runs once the GL
+	// context exists (gl_state itself is a plain let, not reactive).
+	let gl_ready = $state(false);
 	// camera is now a $bindable prop (see COMPARE SEAM above).
 	let z_flip = 1;
 	let mounted = false;
@@ -1227,12 +1236,25 @@
 	function on_context_menu(e: Event) { e.preventDefault(); }
 	function on_dbl_click() { fit_view(); }
 
+	// REPORT SEAM: keep the WebGL clear alpha in sync with the prop. A child
+	// mounts (and runs initGL) before a parent can flip transparentBackground,
+	// so the alpha must be applied reactively — once GL is ready AND whenever the
+	// prop changes — for a headless screenshot to get a real transparent
+	// backbuffer. Off → opaque clear (the live showcase is byte-for-byte intact).
+	$effect(() => {
+		if (!gl_ready || !gl_state) return;
+		const c = hex(canvasTheme.bg);
+		gl_state.gl.clearColor(c[0], c[1], c[2], transparentBackground ? 0 : 1);
+		schedule_render();
+	});
+
 	// ── Lifecycle ───────────────────────────────────────────────────────
 	onMount(() => {
 		mounted = true;
 		if (!canvas) return;
 		gl_state = initGL(canvas);
 		if (!gl_state) return;
+		gl_ready = true; // triggers the clear-alpha $effect below
 
 		const ro = new ResizeObserver(() => mounted && schedule_render());
 		if (container) ro.observe(container);
@@ -1620,7 +1642,7 @@
 	});
 </script>
 
-<div class="viewer" bind:this={container}>
+<div class="viewer" bind:this={container} style:background={transparentBackground ? 'transparent' : null}>
 	<canvas
 		bind:this={canvas}
 		onwheel={on_wheel}

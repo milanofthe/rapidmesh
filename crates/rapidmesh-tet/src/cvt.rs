@@ -1044,6 +1044,92 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stat("mesh_cdt.vol_seeds", interior.len() as f64);
     rmlog::stage("mesh_cdt.seed", t_seed.elapsed().as_secs_f64());
 
+    // ---- 3D Lloyd: relax the interior toward its CVT layout ----------------
+    // The surface is frozen (it was meshed in its own dimension), so only the
+    // interior points move, each to the (uniform-weighted) centroid of its
+    // incident tets in an UNCONSTRAINED Delaunay rebuilt per pass (the relaxation
+    // only needs approximate cells; the final build below is constrained). Out-of
+    // domain or too-close-to-surface targets are rejected.
+    let t_lloyd = std::time::Instant::now();
+    let n_surf = frozen.points.len();
+    let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
+        let order = crate::spatial::morton_order(all_pos);
+        let mut db = DelaunayBuilder::enclosing(lo, hi);
+        let mut orig: Vec<usize> = Vec::with_capacity(order.len());
+        for &i in &order {
+            if db.try_insert(all_pos[i]).is_some() {
+                orig.push(i);
+            }
+        }
+        db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
+    };
+    for _ in 0..LLOYD_ITERS {
+        let mut all: Vec<V3> = frozen.points.clone();
+        all.extend_from_slice(&interior);
+        let tets = build_full(&all);
+        let mut num = vec![[0.0f64; 3]; all.len()];
+        let mut den = vec![0.0f64; all.len()];
+        for t in &tets {
+            let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
+            let c = centroid4(p);
+            let w = tet_det(p).abs();
+            for &i in t {
+                for k in 0..3 {
+                    num[i][k] += w * c[k];
+                }
+                den[i] += w;
+            }
+        }
+        // Rebuild the crowding hash from the surface + interior each pass.
+        let mut grid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
+        for &p in frozen.points.iter().chain(interior.iter()) {
+            let (kx, ky, kz) = ckey(p);
+            grid.entry((kx, ky, kz)).or_default().push(p);
+        }
+        let mut max_move = 0.0f64;
+        for k in 0..interior.len() {
+            let i = n_surf + k;
+            if den[i] == 0.0 {
+                continue;
+            }
+            let tgt: V3 = std::array::from_fn(|c| num[i][c] / den[i]);
+            if !inside(tgt) {
+                continue;
+            }
+            let h = hloc(tgt);
+            if surf_tree.nearest(tgt).map(|q| dist(tgt, frozen.points[q as usize]) < h).unwrap_or(false) {
+                continue;
+            }
+            // Crowding: keep clear of every OTHER point by the local radius.
+            let r2 = (0.6 * h).powi(2);
+            let (kx, ky, kz) = ckey(tgt);
+            let cur = interior[k];
+            let mut clear = true;
+            'scan2: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        if let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
+                            for &q in v {
+                                if q != cur && dot(sub(tgt, q), sub(tgt, q)) < r2 {
+                                    clear = false;
+                                    break 'scan2;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if clear {
+                max_move = max_move.max(dist(cur, tgt));
+                interior[k] = tgt;
+            }
+        }
+        if max_move < LLOYD_CONVERGE_FRAC * spacing {
+            break;
+        }
+    }
+    rmlog::stage("mesh_cdt.lloyd", t_lloyd.elapsed().as_secs_f64());
+
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
     let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &frozen.face_carrier, &interior, lo, hi);

@@ -56,6 +56,18 @@ impl SceneBuilder {
         self.put(solid_box(min, max), maxh, void)
     }
 
+    /// Unions solids: retag every solid in region `from` into `into`, so the
+    /// boundary between overlapping solids fuses (a boolean union, one material).
+    fn merge_regions(&mut self, into: u32, from: u32) {
+        self.scene
+            .merge_region(rapidmesh_geom::RegionTag(into), rapidmesh_geom::RegionTag(from));
+        for (r, _) in &mut self.region_maxh {
+            if *r == from {
+                *r = into;
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (base, axis, radius, segments, maxh=None, void=false))]
     fn add_cylinder(

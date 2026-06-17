@@ -488,9 +488,11 @@ def _g_tube(occ):
 def _r_capsule():
     import rapidmesh as rm
     g = rm.Geometry(maxh=0.2)
-    g.label(g.cylinder(0.6, 1.2, position=(0, 0, -0.6), segments=28, uniform=True), "cap")
-    g.icosphere(0.6, position=(0, 0, -0.6), subdivisions=3)
-    g.icosphere(0.6, position=(0, 0, 0.6), subdivisions=3)
+    cap = g.cylinder(0.6, 1.2, position=(0, 0, -0.6), segments=28, uniform=True)
+    s1 = g.icosphere(0.6, position=(0, 0, -0.6), subdivisions=3)
+    s2 = g.icosphere(0.6, position=(0, 0, 0.6), subdivisions=3)
+    g.union(cap, s1, s2)  # boolean union -> one capsule solid (like occ.fuse)
+    g.label(cap, "cap")
     return g
 
 

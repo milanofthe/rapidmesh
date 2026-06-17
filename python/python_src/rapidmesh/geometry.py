@@ -333,6 +333,21 @@ class Geometry:
         else:
             self._tag_labels[int(target)] = name
 
+    def union(self, *solids: Solid) -> Solid:
+        """Fuse overlapping solids into ONE material (a boolean union): the
+        internal boundaries between them become same-region faces and are
+        dropped at assembly, leaving the outer union surface. Returns the
+        first solid, now representing the merged region."""
+        if not solids:
+            raise ValueError("union needs at least one solid")
+        keep = solids[0]
+        for s in solids[1:]:
+            self._builder.merge_regions(keep.region, s.region)
+            for i, r in enumerate(self._solid_regions):
+                if r == s.region:
+                    self._solid_regions[i] = keep.region
+        return keep
+
     # ------------------------------------------------------------ solids
 
     def box(

@@ -80,6 +80,17 @@ impl Scene {
         self.sheets.push((f, tag));
     }
 
+    /// Unions solids by retagging every solid in region `from` to `into`: the
+    /// boundary between them becomes a same-region internal face (dropped at
+    /// assembly), so overlapping solids fuse into one material (a boolean union).
+    pub fn merge_region(&mut self, into: RegionTag, from: RegionTag) {
+        for r in &mut self.solid_regions {
+            if *r == from.0 {
+                *r = into.0;
+            }
+        }
+    }
+
     /// Assembles the conforming tagged PLC.
     pub fn assemble(&self) -> TaggedPlc {
         // ------------------------------------------------------- flatten

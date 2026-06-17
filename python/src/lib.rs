@@ -320,7 +320,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, surface_deflection=0.02))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -332,7 +332,11 @@ impl SceneBuilder {
         size_points: Vec<([f64; 3], f64)>,
         surface_maxh: Vec<(u32, f64)>,
         density_weighted: bool,
-        surface_deflection: f64,
+        tol_edge: f64,
+        tol_surf: f64,
+        maxh_edge: f64,
+        maxh_surf: f64,
+        maxh_vol: f64,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -353,7 +357,11 @@ impl SceneBuilder {
                 surface_maxh,
                 size_points,
                 density_weighted,
-                surface_deflection,
+                tol_edge,
+                tol_surf,
+                maxh_edge,
+                maxh_surf,
+                maxh_vol,
             };
             let tm = std::time::Instant::now();
             // Opt-in to the new boundary-constrained Stage-3 pipeline for
@@ -433,7 +441,7 @@ impl SceneBuilder {
     /// Returns just the closed boundary surface mesh. Volume-only params
     /// (`radius_edge`, `max_points`) do not apply.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![]))]
+    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY))]
     fn surface_mesh(
         &self,
         py: Python<'_>,
@@ -442,6 +450,11 @@ impl SceneBuilder {
         face_maxh: Vec<(u32, f64)>,
         size_points: Vec<([f64; 3], f64)>,
         surface_maxh: Vec<(u32, f64)>,
+        tol_edge: f64,
+        tol_surf: f64,
+        maxh_edge: f64,
+        maxh_surf: f64,
+        maxh_vol: f64,
     ) -> PySurfaceMesh {
         let t0 = std::time::Instant::now();
         rapidmesh_exact::log::clear();
@@ -457,7 +470,11 @@ impl SceneBuilder {
                 surface_maxh,
                 size_points,
                 density_weighted: false,
-                surface_deflection: 0.02,
+                tol_edge,
+                tol_surf,
+                maxh_edge,
+                maxh_surf,
+                maxh_vol,
             };
             surface_mesh(&plc, &params)
         });

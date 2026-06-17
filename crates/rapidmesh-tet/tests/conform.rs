@@ -176,7 +176,11 @@ fn sized_box_respects_maxh_and_quality() {
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
         density_weighted: false,
-        surface_deflection: 0.02,
+        tol_edge: 1e-2,
+        tol_surf: 1e-2,
+        maxh_edge: f64::INFINITY,
+        maxh_surf: f64::INFINITY,
+        maxh_vol: f64::INFINITY,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -232,7 +236,11 @@ fn sized_em_scene_stays_exact_and_conforming() {
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
         density_weighted: false,
-        surface_deflection: 0.02,
+        tol_edge: 1e-2,
+        tol_surf: 1e-2,
+        maxh_edge: f64::INFINITY,
+        maxh_surf: f64::INFINITY,
+        maxh_vol: f64::INFINITY,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -279,7 +287,11 @@ fn per_region_sizing_creates_density_transition() {
         surface_maxh: Vec::new(),
         size_points: Vec::new(),
         density_weighted: false,
-        surface_deflection: 0.02,
+        tol_edge: 1e-2,
+        tol_surf: 1e-2,
+        maxh_edge: f64::INFINITY,
+        maxh_surf: f64::INFINITY,
+        maxh_vol: f64::INFINITY,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(
@@ -490,7 +502,11 @@ fn size_points_refine_locally() {
         maxh: 1.5,
         size_points: vec![([2.0, 2.0, 2.0], 0.2)],
         density_weighted: false,
-        surface_deflection: 0.02,
+        tol_edge: 1e-2,
+        tol_surf: 1e-2,
+        maxh_edge: f64::INFINITY,
+        maxh_surf: f64::INFINITY,
+        maxh_vol: f64::INFINITY,
         grading: 0.5,
         ..MeshParams::default()
     };

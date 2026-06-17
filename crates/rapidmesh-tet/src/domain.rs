@@ -184,7 +184,7 @@ impl DomainTree {
         // refines the VOLUME near tightly curved boundaries (an airfoil nose), so
         // the surrounding region holds the fine on-surface nodes; the grading
         // term then coarsens away. A gentle curve (R large) leaves `maxh` intact.
-        let chord = (8.0 * params.surface_deflection).sqrt();
+        let chord = (8.0 * params.tol_surf).sqrt();
         let curvature_target = |i: usize| -> f64 {
             let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
             crate::project::surface_curvature_radius(kind, facet_centroid(i)) * chord
@@ -248,7 +248,7 @@ impl DomainTree {
         //     point-to-segment graded distance). Filled by WP-R3; empty here.
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
-        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.surface_deflection);
+        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.tol_edge);
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).

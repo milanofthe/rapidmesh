@@ -616,7 +616,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
     let vol_sources: Vec<(V3, f64)> =
         (0..n_surf).map(|i| (surf_pos[i], domain.h_at(surf_pos[i]).max(1e-9))).collect();
-    let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.maxh);
+    let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.vol_cap());
     // A per-region size cap: `region_maxh` is a region-WIDE size that the surface
     // field (which grows coarse from the boundary inward) does not enforce in the
     // interior, so cap the volume size by the region of the query point.
@@ -1005,7 +1005,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .unwrap_or(params.maxh)
             .min(params.maxh)
     };
-    let hloc = |p: V3| domain.h_at(p).min(region_cap(domain.region_at(p))).max(1e-9);
+    let hloc = |p: V3| domain.h_at(p).min(region_cap(domain.region_at(p))).min(params.vol_cap()).max(1e-9);
     let step = (0.7 * spacing).max(1e-9);
     let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     let ncell = (0.6 * spacing).max(1e-9);
@@ -1393,7 +1393,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let inside2 =
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let step = SURFACE_OVERSAMPLE * domain.finest();
-        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n));
+        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n)).min(params.surf_cap());
         for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(lift3(uv, drop, p0, n));
             loc2.push(uv);
@@ -1501,7 +1501,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // Curvature/volume-error bias: the finest curvature radius over the group
         // sets the grid step (so the scatter is fine enough to honor it); the
         // per-point target is the finer of the domain field and the curvature cap.
-        let chord = (8.0 * params.surface_deflection).sqrt();
+        let chord = (8.0 * params.tol_surf).sqrt();
         let hc_min = gverts
             .iter()
             .map(|&v| chart.curvature_radius(chart.to_uv(points[v])))
@@ -1512,7 +1512,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let target = |uv: [f64; 2]| {
             let xyz = chart.to_xyz(uv);
             let hc = chart.curvature_radius(uv) * chord;
-            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc)
+            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc).min(params.surf_cap())
         };
         for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(chart.to_xyz(uv));

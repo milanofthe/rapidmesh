@@ -802,7 +802,11 @@ class Geometry:
         max_points: int = 500_000,
         grading: float | None = None,
         density_weighted: bool = False,
-        surface_deflection: float = 0.02,
+        tol_edge: float = 1e-2,
+        tol_surf: float = 1e-2,
+        maxh_edge: float = math.inf,
+        maxh_surf: float = math.inf,
+        maxh_vol: float = math.inf,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -827,11 +831,16 @@ class Geometry:
             sizing field settles into a smooth gradient. Off by default (it
             shifts sites near curved boundaries, which the exact-volume path
             cannot absorb); enable for adaptive (curvature/error-bound) meshes.
-        surface_deflection : float
-            relative sagitta error bound for curved surfaces: a curved facet of
-            radius ``R`` is sized ``h = R * sqrt(8 * surface_deflection)``, so
-            the chord deviates by at most ``surface_deflection * R``. Smaller =
-            finer curved surfaces (scale-invariant, ~constant facets per arc).
+        tol_edge, tol_surf : float
+            relative chord (sagitta) tolerance for curved EDGES and SURFACES: an
+            entity of radius ``R`` is sized ``h = R * sqrt(8 * tol)``, so the
+            chord deviates by at most ``tol * R`` (scale-invariant, ~constant
+            facets per arc). Default 1e-2 (1%); 1e-4 is very fine. There is no
+            volume tolerance: the volume size follows from the surface.
+        maxh_edge, maxh_surf, maxh_vol : float
+            maximum element edge length per dimension (edges / surfaces /
+            volume), each combined with ``maxh`` as ``min(maxh, maxh_dim)``.
+            Default ``inf`` (only ``maxh`` applies).
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -844,7 +853,11 @@ class Geometry:
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
             density_weighted,
-            surface_deflection,
+            tol_edge,
+            tol_surf,
+            maxh_edge,
+            maxh_surf,
+            maxh_vol,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}
@@ -857,6 +870,11 @@ class Geometry:
         *,
         maxh: float | None = None,
         grading: float | None = None,
+        tol_edge: float = 1e-2,
+        tol_surf: float = 1e-2,
+        maxh_edge: float = math.inf,
+        maxh_surf: float = math.inf,
+        maxh_vol: float = math.inf,
     ) -> SurfaceMesh:
         """Surface-only export: assembles the exact arrangement and meshes
         only its boundary surface (region interfaces, outer boundary, embedded
@@ -880,6 +898,11 @@ class Geometry:
             [(t, fh) for t, fh in sorted(self._face_maxh.items())],
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
+            tol_edge,
+            tol_surf,
+            maxh_edge,
+            maxh_surf,
+            maxh_vol,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

@@ -395,7 +395,7 @@ pub fn surface_sites(
     // The geometry size field H (finite even when params.maxh is INFINITY -- it
     // falls back to diag/8). The surface is placed at OVERSAMPLE*H, the volume at
     // H, so the surface is finer than the volume (the conformity requirement).
-    let h_at = |p: V3| domain.h_at(p).max(1e-9);
+    let h_at = |p: V3| domain.h_at(p).min(params.surf_cap()).max(1e-9);
     let mut sites: Vec<Site> = Vec::new();
     let mut point_tile: Vec<u32> = Vec::new();
 
@@ -441,7 +441,7 @@ pub fn surface_sites(
             let cap = OVERSAMPLE * edge.chain.iter().map(|&p| h_at(p)).fold(f64::INFINITY, f64::min);
             match edge_curve(edge) {
                 Some(curve) => {
-                    let ps = distribute(&*curve, params.surface_deflection, cap, grad);
+                    let ps = distribute(&*curve, params.tol_edge, cap.min(params.maxh_edge), grad);
                     ps.iter().map(|&s| curve.point_at(s)).collect()
                 }
                 None => edge.chain.clone(),

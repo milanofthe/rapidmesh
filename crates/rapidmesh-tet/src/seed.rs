@@ -129,7 +129,11 @@ mod tests {
             surface_maxh: Vec::new(),
             size_points,
             density_weighted: false,
-            surface_deflection: 0.02,
+            tol_edge: 1e-2,
+            tol_surf: 1e-2,
+            maxh_edge: f64::INFINITY,
+            maxh_surf: f64::INFINITY,
+            maxh_vol: f64::INFINITY,
         }
     }
 

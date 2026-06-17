@@ -245,12 +245,23 @@ pub struct MeshParams {
     /// gradient. Off by default (it shifts sites near curved boundaries, which
     /// the exact-volume fixtures cannot absorb); on for adaptive meshes.
     pub density_weighted: bool,
-    /// Surface sagitta deflection bound (relative): a curved facet edge of
-    /// length `h` on a surface of principal radius `R` deviates by `~ h^2/(8R)`;
-    /// bounding the RELATIVE sagitta `eps/R <= this` sizes curved surfaces by
-    /// `h = R * sqrt(8 * this)`, scale-invariant (constant facets per arc). The
-    /// normalized error knob replacing the old magic chord fraction.
-    pub surface_deflection: f64,
+    /// Relative chord (sagitta) tolerance for curved EDGES: a curve of radius `R`
+    /// is sampled at `h = R*sqrt(8*tol_edge)`, so the chord deviates by at most
+    /// `tol_edge * R`. Scale-invariant (constant segments per arc). Default 1e-2.
+    pub tol_edge: f64,
+    /// Relative chord (sagitta) tolerance for curved SURFACES, the 2D analogue of
+    /// [`MeshParams::tol_edge`]: a facet on a surface of principal radius `R` is
+    /// sized `h = R*sqrt(8*tol_surf)`. Default 1e-2. (There is no volume
+    /// tolerance: the volume size follows from the surface.)
+    pub tol_surf: f64,
+    /// Maximum element edge length on EDGES (1-cells), combined with the global
+    /// [`MeshParams::maxh`] as `min(maxh, maxh_edge)`. `INFINITY` = no extra cap.
+    pub maxh_edge: f64,
+    /// Maximum element edge length on SURFACES (2-cells); `min(maxh, maxh_surf)`.
+    pub maxh_surf: f64,
+    /// Maximum element edge length in the VOLUME (3-cells); `min(maxh, maxh_vol)`.
+    /// Per-region overrides come from [`MeshParams::region_maxh`].
+    pub maxh_vol: f64,
 }
 
 impl Default for MeshParams {
@@ -265,8 +276,28 @@ impl Default for MeshParams {
             surface_maxh: Vec::new(),
             size_points: Vec::new(),
             density_weighted: false,
-            surface_deflection: 0.02,
+            tol_edge: 1e-2,
+            tol_surf: 1e-2,
+            maxh_edge: f64::INFINITY,
+            maxh_surf: f64::INFINITY,
+            maxh_vol: f64::INFINITY,
         }
+    }
+}
+
+impl MeshParams {
+    /// Effective edge-length cap on 1-cells: the global cap tightened by the
+    /// per-dimension edge cap.
+    pub fn edge_cap(&self) -> f64 {
+        self.maxh.min(self.maxh_edge)
+    }
+    /// Effective edge-length cap on 2-cells (surfaces).
+    pub fn surf_cap(&self) -> f64 {
+        self.maxh.min(self.maxh_surf)
+    }
+    /// Effective edge-length cap in the 3-cell (volume).
+    pub fn vol_cap(&self) -> f64 {
+        self.maxh.min(self.maxh_vol)
     }
 }
 

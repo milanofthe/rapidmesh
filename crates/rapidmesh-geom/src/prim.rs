@@ -303,15 +303,16 @@ pub fn extrude_polygon(
     f.push_flat(PlanarFacet::with_holes(top_outer, top_holes), &top_tris, top);
 
     // Walls: region lies left of every (normalized) ring edge, so the quad
-    // (a, b, b+h, a+h) faces outward. Each wall quad is its own plane, hence
-    // its own planar facet.
+    // (a, b, b+h, a+h) faces outward. Each wall is a DISTINCT plane, so each gets
+    // its own analytic surface (a shared one would fit a single bogus plane
+    // through non-coplanar walls and break the per-face parameter meshing).
     for ring in std::iter::once(&outer_ccw).chain(holes_cw.iter()) {
-        let side = f.add_surface(SurfaceKind::Plane);
         for i in 0..ring.len() {
             let j = (i + 1) % ring.len();
             let a = embed(base, u, v, ring[i]);
             let b = embed(base, u, v, ring[j]);
             let (at, bt) = (add(a, h), add(b, h));
+            let side = f.add_surface(SurfaceKind::Plane);
             let tris = [Tri::new(a, b, bt), Tri::new(a, bt, at)];
             f.push_flat(PlanarFacet::new(vec![a, b, bt, at]), &tris, side);
         }

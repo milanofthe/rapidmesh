@@ -105,6 +105,27 @@ into a void and no gaps. This is the decisive structural property and the
 reason the surface must be completed \emph{before} the volume is seeded.
 \end{principle}
 
+\begin{principle}[Embarrassingly parallel within each level]
+\label{prin:parallel}
+Freezing a level before the next consumes it makes the entities \emph{within} a
+level mutually independent: they share only already-frozen, read-only
+lower-dimensional boundary. Hence each level is processed in parallel with no
+synchronisation:
+\begin{itemize}[leftmargin=1.4em,topsep=2pt,itemsep=1pt]
+\item \textbf{all edges} at once (each depends only on its two fixed corners);
+\item then \textbf{all faces} at once (each depends only on its fixed boundary
+edges, which are computed once and read concurrently);
+\item then \textbf{all volume regions} at once (each material region's
+constrained tetrahedralization depends only on its fixed bounding surface;
+shared interface facets are read-only).
+\end{itemize}
+Shared lower-dimensional entities are meshed exactly once and cached, which is
+what removes write contention. Each entity's result is independently
+deterministic and merged in fixed id order, so parallelism does not affect
+reproducibility (\S\ref{sec:notation}). The three barriers (edges $\to$ faces
+$\to$ volume) are the only synchronisation points.
+\end{principle}
+
 \noindent
 The geometry source is a B-Rep assembled from the exact CSG arrangement: faces
 are trimmed analytic (or NURBS) surfaces, edges are analytic curves (including
@@ -115,6 +136,7 @@ any input tessellation.
 
 % ============================================================================
 \section{Notation and preliminaries}
+\label{sec:notation}
 % ============================================================================
 
 \subsection{The sizing field}
@@ -553,6 +575,15 @@ as tetrahedron faces, each surface triangle has a tetrahedron exactly on each
 side; region labels are then assigned by flood fill across non-constraint faces
 starting from the region tag attached to each surface triangle's two sides.
 No tetrahedron straddles the boundary, so:
+
+\noindent
+\emph{Per-region parallelism.} Each material region is bounded by a disjoint
+subset of the frozen $\mathcal{S}$ (its outer walls and the interface facets it
+shares with neighbours, all read-only), so the regions' constrained
+tetrahedralizations are independent and run in parallel
+(Principle~\ref{prin:parallel}); a shared interface facet is meshed once on
+$\mathcal{S}$ and both regions tetrahedralize against the same fixed triangles,
+which keeps the multi-material mesh conforming across interfaces.
 
 \begin{proposition}[Watertightness]
 If $\mathcal{S}$ is a closed, non-self-intersecting, conforming surface mesh and

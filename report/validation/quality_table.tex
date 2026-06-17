@@ -11,6 +11,10 @@ Case & test & coarse & medium & fine & \#elems\\
 \quad hexagon & plate & 31.6 & 28.9 & 31.2 & 6198\\
 \quad L-polygon & plate & 1.6 & 1.0 & 0.6 & 5941\\
 \quad annulus & plate & 7.5 & 2.5 & 1.5 & 10706\\
+\quad triangle & plate & 28.4 & 32.5 & 31.3 & 4357\\
+\quad pentagon & plate & 32.8 & 29.0 & 28.3 & 6425\\
+\quad star & plate & 1.4 & 0.8 & 0.6 & 6525\\
+\quad square\_hole & plate & 3.8 & 2.5 & 1.6 & 14232\\
 \addlinespace
 \multicolumn{6}{@{}l}{\itshape 3D primitives (min dihedral)}\\
 \quad box & solid & 15.8 & 18.6 & 16.7 & 14285\\
@@ -21,6 +25,11 @@ Case & test & coarse & medium & fine & \#elems\\
 \quad torus & solid & 9.8 & 0.0 & 3.8 & 57895\\
 \quad wedge & solid & 12.3 & 8.9 & 11.0 & 37316\\
 \quad L-prism & solid & 15.7 & 14.8 & 11.9 & 61477\\
+\quad slab & solid & 10.6 & 14.0 & 14.5 & 33759\\
+\quad hex\_prism & solid & 17.8 & 18.2 & 11.2 & 83408\\
+\quad tri\_prism & solid & 17.1 & 12.9 & 12.8 & 51541\\
+\quad star\_prism & solid & 15.9 & 14.3 & 11.2 & 74258\\
+\quad ellipsoidish & solid & 19.3 & 10.7 & 7.3 & 145992\\
 \addlinespace
 \multicolumn{6}{@{}l}{\itshape Booleans (min dihedral)}\\
 \quad box $\cup$ sphere & union/cut & 0.5 & 16.3 & 3.5 & 88304\\
@@ -32,6 +41,14 @@ Case & test & coarse & medium & fine & \#elems\\
 \quad box $\cup$ cylinder & union/cut & 6.7 & 13.0 & 7.5 & 55398\\
 \quad cylinder $-$ slab & union/cut & 15.7 & 11.6 & 1.7 & 52090\\
 \quad drilled block ($-$2 cyl) & union/cut & 0.1 & 0.1 & 0.2 & 73464\\
+\quad tube & union/cut & 0.0 & 0.0 & 0.0 & 95526\\
+\quad fused\_deep & union/cut & 7.0 & 2.4 & 0.8 & 126200\\
+\quad fused\_unequal & union/cut & 11.7 & 5.5 & 1.6 & 108348\\
+\quad sphere\_minus\_box & union/cut & 13.0 & 13.9 & 3.9 & 71897\\
+\quad box\_minus\_2sph & union/cut & 10.8 & 6.8 & 10.5 & 63875\\
+\quad cross\_cyl & union/cut & 4.0 & 0.1 & 0.6 & 69173\\
+\quad via & union/cut & 7.4 & 11.0 & 16.1 & 82815\\
+\quad nested\_spheres & union/cut & 12.5 & 14.9 & 4.5 & 154811\\
 \bottomrule
 \end{tabularx}
 \end{table}

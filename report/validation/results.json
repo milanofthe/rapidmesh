@@ -29,7 +29,7 @@
   "n_points": 1947,
   "n_elems": 3714,
   "quality_deg": 33.19,
-  "millis": 18,
+  "millis": 19,
   "metric": "min angle"
  },
  {
@@ -40,7 +40,7 @@
   "n_points": 512,
   "n_elems": 958,
   "quality_deg": 33.2,
-  "millis": 9,
+  "millis": 8,
   "metric": "min angle"
  },
  {
@@ -51,7 +51,7 @@
   "n_points": 1346,
   "n_elems": 2562,
   "quality_deg": 32.67,
-  "millis": 27,
+  "millis": 28,
   "metric": "min angle"
  },
  {
@@ -62,7 +62,7 @@
   "n_points": 3179,
   "n_elems": 6164,
   "quality_deg": 30.55,
-  "millis": 66,
+  "millis": 96,
   "metric": "min angle"
  },
  {
@@ -73,7 +73,7 @@
   "n_points": 547,
   "n_elems": 1008,
   "quality_deg": 31.65,
-  "millis": 4,
+  "millis": 6,
   "metric": "min angle"
  },
  {
@@ -84,7 +84,7 @@
   "n_points": 1343,
   "n_elems": 2552,
   "quality_deg": 28.85,
-  "millis": 14,
+  "millis": 21,
   "metric": "min angle"
  },
  {
@@ -95,7 +95,7 @@
   "n_points": 3202,
   "n_elems": 6198,
   "quality_deg": 31.24,
-  "millis": 71,
+  "millis": 106,
   "metric": "min angle"
  },
  {
@@ -106,7 +106,7 @@
   "n_points": 539,
   "n_elems": 997,
   "quality_deg": 1.55,
-  "millis": 3,
+  "millis": 4,
   "metric": "min angle"
  },
  {
@@ -117,7 +117,7 @@
   "n_points": 1309,
   "n_elems": 2491,
   "quality_deg": 0.97,
-  "millis": 13,
+  "millis": 20,
   "metric": "min angle"
  },
  {
@@ -128,7 +128,7 @@
   "n_points": 3068,
   "n_elems": 5941,
   "quality_deg": 0.63,
-  "millis": 66,
+  "millis": 96,
   "metric": "min angle"
  },
  {
@@ -139,7 +139,7 @@
   "n_points": 934,
   "n_elems": 1746,
   "quality_deg": 7.5,
-  "millis": 16,
+  "millis": 21,
   "metric": "min angle"
  },
  {
@@ -150,7 +150,7 @@
   "n_points": 2351,
   "n_elems": 4508,
   "quality_deg": 2.51,
-  "millis": 37,
+  "millis": 51,
   "metric": "min angle"
  },
  {
@@ -161,7 +161,7 @@
   "n_points": 5498,
   "n_elems": 10706,
   "quality_deg": 1.51,
-  "millis": 156,
+  "millis": 233,
   "metric": "min angle"
  },
  {
@@ -173,7 +173,7 @@
   "n_elems": 891,
   "quality_deg": 15.79,
   "n_regions": 1,
-  "millis": 35,
+  "millis": 46,
   "metric": "min dihedral"
  },
  {
@@ -185,7 +185,7 @@
   "n_elems": 3815,
   "quality_deg": 18.62,
   "n_regions": 1,
-  "millis": 137,
+  "millis": 176,
   "metric": "min dihedral"
  },
  {
@@ -197,7 +197,7 @@
   "n_elems": 14285,
   "quality_deg": 16.66,
   "n_regions": 1,
-  "millis": 529,
+  "millis": 649,
   "metric": "min dihedral"
  },
  {
@@ -209,7 +209,7 @@
   "n_elems": 3239,
   "quality_deg": 15.93,
   "n_regions": 1,
-  "millis": 185,
+  "millis": 237,
   "metric": "min dihedral"
  },
  {
@@ -221,7 +221,7 @@
   "n_elems": 11285,
   "quality_deg": 22.59,
   "n_regions": 1,
-  "millis": 311,
+  "millis": 408,
   "metric": "min dihedral"
  },
  {
@@ -233,7 +233,7 @@
   "n_elems": 43413,
   "quality_deg": 18.32,
   "n_regions": 1,
-  "millis": 1574,
+  "millis": 1999,
   "metric": "min dihedral"
  },
  {
@@ -245,7 +245,7 @@
   "n_elems": 1561,
   "quality_deg": 19.15,
   "n_regions": 1,
-  "millis": 113,
+  "millis": 146,
   "metric": "min dihedral"
  },
  {
@@ -257,7 +257,7 @@
   "n_elems": 7011,
   "quality_deg": 17.46,
   "n_regions": 1,
-  "millis": 331,
+  "millis": 419,
   "metric": "min dihedral"
  },
  {
@@ -269,7 +269,7 @@
   "n_elems": 26532,
   "quality_deg": 14.27,
   "n_regions": 1,
-  "millis": 1294,
+  "millis": 1468,
   "metric": "min dihedral"
  },
  {
@@ -281,7 +281,7 @@
   "n_elems": 882,
   "quality_deg": 0.32,
   "n_regions": 1,
-  "millis": 72,
+  "millis": 77,
   "metric": "min dihedral"
  },
  {
@@ -293,7 +293,7 @@
   "n_elems": 3664,
   "quality_deg": 0.16,
   "n_regions": 1,
-  "millis": 269,
+  "millis": 292,
   "metric": "min dihedral"
  },
  {
@@ -305,7 +305,7 @@
   "n_elems": 13878,
   "quality_deg": 0.03,
   "n_regions": 1,
-  "millis": 1005,
+  "millis": 1228,
   "metric": "min dihedral"
  },
  {
@@ -317,7 +317,7 @@
   "n_elems": 1268,
   "quality_deg": 13.17,
   "n_regions": 1,
-  "millis": 80,
+  "millis": 95,
   "metric": "min dihedral"
  },
  {
@@ -329,7 +329,7 @@
   "n_elems": 5486,
   "quality_deg": 17.72,
   "n_regions": 1,
-  "millis": 244,
+  "millis": 269,
   "metric": "min dihedral"
  },
  {
@@ -341,7 +341,7 @@
   "n_elems": 20741,
   "quality_deg": 0.0,
   "n_regions": 1,
-  "millis": 874,
+  "millis": 832,
   "metric": "min dihedral"
  },
  {
@@ -353,7 +353,7 @@
   "n_elems": 3641,
   "quality_deg": 9.77,
   "n_regions": 1,
-  "millis": 359,
+  "millis": 349,
   "metric": "min dihedral"
  },
  {
@@ -365,7 +365,7 @@
   "n_elems": 13905,
   "quality_deg": 0.0,
   "n_regions": 1,
-  "millis": 1071,
+  "millis": 1047,
   "metric": "min dihedral"
  },
  {
@@ -377,7 +377,7 @@
   "n_elems": 57895,
   "quality_deg": 3.79,
   "n_regions": 1,
-  "millis": 3669,
+  "millis": 3589,
   "metric": "min dihedral"
  },
  {
@@ -389,7 +389,7 @@
   "n_elems": 2340,
   "quality_deg": 12.34,
   "n_regions": 1,
-  "millis": 61,
+  "millis": 57,
   "metric": "min dihedral"
  },
  {
@@ -401,7 +401,7 @@
   "n_elems": 9970,
   "quality_deg": 8.93,
   "n_regions": 1,
-  "millis": 334,
+  "millis": 318,
   "metric": "min dihedral"
  },
  {
@@ -413,7 +413,7 @@
   "n_elems": 37316,
   "quality_deg": 11.04,
   "n_regions": 1,
-  "millis": 1003,
+  "millis": 970,
   "metric": "min dihedral"
  },
  {
@@ -425,7 +425,7 @@
   "n_elems": 3794,
   "quality_deg": 15.65,
   "n_regions": 1,
-  "millis": 102,
+  "millis": 93,
   "metric": "min dihedral"
  },
  {
@@ -437,7 +437,7 @@
   "n_elems": 16036,
   "quality_deg": 14.77,
   "n_regions": 1,
-  "millis": 541,
+  "millis": 509,
   "metric": "min dihedral"
  },
  {
@@ -449,7 +449,7 @@
   "n_elems": 61477,
   "quality_deg": 11.92,
   "n_regions": 1,
-  "millis": 1711,
+  "millis": 1635,
   "metric": "min dihedral"
  },
  {
@@ -461,7 +461,7 @@
   "n_elems": 5999,
   "quality_deg": 0.54,
   "n_regions": 1,
-  "millis": 353,
+  "millis": 336,
   "metric": "min dihedral"
  },
  {
@@ -473,7 +473,7 @@
   "n_elems": 23328,
   "quality_deg": 16.26,
   "n_regions": 1,
-  "millis": 1137,
+  "millis": 1088,
   "metric": "min dihedral"
  },
  {
@@ -485,7 +485,7 @@
   "n_elems": 88304,
   "quality_deg": 3.45,
   "n_regions": 1,
-  "millis": 3418,
+  "millis": 3190,
   "metric": "min dihedral"
  },
  {
@@ -497,7 +497,7 @@
   "n_elems": 6989,
   "quality_deg": 0.06,
   "n_regions": 1,
-  "millis": 951,
+  "millis": 901,
   "metric": "min dihedral"
  },
  {
@@ -509,7 +509,7 @@
   "n_elems": 26450,
   "quality_deg": 0.1,
   "n_regions": 1,
-  "millis": 3108,
+  "millis": 2938,
   "metric": "min dihedral"
  },
  {
@@ -521,7 +521,7 @@
   "n_elems": 97055,
   "quality_deg": 0.16,
   "n_regions": 1,
-  "millis": 4545,
+  "millis": 4394,
   "metric": "min dihedral"
  },
  {
@@ -533,7 +533,7 @@
   "n_elems": 5402,
   "quality_deg": 15.6,
   "n_regions": 1,
-  "millis": 306,
+  "millis": 291,
   "metric": "min dihedral"
  },
  {
@@ -545,7 +545,7 @@
   "n_elems": 22390,
   "quality_deg": 16.58,
   "n_regions": 1,
-  "millis": 988,
+  "millis": 947,
   "metric": "min dihedral"
  },
  {
@@ -557,7 +557,7 @@
   "n_elems": 86855,
   "quality_deg": 12.93,
   "n_regions": 1,
-  "millis": 2797,
+  "millis": 2710,
   "metric": "min dihedral"
  },
  {
@@ -569,7 +569,7 @@
   "n_elems": 6342,
   "quality_deg": 9.31,
   "n_regions": 1,
-  "millis": 322,
+  "millis": 305,
   "metric": "min dihedral"
  },
  {
@@ -581,7 +581,7 @@
   "n_elems": 23993,
   "quality_deg": 17.52,
   "n_regions": 1,
-  "millis": 1161,
+  "millis": 1135,
   "metric": "min dihedral"
  },
  {
@@ -593,7 +593,7 @@
   "n_elems": 93560,
   "quality_deg": 8.87,
   "n_regions": 1,
-  "millis": 4675,
+  "millis": 4432,
   "metric": "min dihedral"
  },
  {
@@ -605,7 +605,7 @@
   "n_elems": 9527,
   "quality_deg": 10.62,
   "n_regions": 1,
-  "millis": 666,
+  "millis": 633,
   "metric": "min dihedral"
  },
  {
@@ -617,7 +617,7 @@
   "n_elems": 34663,
   "quality_deg": 13.08,
   "n_regions": 1,
-  "millis": 2007,
+  "millis": 1905,
   "metric": "min dihedral"
  },
  {
@@ -629,7 +629,7 @@
   "n_elems": 133494,
   "quality_deg": 1.2,
   "n_regions": 1,
-  "millis": 7782,
+  "millis": 7412,
   "metric": "min dihedral"
  },
  {
@@ -641,7 +641,7 @@
   "n_elems": 6932,
   "quality_deg": 0.23,
   "n_regions": 1,
-  "millis": 1075,
+  "millis": 1028,
   "metric": "min dihedral"
  },
  {
@@ -653,7 +653,7 @@
   "n_elems": 24159,
   "quality_deg": 0.19,
   "n_regions": 1,
-  "millis": 1975,
+  "millis": 1899,
   "metric": "min dihedral"
  },
  {
@@ -665,7 +665,7 @@
   "n_elems": 87037,
   "quality_deg": 1.14,
   "n_regions": 1,
-  "millis": 6863,
+  "millis": 6508,
   "metric": "min dihedral"
  },
  {
@@ -677,7 +677,7 @@
   "n_elems": 3939,
   "quality_deg": 6.69,
   "n_regions": 1,
-  "millis": 570,
+  "millis": 563,
   "metric": "min dihedral"
  },
  {
@@ -689,7 +689,7 @@
   "n_elems": 14534,
   "quality_deg": 13.0,
   "n_regions": 1,
-  "millis": 1061,
+  "millis": 1034,
   "metric": "min dihedral"
  },
  {
@@ -701,7 +701,7 @@
   "n_elems": 55398,
   "quality_deg": 7.51,
   "n_regions": 1,
-  "millis": 2881,
+  "millis": 3021,
   "metric": "min dihedral"
  },
  {
@@ -713,7 +713,7 @@
   "n_elems": 3388,
   "quality_deg": 15.65,
   "n_regions": 1,
-  "millis": 501,
+  "millis": 477,
   "metric": "min dihedral"
  },
  {
@@ -725,7 +725,7 @@
   "n_elems": 13026,
   "quality_deg": 11.58,
   "n_regions": 1,
-  "millis": 863,
+  "millis": 838,
   "metric": "min dihedral"
  },
  {
@@ -737,7 +737,7 @@
   "n_elems": 52090,
   "quality_deg": 1.74,
   "n_regions": 1,
-  "millis": 2407,
+  "millis": 2372,
   "metric": "min dihedral"
  },
  {
@@ -749,7 +749,7 @@
   "n_elems": 7955,
   "quality_deg": 0.1,
   "n_regions": 1,
-  "millis": 2693,
+  "millis": 2576,
   "metric": "min dihedral"
  },
  {
@@ -761,7 +761,7 @@
   "n_elems": 21186,
   "quality_deg": 0.1,
   "n_regions": 1,
-  "millis": 4594,
+  "millis": 3922,
   "metric": "min dihedral"
  },
  {
@@ -773,7 +773,607 @@
   "n_elems": 73464,
   "quality_deg": 0.16,
   "n_regions": 1,
-  "millis": 5667,
+  "millis": 4914,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "triangle",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.14,
+  "n_points": 395,
+  "n_elems": 703,
+  "quality_deg": 28.38,
+  "millis": 2,
+  "metric": "min angle"
+ },
+ {
+  "name": "triangle",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.0868,
+  "n_points": 981,
+  "n_elems": 1824,
+  "quality_deg": 32.45,
+  "millis": 8,
+  "metric": "min angle"
+ },
+ {
+  "name": "triangle",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.056,
+  "n_points": 2285,
+  "n_elems": 4357,
+  "quality_deg": 31.31,
+  "millis": 38,
+  "metric": "min angle"
+ },
+ {
+  "name": "pentagon",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.15,
+  "n_points": 561,
+  "n_elems": 1035,
+  "quality_deg": 32.75,
+  "millis": 4,
+  "metric": "min angle"
+ },
+ {
+  "name": "pentagon",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.093,
+  "n_points": 1418,
+  "n_elems": 2694,
+  "quality_deg": 28.99,
+  "millis": 13,
+  "metric": "min angle"
+ },
+ {
+  "name": "pentagon",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.06,
+  "n_points": 3321,
+  "n_elems": 6425,
+  "quality_deg": 28.27,
+  "millis": 59,
+  "metric": "min angle"
+ },
+ {
+  "name": "star",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.12,
+  "n_points": 580,
+  "n_elems": 1153,
+  "quality_deg": 1.42,
+  "millis": 9,
+  "metric": "min angle"
+ },
+ {
+  "name": "star",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.0744,
+  "n_points": 1412,
+  "n_elems": 2817,
+  "quality_deg": 0.85,
+  "millis": 16,
+  "metric": "min angle"
+ },
+ {
+  "name": "star",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.048,
+  "n_points": 3266,
+  "n_elems": 6525,
+  "quality_deg": 0.55,
+  "millis": 71,
+  "metric": "min angle"
+ },
+ {
+  "name": "square_hole",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.12,
+  "n_points": 1248,
+  "n_elems": 2346,
+  "quality_deg": 3.81,
+  "millis": 13,
+  "metric": "min angle"
+ },
+ {
+  "name": "square_hole",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.0744,
+  "n_points": 3111,
+  "n_elems": 5984,
+  "quality_deg": 2.49,
+  "millis": 40,
+  "metric": "min angle"
+ },
+ {
+  "name": "square_hole",
+  "category": "2D",
+  "kind": "surf",
+  "h": 0.048,
+  "n_points": 7301,
+  "n_elems": 14232,
+  "quality_deg": 1.55,
+  "millis": 166,
+  "metric": "min angle"
+ },
+ {
+  "name": "slab",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.18,
+  "n_points": 664,
+  "n_elems": 1884,
+  "quality_deg": 10.62,
+  "n_regions": 1,
+  "millis": 83,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "slab",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.1116,
+  "n_points": 2301,
+  "n_elems": 8636,
+  "quality_deg": 14.03,
+  "n_regions": 1,
+  "millis": 310,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "slab",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.072,
+  "n_points": 7609,
+  "n_elems": 33759,
+  "quality_deg": 14.49,
+  "n_regions": 1,
+  "millis": 988,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "hex_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1275,
+  "n_elems": 5007,
+  "quality_deg": 17.8,
+  "n_regions": 1,
+  "millis": 167,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "hex_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 4712,
+  "n_elems": 21673,
+  "quality_deg": 18.19,
+  "n_regions": 1,
+  "millis": 694,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "hex_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 16406,
+  "n_elems": 83408,
+  "quality_deg": 11.15,
+  "n_regions": 1,
+  "millis": 2547,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tri_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 900,
+  "n_elems": 3200,
+  "quality_deg": 17.09,
+  "n_regions": 1,
+  "millis": 102,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tri_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 3165,
+  "n_elems": 13521,
+  "quality_deg": 12.93,
+  "n_regions": 1,
+  "millis": 415,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tri_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 10681,
+  "n_elems": 51541,
+  "quality_deg": 12.83,
+  "n_regions": 1,
+  "millis": 1950,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "star_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.12,
+  "n_points": 1408,
+  "n_elems": 4818,
+  "quality_deg": 15.9,
+  "n_regions": 1,
+  "millis": 189,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "star_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.0744,
+  "n_points": 4788,
+  "n_elems": 19760,
+  "quality_deg": 14.28,
+  "n_regions": 1,
+  "millis": 558,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "star_prism",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.048,
+  "n_points": 15867,
+  "n_elems": 74258,
+  "quality_deg": 11.17,
+  "n_regions": 1,
+  "millis": 2748,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "ellipsoidish",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1898,
+  "n_elems": 8479,
+  "quality_deg": 19.34,
+  "n_regions": 1,
+  "millis": 344,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "ellipsoidish",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 6957,
+  "n_elems": 36386,
+  "quality_deg": 10.69,
+  "n_regions": 1,
+  "millis": 1420,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "ellipsoidish",
+  "category": "Primitive",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 26228,
+  "n_elems": 145992,
+  "quality_deg": 7.31,
+  "n_regions": 1,
+  "millis": 4771,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tube",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 2015,
+  "n_elems": 7423,
+  "quality_deg": 0.02,
+  "n_regions": 1,
+  "millis": 2751,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tube",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 5396,
+  "n_elems": 24560,
+  "quality_deg": 0.02,
+  "n_regions": 1,
+  "millis": 4521,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "tube",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 18312,
+  "n_elems": 95526,
+  "quality_deg": 0.04,
+  "n_regions": 1,
+  "millis": 8665,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_deep",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1812,
+  "n_elems": 7948,
+  "quality_deg": 7.01,
+  "n_regions": 1,
+  "millis": 380,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_deep",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 5649,
+  "n_elems": 31083,
+  "quality_deg": 2.44,
+  "n_regions": 1,
+  "millis": 1476,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_deep",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 21635,
+  "n_elems": 126200,
+  "quality_deg": 0.77,
+  "n_regions": 1,
+  "millis": 5661,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_unequal",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1621,
+  "n_elems": 6895,
+  "quality_deg": 11.71,
+  "n_regions": 1,
+  "millis": 433,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_unequal",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 5069,
+  "n_elems": 27011,
+  "quality_deg": 5.48,
+  "n_regions": 1,
+  "millis": 1276,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "fused_unequal",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 18806,
+  "n_elems": 108348,
+  "quality_deg": 1.61,
+  "n_regions": 1,
+  "millis": 5544,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "sphere_minus_box",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1166,
+  "n_elems": 4011,
+  "quality_deg": 13.02,
+  "n_regions": 1,
+  "millis": 350,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "sphere_minus_box",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 3649,
+  "n_elems": 16575,
+  "quality_deg": 13.91,
+  "n_regions": 1,
+  "millis": 845,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "sphere_minus_box",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 14050,
+  "n_elems": 71897,
+  "quality_deg": 3.93,
+  "n_regions": 1,
+  "millis": 3056,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "box_minus_2sph",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.18,
+  "n_points": 1498,
+  "n_elems": 4589,
+  "quality_deg": 10.76,
+  "n_regions": 1,
+  "millis": 684,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "box_minus_2sph",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.1116,
+  "n_points": 4611,
+  "n_elems": 16985,
+  "quality_deg": 6.75,
+  "n_regions": 1,
+  "millis": 1308,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "box_minus_2sph",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.072,
+  "n_points": 14068,
+  "n_elems": 63875,
+  "quality_deg": 10.52,
+  "n_regions": 1,
+  "millis": 3226,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "cross_cyl",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 2233,
+  "n_elems": 8370,
+  "quality_deg": 3.95,
+  "n_regions": 1,
+  "millis": 2329,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "cross_cyl",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 4857,
+  "n_elems": 21035,
+  "quality_deg": 0.13,
+  "n_regions": 1,
+  "millis": 4558,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "cross_cyl",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 14128,
+  "n_elems": 69173,
+  "quality_deg": 0.58,
+  "n_regions": 1,
+  "millis": 8612,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "via",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.2,
+  "n_points": 1483,
+  "n_elems": 5578,
+  "quality_deg": 7.42,
+  "n_regions": 1,
+  "millis": 477,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "via",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.124,
+  "n_points": 4923,
+  "n_elems": 22064,
+  "quality_deg": 10.97,
+  "n_regions": 1,
+  "millis": 997,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "via",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.08,
+  "n_points": 16485,
+  "n_elems": 82815,
+  "quality_deg": 16.09,
+  "n_regions": 1,
+  "millis": 2617,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "nested_spheres",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.16,
+  "n_points": 1828,
+  "n_elems": 8783,
+  "quality_deg": 12.47,
+  "n_regions": 1,
+  "millis": 420,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "nested_spheres",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.0992,
+  "n_points": 6435,
+  "n_elems": 36433,
+  "quality_deg": 14.92,
+  "n_regions": 1,
+  "millis": 1385,
+  "metric": "min dihedral"
+ },
+ {
+  "name": "nested_spheres",
+  "category": "Boolean",
+  "kind": "vol",
+  "h": 0.064,
+  "n_points": 26808,
+  "n_elems": 154811,
+  "quality_deg": 4.45,
+  "n_regions": 1,
+  "millis": 5169,
   "metric": "min dihedral"
  }
 ]

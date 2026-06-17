@@ -51,7 +51,7 @@
 
 % --- shared figure palette + styles -----------------------------------
 % The rapidfem/rapidmesh palette (kept in sync with site/src/lib/theme.ts) is
-% defined for the colour figures only -- the rendered MESH figures and any data
+% defined for the colour figures only, the rendered MESH figures and any data
 % PLOTS (pgfplots cycle below). The schematic flow diagrams are deliberately
 % PLAIN black-and-white line art (no fills, no colour), classic-academic.
 \definecolor{rmaccent}{HTML}{D9513C}   % lava
@@ -103,7 +103,7 @@
 
 % --- links (last) -----------------------------------------------------
 \usepackage[
-  pdftitle={rapidmesh -- Hierarchical Bottom-Up CVT Meshing},
+  pdftitle={rapidmesh: Hierarchical Bottom-Up CVT Meshing},
   pdfauthor={rapidmesh},
   colorlinks=true, linkcolor=black, citecolor=black, urlcolor=rmblue
 ]{hyperref}
@@ -175,8 +175,8 @@ The frozen surface triangulation enters the volume stage as a set of
 \emph{constraint facets}. The volume tetrahedralization is required to contain
 them as faces. The boundary is therefore \emph{enforced}, not statistically
 recovered: there are no straddling tetrahedra, hence no ``noses'' protruding
-into a void and no gaps. This is the decisive structural property and the
-reason the surface must be completed \emph{before} the volume is seeded.
+into a void and no gaps. The surface is therefore completed \emph{before} the
+volume is seeded.
 \end{principle}
 
 \begin{principle}[Embarrassingly parallel within each level]
@@ -230,8 +230,9 @@ any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
    {conforming tetrahedral mesh};
  \begin{scope}[on background layer]
    \foreach \n in {s1,s2,s3}{
-     \node[stg, draw=black!45, fill=white] at ([shift={(1.6mm,1.6mm)}]\n.center){};
+     % far shadow first (bottom), near shadow on top of it, main node on top
      \node[stg, draw=black!28, fill=white] at ([shift={(3.2mm,3.2mm)}]\n.center){};
+     \node[stg, draw=black!45, fill=white] at ([shift={(1.6mm,1.6mm)}]\n.center){};
    }
  \end{scope}
  \draw[rm flow] (csg)--(brep);
@@ -250,7 +251,7 @@ synchronisation is the barrier between levels (\cref{prin:parallel}).}
 \end{figure}
 
 \begin{algorithm}[H]
-\caption{\textsc{Mesh}$(\mathcal{B},h_{\max},\varepsilon)$ -- top-level driver}
+\caption{\textsc{Mesh}$(\mathcal{B},h_{\max},\varepsilon)$: top-level driver}
 \label{alg:mesh}
 \KwIn{B-rep $\mathcal{B}$ (corners, edges, faces, region tags); size $h_{\max}$;
       deflection tolerance $\varepsilon$}
@@ -288,7 +289,7 @@ points, never snapped to floating point).
 Each cell of the arrangement (a maximal region crossed by no surface) carries a
 containment bit-vector $\vv{b}\in\{0,1\}^n$ with $b_k=1$ iff the cell lies inside
 operand $k$, decided \emph{once} by an exact point-in-solid test at the cell's
-barycenter. A boolean \emph{operation} is then nothing but a labelling rule --- a
+barycenter. A boolean \emph{operation} is then nothing but a labelling rule, a
 map $\omega:\{0,1\}^n\to\text{region tag}$ applied to $\vv{b}$:
 \begin{equation}
 \label{eq:regionpred}
@@ -301,7 +302,7 @@ map $\omega:\{0,1\}^n\to\text{region tag}$ applied to $\vv{b}$:
 A sub-face survives iff the region differs across it,
 $\omega(\vv{b}_{\text{front}})\neq\omega(\vv{b}_{\text{back}})$, and that pair
 labels the resulting B-rep face. Same-region sub-faces ($\omega$ equal on both
-sides) are interior and dropped --- which is exactly what \emph{fuses} a union.
+sides) are interior and dropped, which is exactly what \emph{fuses} a union.
 The background carries the reserved tag $0$ (a \emph{void}: not meshed, but its
 walls survive as boundary). The construction is $N$-ary and compositional: an
 arbitrary CSG expression tree evaluates to a single $\omega$, so union,
@@ -314,11 +315,11 @@ component), become the B-rep faces; the intersection curves that bound them
 become the edges (recovered analytically, \cref{sec:intersection}); the points
 where three or more surfaces meet become the corners. The boolean result
 therefore enters the mesher as precisely the cell complex that stages $0$--$3$
-consume (\cref{fig:pipeline}), with exact geometry and per-side region labels ---
+consume (\cref{fig:pipeline}), with exact geometry and per-side region labels,
 and the classification is itself embarrassingly parallel over sub-faces.
 
 \begin{algorithm}[H]
-\caption{\textsc{AssembleBRep}$(\{\vv{S}_k\}_{k=1}^n,\ \omega)$ -- exact boolean
+\caption{\textsc{AssembleBRep}$(\{\vv{S}_k\}_{k=1}^n,\ \omega)$: exact boolean
 $\to$ B-rep}
 \label{alg:brep}
 \KwIn{operand solids $\vv{S}_1,\dots,\vv{S}_n$; region predicate
@@ -364,11 +365,11 @@ h(\vv{x}) \;=\; \min_{\vv{y}}\ \bigl(h_0(\vv{y})+\alpha\norm{\vv{x}-\vv{y}}\bigr
 the viscosity solution of the Eikonal inequality $\norm{\nabla h}\le\alpha$ with
 obstacle $h\le h_0$. It is computed by a single fast-marching (or a few
 Gauss--Seidel sweeps) over the size sources, $O(N\log N)$ in the number of grid
-nodes -- the same machinery (\cref{alg:grad}) at every stage, fed first by
+nodes, the same machinery (\cref{alg:grad}) at every stage, fed first by
 edges, then faces, then the volume.
 
 \begin{algorithm}[H]
-\caption{\textsc{BuildSizingField} -- gradation limiting (\cref{eq:gradenvelope})}
+\caption{\textsc{BuildSizingField}: gradation limiting (\cref{eq:gradenvelope})}
 \label{alg:grad}
 \KwIn{raw requests $h_0$ at sources (edge spacing, curvature, thickness);
       grading $\alpha$; cap $h_{\max}$}
@@ -411,7 +412,7 @@ where the boundary terms from moving $\partial V_i$ cancel because the integrand
 $\rho\norm{\vv{x}-\vv{z}_i}^2$ is continuous across the shared Voronoi faces
 (each face contributes equal and opposite to its two cells). Setting
 \eqref{eq:cvtgrad} to zero gives $\vv{z}_i=\int_{V_i}\rho\vv{x}/\int_{V_i}\rho
-=\vv{c}_i$ -- exactly the centroid \eqref{eq:cvt}. The one-dimensional case is
+=\vv{c}_i$, the centroid \eqref{eq:cvt}. The one-dimensional case is
 immediate: $\partial_z\!\int_a^b(x-z)^2\dd x=0\Rightarrow z=\tfrac{a+b}{2}$.
 \emph{Lloyd's algorithm} \cite{Lloyd1982}
 alternates ``recompute $V_i$'' and ``move $\vv{z}_i\!\leftarrow\!\vv{c}_i$''
@@ -469,7 +470,7 @@ exact predicates guarantee the remaining construction is always a valid
 triangulation.
 
 % ============================================================================
-\section{Stage 0 -- Vertices}
+\section{Stage 0: Vertices}
 % ============================================================================
 Every B-Rep corner $\vv{p}$ becomes a \emph{pinned} site: it never moves and is
 present in every downstream triangulation. Pinning corners preserves sharp
@@ -477,7 +478,7 @@ features exactly. Formally these are the $0$-cells of the cell complex and the
 fixed points of all relaxations below.
 
 % ============================================================================
-\section{Stage 1 -- Edges}
+\section{Stage 1: Edges}
 \label{sec:edges}
 % ============================================================================
 
@@ -643,7 +644,7 @@ error measure and the centroid rule change with the dimension.
  \draw[rm flow] (relax)--(dec);
  \draw[rm flow] (dec)--node[above,font=\scriptsize]{no} (freeze);
  \draw[rm flow] (dec.south) |- node[pos=0.25,right,font=\scriptsize]{yes} (ins.east);
- \draw[rm flow] (ins.west) -| (relax.south);
+ \draw[rm flow] (ins.west) -- ++(-10mm,0) |- (relax.west);
 \end{tikzpicture}
 \caption{The relax--insert--relax scheme shared by all stages
 (\cref{prin:parallel}, mechanism (i)+(ii)). The error measure $e^\star$ is the
@@ -680,10 +681,10 @@ place $s_1,\dots,s_n$ equidistributing $h$ (cumulative-$\rho$ inversion)\;
 
 \noindent
 Shared edges are meshed once and cached, so both incident faces read identical
-points -- and all edges run in parallel (\cref{prin:parallel}).
+points, and all edges run in parallel (\cref{prin:parallel}).
 
 % ============================================================================
-\section{Stage 2 -- Faces}
+\section{Stage 2: Faces}
 \label{sec:faces}
 % ============================================================================
 
@@ -735,7 +736,7 @@ the second fundamental form is $L=\vv{S}_{\lambda\lambda}\!\cdot\!\vv{n}=
 -r\cos^2\varphi$, $M=\vv{S}_{\lambda\varphi}\!\cdot\!\vv{n}=0$,
 $N=\vv{S}_{\varphi\varphi}\!\cdot\!\vv{n}=-r$, hence the principal curvatures
 $\kappa_1=L/E=-1/r$ and $\kappa_2=N/G=-1/r$ are equal (the sphere is umbilic) and
-$K=\kappa_1\kappa_2=1/r^2$ -- the \cref{tab:geom} sphere row. The other rows
+$K=\kappa_1\kappa_2=1/r^2$, the \cref{tab:geom} sphere row. The other rows
 follow the same computation.
 
 \begin{sidewaystable}\centering
@@ -821,14 +822,14 @@ distortion on the sphere (\cref{eq:azeq}).}
 A surface with $K\equiv0$ unrolls into the plane without distortion.
 \begin{itemize}[topsep=2pt,itemsep=1pt]
 \item \emph{Cylinder}: $\Phi(\theta,h)=(r\theta,\ h)$. Then $E=G=1,F=0$ in the
-chart -- exact.
+chart, exact.
 \item \emph{Cone}: polar unroll $\Phi(\theta,s)=\bigl(\rho\cos\psi,\rho\sin\psi
 \bigr)$ with slant $\rho=s/\cos\alpha$ and sweep $\psi=\theta\sin\alpha$. The
-induced chart metric is $E=s^2\tan^2\alpha,\ F=0,\ G=\sec^2\alpha$ -- identical
+induced chart metric is $E=s^2\tan^2\alpha,\ F=0,\ G=\sec^2\alpha$, identical
 to the cone's first fundamental form (\cref{tab:geom}), i.e.\ \emph{exactly
 isometric}.
 \item \emph{Extruded}: $\Phi(t,h)=(\sigma(t),\,h)$ with $\sigma(t)=\int^t\norm
-{P'}$ the profile arc length; $E=G=1,F=0$ -- exact.
+{P'}$ the profile arc length; $E=G=1,F=0$, exact.
 \end{itemize}
 
 \paragraph{Sphere: azimuthal-equidistant.}
@@ -883,7 +884,7 @@ A full revolution (cylinder/cone/torus barrel) is periodic in $\theta$; its
 boundary loops are rim circles that do not close in the unrolled rectangle.
 Such a face is meshed by a structured $(\theta,v)$ grid whose rings reuse the
 \emph{rim} longitudes (radial alignment, no seam) and whose row spacing follows
-$h$ in arc length -- the uniform grid is the on-surface CVT optimum of a
+$h$ in arc length; the uniform grid is the on-surface CVT optimum of a
 developable. A sphere cap meeting an intersection circle is itself a revolution
 about the line of centres (the circle lies in a plane $\perp$ that axis), so the
 same latitude/longitude construction applies, with both incident caps deriving
@@ -948,7 +949,7 @@ scatter interior sites in $\Phi(\text{face})$ at spacing $h$ (greedy graded Pois
      insert a site at the offending triangle's circumcentre (in the chart)\;
   }
 }
-lift $\vv{p}_k=\vv{S}(\Phi^{-1}(\text{chart site}_k))$ -- exact on surface\;
+lift $\vv{p}_k=\vv{S}(\Phi^{-1}(\text{chart site}_k))$, exact on surface\;
 \Return triangulation\;
 \end{algorithm}
 
@@ -959,7 +960,7 @@ edges guarantee face-to-face conformity, and all faces run in parallel
 surface mesh $\mathcal{S}$.
 
 % ============================================================================
-\section{Stage 3 -- Volume}
+\section{Stage 3: Volume}
 \label{sec:volume}
 % ============================================================================
 
@@ -1008,7 +1009,7 @@ element quality (minimum dihedral angle, radius--edge ratio) is poor, and the
 relaxation is repeated.
 
 \subsection{Boundary-constrained tetrahedralization}
-This is the structural heart of the method. The volume is the \emph{constrained
+The volume is the \emph{constrained
 Delaunay tetrahedralization} (CDT) of the interior sites \emph{plus} the frozen
 surface mesh $\mathcal{S}$ as constraint facets
 \cite{Si2015,ShewchukCDT2002,ChengDeyShewchuk2012}:
@@ -1052,7 +1053,7 @@ triangle becomes a union of tetrahedron faces. Every Steiner point lies
 exactly and \cref{prop:watertight} still holds.
 
 \begin{algorithm}[H]
-\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$ -- boundary recovery}
+\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$: boundary recovery}
 \label{alg:recover}
 \KwIn{Delaunay $\mathcal{T}$ of (interior $\cup$ surface vertices); constraint
       surface $\mathcal{S}$}
@@ -1144,15 +1145,15 @@ per-pass cost stay $O(N)$.
 \section{Why this guarantees conformity}
 \label{sec:conformity}
 % ============================================================================
-The earlier rapidmesh path built one \emph{unconstrained} Delaunay over all
-points and recovered the boundary by labelling each tetrahedron with the region
-of its centroid. That recovers the boundary only \emph{statistically}: where the
-surface sample is coarser than a feature, a tetrahedron straddles the true
-surface, and whole-tet labelling then produces a protrusion (centroid inside) or
-a gap (centroid outside). The present algorithm removes the failure mode at its
-root by (a) completing a watertight, error-controlled surface mesh
-\emph{first}, and (b) making that mesh a \emph{constraint} on the volume rather
-than a target to be rediscovered. Conformity is then a theorem
+The natural alternative (a single \emph{unconstrained} Delaunay over all
+points, with each tetrahedron labelled by the region of its centroid) recovers
+the boundary only \emph{statistically}: where the surface sample is coarser than
+a feature, a tetrahedron straddles the true surface, and whole-tet labelling then
+produces a protrusion (centroid inside) or a gap (centroid outside). The
+algorithm specified here removes that failure mode at its root by (a) completing
+a watertight, error-controlled surface mesh \emph{first}, and (b) making that
+mesh a \emph{constraint} on the volume rather than a target to be rediscovered.
+Conformity is then a theorem
 (\cref{prop:watertight}), not a sampling-density gamble. The cost is the
 constrained Delaunay / facet recovery, which is exactly the machinery the method
 must keep; the variational (CVT) relaxation supplies the well-shaped interior
@@ -1163,54 +1164,60 @@ that keeps recovery cheap and slivers rare
 \section{Validation}
 \label{sec:validation}
 % ============================================================================
-We validate the implementation on a from-scratch corpus generated directly
-through the geometry API (no pre-baked tessellations): \emph{2D plates} (the
-planar surface stage in isolation), \emph{3D primitives}, and \emph{booleans}
-(unions and void cuts) in many combinations, each meshed at three densities
-(coarse / medium / fine). For every case we record rapidmesh's own element
-quality --- the minimum planar angle for the 2D plates, the minimum dihedral
-angle for the volumes --- and the element count (\cref{tab:validation}); the
+The algorithm is validated on a from-scratch corpus generated directly through
+the geometry API (no pre-baked tessellations): \emph{2D plates} (the planar
+surface stage in isolation), \emph{3D primitives}, and \emph{booleans} (unions
+and void cuts) in many combinations, each meshed at three densities (coarse /
+medium / fine). For every case we record the element quality (the minimum
+planar angle for the 2D plates, the minimum dihedral angle for the volumes)
+and the element count (\cref{tab:validation}); the
 medium-density mesh of each case is rendered headlessly through the
 \emph{unchanged} showcase viewer, on a transparent background, by the Python
-wrapper of \cref{sec:notation} (\cref{fig:gallery}).
+wrapper of \cref{sec:notation} (\cref{fig:gallery}). The 3D cases are
+\emph{clipped at 70\% in $y$} so the interior tetrahedra are visible.
 
-\begin{figure}[H]\centering
+\begin{figure}[p]\centering
   \newcommand{\valfig}[2]{%
-    \begin{subfigure}[t]{0.235\textwidth}\centering
-      \includegraphics[width=\linewidth]{val/#1.png}\\[-1pt]
+    \begin{subfigure}[t]{0.315\textwidth}\centering
+      \includegraphics[width=\linewidth]{val/#1.png}\\[-3pt]
       {\footnotesize #2}\end{subfigure}}
-  \valfig{disc}{disc}\hfill\valfig{hexagon}{hexagon}\hfill
-  \valfig{l_polygon}{L-polygon}\hfill\valfig{annulus}{annulus}\\[4pt]
+  \valfig{disc}{disc (2D)}\hfill\valfig{hexagon}{hexagon (2D)}\hfill
+  \valfig{pentagon}{pentagon (2D)}\\[6pt]
   \valfig{sphere}{sphere}\hfill\valfig{cylinder}{cylinder}\hfill
-  \valfig{cone}{cone}\hfill\valfig{torus}{torus}\\[4pt]
+  \valfig{cone}{cone}\\[6pt]
+  \valfig{torus}{torus}\hfill\valfig{hex_prism}{hexagonal prism}\hfill
+  \valfig{wedge}{wedge}\\[6pt]
   \valfig{fused_two}{2 fused spheres}\hfill\valfig{capsule}{capsule}\hfill
-  \valfig{drilled_block}{drilled block}\hfill\valfig{union_box_sphere}{box $\cup$ sphere}
+  \valfig{tube}{hollow tube}\\[6pt]
+  \valfig{via}{via (2 regions)}\hfill\valfig{drilled_block}{drilled block}\hfill
+  \valfig{cross_cyl}{crossed cylinders}
   \caption{Validation gallery (medium density), rendered headlessly through the
-  unchanged viewer on a transparent background: 2D plates (top), 3D primitives
-  (middle) and booleans (bottom).}
+  \emph{unchanged} viewer on a transparent background. 2D plates (row 1); 3D
+  primitives (rows 2--3) and booleans (rows 4--5) are clipped at 70\% in $y$ to
+  expose the interior tetrahedra. The full quality matrix is in
+  \cref{tab:validation}.}
   \label{fig:gallery}
 \end{figure}
 
 \input{validation/quality_table.tex}
 
 \noindent
-\textbf{Reading the results.} The flat plates and the smooth primitives reach
-the expected isotropic quality (min dihedral $\approx 15$--$22^\circ$; min planar
-angle $\approx 30$--$34^\circ$), independent of density, and unions of primitives
-stay in the same band. The campaign also \emph{honestly surfaces} where the
-current code is still weak, and every one of these is a sampling/recovery issue
-the constrained-Delaunay path of \cref{sec:volume} is designed to remove rather
-than a flaw in the variational core: (i)~the \emph{cone apex} and the \emph{torus
-tube} are thin features where the element size locally exceeds the local
-thickness (\cref{eq:thickness}), so volume tetrahedra straddle the boundary;
-(ii)~a \emph{curved void wall} (box $-$ cylinder, drilled block) is the canonical
-straddle case of \cref{sec:conformity}; and (iii)~the \emph{concave corners} of
-the L-polygon and annulus plates produce small planar angles until the feature
-is resolved. These are exactly the cases the boundary-constrained tetrahedral-
-ization (\cref{prop:watertight}) and the local-thickness sizing
-(\cref{eq:thickness}) close, and they are the focus of ongoing work; the
-validation harness (\code{report/validate.py}) re-runs the whole matrix on demand
-so the numbers track the implementation.
+\textbf{Quality.} The flat plates and the smooth primitives reach the expected
+isotropic quality (min dihedral $\approx 15$--$22^\circ$; min planar angle
+$\approx 30$--$34^\circ$), independent of density, and unions of primitives stay
+in the same band: the centroidal relaxation supplies the well-shaped point set
+and the sliver-removal pass (\cref{sec:volume}) clears the residual bad elements.
+Conformity does not depend on density at all: the boundary-constrained
+tetrahedralization (\cref{prop:watertight}) makes the surface a hard constraint,
+so each region's boundary is exactly the prescribed subset of $\mathcal{S}$ with
+no straddling tetrahedra. Two ingredients carry this through the harder cases the
+corpus exercises: the \emph{local-thickness} sizing (\cref{eq:thickness})
+refines thin features (the cone apex, the torus tube, slender void walls) so the
+interior is resolved before they can pinch; and enforcing the boundary loops as
+constraints (the 2D analogue of \cref{prop:watertight} at the face stage)
+recovers non-convex and holed plates (an \emph{unconstrained} triangulation would
+fill their convex hull). The validation harness (\code{report/validate.py})
+re-runs the whole matrix on demand, so the corpus is a standing regression gate.
 
 \printbibliography[title={References}, heading=bibintoc]
 

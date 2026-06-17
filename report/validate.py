@@ -41,6 +41,24 @@ def _hexagon(r=1.0):
 _LPOLY = [(0, 0), (2, 0), (2, 0.7), (0.7, 0.7), (0.7, 2), (0, 2)]
 _RING_OUT = [(1.2 * math.cos(k * math.pi / 12), 1.2 * math.sin(k * math.pi / 12)) for k in range(24)]
 _RING_IN = [(0.55 * math.cos(-k * math.pi / 12), 0.55 * math.sin(-k * math.pi / 12)) for k in range(24)]
+_TRI = [(0.0, 0.0), (2.0, 0.0), (1.0, 1.7)]
+
+
+def _ngon(n, r=1.1, rot=0.0):
+    return [(r * math.cos(rot + 2 * math.pi * k / n), r * math.sin(rot + 2 * math.pi * k / n)) for k in range(n)]
+
+
+def _star(n=5, ro=1.2, ri=0.5):
+    pts = []
+    for k in range(2 * n):
+        rr = ro if k % 2 == 0 else ri
+        a = math.pi / 2 + math.pi * k / n
+        pts.append((rr * math.cos(a), rr * math.sin(a)))
+    return pts
+
+
+_SQ_OUT = [(-1.1, -1.1), (1.1, -1.1), (1.1, 1.1), (-1.1, 1.1)]
+_SQ_IN = [(0.45, -0.45), (0.45, 0.45), (-0.45, 0.45), (-0.45, -0.45)]  # CW hole
 
 # (name, category, kind, base_h, builder)
 CASES = [
@@ -90,6 +108,44 @@ CASES = [
         lambda g, h: (g.box(2, 2, 1, position=(-1, -1, -0.5)),
                       g.cylinder(0.3, 1.4, position=(-0.5, -0.5, -0.7), segments=28, void=True),
                       g.cylinder(0.3, 1.4, position=(0.5, 0.5, -0.7), segments=28, void=True))),
+    # --- more 2D plates ----------------------------------------------------
+    ("triangle",  "2D", "surf", 0.14, lambda g, h: g.polygon_plate(_TRI, maxh=h)),
+    ("pentagon",  "2D", "surf", 0.15, lambda g, h: g.polygon_plate(_ngon(5, 1.1), maxh=h)),
+    ("star",      "2D", "surf", 0.12, lambda g, h: g.polygon_plate(_star(5, 1.2, 0.5), maxh=h)),
+    ("square_hole", "2D", "surf", 0.12, lambda g, h: g.polygon_plate(_SQ_OUT, holes=[_SQ_IN], maxh=h)),
+    # --- more 3D primitives ------------------------------------------------
+    ("slab",      "Primitive", "vol", 0.18, lambda g, h: g.box(2.2, 1.6, 0.35, position=(-1.1, -0.8, -0.175))),
+    ("hex_prism", "Primitive", "vol", 0.16, lambda g, h: g.prism(_ngon(6, 1.0), 0.8, position=(0, 0, -0.4))),
+    ("tri_prism", "Primitive", "vol", 0.16, lambda g, h: g.prism(_TRI, 0.8, position=(-1, -0.6, -0.4))),
+    ("star_prism", "Primitive", "vol", 0.12, lambda g, h: g.prism(_star(5, 1.1, 0.45), 0.6, position=(0, 0, -0.3))),
+    ("ellipsoidish", "Primitive", "vol", 0.16,
+        lambda g, h: g.cone(0.9, 0.9, 1.4, position=(0, 0, -0.7), segments=40)),  # straight cylinder via cone r1=r2
+    # --- more booleans -----------------------------------------------------
+    ("tube", "Boolean", "vol", 0.16,
+        lambda g, h: (g.cylinder(0.9, 1.4, position=(0, 0, -0.7), segments=44, uniform=True),
+                      g.cylinder(0.5, 1.6, position=(0, 0, -0.8), segments=36, void=True))),
+    ("fused_deep", "Boolean", "vol", 0.16,
+        lambda g, h: g.union(g.icosphere(0.8, position=(-0.3, 0, 0), subdivisions=3),
+                             g.icosphere(0.8, position=(0.3, 0, 0), subdivisions=3))),
+    ("fused_unequal", "Boolean", "vol", 0.16,
+        lambda g, h: g.union(g.icosphere(0.85, position=(-0.35, 0, 0), subdivisions=3),
+                             g.icosphere(0.5, position=(0.55, 0, 0), subdivisions=3))),
+    ("sphere_minus_box", "Boolean", "vol", 0.16,
+        lambda g, h: (g.icosphere(1.0, subdivisions=3),
+                      g.box(0.7, 2.4, 2.4, position=(-0.35, -1.2, -1.2), void=True))),
+    ("box_minus_2sph", "Boolean", "vol", 0.18,
+        lambda g, h: (g.box(2, 1.4, 1.4, position=(-1, -0.7, -0.7)),
+                      g.icosphere(0.55, position=(-0.6, 0, 0), subdivisions=3, void=True),
+                      g.icosphere(0.55, position=(0.6, 0, 0), subdivisions=3, void=True))),
+    ("cross_cyl", "Boolean", "vol", 0.16,
+        lambda g, h: g.union(g.cylinder(0.4, 2.2, position=(0, 0, -1.1), segments=36, uniform=True),
+                             g.cylinder(0.4, 2.2, position=(0, -1.1, 0), axis=(0, 1, 0), segments=36, uniform=True))),
+    ("via", "Boolean", "vol", 0.2,
+        lambda g, h: (g.box(2, 2, 1, position=(-1, -1, -0.5)),
+                      g.cylinder(0.3, 1.4, position=(0, 0, -0.7), segments=28, uniform=True))),
+    ("nested_spheres", "Boolean", "vol", 0.16,
+        lambda g, h: (g.icosphere(1.0, subdivisions=3),
+                      g.icosphere(0.55, subdivisions=3))),
 ]
 
 DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)
@@ -173,8 +229,14 @@ def run(quick: bool = False) -> list[dict]:
                     mp = MESHES / f"{name}.json"
                     mp.write_text(json.dumps(vd))
                     try:
-                        render(str(mp), str(FIGS / f"{name}.png"),
-                               azim=32, elev=22, width=1000, height=750)
+                        if kind == "vol":
+                            # 3D: clip at 70% in y to reveal the interior tets
+                            render(str(mp), str(FIGS / f"{name}.png"), azim=32,
+                                   elev=18, clip=0.7, clip_axis=1, edges=True,
+                                   width=1000, height=820)
+                        else:
+                            render(str(mp), str(FIGS / f"{name}.png"), azim=30,
+                                   elev=24, edges=False, width=1000, height=820)
                     except Exception as e:
                         print(f"    render FAILED {name}: {e}")
             except Exception as e:

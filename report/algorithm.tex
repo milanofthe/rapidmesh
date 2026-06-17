@@ -50,39 +50,36 @@
 \pgfplotsset{compat=1.18}
 
 % --- shared figure palette + styles -----------------------------------
-% One visual language across every diagram and plot, the rapidfem/rapidmesh
-% palette (kept in sync with site/src/lib/theme.ts), mapped to the same
-% semantic roles the SANE figures use: state = blue, parameter = green,
-% operator = grey, output/boundary = lava-red, decision = olive; amber is
-% reserved for emphasis only (never a category). Colours appear ONLY in
-% figures and plots; the body is classic black.
-\definecolor{rmaccent}{HTML}{D9513C}   % lava  -> output / boundary
-\definecolor{rmamber}{HTML}{E8944A}    % amber -> emphasis / highlight
-\definecolor{rmgreen}{HTML}{6BBF8A}    % green -> parameter
-\definecolor{rmpurple}{HTML}{7B5E8A}   % purple-> spare category
-\definecolor{rmblue}{HTML}{4A9EC2}     % blue  -> state
-\definecolor{rmolive}{HTML}{C4C46B}    % olive -> decision
-\definecolor{rmop}{HTML}{8A8A8A}       % grey  -> operator border
-\definecolor{rmopF}{HTML}{E0E0E0}      % grey  -> operator fill
+% The rapidfem/rapidmesh palette (kept in sync with site/src/lib/theme.ts) is
+% defined for the colour figures only -- the rendered MESH figures and any data
+% PLOTS (pgfplots cycle below). The schematic flow diagrams are deliberately
+% PLAIN black-and-white line art (no fills, no colour), classic-academic.
+\definecolor{rmaccent}{HTML}{D9513C}   % lava
+\definecolor{rmamber}{HTML}{E8944A}    % amber
+\definecolor{rmgreen}{HTML}{6BBF8A}    % green
+\definecolor{rmpurple}{HTML}{7B5E8A}   % purple
+\definecolor{rmblue}{HTML}{4A9EC2}     % blue
+\definecolor{rmolive}{HTML}{C4C46B}    % olive
 \pgfplotscreateplotcyclelist{rm}{%
   {rmaccent},{rmamber},{rmgreen},{rmpurple},{rmblue},{rmolive}}
+% Plain black-and-white diagram styles (white fill, black stroke, black text).
 \tikzset{
   >={Stealth[length=4.5pt]},
-  rm edge/.style={draw=rmop, ->, line width=0.7pt},
-  rm flow/.style={draw=rmop, ->, line width=1.0pt},
-  rm op/.style={draw=rmop, fill=rmopF, circle, minimum size=7mm, inner sep=1pt,
-    font=\small, line width=0.7pt},
-  rm state/.style={draw=rmblue, fill=rmblue!20, rounded corners=2pt, inner sep=3pt,
-    font=\small, line width=0.7pt},
-  rm param/.style={draw=rmgreen, fill=rmgreen!22, rounded corners=2pt, inner sep=3pt,
-    font=\small, line width=0.7pt},
-  rm sel/.style={draw=rmolive, fill=rmolive!32, diamond, aspect=1.7, inner sep=1pt,
-    font=\footnotesize, line width=0.7pt},
-  rm stage/.style={draw=rmblue, fill=rmblue!16, rounded corners=3pt, align=center,
-    font=\small, minimum height=10mm, text width=24mm, line width=0.8pt},
-  rm out/.style={draw=rmaccent, fill=rmaccent!18, rounded corners=3pt, align=center,
-    font=\small, minimum height=10mm, text width=24mm, line width=0.8pt},
-  rm hi/.style={draw=rmamber, line width=1pt},
+  rm edge/.style={draw=black, ->, line width=0.6pt},
+  rm flow/.style={draw=black, ->, line width=0.8pt},
+  rm op/.style={draw=black, fill=white, circle, minimum size=7mm, inner sep=1pt,
+    font=\small, line width=0.6pt},
+  rm state/.style={draw=black, fill=white, rounded corners=2pt, inner sep=3pt,
+    font=\small, line width=0.6pt},
+  rm param/.style={draw=black, fill=white, rounded corners=2pt, inner sep=3pt,
+    font=\small, line width=0.6pt},
+  rm sel/.style={draw=black, fill=white, diamond, aspect=2, inner sep=1pt,
+    font=\footnotesize, line width=0.6pt},
+  rm stage/.style={draw=black, fill=white, rounded corners=3pt, align=center,
+    font=\small, minimum height=10mm, text width=24mm, line width=0.7pt},
+  rm out/.style={draw=black, fill=white, rounded corners=3pt, align=center,
+    font=\small, minimum height=10mm, text width=24mm, line width=0.7pt},
+  rm hi/.style={draw=black, line width=1pt},
 }
 
 % --- macros -----------------------------------------------------------
@@ -214,11 +211,11 @@ any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
 \begin{figure}[H]\centering
 \begin{tikzpicture}[font=\small, node distance=5.5mm,
    stg/.style={rm stage, text width=58mm, align=center},
-   pre/.style={draw=rmop, fill=rmop!18, rounded corners=3pt, text width=58mm,
-     align=center, minimum height=9mm, font=\small, line width=0.8pt}]
+   pre/.style={draw=black, fill=white, rounded corners=3pt, text width=58mm,
+     align=center, minimum height=9mm, font=\small, line width=0.7pt}]
  \node[pre] (csg) {exact CSG arrangement $+$ region predicate \\ (\emph{booleans})};
  \node[pre, below=of csg] (brep) {B-Rep: vertices $\cdot$ edges $\cdot$ faces $\cdot$ region tags};
- \node[stg, below=of brep, fill=rmop!18, draw=rmop] (s0)
+ \node[stg, below=of brep] (s0)
    {\textbf{Stage 0} — corners (pinned)};
  \node[stg, below=7mm of s0] (s1)
    {\textbf{Stage 1} — all \emph{edges} in parallel\\[1pt]
@@ -233,8 +230,8 @@ any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
    {conforming tetrahedral mesh};
  \begin{scope}[on background layer]
    \foreach \n in {s1,s2,s3}{
-     \node[stg, draw=rmblue!55, fill=rmblue!9] at ([shift={(1.6mm,1.6mm)}]\n.center){};
-     \node[stg, draw=rmblue!35, fill=rmblue!5] at ([shift={(3.2mm,3.2mm)}]\n.center){};
+     \node[stg, draw=black!45, fill=white] at ([shift={(1.6mm,1.6mm)}]\n.center){};
+     \node[stg, draw=black!28, fill=white] at ([shift={(3.2mm,3.2mm)}]\n.center){};
    }
  \end{scope}
  \draw[rm flow] (csg)--(brep);

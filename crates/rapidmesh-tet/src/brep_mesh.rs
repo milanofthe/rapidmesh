@@ -263,6 +263,11 @@ pub struct SurfaceSites {
     /// Per site: the B-rep face it tiles, or `u32::MAX` for a shared corner/edge
     /// point (which defers its output tag to an interior face point).
     pub point_tile: Vec<u32>,
+    /// Per site: the local target edge length it was generated at (the per-entity
+    /// `edge_maxh`/`surf_maxh` resolution). The volume stage uses this as the
+    /// point's `point_size` so the quality post-pass does NOT coarsen an
+    /// intentionally refined edge/face back to the bulk size.
+    pub point_size: Vec<f64>,
     /// Per B-rep face: `(originating plc surface index, face tag)` for output.
     pub tiles: Vec<(u32, FaceTag)>,
     /// Number of pinned corner points (the `plc_points` count).
@@ -398,11 +403,13 @@ pub fn surface_sites(
     let h_at = |p: V3| domain.h_at(p).max(1e-9);
     let mut sites: Vec<Site> = Vec::new();
     let mut point_tile: Vec<u32> = Vec::new();
+    let mut point_size: Vec<f64> = Vec::new();
 
     // ---- stage 1a: corners (pinned) -------------------------------------
     for v in &brep.vertices {
         sites.push(Site::vertex(v.pos));
         point_tile.push(u32::MAX);
+        point_size.push(f64::INFINITY); // pinned; no local coarsening target
     }
     let plc_points = sites.len();
 
@@ -447,9 +454,11 @@ pub fn surface_sites(
                 None => edge.chain.clone(),
             }
         };
+        let esz = params.edge_maxh_for(ei);
         for &p in pts3.iter().take(pts3.len().saturating_sub(1)).skip(1) {
             sites.push(Site::vertex(p));
             point_tile.push(u32::MAX);
+            point_size.push(esz);
         }
         edge_pts.push(pts3);
     }
@@ -494,6 +503,7 @@ pub fn surface_sites(
                 for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
                     sites.push(Site::on_surface(kind.clone(), p));
                     point_tile.push(fid as u32);
+                point_size.push(params.surf_maxh_for(fid));
                 }
                 continue;
             }
@@ -507,6 +517,7 @@ pub fn surface_sites(
                     if seen.insert(bits(p)) {
                         sites.push(Site::vertex(p));
                         point_tile.push(fid as u32);
+                point_size.push(params.surf_maxh_for(fid));
                     }
                 }
             }
@@ -557,6 +568,7 @@ pub fn surface_sites(
             for q in interior {
                 sites.push(Site::on_plane(o, n, surf.eval_uv(q)));
                 point_tile.push(fid as u32);
+                point_size.push(params.surf_maxh_for(fid));
             }
         } else {
             // non-planar, non-structured (trimmed NURBS): dart-seed fallback.
@@ -569,12 +581,13 @@ pub fn surface_sites(
             for p in fill_face_points(surf, &face.facets, plc, &boundary, &target, fid as u64) {
                 sites.push(Site::on_surface(plc.surfaces[face.plc_surface as usize].clone(), p));
                 point_tile.push(fid as u32);
+                point_size.push(params.surf_maxh_for(fid));
             }
         }
     }
 
     let n_surf = sites.len();
-    SurfaceSites { sites, n_surf, point_tile, tiles, plc_points }
+    SurfaceSites { sites, n_surf, point_tile, point_size, tiles, plc_points }
 }
 
 #[cfg(test)]

@@ -596,6 +596,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let ss = crate::brep_mesh::surface_sites(&brep, plc, params, &domain);
     let mut sites = ss.sites;
     let mut point_tile = ss.point_tile;
+    let surf_point_size = ss.point_size; // per-surface-point generation size
     let tiles = ss.tiles;
     let plc_points = ss.plc_points;
 
@@ -614,8 +615,13 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // the exact PLC boundary (conformity). Sampling `H` at the surface points and
     // gradient-limiting reproduces the field for the volume stages.
     let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
-    let vol_sources: Vec<(V3, f64)> =
-        (0..n_surf).map(|i| (surf_pos[i], domain.h_at(surf_pos[i]).max(1e-9))).collect();
+    // Each surface point seeds the volume field at the size it was GENERATED at
+    // (its per-entity edge/face target, finite even where `domain.h_at` is the
+    // coarse bulk): a refined edge keeps a fine field around it, so the quality
+    // post-pass does not coarsen it back.
+    let vol_sources: Vec<(V3, f64)> = (0..n_surf)
+        .map(|i| (surf_pos[i], surf_point_size[i].min(domain.h_at(surf_pos[i])).max(1e-9)))
+        .collect();
     let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.vol_cap());
     // A per-region size cap: `region_maxh` is a region-WIDE size that the surface
     // field (which grows coarse from the boundary inward) does not enforce in the
@@ -925,9 +931,20 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // Per-point local target size (the graded sizing field), so the optimizer
     // coarsens to the LOCAL size, not one region-uniform floor that would erase
-    // curvature-fine detail.
-    let point_size: Vec<f64> =
-        pts.iter().map(|&p| vol_field.at(p).min(region_cap(domain.region_at(p)))).collect();
+    // curvature-fine detail. A surface point keeps its per-entity generation size
+    // (so an intentionally refined edge/face is not coarsened back).
+    let point_size: Vec<f64> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let field = vol_field.at(p).min(region_cap(domain.region_at(p)));
+            if i < n_surf {
+                field.min(surf_point_size[i])
+            } else {
+                field
+            }
+        })
+        .collect();
     let mesh = TetMesh {
         points: pts,
         tets: kept,

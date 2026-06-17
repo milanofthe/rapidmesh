@@ -1129,6 +1129,49 @@ Because each stage only ever lowers $h$ and then re-smooths, the field is
 monotone and Lipschitz, and the element-size contract (a documented
 $1.5\times$ max-edge bound, as in gmsh) holds globally.
 
+\subsection{Error control: two orthogonal axes}
+\label{sec:errctl}
+The user controls the mesh through two \emph{independent} kinds of bound, which
+must not be conflated.
+\begin{description}[topsep=2pt,itemsep=2pt,leftmargin=1.4em]
+\item[Conformity] (exact). The meshed region fills exactly the volume enclosed
+by the frozen surface mesh: there are no straddling tetrahedra
+(\cref{prop:watertight}). This is not a tunable tolerance; it is a structural
+guarantee, verified to machine-rational equality on planar fixtures
+(\cref{sec:validation}). It says nothing about how well the surface mesh
+approximates a \emph{round} geometry.
+\item[Geometric accuracy] (a relative tolerance). How closely the piecewise-linear
+surface follows the true analytic geometry, governed by the deflection bounds
+$\varepsilon_{\text{edge}}=$\code{tol\_edge} and $\varepsilon_{\text{surf}}=$\code{tol\_surf}.
+By \eqref{eq:defl_len}/\eqref{eq:surf_defl} an entity of principal radius $R$ is
+sized $h=R\sqrt{8\varepsilon}$, so the chord deviates by at most $\varepsilon R$
+(\emph{relative}, hence scale-invariant). The default $\varepsilon=10^{-2}$
+($1\%$) is a good engineering mesh; $10^{-4}$ is very fine. A round surface is
+never meshed exactly, so a conformity demand of $10^{-9}$ on a curved body is a
+category error: it is the \emph{fill} that is exact, not the chord.
+\end{description}
+
+\paragraph{Size and tolerance handles.}
+Element size is capped per dimension by \code{maxh\_edge}, \code{maxh\_surf},
+\code{maxh\_vol}, each combined with the global \code{maxh} as the minimum; there
+is no volume \emph{tolerance} (the volume size follows from the surface,
+\cref{sec:volume}). Every bound is settable per individual entity through a
+\emph{hierarchical} handle that mirrors the dimensional hierarchy
+(\cref{prin:parallel}):
+\begin{center}
+\code{g.region(sel).surf(sel).edge(sel).maxh}\quad/\quad\code{.tol}
+\end{center}
+A level addressed without a selector applies to all of its children
+(\code{g.edge().tol} sets every edge, i.e.\ the global \code{tol\_edge};
+\code{g.maxh} sets everything), and a selector (\code{tag}, \code{normal},
+\code{near}, \code{between}) narrows it to specific entities. Resolution is
+most-specific-wins: a per-entity override beats the per-dimension default, which
+beats the global. The selectors are resolved against the B-rep topology (region
+$\to$ faces $\to$ edges, \cref{sec:booleans}), so the same composition that
+structures the algorithm structures its control surface; power users drive local
+refinement (a boundary layer on one face, a fine seam on one edge) without a
+separate selection language.
+
 % ============================================================================
 \section{Complexity and parallel scaling}
 % ============================================================================

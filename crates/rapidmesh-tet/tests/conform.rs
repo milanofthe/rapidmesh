@@ -965,6 +965,7 @@ fn per_edge_maxh_refines_that_edge() {
             .count()
     };
     let coarse = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, ..Default::default() });
-    let fine = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, edge_maxh: vec![(0, 0.5)], ..Default::default() });
-    assert!(near(&fine) > near(&coarse), "per-edge maxh should add points on edge 0: {} -> {}", near(&coarse), near(&fine));
+    let fine = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, edge_maxh: vec![(0, 0.25)], ..Default::default() });
+    // 0.25 on a length-4 edge -> ~16 segments -> >=10 points on it.
+    assert!(near(&fine) >= 10, "per-edge maxh=0.25 should give many points on edge 0: {} -> {}", near(&coarse), near(&fine));
 }

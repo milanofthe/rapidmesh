@@ -9,6 +9,7 @@
 //! boundaries) and surface oversampling, not from exact coordinates.
 
 use crate::project;
+use rapidmesh_exact::Point3;
 use rapidmesh_geom::SurfaceKind;
 
 type V3 = [f64; 3];
@@ -24,6 +25,36 @@ fn scale(a: V3, s: f64) -> V3 {
 }
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+fn norm(a: V3) -> f64 {
+    dot(a, a).sqrt()
+}
+
+/// A deterministic orthonormal in-plane basis `(e1, e2)` for the plane with unit
+/// normal `n`: cross `n` with whichever world axis is least aligned with it
+/// (stable, never near-degenerate). For an axis-aligned plane the basis is the
+/// two world axes in the plane, so a [`Point3::Pac`] built on `o, o+e1, o+e2`
+/// rounds back to coordinates EXACTLY on that plane (the bit-exact planar-volume
+/// guarantee). Used by [`Carrier::exact`].
+fn plane_basis(n: V3) -> (V3, V3) {
+    let a = n[0].abs();
+    let b = n[1].abs();
+    let c = n[2].abs();
+    let axis = if a <= b && a <= c {
+        [1.0, 0.0, 0.0]
+    } else if b <= c {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let mut e1 = cross(n, axis);
+    let l1 = norm(e1);
+    e1 = [e1[0] / l1, e1[1] / l1, e1[2] / l1];
+    let e2 = cross(n, e1); // already unit (n, e1 orthonormal)
+    (e1, e2)
 }
 
 /// One side of a curved feature edge: the analytic geometry a point on the edge
@@ -154,6 +185,46 @@ impl Site {
             self.pos = self.project(tgt);
         }
     }
+
+    /// The EXACT [`Point3`] for this site's current position on its carrier: a
+    /// [`Point3::Lnc`] on a straight edge and a [`Point3::Pac`] on a plane (both
+    /// stay exactly on the carrier, and are closed under Steiner splits, so the
+    /// constrained tetrahedralization keeps the boundary watertight and planar
+    /// region volumes bit-exact). Curved carriers and the volume interior are
+    /// explicit f64 (their exactness is tolerance-based, \cref{sec:conformity}).
+    pub fn exact(&self) -> Point3 {
+        self.carrier.exact(self.pos)
+    }
+}
+
+impl Carrier {
+    /// The exact [`Point3`] at f64 position `pos` on this carrier (see
+    /// [`Site::exact`]). `pos` is assumed already on the carrier (the relaxation
+    /// keeps it there); the construction only chooses the exact representation.
+    pub fn exact(&self, pos: V3) -> Point3 {
+        match self {
+            Carrier::Vertex | Carrier::Volume | Carrier::Surface(_) | Carrier::CurvedEdge { .. } => {
+                Point3::Explicit(pos)
+            }
+            Carrier::Edge { a, b } => {
+                let ab = sub(*b, *a);
+                let t = dot(sub(pos, *a), ab) / dot(ab, ab);
+                Point3::Lnc { a: *a, b: *b, t }
+            }
+            Carrier::Plane { p0, n } => {
+                let (e1, e2) = plane_basis(*n);
+                let u = dot(sub(pos, *p0), e1);
+                let v = dot(sub(pos, *p0), e2);
+                Point3::Pac {
+                    a: *p0,
+                    b: add(*p0, e1),
+                    c: add(*p0, e2),
+                    u,
+                    v,
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +260,33 @@ mod tests {
         assert!((dot(s.pos(), s.pos()).sqrt() - 2.0).abs() < 1e-12);
         s.move_to([0.0, 0.0, 9.0]);
         assert!((dot(s.pos(), s.pos()).sqrt() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exact_plane_point_is_bit_exactly_on_axis_aligned_plane() {
+        // A point relaxed on the plane z = 2 must reconstruct to a Pac whose f64
+        // coordinates have z EXACTLY 2.0 (the bit-exact planar-volume guarantee).
+        let s = Site::on_plane([5.0, -3.0, 2.0], [0.0, 0.0, 1.0], [0.37, 1.9, 2.0]);
+        let e = s.exact();
+        assert!(matches!(e, Point3::Pac { .. }));
+        let p = e.approx().unwrap();
+        assert_eq!(p[2], 2.0, "Pac z must be bit-exactly on the plane");
+        assert!(dist(p, s.pos()) < 1e-12, "Pac must reconstruct the position");
+    }
+
+    #[test]
+    fn exact_edge_point_lies_on_the_segment_line() {
+        let s = Site::on_edge([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], 0.3);
+        let e = s.exact();
+        match e {
+            Point3::Lnc { a, b, t } => {
+                assert_eq!(a, [0.0, 0.0, 0.0]);
+                assert_eq!(b, [4.0, 0.0, 0.0]);
+                assert!((t - 0.3).abs() < 1e-12);
+            }
+            _ => panic!("edge carrier must yield an Lnc"),
+        }
+        assert!(dist(e.approx().unwrap(), s.pos()) < 1e-12);
     }
 
     #[test]

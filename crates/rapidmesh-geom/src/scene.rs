@@ -13,7 +13,10 @@ use crate::faceted::{Faceted, SurfaceKind};
 use crate::plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc, SHEET_OWNER};
 use rapidmesh_csg::{arrange_facets, classify, Placement, PlanarInput, Tri, TriBoxes, VertexPool};
 use rapidmesh_exact::Point3;
-use std::collections::{HashMap, HashSet};
+// Deterministic (seedless) hashers: the weld/merge stages ITERATE these maps,
+// and that order decides which coincident vertex wins -- std's RandomState would
+// make the assembled PLC (and the whole mesh) vary run to run.
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Relative (to the scene bounding-box diagonal) tolerance for welding f64
 /// twins during scene assembly: exact constructions land within an ulp or two
@@ -181,7 +184,7 @@ impl Scene {
         let mut region_tags: Vec<[RegionTag; 2]> = Vec::new();
         // Unordered vertex triple of already-emitted facets, for merging
         // coincident survivors.
-        let mut emitted: HashMap<[u32; 3], usize> = HashMap::new();
+        let mut emitted: HashMap<[u32; 3], usize> = HashMap::default();
 
         // Per-solid bounding boxes (exact: the input tessellations are
         // explicit f64), padded by a fat safety margin against the
@@ -360,7 +363,7 @@ impl Scene {
         let cell_of = |q: &[f64; 3]| -> [i64; 3] {
             std::array::from_fn(|k| (q[k] / cell).floor() as i64)
         };
-        let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+        let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::default();
         let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(raw.len());
         let mut remap: Vec<u32> = vec![u32::MAX; raw.len()];
         let weld_pass = |explicit_only: bool,
@@ -408,7 +411,7 @@ impl Scene {
         let mut out_face_tags: Vec<FaceTag> = Vec::with_capacity(triangles.len());
         let mut out_surface_refs: Vec<SurfaceRef> = Vec::with_capacity(triangles.len());
         let mut out_region_tags: Vec<[RegionTag; 2]> = Vec::with_capacity(triangles.len());
-        let mut emitted_snapped: HashMap<[u32; 3], usize> = HashMap::new();
+        let mut emitted_snapped: HashMap<[u32; 3], usize> = HashMap::default();
         for (i, t) in triangles.iter().enumerate() {
             let m = t.map(|v| remap[v as usize]);
             if m[0] == m[1] || m[1] == m[2] || m[0] == m[2] {
@@ -531,7 +534,7 @@ fn repair_t_junctions(
         // T-junctions); they are ALL subdivided in this one round, ordered
         // along the edge, so convergence does not depend on how many sit on a
         // single edge.
-        let mut edge_verts: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        let mut edge_verts: HashMap<(u32, u32), Vec<u32>> = HashMap::default();
         let mut buf: Vec<u32> = Vec::new();
         for v in 0..vertices.len() as u32 {
             grid.edges_near(vertices[v as usize], &mut buf);
@@ -575,7 +578,7 @@ fn repair_t_junctions(
         // vertex stars. Weld each sub-tolerance cluster to its lowest
         // member (union-find over consecutive pairs), rewrite the soup, and
         // restart the round on the welded triangles.
-        let mut remap: HashMap<u32, u32> = HashMap::new();
+        let mut remap: HashMap<u32, u32> = HashMap::default();
         fn find(m: &HashMap<u32, u32>, mut v: u32) -> u32 {
             while let Some(&r) = m.get(&v) {
                 v = r;
@@ -621,7 +624,7 @@ fn repair_t_junctions(
         }
 
         // Build edge -> incident triangle indices for application.
-        let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
         for (ti, t) in triangles.iter().enumerate() {
             for e in 0..3 {
                 let (x, y) = (t[e], t[(e + 1) % 3]);
@@ -652,7 +655,7 @@ fn repair_t_junctions(
         let mut edges_sorted: Vec<(u32, u32)> = edge_verts.keys().copied().collect();
         edges_sorted.sort_unstable();
         let mut consumed: HashSet<usize> = HashSet::default();
-        let mut children: HashMap<usize, Vec<[u32; 3]>> = HashMap::new();
+        let mut children: HashMap<usize, Vec<[u32; 3]>> = HashMap::default();
         for e in &edges_sorted {
             let vs = &edge_verts[e];
             let Some(tlist) = edge_tris.get(e) else {
@@ -796,7 +799,7 @@ impl EdgeGrid {
         let mut g = EdgeGrid {
             cell,
             origin,
-            map: HashMap::new(),
+            map: HashMap::default(),
             large: Vec::new(),
             edges,
         };

@@ -230,7 +230,7 @@ pub fn triangulate_seeded(
     // triangle-by-triangle downstream.
     let d_recover = t_recover.elapsed();
     let t_delaunay = std::time::Instant::now();
-    let constrained: std::collections::HashSet<(usize, usize)> = chain_edges
+    let constrained: rustc_hash::FxHashSet<(usize, usize)> = chain_edges
         .iter()
         .map(|&(u, v)| (u.min(v), u.max(v)))
         .collect();
@@ -329,7 +329,7 @@ fn delaunay_pass(
     pool: &[Point3],
     axis: Axis,
     orientation: Sign,
-    constrained: &std::collections::HashSet<(usize, usize)>,
+    constrained: &rustc_hash::FxHashSet<(usize, usize)>,
 ) {
     let o2d = |a: usize, b: usize, c: usize| -> Sign {
         orient2d(&pool[a], &pool[b], &pool[c], axis).expect("valid")

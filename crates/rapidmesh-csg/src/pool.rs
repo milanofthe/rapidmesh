@@ -1,7 +1,7 @@
 //! Globally deduplicated exact vertex pool.
 
 use rapidmesh_exact::Point3;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Vertex pool with exact deduplication, accelerated by a spatial hash on
 /// approximate coordinates (coincident points approximate to within far less

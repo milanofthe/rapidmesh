@@ -16,7 +16,10 @@ use crate::{
     Vertex, VertexId,
 };
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
-use std::collections::HashMap;
+// Deterministic (seedless) hashers: from_plc's map ITERATION order sets the
+// B-rep edge / face / vertex order, which flows into the surface point order and
+// the mesh -- std's RandomState would make the whole mesh vary run to run.
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 type V3 = [f64; 3];
 
@@ -99,7 +102,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         let r = plc.region_tags[i];
         (plc.surface_refs[i].0, r[0].0.min(r[1].0), r[0].0.max(r[1].0), plc.face_tags[i].0)
     };
-    let mut edge_tris: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut edge_tris: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
     for i in 0..n_tri {
         let c = tri(i);
         for e in 0..3 {
@@ -117,7 +120,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         }
     }
     // Component representative -> face id; build the Face records.
-    let mut face_of_rep: HashMap<usize, usize> = HashMap::new();
+    let mut face_of_rep: HashMap<usize, usize> = HashMap::default();
     let mut faces: Vec<Face> = Vec::new();
     let mut tri_face: Vec<usize> = vec![usize::MAX; n_tri];
     for i in 0..n_tri {
@@ -143,10 +146,10 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     // ---- boundary edges per face, and the radial face set per edge -----------
     // A face's boundary edge is used by exactly one of its triangles (interior
     // edges by two). The set of faces sharing a boundary edge is its radial set.
-    let mut bedge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut bedge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
     {
         // count (face, edge) uses
-        let mut fe_count: HashMap<(usize, (usize, usize)), usize> = HashMap::new();
+        let mut fe_count: HashMap<(usize, (usize, usize)), usize> = HashMap::default();
         for i in 0..n_tri {
             let c = tri(i);
             let f = tri_face[i];
@@ -169,7 +172,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     // The boundary graph: vertices linked by boundary edges. Walk maximal chains
     // that keep the SAME radial face set, splitting at junctions (degree != 2),
     // at a change of the face set, and at sharp turns (> 45 deg).
-    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::default();
     for &(a, b) in bedge_faces.keys() {
         adj.entry(a).or_default().push(b);
         adj.entry(b).or_default().push(a);
@@ -190,7 +193,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     let walk = |c0: usize,
                 start: usize,
                 adj: &HashMap<usize, Vec<usize>>,
-                done: &mut std::collections::HashSet<(usize, usize)>|
+                done: &mut HashSet<(usize, usize)>|
      -> Vec<usize> {
         let mut chain = vec![c0];
         let (mut prev, mut cur) = (c0, start);
@@ -211,7 +214,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         chain
     };
     let mut chains: Vec<Vec<usize>> = Vec::new();
-    let mut done: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut done: HashSet<(usize, usize)> = HashSet::default();
     let mut corners: Vec<usize> = adj.keys().copied().filter(|&v| is_corner(v, &adj)).collect();
     corners.sort_unstable();
     for &c0 in &corners {
@@ -251,7 +254,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     }
 
     // ---- B2: vertices = unique chain endpoints (through the merge) -----------
-    let mut vid: HashMap<usize, VertexId> = HashMap::new();
+    let mut vid: HashMap<usize, VertexId> = HashMap::default();
     let mut vertices: Vec<Vertex> = Vec::new();
     let corner_id = |plc_v: usize,
                          vid: &mut HashMap<usize, VertexId>,
@@ -361,7 +364,7 @@ fn loop_points(sl: &[(usize, bool)], edges: &[Edge]) -> Vec<V3> {
 /// traverses the edge from `ends[0]` to `ends[1]`. The largest-perimeter loop is
 /// placed first (the outer boundary; the rest are holes).
 fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Vec<(usize, bool)>> {
-    let mut adj: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut adj: HashMap<u32, Vec<usize>> = HashMap::default();
     for &ei in eids {
         let [a, b] = edges[ei].ends;
         adj.entry(a.0).or_default().push(ei);

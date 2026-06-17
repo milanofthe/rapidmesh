@@ -26,7 +26,7 @@ use crate::tri_tri::{tri_tri_intersection, TriTriIsect};
 use crate::triangulate::triangulate_seeded;
 use rapidmesh_exact::{cmp_along, collinear, Point3, Sign};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// One input facet for the conformal arrangement: a planar boundary polygon
 /// and a helper triangulation that exactly tiles it (used for intersection
@@ -85,9 +85,9 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
 
     // Per facet: sub-segments grouped by the cutting facet, plus touch points;
     // coplanar facet pairs are recorded for boundary-level handling.
-    let mut cut: Vec<HashMap<usize, Vec<CutSeg>>> = vec![HashMap::new(); n];
+    let mut cut: Vec<HashMap<usize, Vec<CutSeg>>> = vec![HashMap::default(); n];
     let mut points: Vec<Vec<Point3>> = vec![Vec::new(); n];
-    let mut coplanar: HashSet<(usize, usize)> = HashSet::new();
+    let mut coplanar: HashSet<(usize, usize)> = HashSet::default();
 
     for (mi, mj) in pairs {
         let (fi, fj) = (member_facet[mi], member_facet[mj]);

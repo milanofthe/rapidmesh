@@ -445,13 +445,13 @@ fn circumradius(a: V3, b: V3, c: V3) -> f64 {
 /// curves no tighter than its surface (a cylinder rim), `R_edge` matches the face
 /// target and the MIN composition makes this a harmless no-op.
 fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64) -> Vec<(Tri, f64)> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     let chord = (8.0 * deflection).sqrt();
     let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
     let is_curved = |sid: u32| !matches!(plc.surfaces[sid as usize], SurfaceKind::Plane);
 
     // Distinct analytic surfaces meeting along each undirected edge.
-    let mut edge_surf: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    let mut edge_surf: FxHashMap<(u32, u32), Vec<u32>> = FxHashMap::default();
     for (fi, t) in plc.triangles.iter().enumerate() {
         let s = plc.surface_refs[fi].0;
         for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -461,15 +461,17 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64) -> Vec<(Tri, f64)> {
             }
         }
     }
-    // Feature edges: two distinct surfaces meet, at least one curved.
-    let feature: Vec<(u32, u32)> = edge_surf
+    // Feature edges: two distinct surfaces meet, at least one curved. Sorted so
+    // the downstream segment list (and its BVH) is order-deterministic.
+    let mut feature: Vec<(u32, u32)> = edge_surf
         .iter()
         .filter(|(_, s)| s.len() >= 2 && s.iter().any(|&x| is_curved(x)))
         .map(|(&e, _)| e)
         .collect();
+    feature.sort_unstable();
 
     // Edge-curve neighbours of each feature vertex (its polyline link).
-    let mut nbr: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut nbr: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
     for &(a, b) in &feature {
         nbr.entry(a).or_default().push(b);
         nbr.entry(b).or_default().push(a);

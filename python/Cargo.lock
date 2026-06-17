@@ -257,6 +257,7 @@ dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
@@ -266,6 +267,7 @@ dependencies = [
  "geometry-predicates",
  "rapidmesh-exact",
  "rayon",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
@@ -282,6 +284,7 @@ dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rayon",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]

@@ -32,6 +32,64 @@ fn bits(p: V3) -> [u64; 3] {
     [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
 }
 
+fn dist3(a: V3, b: V3) -> f64 {
+    let d = sub(a, b);
+    dot(d, d).sqrt()
+}
+
+/// True if the face's boundary covers the full 2*pi in the surface's first
+/// parameter (theta) -- a full-revolution barrel with no axial trim.
+fn is_full_revolution(surf: &Surface, boundary: &[V3]) -> bool {
+    use std::f64::consts::PI;
+    if boundary.len() < 4 {
+        return false;
+    }
+    let mut th: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[0]).collect();
+    th.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut max_gap = th[0] + 2.0 * PI - th[th.len() - 1];
+    for w in th.windows(2) {
+        max_gap = max_gap.max(w[1] - w[0]);
+    }
+    max_gap < PI / 3.0
+}
+
+/// The sorted, deduplicated theta rays of a revolution face's rim edges (the
+/// boundary points projected to the surface's first parameter). Reused for every
+/// interior row so the grid aligns RADIALLY with the rims (clean quads, no rim
+/// slivers), exactly as `cylinder_iso`/`frustum_iso` build their rings.
+fn rim_theta_rays(surf: &Surface, boundary: &[V3]) -> Vec<f64> {
+    let mut th: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[0]).collect();
+    th.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    th.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
+    th
+}
+
+/// A structured (theta, v) grid on a full-revolution surface at the target
+/// ARC-LENGTH spacing in v, on the rim `theta_rays` -- INTERIOR rows only (the
+/// rims are shared edges). Uniform v is uniform arc length on every revolution
+/// surface (each column is an isometric generator), and reusing the rim rays
+/// keeps the rings radially aligned, so the grid is the on-surface CVT optimum
+/// for a developable. Density is mesher-chosen (refinement-independent).
+fn revolution_grid(surf: &Surface, vmin: f64, vmax: f64, theta_rays: &[f64], target: impl Fn(V3) -> f64) -> Vec<V3> {
+    if !(vmax > vmin) || theta_rays.len() < 3 {
+        return Vec::new();
+    }
+    let vmid = 0.5 * (vmin + vmax);
+    let eps = (vmax - vmin) * 1e-4 + 1e-12;
+    let dv_arc = dist3(surf.eval_uv([0.0, vmid + eps]), surf.eval_uv([0.0, vmid - eps])) / (2.0 * eps);
+    let v_arc_total = dv_arc * (vmax - vmin);
+    let tgt_mid = target(surf.eval_uv([0.0, vmid])).max(1e-9);
+    let nv = ((v_arc_total / tgt_mid).round() as usize).max(1);
+    let mut pts = Vec::new();
+    for j in 1..nv {
+        let vj = vmin + (vmax - vmin) * j as f64 / nv as f64;
+        for &theta in theta_rays {
+            pts.push(surf.eval_uv([theta, vj]));
+        }
+    }
+    pts
+}
+
 /// Even-odd point-in-region test over a planar face's loop segments (in (u,v)).
 fn in_loops(uv: P2, segs: &[(P2, P2)]) -> bool {
     let mut c = false;
@@ -412,17 +470,37 @@ pub fn surface_sites(
         }
         let surf = brep.surface(face.surface);
         if structured(face) {
-            // clean structured input tessellation, pinned FIXED (Carrier::Vertex):
-            // it already is a near-uniform on-surface mesh; ruled surfaces stay
-            // sliver-free and the points match the PLC exactly.
-            let mut seen: std::collections::HashSet<[u64; 3]> = std::collections::HashSet::new();
+            let kind = plc.surfaces[face.plc_surface as usize].clone();
+            let is_revolution = matches!(
+                kind,
+                SurfaceKind::Cylinder { .. } | SurfaceKind::Cone { .. } | SurfaceKind::Torus { .. }
+            );
+            let mut boundary: Vec<V3> = Vec::new();
             for lp in &face.loops {
                 for &cid in &lp.coedges {
-                    for &p in &edge_pts[brep.coedge(cid).edge.0 as usize] {
-                        seen.insert(bits(p));
-                    }
+                    boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
                 }
             }
+            // FULL REVOLUTION (cylinder/cone/torus barrel): generate a structured
+            // (theta, v) grid at the mesher's target density -- refinement-
+            // independent, the theta rings close with no seam. Interior rows only;
+            // the rims are the shared edges.
+            if is_revolution && is_full_revolution(surf, &boundary) {
+                let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
+                let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
+                let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let rays = rim_theta_rays(surf, &boundary);
+                let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
+                for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
+                    sites.push(Site::on_surface(kind.clone(), p));
+                    point_tile.push(fid as u32);
+                }
+                continue;
+            }
+            // fallback: pin the input tessellation (closed sphere, trimmed/cut
+            // curved faces, extruded) until their param meshing lands.
+            let mut seen: std::collections::HashSet<[u64; 3]> =
+                boundary.iter().map(|&p| bits(p)).collect();
             for &tfi in &face.facets {
                 for &v in &plc.triangles[tfi as usize] {
                     let p = plc.vertices[v as usize];

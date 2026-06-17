@@ -293,6 +293,7 @@ version = "0.1.0"
 dependencies = [
  "numpy",
  "pyo3",
+ "rapidmesh-brep",
  "rapidmesh-exact",
  "rapidmesh-geom",
  "rapidmesh-tet",

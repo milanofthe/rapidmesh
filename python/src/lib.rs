@@ -12,6 +12,7 @@ use rapidmesh_geom::{
     icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
     solid_box, sphere, torus, wedge, FaceTag, Scene,
 };
+use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
     mesh_cdt, mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
     QualityStats, SurfaceMesh, TetMesh,
@@ -320,7 +321,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![]))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -337,6 +338,11 @@ impl SceneBuilder {
         maxh_edge: f64,
         maxh_surf: f64,
         maxh_vol: f64,
+        edge_maxh: Vec<(u32, f64)>,
+        edge_tol: Vec<(u32, f64)>,
+        surf_maxh: Vec<(u32, f64)>,
+        surf_tol: Vec<(u32, f64)>,
+        region_over: Vec<(u32, f64)>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -347,9 +353,19 @@ impl SceneBuilder {
             let plc = self.scene.assemble();
             let t_assemble = ta.elapsed();
             rapidmesh_exact::log::stage("assemble.total", t_assemble.as_secs_f64());
+            // Per-region size: the solid-set defaults (g.box(maxh=)) overridden by
+            // any hierarchical g.region(tag).maxh entries.
+            let mut region_maxh = self.region_maxh.clone();
+            for (r, h) in &region_over {
+                if let Some(e) = region_maxh.iter_mut().find(|(rr, _)| rr == r) {
+                    e.1 = *h;
+                } else {
+                    region_maxh.push((*r, *h));
+                }
+            }
             let params = MeshParams {
                 maxh,
-                region_maxh: self.region_maxh.clone(),
+                region_maxh,
                 radius_edge_bound: radius_edge,
                 max_points,
                 grading,
@@ -362,6 +378,10 @@ impl SceneBuilder {
                 maxh_edge,
                 maxh_surf,
                 maxh_vol,
+                edge_maxh,
+                edge_tol,
+                surf_maxh,
+                surf_tol,
             };
             let tm = std::time::Instant::now();
             // Opt-in to the new boundary-constrained Stage-3 pipeline for
@@ -475,6 +495,10 @@ impl SceneBuilder {
                 maxh_edge,
                 maxh_surf,
                 maxh_vol,
+                edge_maxh: vec![],
+                edge_tol: vec![],
+                surf_maxh: vec![],
+                surf_tol: vec![],
             };
             surface_mesh(&plc, &params)
         });
@@ -484,6 +508,48 @@ impl SceneBuilder {
             millis: t0.elapsed().as_millis() as u64,
             timings,
         }
+    }
+
+    /// Region/face/edge topology (stable ids + geometry + incidence) for the
+    /// hierarchical per-entity sizing API. Assembles and builds the B-rep on
+    /// demand; ids are valid for the current geometry.
+    fn topology(&self) -> PyTopology {
+        let plc = self.scene.assemble();
+        let brep = brep_build::from_plc(&plc);
+        PyTopology { topo: extract_topology(&plc, &brep) }
+    }
+}
+
+/// The B-rep topology read model exposed to the Python hierarchical sizing API.
+#[pyclass]
+struct PyTopology {
+    topo: rapidmesh_brep::Topology,
+}
+
+#[pymethods]
+impl PyTopology {
+    /// Meshed region tags.
+    #[getter]
+    fn regions(&self) -> Vec<u32> {
+        self.topo.regions.clone()
+    }
+    /// Per face: (centroid, normal, area, region_front, region_back, tag,
+    /// surface, owner, edge_ids).
+    #[allow(clippy::type_complexity)]
+    fn faces(&self) -> Vec<([f64; 3], [f64; 3], f64, u32, u32, u32, u32, u32, Vec<u32>)> {
+        self.topo
+            .faces
+            .iter()
+            .map(|f| (f.centroid, f.normal, f.area, f.regions[0], f.regions[1], f.face_tag, f.surface, f.owner, f.edges.clone()))
+            .collect()
+    }
+    /// Per edge: (p0, p1, midpoint, length, kind_code, face_ids).
+    fn edges(&self) -> Vec<([f64; 3], [f64; 3], [f64; 3], f64, u8, Vec<u32>)> {
+        self.topo
+            .edges
+            .iter()
+            .map(|e| (e.p0, e.p1, e.midpoint, e.length, e.kind as u8, e.faces.clone()))
+            .collect()
     }
 }
 
@@ -773,5 +839,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SceneBuilder>()?;
     m.add_class::<PyMesh>()?;
     m.add_class::<PySurfaceMesh>()?;
+    m.add_class::<PyTopology>()?;
     Ok(())
 }

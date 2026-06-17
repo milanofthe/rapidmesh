@@ -290,6 +290,91 @@ def _position_with_center_alias(position, center, *, what):
     return position, False
 
 
+def _filt(sel, kw):
+    """A selector descriptor: ``None`` (unfiltered) or a dict of criteria."""
+    if sel is None and not kw:
+        return None
+    f = dict(kw)
+    if sel is not None:
+        f["id"] = sel
+    return f
+
+
+def _d2(a, b):
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+
+
+@dataclass
+class _Face:
+    id: int
+    centroid: tuple
+    normal: tuple
+    area: float
+    regions: tuple
+    tag: int
+    surface: int
+    owner: int
+    edges: list
+
+
+@dataclass
+class _Edge:
+    id: int
+    p0: tuple
+    p1: tuple
+    midpoint: tuple
+    length: float
+    kind: int
+    faces: list
+
+
+@dataclass
+class _Topology:
+    regions: list
+    faces: list  # list[_Face]
+    edges: list  # list[_Edge]
+
+
+class _Scope:
+    """A hierarchical sizing scope built by ``g.region(..).surf(..).edge(..)``.
+
+    Setting ``.maxh`` / ``.tol`` applies to every entity the scope selects:
+    unfiltered at a dimension sets the global per-dimension knob, a filtered
+    scope sets per-entity overrides (the most specific scope wins, because a
+    per-entity override beats the dimension default in the mesher).
+    """
+
+    __slots__ = ("_g", "_level", "_rf", "_ff", "_ef")
+
+    def __init__(self, g, level, rf=None, ff=None, ef=None):
+        self._g, self._level, self._rf, self._ff, self._ef = g, level, rf, ff, ef
+
+    def region(self, sel=None, **kw):
+        return _Scope(self._g, "region", _filt(sel, kw), self._ff, self._ef)
+
+    def surf(self, sel=None, **kw):
+        return _Scope(self._g, "surf", self._rf, _filt(sel, kw), self._ef)
+
+    def edge(self, sel=None, **kw):
+        return _Scope(self._g, "edge", self._rf, self._ff, _filt(sel, kw))
+
+    @property
+    def maxh(self):
+        raise AttributeError("a sizing scope is write-only")
+
+    @maxh.setter
+    def maxh(self, v):
+        self._g._apply_scope(self, "maxh", float(v))
+
+    @property
+    def tol(self):
+        raise AttributeError("a sizing scope is write-only")
+
+    @tol.setter
+    def tol(self, v):
+        self._g._apply_scope(self, "tol", float(v))
+
+
 class Geometry:
     """Top-level geometry builder (the rapidmesh analog of
     ``rapidfem.Geometry``, without materials and physics: regions carry
@@ -317,12 +402,175 @@ class Geometry:
         self._solid_regions: list[int] = []
         self._solid_labels: dict[int, str] = {}
         self._tag_labels: dict[int, str] = {}
+        # Hierarchical per-entity sizing (set via g.region(..).surf(..).edge(..)).
+        # Global per-dimension defaults plus sparse per-brep-id overrides.
+        self._tol_edge = 1e-2
+        self._tol_surf = 1e-2
+        self._maxh_edge = math.inf
+        self._maxh_surf = math.inf
+        self._maxh_vol = math.inf
+        self._edge_maxh: dict[int, float] = {}
+        self._edge_tol: dict[int, float] = {}
+        self._surf_maxh: dict[int, float] = {}
+        self._surf_tol: dict[int, float] = {}
+        self._region_maxh: dict[int, float] = {}
+        self._topo_cache: _Topology | None = None
 
     def _solid(self, region: int) -> Solid:
         idx = self._n_solids
         self._n_solids += 1
         self._solid_regions.append(region)
+        self._topo_cache = None  # geometry changed: stale topology ids
         return Solid(region, idx)
+
+    # ---- hierarchical per-entity sizing -----------------------------------
+    # g.maxh = ...                      # global size (all dimensions)
+    # g.edge().tol = ...                # all edges (== tol_edge)
+    # g.surf(normal=(0,0,1)).maxh = ... # selected surfaces
+    # g.region("diel").surf().edge(near=p).maxh = ...  # specific edges
+
+    @property
+    def maxh(self) -> float | None:
+        """Global target edge length (all dimensions)."""
+        return self._maxh
+
+    @maxh.setter
+    def maxh(self, v: float) -> None:
+        self._maxh = float(v)
+
+    @property
+    def tol(self) -> float:
+        raise AttributeError("write-only; sets both edge and surface tolerance")
+
+    @tol.setter
+    def tol(self, v: float) -> None:
+        self._tol_edge = self._tol_surf = float(v)
+
+    def region(self, sel=None, **kw) -> _Scope:
+        """Scope on a region (material) by tag/id, or all regions if unfiltered."""
+        return _Scope(self, "region", _filt(sel, kw))
+
+    def surf(self, sel=None, **kw) -> _Scope:
+        """Scope on surfaces by ``id=``/``tag=``/``normal=``/``near=``, or all."""
+        return _Scope(self, "surf", None, _filt(sel, kw))
+
+    def edge(self, sel=None, **kw) -> _Scope:
+        """Scope on edges by ``id=``/``near=``/``between=``/``kind=``, or all."""
+        return _Scope(self, "edge", None, None, _filt(sel, kw))
+
+    def _topology(self) -> _Topology:
+        if self._topo_cache is None:
+            t = self._builder.topology()
+            faces = [
+                _Face(i, tuple(c), tuple(n), a, (rf, rb), tag, surf, owner, list(edges))
+                for i, (c, n, a, rf, rb, tag, surf, owner, edges) in enumerate(t.faces())
+            ]
+            edges = [
+                _Edge(i, tuple(p0), tuple(p1), tuple(mid), ln, kind, list(fs))
+                for i, (p0, p1, mid, ln, kind, fs) in enumerate(t.edges())
+            ]
+            self._topo_cache = _Topology(list(t.regions), faces, edges)
+        return self._topo_cache
+
+    @staticmethod
+    def _region_ok(face: _Face, rf) -> bool:
+        if rf is None:
+            return True
+        want = rf.get("id", rf.get("tag"))
+        return want is None or want in face.regions
+
+    @staticmethod
+    def _face_ok(face: _Face, ff) -> bool:
+        if ff is None:
+            return True
+        if "id" in ff and face.id != ff["id"]:
+            return False
+        if "tag" in ff and face.tag != ff["tag"]:
+            return False
+        if "normal" in ff:
+            n = ff["normal"]
+            nl = (n[0] ** 2 + n[1] ** 2 + n[2] ** 2) ** 0.5 or 1.0
+            d = (face.normal[0] * n[0] + face.normal[1] * n[1] + face.normal[2] * n[2]) / nl
+            if d < ff.get("normal_tol", 0.9):
+                return False
+        return True
+
+    @staticmethod
+    def _edge_ok(edge: _Edge, ef, topo: _Topology) -> bool:
+        if ef is None:
+            return True
+        if "id" in ef and edge.id != ef["id"]:
+            return False
+        if "kind" in ef and edge.kind != ef["kind"]:
+            return False
+        if "between" in ef:
+            a, b = ef["between"]
+            regs = set()
+            for fid in edge.faces:
+                regs.update(topo.faces[fid].regions)
+            if not ({a, b} <= regs):
+                return False
+        return True
+
+    @staticmethod
+    def _apply_near(items, filt, pos):
+        """If `filt` carries ``near=point``, keep only the single closest item."""
+        if filt is None or "near" not in filt:
+            return items
+        p = filt["near"]
+        return [min(items, key=lambda it: _d2(pos(it), p))] if items else []
+
+    def _resolve(self, scope: _Scope) -> list:
+        topo = self._topology()
+        rf, ff, ef = scope._rf, scope._ff, scope._ef
+        if scope._level == "region":
+            want = rf.get("id", rf.get("tag")) if rf else None
+            return [t for t in topo.regions if want is None or t == want]
+        if scope._level == "surf":
+            faces = [f for f in topo.faces if self._region_ok(f, rf) and self._face_ok(f, ff)]
+            faces = self._apply_near(faces, ff, lambda f: f.centroid)
+            return [f.id for f in faces]
+        edges = []
+        for e in topo.edges:
+            incident = [topo.faces[fid] for fid in e.faces]
+            if rf is not None and not any(self._region_ok(f, rf) for f in incident):
+                continue
+            if ff is not None and not any(self._face_ok(f, ff) for f in incident):
+                continue
+            if not self._edge_ok(e, ef, topo):
+                continue
+            edges.append(e)
+        edges = self._apply_near(edges, ef, lambda e: e.midpoint)
+        return [e.id for e in edges]
+
+    def _apply_scope(self, scope: _Scope, what: str, value: float) -> None:
+        unfiltered = scope._rf is None and scope._ff is None and scope._ef is None
+        if unfiltered:
+            # A bare dimension scope sets the global per-dimension knob.
+            if scope._level == "edge":
+                if what == "maxh":
+                    self._maxh_edge = value
+                else:
+                    self._tol_edge = value
+            elif scope._level == "surf":
+                if what == "maxh":
+                    self._maxh_surf = value
+                else:
+                    self._tol_surf = value
+            else:  # region
+                if what != "maxh":
+                    raise ValueError("regions have no tolerance (volume follows the surface)")
+                self._maxh_vol = value
+            return
+        for eid in self._resolve(scope):
+            if scope._level == "edge":
+                (self._edge_maxh if what == "maxh" else self._edge_tol)[eid] = value
+            elif scope._level == "surf":
+                (self._surf_maxh if what == "maxh" else self._surf_tol)[eid] = value
+            else:  # region
+                if what != "maxh":
+                    raise ValueError("regions have no tolerance (volume follows the surface)")
+                self._region_maxh[eid] = value
 
     def label(self, target: Solid | int, name: str) -> None:
         """Display name for viewer exports: for a :class:`Solid`, the name
@@ -802,11 +1050,11 @@ class Geometry:
         max_points: int = 500_000,
         grading: float | None = None,
         density_weighted: bool = False,
-        tol_edge: float = 1e-2,
-        tol_surf: float = 1e-2,
-        maxh_edge: float = math.inf,
-        maxh_surf: float = math.inf,
-        maxh_vol: float = math.inf,
+        tol_edge: float | None = None,
+        tol_surf: float | None = None,
+        maxh_edge: float | None = None,
+        maxh_surf: float | None = None,
+        maxh_vol: float | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -844,6 +1092,12 @@ class Geometry:
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
+        # Call kwargs override the accumulated hierarchical globals.
+        te = tol_edge if tol_edge is not None else self._tol_edge
+        ts = tol_surf if tol_surf is not None else self._tol_surf
+        me = maxh_edge if maxh_edge is not None else self._maxh_edge
+        ms = maxh_surf if maxh_surf is not None else self._maxh_surf
+        mv = maxh_vol if maxh_vol is not None else self._maxh_vol
         native = self._builder.mesh(
             h if h is not None else math.inf,
             radius_edge,
@@ -853,11 +1107,16 @@ class Geometry:
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
             density_weighted,
-            tol_edge,
-            tol_surf,
-            maxh_edge,
-            maxh_surf,
-            maxh_vol,
+            te,
+            ts,
+            me,
+            ms,
+            mv,
+            [(int(i), v) for i, v in sorted(self._edge_maxh.items())],
+            [(int(i), v) for i, v in sorted(self._edge_tol.items())],
+            [(int(i), v) for i, v in sorted(self._surf_maxh.items())],
+            [(int(i), v) for i, v in sorted(self._surf_tol.items())],
+            [(int(t), v) for t, v in sorted(self._region_maxh.items())],
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

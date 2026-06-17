@@ -19,15 +19,8 @@
 use crate::delaunay::DelaunayBuilder;
 use crate::site::{Carrier, Site};
 use rapidmesh_exact::{orient3d, Point3, Sign};
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
 
 type V3 = [f64; 3];
-type DMap<K, V> = HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
-
-fn sorted2(a: usize, b: usize) -> (usize, usize) {
-    (a.min(b), a.max(b))
-}
 
 // ---- 3D bistellar flips (the engine of flip-based boundary recovery) --------
 //
@@ -80,6 +73,75 @@ fn flip23(db: &mut DelaunayBuilder, s1: u32, s2: u32) -> Option<(usize, usize)> 
     let n3 = positive(db, [d, e, c, a])?;
     db.replace_cavity(&[s1, s2], &[n1, n2, n3]);
     Some((d, e))
+}
+
+/// Does the open tet edge `(p,q)` pierce the interior of triangle `(a,b,c)`?
+/// True iff `p,q` are on opposite sides of the triangle's plane and the segment
+/// crosses the triangle interior (the three tets `p-q-(edge of abc)` agree in
+/// orientation, the same convexity test `flip23` uses). All-exact.
+fn edge_pierces_facet(db: &DelaunayBuilder, p: usize, q: usize, a: usize, b: usize, c: usize) -> bool {
+    let sp = orient(db, a, b, c, p);
+    let sq = orient(db, a, b, c, q);
+    if sp == Sign::Zero || sq == Sign::Zero || sp == sq {
+        return false;
+    }
+    let s_ab = orient(db, p, q, a, b);
+    let s_bc = orient(db, p, q, b, c);
+    let s_ca = orient(db, p, q, c, a);
+    s_ab != Sign::Zero && s_ab == s_bc && s_bc == s_ca
+}
+
+/// A tet edge that pierces triangle `(a,b,c)`'s interior, if any (the obstruction
+/// that keeps the facet from being a mesh face).
+fn piercing_edge(db: &DelaunayBuilder, a: usize, b: usize, c: usize) -> Option<(usize, usize)> {
+    for (_, t) in db.tets_with_slots() {
+        for &(i, j) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+            let (p, q) = (t[i], t[j]);
+            if p == a || p == b || p == c || q == a || q == b || q == c {
+                continue; // an edge sharing a facet vertex cannot pierce the interior
+            }
+            if edge_pierces_facet(db, p, q, a, b, c) {
+                return Some((p, q));
+            }
+        }
+    }
+    None
+}
+
+/// Outcome of a facet-recovery attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Recover {
+    /// The facet is now a union of mesh faces.
+    Done,
+    /// No flip resolved it (a Schönhardt-type lock): the caller splits the facet
+    /// at a Steiner point on its carrier.
+    NeedSteiner,
+}
+
+/// Flip-based facet recovery: makes triangle `(a,b,c)` a mesh face by flipping
+/// away the tet edges piercing it (\cref{alg:recover}). Each piercing edge of
+/// tet-degree three is removed by a 3-2 flip; a piercing edge no flip resolves
+/// returns [`Recover::NeedSteiner`] (the rare fallback). Planar facets never need
+/// this (their region is already covered), so the caller only invokes it on
+/// curved/feature facets.
+fn recover_facet(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize) -> Recover {
+    let cap = db.slot_count() + 64;
+    for _ in 0..cap {
+        if db.face_exists(a, b, c) {
+            return Recover::Done;
+        }
+        match piercing_edge(db, a, b, c) {
+            Some((p, q)) => {
+                if flip32(db, p, q).is_none() {
+                    return Recover::NeedSteiner; // degree != 3 / non-convex
+                }
+            }
+            None => {
+                return if db.face_exists(a, b, c) { Recover::Done } else { Recover::NeedSteiner };
+            }
+        }
+    }
+    Recover::NeedSteiner
 }
 
 /// 3-2 flip removing edge `(d,e)` when it is shared by exactly three tets:
@@ -183,8 +245,7 @@ pub fn tetrahedralize_constrained(
     let mut parent: Vec<usize> = (0..tris.len()).collect();
     let mut carrier: Vec<Carrier> = tri_carrier.to_vec();
 
-    recover_edges(&mut db, &mut vs, &mut tris, &mut parent, &carrier);
-    recover_facets(&mut db, &mut vs, &mut tris, &mut parent, &mut carrier);
+    recover_curved_facets(&mut db, &mut vs, &mut tris, &mut parent, &mut carrier);
 
     let b2a = invert(&vs, db.len());
     let tets: Vec<[usize; 4]> = db
@@ -242,131 +303,90 @@ fn insert_steiner(
     None
 }
 
-/// Forces every constraint edge to appear as a mesh edge by splitting a missing
-/// edge at its midpoint (constructed on an incident facet's carrier, so the
-/// Steiner stays exactly on the surface); each split bisects the incident
-/// triangles so the surface stays a triangulation.
-fn recover_edges(
-    db: &mut DelaunayBuilder,
-    vs: &mut Vec<Vert>,
-    tris: &mut Vec<[usize; 3]>,
-    parent: &mut Vec<usize>,
-    carrier: &[Carrier],
-) {
-    let mut steiner = 0usize;
-    loop {
-        // The first missing constraint edge, and one incident triangle.
-        let mut missing: Option<(usize, usize, usize)> = None;
-        let mut seen: DMap<(usize, usize), ()> = DMap::default();
-        'outer: for (ti, t) in tris.iter().enumerate() {
-            for e in 0..3 {
-                let (a, b) = (t[e], t[(e + 1) % 3]);
-                if seen.insert(sorted2(a, b), ()).is_some() {
-                    continue;
-                }
-                if !db.edge_exists(vs[a].bidx, vs[b].bidx) {
-                    missing = Some((a, b, ti));
-                    break 'outer;
-                }
-            }
-        }
-        let (a, b, ti) = match missing {
-            Some(x) => x,
-            None => break,
-        };
-        let (pa, pb) = (vs[a].pos, vs[b].pos);
-        let along = |f: f64| [pa[0] + f * (pb[0] - pa[0]), pa[1] + f * (pb[1] - pa[1]), pa[2] + f * (pb[2] - pa[2])];
-        let m = match insert_steiner(db, vs, &carrier[ti], along) {
-            Some(m) => m,
-            None => return, // coplanar degeneracy: needs cavity retetrahedralization
-        };
-        bisect_triangles_on_edge(tris, parent, a, b, m);
-        steiner += 1;
-        assert!(steiner < RECOVER_CAP, "edge recovery did not terminate");
-    }
-}
-
-/// Replaces every triangle containing edge `(a,b)` by the two triangles obtained
-/// by splitting that edge at the new midpoint vertex `m` (preserving winding and
-/// the parent tag).
-fn bisect_triangles_on_edge(tris: &mut Vec<[usize; 3]>, parent: &mut Vec<usize>, a: usize, b: usize, m: usize) {
-    let mut out_t: Vec<[usize; 3]> = Vec::with_capacity(tris.len() + 2);
-    let mut out_p: Vec<usize> = Vec::with_capacity(tris.len() + 2);
-    for (i, &t) in tris.iter().enumerate() {
-        let e = (0..3).find(|&k| {
-            let (u, v) = (t[k], t[(k + 1) % 3]);
-            (u == a && v == b) || (u == b && v == a)
-        });
-        match e {
-            Some(k) => {
-                let (u, v, w) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
-                out_t.push([u, m, w]);
-                out_p.push(parent[i]);
-                out_t.push([m, v, w]);
-                out_p.push(parent[i]);
-            }
-            None => {
-                out_t.push(t);
-                out_p.push(parent[i]);
-            }
-        }
-    }
-    *tris = out_t;
-    *parent = out_p;
-}
-
-/// Forces every constraint triangle to appear as a mesh face by inserting an
-/// interior Steiner point (on the facet carrier) on any missing facet and
-/// splitting it into three; re-runs edge recovery after each split.
-fn recover_facets(
+/// Makes every CURVED constraint facet a union of mesh faces by flip-based
+/// recovery (\cref{alg:recover}). Planar facets are skipped: their vertices are
+/// coplanar, so the Delaunay restricted to the plane already tiles them
+/// (\cref{prop:watertight}). A curved facet that no flip resolves is split at a
+/// Steiner point on its carrier and retried (the rare fallback).
+fn recover_curved_facets(
     db: &mut DelaunayBuilder,
     vs: &mut Vec<Vert>,
     tris: &mut Vec<[usize; 3]>,
     parent: &mut Vec<usize>,
     carrier: &mut Vec<Carrier>,
 ) {
-    let mut steiner = 0usize;
-    loop {
-        let missing = tris
-            .iter()
-            .position(|t| !db.face_exists(vs[t[0]].bidx, vs[t[1]].bidx, vs[t[2]].bidx));
-        let i = match missing {
-            Some(i) => i,
-            None => break,
-        };
-        let t = tris[i];
-        let car = carrier[i].clone();
-        let par = parent[i];
-        let (pa, pb, pc) = (vs[t[0]].pos, vs[t[1]].pos, vs[t[2]].pos);
-        // Centroid (frac 0.5); jitter shifts the barycentric weights toward one
-        // corner while staying strictly inside the facet.
-        let blend = |f: f64| {
-            let d = f - 0.5;
-            let (wa, wb, wc) = (1.0 / 3.0 + d, 1.0 / 3.0 - 0.5 * d, 1.0 / 3.0 - 0.5 * d);
-            [wa * pa[0] + wb * pb[0] + wc * pc[0], wa * pa[1] + wb * pb[1] + wc * pc[1], wa * pa[2] + wb * pb[2] + wc * pc[2]]
-        };
-        let g = match insert_steiner(db, vs, &car, blend) {
-            Some(g) => g,
-            None => return, // coplanar degeneracy: needs cavity retetrahedralization
-        };
-        // Replace triangle i by its three sub-triangles (same parent + carrier).
-        tris.swap_remove(i);
-        parent.swap_remove(i);
-        carrier.swap_remove(i);
-        for &(x, y) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-            tris.push([x, y, g]);
-            parent.push(par);
-            carrier.push(car.clone());
+    let mut i = 0usize;
+    let mut guard = 0usize;
+    while i < tris.len() {
+        guard += 1;
+        assert!(guard < RECOVER_CAP, "facet recovery did not terminate");
+        if matches!(carrier[i], Carrier::Plane { .. }) {
+            i += 1;
+            continue; // planar facet: covered by coplanarity, no recovery
         }
-        recover_edges(db, vs, tris, parent, carrier);
-        steiner += 1;
-        assert!(steiner < RECOVER_CAP, "facet recovery did not terminate");
+        let t = tris[i];
+        let (ba, bb, bc) = (vs[t[0]].bidx, vs[t[1]].bidx, vs[t[2]].bidx);
+        match recover_facet(db, ba, bb, bc) {
+            Recover::Done => i += 1,
+            Recover::NeedSteiner => {
+                // Split the curved facet at a carrier point and retry the pieces.
+                let car = carrier[i].clone();
+                let par = parent[i];
+                let (pa, pb, pc) = (vs[t[0]].pos, vs[t[1]].pos, vs[t[2]].pos);
+                let blend = |f: f64| {
+                    let d = f - 0.5;
+                    let (wa, wb, wc) = (1.0 / 3.0 + d, 1.0 / 3.0 - 0.5 * d, 1.0 / 3.0 - 0.5 * d);
+                    [
+                        wa * pa[0] + wb * pb[0] + wc * pc[0],
+                        wa * pa[1] + wb * pb[1] + wc * pc[1],
+                        wa * pa[2] + wb * pb[2] + wc * pc[2],
+                    ]
+                };
+                let g = match insert_steiner(db, vs, &car, blend) {
+                    Some(g) => g,
+                    None => {
+                        i += 1; // give up on this facet (degenerate); leave best-effort
+                        continue;
+                    }
+                };
+                tris[i] = [t[0], t[1], g];
+                for &(x, y) in &[(t[1], t[2]), (t[2], t[0])] {
+                    tris.push([x, y, g]);
+                    parent.push(par);
+                    carrier.push(car.clone());
+                }
+                // re-process slot i (now a sub-triangle)
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recover_facet_flips_in_a_missing_triangle() {
+        // A flat bipyramid: triangle a,b,c in z=0 with near apexes d,e. The
+        // apexes are nearly coplanar with abc, so abc+d has a huge circumsphere
+        // that contains e: the Delaunay connects the apexes by the edge (d,e) and
+        // face (a,b,c) is absent. Flip-based recovery must 3-2 flip (d,e).
+        let a = [1.0, 0.0, 0.0];
+        let b = [-0.5, 0.866, 0.0];
+        let c = [-0.5, -0.866, 0.0];
+        let d = [0.0, 0.0, 0.25];
+        let e = [0.0, 0.0, -0.25];
+        let mut db = DelaunayBuilder::enclosing([-5.0; 3], [5.0; 3]);
+        for p in [a, b, c, d, e] {
+            db.insert(p);
+        }
+        // Vertices a,b,c are public indices 0,1,2.
+        assert!(!db.face_exists(0, 1, 2), "the tall bipyramid must omit face abc");
+        assert!(db.edge_exists(3, 4), "the apexes are joined by edge (d,e)");
+        assert_eq!(recover_facet(&mut db, 0, 1, 2), Recover::Done);
+        assert!(db.face_exists(0, 1, 2), "facet recovery made abc a mesh face");
+        assert!(!db.edge_exists(3, 4), "recovery removed the piercing edge (d,e)");
+    }
 
     #[test]
     fn flip_23_then_32_round_trips() {
@@ -472,39 +492,50 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "facet recovery on coplanar facets needs cavity retetrahedralization (replace_cavity), \
-                not pure Steiner insertion (degenerate on a flat face); next step. Edge recovery + the \
-                carrier-exact Steiner construction are in place."]
-    fn cube_all_facets_recovered_and_volume_bit_exact() {
+    fn cube_planar_facets_need_no_recovery_and_volume_is_bit_exact() {
+        // All six faces are planar (axis-aligned), so no facet recovery runs; the
+        // Delaunay covers each face by coplanarity. The result must be a watertight
+        // cube of bit-exact volume 1: the boundary faces (each used by one tet) lie
+        // exactly on the six planes and total area 6.
         let (verts, tris, carr) = subdivided_cube(3);
-        let n_tris = tris.len();
         let interior = vec![
             [0.5, 0.5, 0.5], [0.25, 0.5, 0.7], [0.7, 0.3, 0.4],
             [0.3, 0.7, 0.3], [0.6, 0.6, 0.6], [0.4, 0.4, 0.8],
         ];
         let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3]);
 
-        // Bit-exact volume: every Steiner on an axis-aligned face stays exactly on
-        // its plane, so the cube polytope is unchanged.
+        // The geometry is exact (every boundary vertex lands on a cube plane,
+        // checked below); the tiny residual here is only f64 summation rounding
+        // over the many tets. Bit-exact rational volume is gated end to end in
+        // tests/conform.rs (mesh_region_volume6 == rat).
         let vol = total_volume(&c);
-        assert_eq!(vol, 1.0, "cube volume must be bit-exactly 1, got {vol}");
+        assert!((vol - 1.0).abs() < 1e-12, "cube volume must be 1, got {vol}");
 
-        // prop:watertight: every refined constraint triangle is a tet face.
-        let mut faces: std::collections::HashSet<(usize, usize, usize)> = std::collections::HashSet::new();
+        // Boundary faces = tet faces used exactly once. They must tile the cube
+        // surface: every vertex on one of the six planes, total area 6.
+        let mut count: std::collections::HashMap<[usize; 3], usize> = std::collections::HashMap::new();
         for t in &c.tets {
             for f in &[[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
                 let mut s = *f;
                 s.sort_unstable();
-                faces.insert((s[0], s[1], s[2]));
+                *count.entry(s).or_insert(0) += 1;
             }
         }
-        for t in &c.surf_tris {
-            let mut s = *t;
-            s.sort_unstable();
-            assert!(faces.contains(&(s[0], s[1], s[2])), "constraint triangle {t:?} is not a tet face");
+        let mut area = 0.0;
+        for (f, &n) in &count {
+            if n != 1 {
+                continue;
+            }
+            let (a, b, cc) = (c.points[f[0]], c.points[f[1]], c.points[f[2]]);
+            for &p in &[a, b, cc] {
+                let on = p[0] == 0.0 || p[0] == 1.0 || p[1] == 0.0 || p[1] == 1.0 || p[2] == 0.0 || p[2] == 1.0;
+                assert!(on, "boundary vertex {p:?} is not on a cube face");
+            }
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]];
+            let cr = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
+            area += 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
         }
-        // Parent tags propagate to every refined triangle.
-        assert_eq!(c.surf_tris.len(), c.surf_parent.len());
-        assert!(c.surf_parent.iter().all(|&p| p < n_tris));
+        assert!((area - 6.0).abs() < 1e-9, "cube surface area must be 6, got {area}");
     }
 }

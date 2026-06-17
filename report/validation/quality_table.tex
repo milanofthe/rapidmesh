@@ -1,0 +1,37 @@
+\begin{table}[H]\centering
+\caption{From-scratch validation: rapidmesh's own element quality across three mesh densities (coarse / medium / fine), and the fine element count. Min planar angle for the 2D plates, min dihedral angle for the volumes.}
+\label{tab:validation}
+\begin{tabularx}{\textwidth}{@{}l L c c c r@{}}
+\toprule
+Case & test & coarse & medium & fine & \#elems\\
+\midrule
+\multicolumn{6}{@{}l}{\itshape 2D plates (min planar angle)}\\
+\quad rectangle plate & plate & 33.8 & 33.2 & 33.2 & 3714\\
+\quad disc & plate & 33.2 & 32.7 & 30.6 & 6164\\
+\quad hexagon & plate & 31.6 & 28.9 & 31.2 & 6198\\
+\quad L-polygon & plate & 1.6 & 1.0 & 0.6 & 5941\\
+\quad annulus & plate & 7.5 & 2.5 & 1.5 & 10706\\
+\addlinespace
+\multicolumn{6}{@{}l}{\itshape 3D primitives (min dihedral)}\\
+\quad box & solid & 15.8 & 18.6 & 16.7 & 14285\\
+\quad sphere & solid & 15.9 & 22.6 & 18.3 & 43413\\
+\quad cylinder & solid & 19.1 & 17.5 & 14.3 & 26532\\
+\quad cone & solid & 0.3 & 0.2 & 0.0 & 13878\\
+\quad frustum & solid & 13.2 & 17.7 & 0.0 & 20741\\
+\quad torus & solid & 9.8 & 0.0 & 3.8 & 57895\\
+\quad wedge & solid & 12.3 & 8.9 & 11.0 & 37316\\
+\quad L-prism & solid & 15.7 & 14.8 & 11.9 & 61477\\
+\addlinespace
+\multicolumn{6}{@{}l}{\itshape Booleans (min dihedral)}\\
+\quad box $\cup$ sphere & union/cut & 0.5 & 16.3 & 3.5 & 88304\\
+\quad box $-$ cylinder & union/cut & 0.1 & 0.1 & 0.2 & 97055\\
+\quad box $-$ sphere & union/cut & 15.6 & 16.6 & 12.9 & 86855\\
+\quad 2 fused spheres & union/cut & 9.3 & 17.5 & 8.9 & 93560\\
+\quad 3 fused spheres & union/cut & 10.6 & 13.1 & 1.2 & 133494\\
+\quad capsule (cyl $\cup$ 2 sph) & union/cut & 0.2 & 0.2 & 1.1 & 87037\\
+\quad box $\cup$ cylinder & union/cut & 6.7 & 13.0 & 7.5 & 55398\\
+\quad cylinder $-$ slab & union/cut & 15.7 & 11.6 & 1.7 & 52090\\
+\quad drilled block ($-$2 cyl) & union/cut & 0.1 & 0.1 & 0.2 & 73464\\
+\bottomrule
+\end{tabularx}
+\end{table}

@@ -1,0 +1,197 @@
+"""From-scratch validation campaign for the report.
+
+Builds a systematic corpus -- 2D plates, 3D primitives, then booleans -- each
+meshed at several densities, records quality (min dihedral angle for volumes,
+min planar angle for 2D plates; element counts; timing), and renders one figure
+per case via the unchanged viewer (``report/viewer.py``).
+
+Run:  python report/validate.py            # full campaign
+      python report/validate.py --quick    # primitives + a few booleans only
+
+Outputs:
+  report/validation/results.json           # all (case x density) stats
+  report/validation/meshes/*.json          # viewer JSONs (one per rendered case)
+  report/figures/val/*.png                 # transparent renders (one per case)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import rapidmesh as rm
+
+REPO = Path(__file__).resolve().parents[1]
+VALID = REPO / "report" / "validation"
+MESHES = VALID / "meshes"
+FIGS = REPO / "report" / "figures" / "val"
+
+# ----------------------------------------------------------------------------
+# geometry builders.  Each takes (g, h) and configures the Geometry; the
+# campaign meshes with maxh=h.  kind "vol" -> g.mesh(), "surf" -> g.surface_mesh().
+# ----------------------------------------------------------------------------
+def _hexagon(r=1.0):
+    return [(r * math.cos(k * math.pi / 3), r * math.sin(k * math.pi / 3)) for k in range(6)]
+
+
+_LPOLY = [(0, 0), (2, 0), (2, 0.7), (0.7, 0.7), (0.7, 2), (0, 2)]
+_RING_OUT = [(1.2 * math.cos(k * math.pi / 12), 1.2 * math.sin(k * math.pi / 12)) for k in range(24)]
+_RING_IN = [(0.55 * math.cos(-k * math.pi / 12), 0.55 * math.sin(-k * math.pi / 12)) for k in range(24)]
+
+# (name, category, kind, base_h, builder)
+CASES = [
+    # --- 2D plates (planar surface meshing) --------------------------------
+    ("plate_rect", "2D", "surf", 0.18, lambda g, h: g.xy_plate(2.0, 1.2, maxh=h)),
+    ("disc",       "2D", "surf", 0.16, lambda g, h: g.disc(1.0, segments=64, maxh=h)),
+    ("hexagon",    "2D", "surf", 0.16, lambda g, h: g.polygon_plate(_hexagon(1.1), maxh=h)),
+    ("l_polygon",  "2D", "surf", 0.14, lambda g, h: g.polygon_plate(_LPOLY, maxh=h)),
+    ("annulus",    "2D", "surf", 0.13, lambda g, h: g.polygon_plate(_RING_OUT, holes=[_RING_IN], maxh=h)),
+    # --- 3D primitives -----------------------------------------------------
+    ("box",      "Primitive", "vol", 0.30, lambda g, h: g.box(2, 1.2, 1, position=(-1, -0.6, -0.5))),
+    ("sphere",   "Primitive", "vol", 0.24, lambda g, h: g.icosphere(1.0, subdivisions=3)),
+    ("cylinder", "Primitive", "vol", 0.22, lambda g, h: g.cylinder(0.6, 1.6, position=(0, 0, -0.8), segments=40, uniform=True)),
+    ("cone",     "Primitive", "vol", 0.22, lambda g, h: g.cone(0.8, 0.0, 1.5, position=(0, 0, -0.75), segments=40)),
+    ("frustum",  "Primitive", "vol", 0.22, lambda g, h: g.cone(0.8, 0.4, 1.3, position=(0, 0, -0.65), segments=40)),
+    ("torus",    "Primitive", "vol", 0.18, lambda g, h: g.torus(1.0, 0.35, segments=48, tube_segments=24)),
+    ("wedge",    "Primitive", "vol", 0.16, lambda g, h: g.wedge(2.0, 1.0, 1.0, position=(-1, -0.5, 0), top_x=0.0)),
+    ("prism_l",  "Primitive", "vol", 0.16, lambda g, h: g.prism(_LPOLY, 0.7, position=(-1, -1, -0.35))),
+    # --- booleans: unions (g.union) and differences (void cuts) ------------
+    ("union_box_sphere", "Boolean", "vol", 0.18,
+        lambda g, h: g.union(g.box(1.6, 1.6, 1.0, position=(-0.8, -0.8, -0.5)),
+                             g.icosphere(0.7, position=(0.7, 0, 0), subdivisions=3))),
+    ("diff_box_cyl", "Boolean", "vol", 0.18,
+        lambda g, h: (g.box(2, 2, 1, position=(-1, -1, -0.5)),
+                      g.cylinder(0.45, 1.4, position=(0, 0, -0.7), segments=36, void=True))),
+    ("diff_box_sphere", "Boolean", "vol", 0.18,
+        lambda g, h: (g.box(1.8, 1.8, 1.2, position=(-0.9, -0.9, -0.6)),
+                      g.icosphere(0.7, position=(0, 0, 0.6), subdivisions=3, void=True))),
+    ("fused_two", "Boolean", "vol", 0.18,
+        lambda g, h: g.union(g.icosphere(0.8, position=(-0.4, 0, 0), subdivisions=3),
+                             g.icosphere(0.8, position=(0.4, 0, 0), subdivisions=3))),
+    ("fused_three", "Boolean", "vol", 0.16,
+        lambda g, h: g.union(g.icosphere(0.7, position=(0, 0, 0), subdivisions=3),
+                             g.icosphere(0.7, position=(0.9, 0, 0), subdivisions=3),
+                             g.icosphere(0.7, position=(0.45, 0.78, 0), subdivisions=3))),
+    ("capsule", "Boolean", "vol", 0.16,
+        lambda g, h: g.union(g.cylinder(0.6, 1.2, position=(0, 0, -0.6), segments=40, uniform=True),
+                             g.icosphere(0.6, position=(0, 0, -0.6), subdivisions=3),
+                             g.icosphere(0.6, position=(0, 0, 0.6), subdivisions=3))),
+    ("union_box_cyl", "Boolean", "vol", 0.18,
+        lambda g, h: g.union(g.box(1.4, 1.4, 0.8, position=(-0.7, -0.7, -0.4)),
+                             g.cylinder(0.4, 1.8, position=(0, 0, -0.9), segments=36, uniform=True))),
+    ("diff_cyl_box", "Boolean", "vol", 0.18,
+        lambda g, h: (g.cylinder(0.9, 1.4, position=(0, 0, -0.7), segments=44, uniform=True),
+                      g.box(0.6, 2.2, 2.2, position=(-0.3, -1.1, -1.1), void=True))),
+    ("drilled_block", "Boolean", "vol", 0.2,
+        lambda g, h: (g.box(2, 2, 1, position=(-1, -1, -0.5)),
+                      g.cylinder(0.3, 1.4, position=(-0.5, -0.5, -0.7), segments=28, void=True),
+                      g.cylinder(0.3, 1.4, position=(0.5, 0.5, -0.7), segments=28, void=True))),
+]
+
+DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)
+RENDER_FACTOR = 0.62                   # which density gets the figure
+
+
+def _min_triangle_angle(points: np.ndarray, faces: np.ndarray) -> float:
+    """Smallest interior angle (deg) over a 2D/surface triangulation."""
+    P = np.asarray(points, float)
+    best = 180.0
+    for a, b, c in np.asarray(faces, int):
+        va, vb, vc = P[a], P[b], P[c]
+        for p, q, r in ((va, vb, vc), (vb, vc, va), (vc, va, vb)):
+            u, w = q - p, r - p
+            nu, nw = np.linalg.norm(u), np.linalg.norm(w)
+            if nu < 1e-12 or nw < 1e-12:
+                continue
+            cosang = np.clip(np.dot(u, w) / (nu * nw), -1, 1)
+            best = min(best, math.degrees(math.acos(cosang)))
+    return best
+
+
+def _surface_viewer_dict(sm, name: str) -> dict:
+    """Viewer JSON for a surface-only mesh (no tets) -- a flat 2D triangulation."""
+    return {
+        "name": name, "mesher": "rapidmesh",
+        "points": sm.points.tolist(),
+        "tets": [], "tet_regions": [],
+        "faces": [{"tri": [int(a), int(b), int(c)], "tag": int(t),
+                   "regions": [int(r0), int(r1)], "surface": int(s)}
+                  for (a, b, c), t, (r0, r1), s in
+                  zip(sm.faces, sm.face_tags, sm.face_regions, sm.face_surfaces)],
+        "surface_owners": [-1 if int(o) == 0xFFFFFFFF else int(o) for o in sm.surface_owners],
+        "solids": sm.solids, "tag_labels": {str(t): n for t, n in sm.tag_labels.items()},
+        "edges": [],
+        "stats": {"n_points": int(sm.stats["n_points"]), "n_tets": 0,
+                  "min_dihedral_deg": 0.0, "max_radius_edge": 0.0,
+                  "max_edge": 0.0, "millis": int(sm.stats["millis"])},
+    }
+
+
+def run(quick: bool = False) -> list[dict]:
+    MESHES.mkdir(parents=True, exist_ok=True)
+    FIGS.mkdir(parents=True, exist_ok=True)
+    from report.viewer import render
+
+    cases = CASES
+    if quick:
+        cases = [c for c in CASES if c[1] != "Boolean" or c[0] in ("fused_two", "diff_box_cyl")]
+
+    results: list[dict] = []
+    for name, cat, kind, base_h, build in cases:
+        for fac in DENSITY_FACTORS:
+            h = base_h * fac
+            g = rm.Geometry(maxh=h)
+            try:
+                build(g, h)
+                if kind == "surf":
+                    m = g.surface_mesh(maxh=h)
+                    quality = _min_triangle_angle(m.points, m.faces)
+                    rec = {"name": name, "category": cat, "kind": kind, "h": round(h, 4),
+                           "n_points": int(m.stats["n_points"]), "n_elems": int(m.stats["n_faces"]),
+                           "quality_deg": round(quality, 2), "millis": int(m.stats["millis"]),
+                           "metric": "min angle"}
+                    vd = _surface_viewer_dict(m, name)
+                else:
+                    m = g.mesh(maxh=h)
+                    s = m.stats
+                    rec = {"name": name, "category": cat, "kind": kind, "h": round(h, 4),
+                           "n_points": int(s["n_points"]), "n_elems": int(s["n_tets"]),
+                           "quality_deg": round(float(s["min_dihedral_deg"]), 2),
+                           "n_regions": int(s.get("n_regions", 1)),
+                           "millis": int(s["millis"]), "metric": "min dihedral"}
+                    vd = m.to_viewer_dict(name)
+                results.append(rec)
+                print(f"  {name:18s} h={h:.3f}  {rec['n_elems']:6d} elems  "
+                      f"{rec['metric']}={rec['quality_deg']:5.1f}  {rec['millis']}ms")
+
+                # render one figure per case at the chosen density
+                if abs(fac - RENDER_FACTOR) < 1e-9:
+                    mp = MESHES / f"{name}.json"
+                    mp.write_text(json.dumps(vd))
+                    try:
+                        render(str(mp), str(FIGS / f"{name}.png"),
+                               azim=32, elev=22, width=1000, height=750)
+                    except Exception as e:
+                        print(f"    render FAILED {name}: {e}")
+            except Exception as e:
+                print(f"  {name:18s} h={h:.3f}  MESH FAILED: {e}")
+                results.append({"name": name, "category": cat, "kind": kind,
+                                "h": round(h, 4), "error": str(e)})
+
+    VALID.mkdir(parents=True, exist_ok=True)
+    (VALID / "results.json").write_text(json.dumps(results, indent=1))
+    print(f"\n{len([r for r in results if 'error' not in r])} ok / {len(results)} runs "
+          f"-> {VALID / 'results.json'}")
+    return results
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--quick", action="store_true")
+    args = ap.parse_args()
+    sys.path.insert(0, str(REPO))
+    run(quick=args.quick)

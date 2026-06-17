@@ -11,3 +11,7 @@
 *.bcf
 *.blg
 *.run.xml
+# generated viewer demo PNGs at the top level (not used by the report)
+figures/*.png
+# intermediate per-case viewer JSONs (regenerable via validate.py)
+validation/meshes/

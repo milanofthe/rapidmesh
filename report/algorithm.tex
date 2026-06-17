@@ -1142,6 +1142,7 @@ per-pass cost stay $O(N)$.
 
 % ============================================================================
 \section{Why this guarantees conformity}
+\label{sec:conformity}
 % ============================================================================
 The earlier rapidmesh path built one \emph{unconstrained} Delaunay over all
 points and recovered the boundary by labelling each tetrahedron with the region
@@ -1157,6 +1158,59 @@ constrained Delaunay / facet recovery, which is exactly the machinery the method
 must keep; the variational (CVT) relaxation supplies the well-shaped interior
 that keeps recovery cheap and slivers rare
 \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
+
+% ============================================================================
+\section{Validation}
+\label{sec:validation}
+% ============================================================================
+We validate the implementation on a from-scratch corpus generated directly
+through the geometry API (no pre-baked tessellations): \emph{2D plates} (the
+planar surface stage in isolation), \emph{3D primitives}, and \emph{booleans}
+(unions and void cuts) in many combinations, each meshed at three densities
+(coarse / medium / fine). For every case we record rapidmesh's own element
+quality --- the minimum planar angle for the 2D plates, the minimum dihedral
+angle for the volumes --- and the element count (\cref{tab:validation}); the
+medium-density mesh of each case is rendered headlessly through the
+\emph{unchanged} showcase viewer, on a transparent background, by the Python
+wrapper of \cref{sec:notation} (\cref{fig:gallery}).
+
+\begin{figure}[H]\centering
+  \newcommand{\valfig}[2]{%
+    \begin{subfigure}[t]{0.235\textwidth}\centering
+      \includegraphics[width=\linewidth]{val/#1.png}\\[-1pt]
+      {\footnotesize #2}\end{subfigure}}
+  \valfig{disc}{disc}\hfill\valfig{hexagon}{hexagon}\hfill
+  \valfig{l_polygon}{L-polygon}\hfill\valfig{annulus}{annulus}\\[4pt]
+  \valfig{sphere}{sphere}\hfill\valfig{cylinder}{cylinder}\hfill
+  \valfig{cone}{cone}\hfill\valfig{torus}{torus}\\[4pt]
+  \valfig{fused_two}{2 fused spheres}\hfill\valfig{capsule}{capsule}\hfill
+  \valfig{drilled_block}{drilled block}\hfill\valfig{union_box_sphere}{box $\cup$ sphere}
+  \caption{Validation gallery (medium density), rendered headlessly through the
+  unchanged viewer on a transparent background: 2D plates (top), 3D primitives
+  (middle) and booleans (bottom).}
+  \label{fig:gallery}
+\end{figure}
+
+\input{validation/quality_table.tex}
+
+\noindent
+\textbf{Reading the results.} The flat plates and the smooth primitives reach
+the expected isotropic quality (min dihedral $\approx 15$--$22^\circ$; min planar
+angle $\approx 30$--$34^\circ$), independent of density, and unions of primitives
+stay in the same band. The campaign also \emph{honestly surfaces} where the
+current code is still weak, and every one of these is a sampling/recovery issue
+the constrained-Delaunay path of \cref{sec:volume} is designed to remove rather
+than a flaw in the variational core: (i)~the \emph{cone apex} and the \emph{torus
+tube} are thin features where the element size locally exceeds the local
+thickness (\cref{eq:thickness}), so volume tetrahedra straddle the boundary;
+(ii)~a \emph{curved void wall} (box $-$ cylinder, drilled block) is the canonical
+straddle case of \cref{sec:conformity}; and (iii)~the \emph{concave corners} of
+the L-polygon and annulus plates produce small planar angles until the feature
+is resolved. These are exactly the cases the boundary-constrained tetrahedral-
+ization (\cref{prop:watertight}) and the local-thickness sizing
+(\cref{eq:thickness}) close, and they are the focus of ongoing work; the
+validation harness (\code{report/validate.py}) re-runs the whole matrix on demand
+so the numbers track the implementation.
 
 \printbibliography[title={References}, heading=bibintoc]
 

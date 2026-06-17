@@ -10,7 +10,6 @@
 use crate::conform::MeshParams;
 use crate::curve::{distribute, Curve, PolylineCurve};
 use crate::site::Site;
-use crate::sizefield::SizeField;
 use crate::surf2d::cvt_fill;
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
@@ -22,10 +21,12 @@ type P2 = [f64; 2];
 
 /// Surface 2D Lloyd passes for planar faces (`cvt_fill`).
 const SURF_LLOYD_ITERS: usize = 4;
+/// The surface is meshed FINER than the volume by this factor, so the
+/// restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
+/// the exact PLC boundary (the conformity requirement). Surface element size =
+/// `OVERSAMPLE * H`; the volume is at the size field `H`.
+const OVERSAMPLE: f64 = 0.7;
 
-fn dist(a: V3, b: V3) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-}
 fn dist2(a: P2, b: P2) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
@@ -209,26 +210,6 @@ pub struct SurfaceSites {
     pub plc_points: usize,
 }
 
-/// The user size cap for a B-rep face (face tag, then surface owner, then region).
-fn face_cap(face: &rapidmesh_brep::Face, params: &MeshParams) -> f64 {
-    let ft = face.face_tag.0;
-    if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
-        return h.min(params.maxh);
-    }
-    if let Some(&(_, h)) = params.surface_maxh.iter().find(|(o, _)| *o == face.owner) {
-        return h.min(params.maxh);
-    }
-    let mut h = params.maxh;
-    for r in face.regions {
-        if r.0 != 0 {
-            if let Some(&(_, rh)) = params.region_maxh.iter().find(|(rr, _)| *rr == r.0) {
-                h = h.min(rh);
-            }
-        }
-    }
-    h
-}
-
 /// Deterministic splitmix64 -> uniform f64 in `[0, 1)` (the mesher must be
 /// reproducible run-to-run, so no real RNG).
 fn rng(state: &mut u64) -> f64 {
@@ -393,8 +374,17 @@ fn fill_face_points(
 /// the surface (an exact planar carrier where the face is a plane). Closed faces
 /// with no loops (a full sphere) are skipped here -- periodic param meshing is a
 /// later step; until then they stay on the faceted path.
-pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> SurfaceSites {
+pub fn surface_sites(
+    brep: &Brep,
+    plc: &TaggedPlc,
+    params: &MeshParams,
+    domain: &crate::domain::DomainTree,
+) -> SurfaceSites {
     let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
+    // The geometry size field H (finite even when params.maxh is INFINITY -- it
+    // falls back to diag/8). The surface is placed at OVERSAMPLE*H, the volume at
+    // H, so the surface is finer than the volume (the conformity requirement).
+    let h_at = |p: V3| domain.h_at(p).max(1e-9);
     let mut sites: Vec<Site> = Vec::new();
     let mut point_tile: Vec<u32> = Vec::new();
 
@@ -430,17 +420,13 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
         .collect();
 
     // ---- stage 1b: edge points (shared); kept per edge for face boundaries ---
-    let mut edge_sources: Vec<(V3, f64)> = Vec::new();
+    // Each edge is distributed at OVERSAMPLE * (finest H along it).
     let mut edge_pts: Vec<Vec<V3>> = Vec::with_capacity(brep.edges.len());
     for (ei, edge) in brep.edges.iter().enumerate() {
-        let cap = edge
-            .coedges
-            .iter()
-            .map(|&c| face_cap(brep.face(brep.coedge(c).face), params))
-            .fold(params.maxh, f64::min);
         let pts3: Vec<V3> = if edge_keep_input[ei] {
             edge.chain.clone()
         } else {
+            let cap = OVERSAMPLE * edge.chain.iter().map(|&p| h_at(p)).fold(f64::INFINITY, f64::min);
             match edge_curve(edge) {
                 Some(curve) => {
                     let ps = distribute(&*curve, params.surface_deflection, cap, grad);
@@ -449,16 +435,6 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
                 None => edge.chain.clone(),
             }
         };
-        for k in 0..pts3.len() {
-            let mut sp = cap;
-            if k > 0 {
-                sp = sp.min(dist(pts3[k], pts3[k - 1]));
-            }
-            if k + 1 < pts3.len() {
-                sp = sp.min(dist(pts3[k], pts3[k + 1]));
-            }
-            edge_sources.push((pts3[k], sp));
-        }
         // interior points only; endpoints are the (already pinned) corners
         for &p in pts3.iter().take(pts3.len().saturating_sub(1)).skip(1) {
             sites.push(Site::vertex(p));
@@ -466,11 +442,7 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
         }
         edge_pts.push(pts3);
     }
-    for &(p, h) in &params.size_points {
-        edge_sources.push((p, h));
-    }
-    let surf_min_h = edge_sources.iter().map(|s| s.1).fold(params.maxh, f64::min).max(1e-9);
-    let surf_field = SizeField::new(edge_sources, grad, params.maxh);
+    let fine = (OVERSAMPLE * domain.finest()).max(1e-9);
 
     let tiles: Vec<(u32, FaceTag)> =
         brep.faces.iter().map(|f| (f.plc_surface, f.face_tag)).collect();
@@ -483,7 +455,6 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
     // field. Planar points keep an exact on-plane carrier; curved points sit on
     // the analytic surface.
     let bits = |p: V3| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
-    let chord = (8.0 * params.surface_deflection).sqrt();
     for (fid, face) in brep.faces.iter().enumerate() {
         if face.facets.is_empty() {
             continue;
@@ -495,7 +466,6 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
                 boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
             }
         }
-        let fcap = face_cap(face, params);
         if structured(face) {
             // keep the clean structured input tessellation: pin the face's interior
             // input vertices (those not already on a boundary edge), on the surface.
@@ -539,9 +509,10 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
                     hi[k] = hi[k].max(p[k]);
                 }
             }
-            // denser than the bulk size so flat caps are not under-seeded.
-            let target = |uv: P2| (surf_field.at(surf.eval_uv(uv)).min(fcap)).max(surf_min_h * 0.5);
-            let step = (surf_min_h * 0.8).max(1e-9);
+            // oversampled (OVERSAMPLE * H): the surface is finer than the volume
+            // so the restricted-Delaunay boundary recovers without straddling tets.
+            let target = |uv: P2| (OVERSAMPLE * h_at(surf.eval_uv(uv))).max(fine * 0.5);
+            let step = (fine * 0.8).max(1e-9);
             let inside = |uv: P2| in_loops(uv, &segs);
             for uv in cvt_fill(&bnd, lo, hi, step, target, SURF_LLOYD_ITERS, inside, params.density_weighted) {
                 sites.push(Site::on_plane(o, n, surf.eval_uv(uv)));
@@ -549,11 +520,9 @@ pub fn surface_sites(brep: &Brep, plc: &TaggedPlc, params: &MeshParams) -> Surfa
             }
             continue;
         }
-        // sphere / other doubly-curved: randomized on-surface fill.
-        let target = |p: V3| {
-            let hc = surf.curvature_radius(surf.project_uv(p)) * chord;
-            surf_field.at(p).min(hc).min(fcap).max(surf_min_h * 0.25)
-        };
+        // sphere / other doubly-curved: randomized on-surface fill (oversampled;
+        // curvature refinement is already in H = domain.h_at).
+        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
         for p in fill_face_points(surf, &face.facets, plc, &boundary, &target, fid as u64) {
             sites.push(Site::on_surface(plc.surfaces[face.plc_surface as usize].clone(), p));
             point_tile.push(fid as u32);

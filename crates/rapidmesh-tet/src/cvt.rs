@@ -593,7 +593,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // the volume stages below are unchanged.
     let t_surf = std::time::Instant::now();
     let brep = rapidmesh_brep::build::from_plc(plc);
-    let ss = crate::brep_mesh::surface_sites(&brep, plc, params);
+    let ss = crate::brep_mesh::surface_sites(&brep, plc, params, &domain);
     let mut sites = ss.sites;
     let mut point_tile = ss.point_tile;
     let tiles = ss.tiles;
@@ -606,27 +606,16 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
 
 
-    // ---- stage 3 input: the VOLUME size field, grown from the surface points --
-    // Each surface point's source size is its actual local spacing (nearest other
-    // surface point), so the field carries the true surface density (fine at a
-    // curved nose) into the interior, gradient-limited like the surface field.
+    // ---- stage 3 input: the VOLUME size field = the SIZE FIELD `H` --------
+    // The volume is meshed at the geometry's size field `H` (`domain.h_at`: caps +
+    // curvature, graded), DECOUPLED from the surface. The surface was meshed FINER
+    // (at `OVERSAMPLE * H`), so the surface is finer than the volume -- the
+    // restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
+    // the exact PLC boundary (conformity). Sampling `H` at the surface points and
+    // gradient-limiting reproduces the field for the volume stages.
     let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
-    let stree = Octree::build(&surf_pos);
-    let vol_sources: Vec<(V3, f64)> = (0..n_surf)
-        .map(|i| {
-            let mut best = params.maxh;
-            for j in stree.within_radius(surf_pos[i], params.maxh) {
-                let j = j as usize;
-                if j != i {
-                    let d = dist(surf_pos[i], surf_pos[j]);
-                    if d > 1e-12 && d < best {
-                        best = d;
-                    }
-                }
-            }
-            (surf_pos[i], best)
-        })
-        .collect();
+    let vol_sources: Vec<(V3, f64)> =
+        (0..n_surf).map(|i| (surf_pos[i], domain.h_at(surf_pos[i]).max(1e-9))).collect();
     let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.maxh);
     // A per-region size cap: `region_maxh` is a region-WIDE size that the surface
     // field (which grows coarse from the boundary inward) does not enforce in the

@@ -247,6 +247,29 @@ synchronisation is the barrier between levels (\cref{prin:parallel}).}
 \label{fig:pipeline}
 \end{figure}
 
+\begin{algorithm}[H]
+\caption{\textsc{Mesh}$(\mathcal{B},h_{\max},\varepsilon)$ -- top-level driver}
+\label{alg:mesh}
+\KwIn{B-rep $\mathcal{B}$ (corners, edges, faces, region tags); size $h_{\max}$;
+      deflection tolerance $\varepsilon$}
+\KwOut{conforming, watertight, multi-region tetrahedral mesh}
+pin every corner vertex\hfill\tcp*[h]{Stage 0}\;
+\ForEach{edge $e\in\mathcal{B}$ \normalfont(\emph{in parallel})}{
+   $P_e \gets$ \textsc{MeshEdge}$(e,h_{\text{edge}},\varepsilon)$
+   \hfill\tcp*[h]{Stage 1}}
+\textbf{barrier}\;
+\ForEach{face $f\in\mathcal{B}$ \normalfont(\emph{in parallel})}{
+   $h_f\gets$ \textsc{BuildSizingField}$(\partial f,\,$curvature$,h_{\max})$;\quad
+   $T_f \gets$ \textsc{MeshFace}$(f,h_f,\varepsilon)$ \hfill\tcp*[h]{Stage 2}}
+\textbf{barrier}\;
+$\mathcal{S}\gets\bigcup_f T_f$ \hfill\tcp*[h]{watertight surface mesh}\;
+$h_{\text{vol}}\gets$ \textsc{BuildSizingField}$(\mathcal{S},\,$thickness$,h_{\max})$\;
+\ForEach{region $R$ \normalfont(\emph{in parallel})}{
+   $M_R \gets$ \textsc{MeshVolume}$(\mathcal{S}|_R,\,h_{\text{vol}})$
+   \hfill\tcp*[h]{Stage 3}}
+\Return $\bigcup_R M_R$, merged in fixed id order\;
+\end{algorithm}
+
 % ============================================================================
 \section{Notation and preliminaries}
 \label{sec:notation}
@@ -274,8 +297,24 @@ h(\vv{x}) \;=\; \min_{\vv{y}}\ \bigl(h_0(\vv{y})+\alpha\norm{\vv{x}-\vv{y}}\bigr
 the viscosity solution of the Eikonal inequality $\norm{\nabla h}\le\alpha$ with
 obstacle $h\le h_0$. It is computed by a single fast-marching (or a few
 Gauss--Seidel sweeps) over the size sources, $O(N\log N)$ in the number of grid
-nodes -- the same machinery at every stage, fed first by edges, then faces,
-then the volume.
+nodes -- the same machinery (\cref{alg:grad}) at every stage, fed first by
+edges, then faces, then the volume.
+
+\begin{algorithm}[H]
+\caption{\textsc{BuildSizingField} -- gradation limiting (\cref{eq:gradenvelope})}
+\label{alg:grad}
+\KwIn{raw requests $h_0$ at sources (edge spacing, curvature, thickness);
+      grading $\alpha$; cap $h_{\max}$}
+\KwOut{Lipschitz field $h$ on the background octree}
+$h(\vv x)\gets\min(h_0(\vv x),h_{\max})$ at sources, $+\infty$ elsewhere;
+   push sources into a min-heap keyed by $h$\;
+\While{heap nonempty}{
+  pop node $\vv x$ of smallest $h$\;
+  \ForEach{neighbour $\vv y$}{
+    \If{$h(\vv x)+\alpha\norm{\vv x-\vv y}<h(\vv y)$}{
+       $h(\vv y)\gets h(\vv x)+\alpha\norm{\vv x-\vv y}$;\ \ update heap}}}
+\Return $h$\;
+\end{algorithm}
 
 \subsection{Centroidal Voronoi Tessellation}
 Given a density $\rho:\Omega\to\R_{>0}$ on a domain $\Omega$ and sites
@@ -448,6 +487,21 @@ surfaces are analytic with known second fundamental forms, from their normal
 curvatures in the direction $\vv{T}$). A circle is recovered exactly when both
 operands are quadrics sharing an axis, in which case the modality collapses to
 the \emph{Circle} row of \cref{tab:curves}.
+
+\begin{algorithm}[H]
+\caption{\textsc{IntersectionCurve}$(\vv{S}_a,\vv{S}_b,\text{chain})$}
+\label{alg:inter}
+\KwIn{two surfaces (implicit $f,g$); seed polyline (chain) from the arrangement}
+\KwOut{points on $\{f{=}g{=}0\}$ with tangents, ready for \textsc{MeshEdge}}
+\ForEach{seed vertex $\vv x_0$ of the chain}{
+  \Repeat{$\norm{(f,g)}<\mathrm{tol}$}{
+     $\vv x\gets \vv x - J^{+}(f,g)^\T$,\quad $J=[\nabla f^\T;\nabla g^\T]$
+     \hfill\tcp*[h]{\eqref{eq:interNewton}}}
+  $\vv T\gets (\nabla f\times\nabla g)/\norm{\nabla f\times\nabla g}$
+     \hfill\tcp*[h]{\eqref{eq:interT}}}
+distribute along the recovered curve by deflection \eqref{eq:defl_len}, using
+$\kappa$ from \eqref{eq:interkappa}\;
+\end{algorithm}
 
 \subsection{Deflection sizing}
 \label{sec:defl}
@@ -754,6 +808,41 @@ about the line of centres (the circle lies in a plane $\perp$ that axis), so the
 same latitude/longitude construction applies, with both incident caps deriving
 their longitude reference from the \emph{shared} rim so their rings align.
 
+\begin{algorithm}[H]
+\caption{\textsc{BuildChart}$(\vv{S},\,\text{verts})$}
+\label{alg:chart}
+\KwIn{analytic surface $\vv{S}$; representative on-surface points of the face}
+\KwOut{chart $(\Phi,\Phi^{-1})$, or \textsc{None} (caller falls back)}
+\Switch{kind of $\vv{S}$}{
+  \uCase{plane}{$(\Phi,\Phi^{-1})\gets$ in-plane orthonormal frame}
+  \uCase{cylinder / cone / extruded}{$(\Phi,\Phi^{-1})\gets$ exact isometric
+     unroll \eqref{eq:chartmaps}}
+  \uCase{sphere}{$\vv c\gets$ projected centroid of verts;
+     $(\Phi,\Phi^{-1})\gets(\log_{\vv c},\exp_{\vv c})$}
+  \Other{metric-scale the parameters by $(\sqrt E,\sqrt G)$ at the centroid}
+}
+\If{$\max_{\text{verts}}\dist\!\bigl(\proj_{\vv S}(\vv p),\,\Phi^{-1}\Phi(\vv p)
+     \bigr)>\mathrm{tol}$}{
+   \Return \textsc{None} \hfill\tcp*[h]{wrapping/closed $\to$ revolution grid}}
+\Return $(\Phi,\Phi^{-1})$\;
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{\textsc{RevolutionGrid}$(\vv{S},\vv a,\text{rim loops},h)$}
+\label{alg:rev}
+\KwIn{revolution surface $\vv{S}$; axis $\vv a$; rim edge points; field $h$}
+\KwOut{interior surface points (seam-free, rim-aligned)}
+$\{\theta_k\}\gets$ longitudes of the rim points about $\vv a$ (sorted, dedup)
+   \hfill\tcp*[h]{shared by both incident faces}\;
+$[v_0,v_1]\gets$ the $v$-extent of the rim loops\;
+$n_v\gets\max\!\bigl(1,\lceil\operatorname{arclen}(v_0,v_1)/h\rceil\bigr)$\;
+\For{interior row $j=1,\dots,n_v-1$}{
+  $v_j\gets v_0+(v_1-v_0)\,j/n_v$\;
+  \For{each $\theta_k$ \normalfont(thinned by $\cos$ toward a pole)}{
+     emit $\vv{S}(\theta_k,v_j)$ \hfill\tcp*[h]{ring aligned to the rim}}}
+\Return the interior rings \hfill\tcp*[h]{rims/poles are the shared edges}\;
+\end{algorithm}
+
 \subsection{Surface CVT and adaptivity}
 \begin{algorithm}[H]
 \caption{\textsc{MeshFace}$(\vv{S},\text{loops},h,\varepsilon)$}
@@ -880,6 +969,20 @@ locally re-tetrahedralizes the cavity straddling each constraint triangle so the
 triangle becomes a union of tetrahedron faces. Every Steiner point lies
 \emph{on} $\mathcal{S}$ (never off it), so the boundary geometry is preserved
 exactly and \cref{prop:watertight} still holds.
+
+\begin{algorithm}[H]
+\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$ -- boundary recovery}
+\label{alg:recover}
+\KwIn{Delaunay $\mathcal{T}$ of (interior $\cup$ surface vertices); constraint
+      surface $\mathcal{S}$}
+\KwOut{CDT containing every $\triangle\in\mathcal{S}$ as a union of faces}
+\ForEach{constraint edge $e\in\mathcal{S}$ not yet a union of mesh edges}{
+  insert Steiner points on $e$ until $e$ is recovered \hfill\tcp*[h]{on $\mathcal{S}$}}
+\ForEach{constraint triangle $\triangle\in\mathcal{S}$ not yet a union of faces}{
+  re-tetrahedralize the cavity straddling $\triangle$ so $\triangle$ is a union
+  of faces \hfill\tcp*[h]{Steiner only on $\mathcal{S}$}}
+\Return $\mathcal{T}$\;
+\end{algorithm}
 
 \paragraph{Quality measures and the cleanup pass.}
 Element quality is reported as the minimum dihedral angle and the

@@ -15,3 +15,6 @@
 figures/*.png
 # intermediate per-case viewer JSONs (regenerable via validate.py)
 validation/meshes/
+
+# regenerable gallery renders (report/render_gallery.py)
+figures/gallery/

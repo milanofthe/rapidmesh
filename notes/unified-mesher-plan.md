@@ -200,8 +200,15 @@ watertight/exakt bei vertretbarer Perf. Reihenfolge = Risiko zuerst, dann Perf
 2. **B2 (#103) — GATE** — Box (exakt+watertight) + geschlossene Kugel (<=tol+watertight,
    Steiner beschraenkt). **GO** → weiter. **NO-GO** → Eskalation (Cavity-Retet in cdt3).
    Das billigste Experiment, das die teuerste Unsicherheit (gekruemmte Recovery) aufloest.
-3. **C1 (#104)** — `piercing_edge`/Recovery via Octree (6x→~1.5x). Frueh, damit der
-   67er-Benchmark als laufendes Gate bezahlbar wird.
+3. **C1 (#104) — fertig** — `piercing_edge` lokale Stern-Suche (O(star) statt O(tets),
+   Full-Scan-Fallback). Zylinder-Recovery 87s→14s. BEFUND: die Restkosten sind KEIN
+   piercing_edge-Problem mehr, sondern **C3** — der Zylinder-Barrel erzeugt steiner=4192
+   (= Budget), weil `recover_facet` nur 3-2-Flips kann und das nicht-near-Delaunay-Band
+   nicht reinflippt. Die Icosphere war steiner=0 (near-Delaunay). → C3 ist der echte
+   Engpass fuer gekruemmte Nicht-Kugel-Flaechen; rueckt VOR C2.
+   Design-Fork fuer C3: (A) Recovery staerken (2-3/4-4-Flips, Cavity-Retet) — generell,
+   hilft auch Torus; (B) Surface-Tris near-3D-Delaunay erzeugen (z.B. konvexe Huelle
+   fuer konvexe Solids) — steiner~0, aber nicht fuer konkav/Torus. (A) ist holistisch.
 4. **A5 (#105) — teilweise** — Voll-Revolution mit 2 Rims (Zylinder, Kegel-Frustum,
    partieller Torus-Tube) = geschlossenes Tri-Band (Spalten=gemeinsame Rim-Thetas,
    Wrap schliesst die Naht). Zylinder watertight via mesh_cdt verifiziert. OFFEN:

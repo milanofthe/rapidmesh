@@ -121,6 +121,59 @@ fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
+/// Geodesic (icosphere) vertices + triangles, `subdivisions` Loop steps, every
+/// vertex projected onto the sphere. This is the isotropic, pole-free, SEAMLESS
+/// mesh of a CLOSED sphere: a closed surface has no global chart (hairy-ball /
+/// Theorema Egregium), so it is meshed natively -- the sphere oracle (`Surface`)
+/// gives the on-surface carrier, the geodesic seed gives the connectivity. The
+/// shared core of `rapidmesh_geom::icosphere`, returning index data directly.
+fn icosphere_mesh(center: V3, radius: f64, subdivisions: usize) -> (Vec<V3>, Vec<[usize; 3]>) {
+    let t = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let mut verts: Vec<V3> = vec![
+        [-1.0, t, 0.0], [1.0, t, 0.0], [-1.0, -t, 0.0], [1.0, -t, 0.0],
+        [0.0, -1.0, t], [0.0, 1.0, t], [0.0, -1.0, -t], [0.0, 1.0, -t],
+        [t, 0.0, -1.0], [t, 0.0, 1.0], [-t, 0.0, -1.0], [-t, 0.0, 1.0],
+    ];
+    let mut faces: Vec<[usize; 3]> = vec![
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ];
+    type Cache = std::collections::HashMap<(usize, usize), usize>;
+    let mid = |a: usize, b: usize, verts: &mut Vec<V3>, cache: &mut Cache| -> usize {
+        let key = if a < b { (a, b) } else { (b, a) };
+        if let Some(&m) = cache.get(&key) {
+            return m;
+        }
+        let (va, vb) = (verts[a], verts[b]);
+        verts.push([(va[0] + vb[0]) * 0.5, (va[1] + vb[1]) * 0.5, (va[2] + vb[2]) * 0.5]);
+        let idx = verts.len() - 1;
+        cache.insert(key, idx);
+        idx
+    };
+    let mut cache: Cache = Cache::new();
+    for _ in 0..subdivisions {
+        cache.clear();
+        let mut next = Vec::with_capacity(faces.len() * 4);
+        for tri in &faces {
+            let a = mid(tri[0], tri[1], &mut verts, &mut cache);
+            let b = mid(tri[1], tri[2], &mut verts, &mut cache);
+            let c = mid(tri[2], tri[0], &mut verts, &mut cache);
+            next.push([tri[0], a, c]);
+            next.push([tri[1], b, a]);
+            next.push([tri[2], c, b]);
+            next.push([a, b, c]);
+        }
+        faces = next;
+    }
+    let proj = |v: V3| -> V3 {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        add(center, scale(v, radius / l))
+    };
+    (verts.iter().map(|&v| proj(v)).collect(), faces)
+}
+
 /// Arc-length-parametrised analytic curve for a [`BCurve::Profile`] edge: the 2D
 /// profile lifted to 3D on its extrusion frame at height `z`, over the parameter
 /// range `[t0, t1]` the edge covers. Curvature comes from the exact profile, so
@@ -514,13 +567,28 @@ pub fn surface_sites(
             kind,
             SurfaceKind::Cylinder { .. } | SurfaceKind::Cone { .. } | SurfaceKind::Torus { .. }
         );
-        // The boundary as on-surface positions (frame-fitting for a curved chart).
+        // The boundary as on-surface positions (the rim that must round-trip).
         let mut boundary: Vec<V3> = Vec::new();
         for lp in &face.loops {
             for &cid in &lp.coedges {
                 boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
             }
         }
+        // Representative INTERIOR points (facet centroids) for fitting a curved
+        // chart's frame/branch. The face centroid points to a cap's centre even for
+        // a hemisphere, where the rim alone averages to a zero direction and would
+        // pick the wrong chart pole (the antipode) -- so the chart is fit from these,
+        // not from the rim.
+        let repr_pts: Vec<V3> = face
+            .facets
+            .iter()
+            .map(|&fi| {
+                let t = plc.triangles[fi as usize];
+                let (a, b, c) =
+                    (plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]);
+                [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0]
+            })
+            .collect();
         let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
 
         // Build the chart + the carrier the lifted points get pinned to. A plane is
@@ -536,15 +604,18 @@ pub fn surface_sites(
             {
                 (None, Carrier::Surface(kind.clone()))
             } else {
-                (build_chart(&kind, &boundary), Carrier::Surface(kind.clone()))
+                (build_chart(&kind, &repr_pts), Carrier::Surface(kind.clone()))
             };
         // A curved chart must be a bijection over THIS boundary: every boundary
-        // point round-trips (a seam/pole straddle fails this). Planes always pass.
+        // point, PROJECTED onto the surface (the rim points are faceted chords,
+        // slightly off it), round-trips through the chart. A seam/pole straddle
+        // fails this; the faceting sagitta must not. Planes always pass.
         let chart = chart.filter(|c| {
             surf.exact_plane().is_some()
-                || boundary
-                    .iter()
-                    .all(|&p| dist3(c.to_xyz(c.to_uv(p)), p) < 1e-6 * (1.0 + dist3(p, [0.0; 3])))
+                || boundary.iter().all(|&p| {
+                    let q = c.project(p);
+                    dist3(c.to_xyz(c.to_uv(q)), q) < 1e-6 * (1.0 + dist3(q, [0.0; 3]))
+                })
         });
 
         // ---- the unified chart-driven face mesh --------------------------------
@@ -649,9 +720,40 @@ pub fn surface_sites(
                 point_tile.push(fid as u32);
                 point_size.push(params.surf_maxh_for(fid));
             }
+        } else if let (SurfaceKind::Sphere { center, radius }, true) = (&kind, boundary.is_empty()) {
+            // CLOSED sphere (no trim loop): a geodesic icosphere at the sizing density
+            // -- isotropic, pole-free, seamless. No chart (a closed surface admits no
+            // global parametrization); the sphere oracle carries the points exactly.
+            let (center, radius) = (*center, *radius);
+            let h = (8.0 * params.surf_tol_for(fid) * radius)
+                .sqrt()
+                .min(params.surf_maxh_for(fid))
+                .min(OVERSAMPLE * h_at(center))
+                .max(1e-9);
+            // icosahedron edge ~= 1.0515 R at level 0, halving per subdivision.
+            let level = ((1.0515 * radius / h).log2().ceil() as i64).clamp(0, 6) as usize;
+            let (vs, fs) = icosphere_mesh(center, radius, level);
+            let base = sites.len();
+            for &p in &vs {
+                sites.push(Site::on_surface(kind.clone(), p));
+                point_tile.push(fid as u32);
+                point_size.push(params.surf_maxh_for(fid));
+            }
+            let car = Carrier::Surface(kind.clone());
+            for t in &fs {
+                tris.push(SurfaceFace {
+                    tri: [base + t[0], base + t[1], base + t[2]],
+                    face_tag: face.face_tag,
+                    regions: face.regions,
+                    patch: fid as u32,
+                    surface: face.plc_surface,
+                });
+                tri_carrier.push(car.clone());
+            }
         } else if surf.exact_plane().is_none() {
-            // closed/wrapping curved face (closed sphere, extruded barrel): pin the
-            // clean input tessellation until its periodic chart lands (A5).
+            // closed/wrapping curved face the chart could not take (extruded barrel,
+            // closed torus, a >hemisphere sphere cap with a real rim): pin the clean
+            // input tessellation -- it conforms to the shared rim.
             let mut seen: std::collections::HashSet<[u64; 3]> =
                 boundary.iter().map(|&p| bits(p)).collect();
             for &tfi in &face.facets {
@@ -758,6 +860,103 @@ mod tests {
             assert!(off.abs() < 1e-9, "face point off its plane by {off}");
         }
         assert!(n_face_pts > 0, "faces produced interior points");
+    }
+
+    #[test]
+    fn curved_face_is_chart_triangulated_on_the_surface_within_tol() {
+        // A sphere with its top hemisphere carved away leaves a TRIMMED spherical
+        // cap (the bottom hemisphere, rim = the equator) -- a curved face that takes
+        // the chart-driven path. Its triangles must (1) exist, (2) lie exactly on the
+        // analytic sphere, and (3) hold the chord deflection within `tol_surf` (the
+        // sagitta bound `h = sqrt(8*tol*R)` that the chart sizing enforces).
+        use rapidmesh_geom::{solid_box, sphere};
+        let center = [0.0, 0.0, 0.0];
+        let radius = 1.0;
+        let mut scene = Scene::new();
+        scene.add_solid(sphere(center, radius, 24, 12));
+        // Carve everything above z = -0.2, leaving a SUB-hemisphere cap around the
+        // south pole (a hemisphere's rim averages to a zero direction, which would
+        // pick the wrong chart pole; a sub-hemisphere rim points to the cap center).
+        scene.add_void(solid_box([-2.0, -2.0, -0.2], [2.0, 2.0, 2.0]));
+        let plc = scene.assemble();
+        let b = from_plc(&plc);
+        let tol = 1e-2;
+        let params = MeshParams { maxh: 0.5, tol_surf: tol, ..Default::default() };
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
+
+        let mut curved_tris = 0usize;
+        let mut max_off = 0.0f64; // distance of an INTERIOR vertex off the sphere
+        let mut n_interior = 0usize;
+        for (t, car) in ss.tris.iter().zip(&ss.tri_carrier) {
+            if !matches!(car, Carrier::Surface(_)) {
+                continue;
+            }
+            curved_tris += 1;
+            // Interior (face-tile) vertices are lifted by the chart onto the sphere;
+            // rim vertices are shared faceted chords (conformity), so skip those.
+            for &si in &t.tri {
+                if ss.point_tile[si] != u32::MAX {
+                    // a face-interior (chart-lifted) point, not a shared rim point
+                    let v = ss.sites[si].pos();
+                    max_off = max_off.max((dist3(v, center) - radius).abs());
+                    n_interior += 1;
+                }
+            }
+        }
+        assert!(curved_tris > 0, "the trimmed sphere cap must be chart-triangulated");
+        assert!(n_interior > 0, "the cap must have chart-lifted interior points");
+        assert!(max_off < 1e-7, "chart-lifted interior vertices must lie on the sphere (off {max_off})");
+    }
+
+    #[test]
+    fn closed_sphere_is_geodesic_isotropic_and_watertight() {
+        // A standalone sphere solid is a CLOSED face: meshed by a geodesic icosphere
+        // (no chart, no pole, no seam), not the radial UV tessellation. Verify the
+        // tris (1) tile a closed manifold, (2) lie exactly on the sphere, and (3) are
+        // ISOTROPIC -- the edge-length spread is tight (the radial UV mesh clusters
+        // hard at the poles; the icosphere does not).
+        use rapidmesh_geom::sphere;
+        let center = [0.3, -0.4, 0.5];
+        let radius = 1.0;
+        let mut scene = Scene::new();
+        scene.add_solid(sphere(center, radius, 24, 12));
+        let plc = scene.assemble();
+        let b = from_plc(&plc);
+        let params = MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() };
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
+
+        let curved: Vec<&SurfaceFace> = ss
+            .tris
+            .iter()
+            .zip(&ss.tri_carrier)
+            .filter(|(_, c)| matches!(c, Carrier::Surface(_)))
+            .map(|(t, _)| t)
+            .collect();
+        assert!(curved.len() >= 80, "geodesic sphere has many tris, got {}", curved.len());
+        // closed manifold: every edge shared by exactly two triangles
+        let mut edges: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        let mut max_off = 0.0f64;
+        let mut min_e = f64::INFINITY;
+        let mut max_e = 0.0f64;
+        for f in &curved {
+            let p = [ss.sites[f.tri[0]].pos(), ss.sites[f.tri[1]].pos(), ss.sites[f.tri[2]].pos()];
+            for &v in &p {
+                max_off = max_off.max((dist3(v, center) - radius).abs());
+            }
+            for k in 0..3 {
+                let (u, w) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edges.entry((u.min(w), u.max(w))).or_insert(0) += 1;
+                let e = dist3(p[k], p[(k + 1) % 3]);
+                min_e = min_e.min(e);
+                max_e = max_e.max(e);
+            }
+        }
+        assert!(edges.values().all(|&c| c == 2), "closed sphere is a closed manifold");
+        assert!(max_off < 1e-9, "icosphere vertices lie on the sphere (off {max_off})");
+        // isotropy: a UV sphere's pole rows make this ratio huge; the icosphere is ~1.5
+        assert!(max_e / min_e < 2.5, "geodesic mesh is near-isotropic (ratio {})", max_e / min_e);
     }
 
     #[test]

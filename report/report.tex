@@ -1036,33 +1036,43 @@ the multi-material mesh conforming across interfaces.
 \begin{proposition}[Watertightness]
 \label{prop:watertight}
 If $\mathcal{S}$ is a closed, non-self-intersecting, conforming surface mesh and
-the CDT recovers all of its facets, then for every constraint triangle the two
-incident tetrahedra carry the region labels prescribed by that triangle's
-front/back tags, and the boundary of each meshed region is exactly the
-corresponding subset of $\mathcal{S}$. In particular there are no protrusions
-into a void and no gaps.
+the CDT recovers it, then $\mathcal{S}$ is covered by tet faces with exactly one
+tetrahedron on each side (a planar facet may be re-triangulated within its own
+plane, which leaves the surface geometry unchanged), each side carrying the
+region label prescribed by $\mathcal{S}$, and the boundary of each meshed region
+is exactly the corresponding subset of $\mathcal{S}$. In particular there are no
+protrusions into a void and no gaps.
 \end{proposition}
 
 \noindent
-Boundary recovery proceeds in two classical stages \cite{ShewchukCDT2002,Si2015}:
-\emph{edge recovery} forces each missing constraint edge by inserting Steiner
-points on it until it appears as a union of mesh edges; \emph{facet recovery}
-locally re-tetrahedralizes the cavity straddling each constraint triangle so the
-triangle becomes a union of tetrahedron faces. Every Steiner point lies
-\emph{on} $\mathcal{S}$ (never off it), so the boundary geometry is preserved
-exactly and \cref{prop:watertight} still holds.
+Boundary recovery is by \emph{bistellar flips} \cite{ShewchukCDT2002,Si2015}: a
+constraint edge or facet absent from the Delaunay is pierced by a tetrahedron
+edge, and a local $2$-$3$ or $3$-$2$ flip removes that edge so the constraint
+appears as a union of faces (the $3$D analogue of the $2$D constrained-edge flip
+of \cref{sec:faces}). \emph{Planar facets need no recovery}: their vertices are
+coplanar, so the Delaunay restricted to the plane already tiles them with a
+tetrahedron on each side; recovery is confined to curved and feature regions, and
+the flip count is therefore small. The rare configuration that no flip resolves
+(a Schönhardt-type lock) is split by a Steiner point lying \emph{on}
+$\mathcal{S}$, constructed on its carrier (a point on a line, $\vv{x}=\vv a+t(\vv
+b-\vv a)$, or on a plane, $\vv{x}=\vv a+u(\vv b-\vv a)+v(\vv c-\vv a)$, so it
+stays exactly on the carrier under repeated splitting); the boundary geometry, and
+a planar region's bit-exact volume, are thereby preserved and
+\cref{prop:watertight} still holds.
 
 \begin{algorithm}[H]
-\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$: boundary recovery}
+\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$: flip-based boundary
+recovery}
 \label{alg:recover}
 \KwIn{Delaunay $\mathcal{T}$ of (interior $\cup$ surface vertices); constraint
-      surface $\mathcal{S}$}
-\KwOut{CDT containing every $\triangle\in\mathcal{S}$ as a union of faces}
+      surface $\mathcal{S}$ (planar facets exempt, \cref{prop:watertight})}
+\KwOut{CDT containing every non-planar $\triangle\in\mathcal{S}$ as a union of faces}
 \ForEach{constraint edge $e\in\mathcal{S}$ not yet a union of mesh edges}{
-  insert Steiner points on $e$ until $e$ is recovered \hfill\tcp*[h]{on $\mathcal{S}$}}
-\ForEach{constraint triangle $\triangle\in\mathcal{S}$ not yet a union of faces}{
-  re-tetrahedralize the cavity straddling $\triangle$ so $\triangle$ is a union
-  of faces \hfill\tcp*[h]{Steiner only on $\mathcal{S}$}}
+  \lWhile{a tet edge crosses $e$}{$2$-$3$/$3$-$2$ flip it away}
+  \lIf{still missing}{split $e$ at a Steiner point on its carrier}}
+\ForEach{constraint facet $\triangle\in\mathcal{S}$ not yet a union of faces}{
+  flip the tet edge piercing $\triangle$ so $\triangle$ becomes a union of faces;
+  \hfill\tcp*[h]{Steiner on $\mathcal{S}$ only if no flip applies}}
 \Return $\mathcal{T}$\;
 \end{algorithm}
 
@@ -1129,8 +1139,9 @@ the surface/volume triangulations by Bowyer--Watson with octree-accelerated poin
 location. The CVT relaxation is a fixed number of passes, each a (rebuilt or
 locally updated) Delaunay plus a linear centroid sweep \eqref{eq:disc_centroid};
 because the sites are already near-uniform, boundary recovery (\cref{alg:recover})
-inserts only a bounded, in practice tiny, number of Steiner points, and slivers
-left for the cleanup pass are rare \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
+performs only a bounded, in practice tiny, number of flips (a Steiner split is
+rarer still), and slivers left for the cleanup pass are rare
+\cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
 
 The structure is what makes it scale. Within a level the entities are independent
 (\cref{prin:parallel}), so with $P$ workers the wall-clock of a stage is the

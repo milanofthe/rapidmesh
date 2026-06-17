@@ -18,8 +18,6 @@
 \usepackage{enumitem}
 \usepackage{booktabs}
 \usepackage{tabularx}
-\usepackage{ltablex}
-\keepXColumns
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
 \newcolumntype{C}{>{\centering\arraybackslash}X}
 \newcolumntype{R}{>{\raggedleft\arraybackslash}X}
@@ -30,6 +28,7 @@
 \usepackage[font=small,labelfont=bf]{caption}
 \usepackage{subcaption}
 \usepackage{float}
+\usepackage{rotating}   % sidewaystable for the wide per-surface table
 
 % --- algorithms -------------------------------------------------------
 \usepackage[ruled,vlined]{algorithm2e}
@@ -300,7 +299,7 @@ support the modalities in \cref{tab:curves}.
 \begin{table}[H]\centering
 \caption{Edge curve modalities. All expose $\vv{C}(t),\vv{C}'(t),\vv{C}''(t)$.}
 \label{tab:curves}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}l L X@{}}
 \toprule
 Modality & $\vv{C}(t)$ & Source \\
 \midrule
@@ -311,7 +310,7 @@ NURBS & $\dfrac{\sum_i N_{i,p}(t)\,w_i\,\vv{P}_i}{\sum_i N_{i,p}(t)\,w_i}$ & imp
 Extruded profile & $\vv{b}+z\,\vv{a}+u_x\,P_x(t)+u_y\,P_y(t)$ & lifted 2D profile (airfoil)\\
 Polyline & piecewise linear chain & faceted fallback\\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{table}
 
 \subsection{Arc length}
@@ -446,28 +445,33 @@ E=\Su\!\cdot\!\Su,\quad F=\Su\!\cdot\!\Sv,\quad G=\Sv\!\cdot\!\Sv,
 A curve $t\mapsto(u(t),v(t))$ in parameter space has length
 $\int\sqrt{E\dot u^2+2F\dot u\dot v+G\dot v^2}\,\dd t$; this is the metric the
 chart must reproduce for Euclidean 2D operations (separation, centroid) to mean
-arc length on the surface. \Cref{tab:fff} lists $E,F,G,\dd A$ for every analytic
+arc length on the surface. \Cref{tab:geom} lists $E,F,G,\dd A$ for every analytic
 modality, all derived with a computer-algebra system.
 
-\begin{table}[H]\centering
-\caption{First fundamental form per modality ($\vv{a}$ the unit axis;
-$\alpha$ the cone half-angle). All but the NURBS row are diagonal ($F=0$),
-which is what makes the charts below clean.}
-\label{tab:fff}
-\begin{tabular}{@{}llllll@{}}
+\begin{sidewaystable}\centering
+\caption{Per-modality geometric quantities (all verified by computer algebra):
+the parameterization $\vv{S}(u,v)$, the first fundamental form $E,F,G$ and area
+element $\dd A$ (\cref{sec:faces}.1), and the Gaussian curvature $K$ and largest
+principal curvature $\kappa_{\max}=1/R_{\min}$ that drive the deflection sizing
+(\cref{sec:faces}.2). $\vv{a}$ is the unit axis, $\alpha$ the cone half-angle.
+All but the NURBS row are diagonal ($F=0$); developables have $K=0$; the sphere
+is umbilic.}
+\label{tab:geom}
+\small
+\begin{tabularx}{\textheight}{@{}l L c c c L c L@{}}
 \toprule
-Surface & $\vv{S}(u,v)$ & $E$ & $F$ & $G$ & $\dd A$\\
+Surface & $\vv{S}(u,v)$ & $E$ & $F$ & $G$ & $\dd A$ & $K$ & $\kappa_{\max}=1/R_{\min}$\\
 \midrule
-Plane & $\vv{o}+u\vv{e}_1+v\vv{e}_2$ & $1$ & $0$ & $1$ & $\dd u\dd v$\\
-Cylinder $(\theta,h)$ & $r(\cos\theta,\sin\theta)+h\vv{a}$ & $r^2$ & $0$ & $1$ & $r\,\dd u\dd v$\\
-Sphere $(\lambda,\varphi)$ & $r(\cos\varphi\cos\lambda,\cos\varphi\sin\lambda,\sin\varphi)$ & $r^2\cos^2\varphi$ & $0$ & $r^2$ & $r^2\abs{\cos\varphi}\,\dd u\dd v$\\
-Cone $(\theta,s)$ & $s\tan\!\alpha(\cos\theta,\sin\theta)+s\vv{a}$ & $s^2\tan^2\!\alpha$ & $0$ & $\sec^2\!\alpha$ & $\abs{s}\tan\!\alpha\sec\!\alpha\,\dd u\dd v$\\
-Torus $(\theta,\phi)$ & $(R{+}r\cos\phi)(\cos\theta,\sin\theta){+}r\sin\phi\,\vv{a}$ & $(R{+}r\cos\phi)^2$ & $0$ & $r^2$ & $r\abs{R{+}r\cos\phi}\,\dd u\dd v$\\
-Extruded $(t,h)$ & $\vv{b}+P(t)+h\vv{a}$ & $\norm{P'(t)}^2$ & $0$ & $1$ & $\norm{P'(t)}\dd u\dd v$\\
-NURBS $(u,v)$ & tensor B-spline \cite{PieglTiller1997} & $\Su\!\cdot\!\Su$ & $\Su\!\cdot\!\Sv$ & $\Sv\!\cdot\!\Sv$ & $\sqrt{EG{-}F^2}$\\
+Plane & $\vv{o}+u\vv{e}_1+v\vv{e}_2$ & $1$ & $0$ & $1$ & $\dd u\dd v$ & $0$ & $0$\\
+Cylinder $(\theta,h)$ & $r(\cos\theta,\sin\theta)+h\vv{a}$ & $r^2$ & $0$ & $1$ & $r\,\dd u\dd v$ & $0$ & $1/r$\\
+Sphere $(\lambda,\varphi)$ & $r(\cos\varphi\cos\lambda,\cos\varphi\sin\lambda,\sin\varphi)$ & $r^2\cos^2\varphi$ & $0$ & $r^2$ & $r^2\abs{\cos\varphi}\,\dd u\dd v$ & $1/r^2$ & $1/r$\\
+Cone $(\theta,s)$ & $s\tan\!\alpha(\cos\theta,\sin\theta)+s\vv{a}$ & $s^2\tan^2\!\alpha$ & $0$ & $\sec^2\!\alpha$ & $\abs{s}\tan\!\alpha\sec\!\alpha\,\dd u\dd v$ & $0$ & $\dfrac{\cos\alpha}{s\tan\alpha}$\\[4pt]
+Torus $(\theta,\phi)$ & $(R{+}r\cos\phi)(\cos\theta,\sin\theta){+}r\sin\phi\,\vv{a}$ & $(R{+}r\cos\phi)^2$ & $0$ & $r^2$ & $r\abs{R{+}r\cos\phi}\,\dd u\dd v$ & $\dfrac{\cos\phi}{r(R{+}r\cos\phi)}$ & $1/r$\\[4pt]
+Extruded $(t,h)$ & $\vv{b}+P(t)+h\vv{a}$ & $\norm{P'(t)}^2$ & $0$ & $1$ & $\norm{P'(t)}\dd u\dd v$ & $0$ & $\dfrac{\abs{P'\times P''}}{\norm{P'}^3}$\\[4pt]
+NURBS $(u,v)$ & tensor B-spline \cite{PieglTiller1997} & $\Su\!\cdot\!\Su$ & $\Su\!\cdot\!\Sv$ & $\Sv\!\cdot\!\Sv$ & $\sqrt{EG{-}F^2}$ & $\dfrac{LN{-}M^2}{EG{-}F^2}$ & $H{+}\sqrt{H^2{-}K}$\\
 \bottomrule
-\end{tabular}
-\end{table}
+\end{tabularx}
+\end{sidewaystable}
 
 \subsection{Curvature and surface deflection sizing}
 The shape operator's eigenvalues are the principal curvatures
@@ -480,27 +484,13 @@ Gaussian and mean curvatures are
 K=\kappa_1\kappa_2=\frac{LN-M^2}{EG-F^2},\qquad
 H=\tfrac12(\kappa_1+\kappa_2)=\frac{EN-2FM+GL}{2(EG-F^2)},
 \end{equation}
-and $\kappa_{1,2}=H\pm\sqrt{H^2-K}$. Verified values
-(\cref{tab:curv}) confirm the geometric intuition: developables have
-$K=0$, the sphere is umbilic.
-
-\begin{table}[H]\centering
-\caption{Principal/Gaussian curvature per modality (verified by computer
-algebra). $R_{\min}=1/\kappa_{\max}$ feeds the surface deflection bound.}
-\label{tab:curv}
-\begin{tabular}{@{}llll@{}}
-\toprule
-Surface & $K$ & principal curvatures & $\kappa_{\max}=1/R_{\min}$\\
-\midrule
-Plane & $0$ & $0,\ 0$ & $0$\\
-Cylinder & $0$ & $1/r,\ 0$ & $1/r$\\
-Cone & $0$ & $1/(s\tan\alpha\sec\alpha),\ 0$ & $1/(s\tan\alpha\sec\alpha)$\\
-Sphere & $1/r^2$ & $1/r,\ 1/r$ & $1/r$\\
-Torus & $\dfrac{\cos\phi}{r(R+r\cos\phi)}$ & $\dfrac{1}{r},\ \dfrac{\cos\phi}{R+r\cos\phi}$ & $1/r$\\
-Extruded & $0$ & $\kappa_P(t),\ 0$ & $\kappa_P(t)=\dfrac{\abs{P'\times P''}}{\norm{P'}^3}$\\
-\bottomrule
-\end{tabular}
-\end{table}
+and $\kappa_{1,2}=H\pm\sqrt{H^2-K}$. The per-modality values in \cref{tab:geom}
+confirm the geometric intuition: developables have $K=0$ (cylinder, cone,
+extruded), and the sphere is umbilic ($\kappa_1=\kappa_2=1/r$). For the cone the
+single non-zero principal curvature is $\cos\alpha/(s\tan\alpha)$, growing
+without bound toward the apex; for the torus the two principal curvatures are
+$1/r$ (tube) and $\cos\phi/(R+r\cos\phi)$ (which changes sign across the
+inner/outer equator), so $K$ is signed.
 
 \noindent
 The surface sagitta argument mirrors \eqref{eq:sagitta} with $R=R_{\min}=
@@ -528,7 +518,7 @@ chart -- exact.
 \item \emph{Cone}: polar unroll $\Phi(\theta,s)=\bigl(\rho\cos\psi,\rho\sin\psi
 \bigr)$ with slant $\rho=s/\cos\alpha$ and sweep $\psi=\theta\sin\alpha$. The
 induced chart metric is $E=s^2\tan^2\alpha,\ F=0,\ G=\sec^2\alpha$ -- identical
-to the cone's first fundamental form (\cref{tab:fff}), i.e.\ \emph{exactly
+to the cone's first fundamental form (\cref{tab:geom}), i.e.\ \emph{exactly
 isometric}.
 \item \emph{Extruded}: $\Phi(t,h)=(\sigma(t),\,h)$ with $\sigma(t)=\int^t\norm
 {P'}$ the profile arc length; $E=G=1,F=0$ -- exact.

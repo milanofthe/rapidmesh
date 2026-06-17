@@ -30,6 +30,6 @@ pub mod surf2d;
 pub mod surfchart;
 
 pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, SurfaceMesh, TetMesh};
-pub use cvt::surface_mesh;
+pub use cvt::{frozen_surface, surface_mesh, FrozenSurface};
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};

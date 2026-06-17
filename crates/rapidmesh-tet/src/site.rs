@@ -134,6 +134,14 @@ impl Site {
         s
     }
 
+    /// A site at `pos` on the given `carrier`, taking `pos` as-is (it is assumed
+    /// already on the carrier, e.g. a surface point the bottom-up stages produced
+    /// on its plane/curve). The constructor used to attach carriers to the frozen
+    /// surface for the volume stage.
+    pub fn at(carrier: Carrier, pos: V3) -> Site {
+        Site { carrier, pos }
+    }
+
     pub fn pos(&self) -> V3 {
         self.pos
     }

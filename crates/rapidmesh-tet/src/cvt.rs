@@ -1273,6 +1273,102 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
     }
 }
 
+/// The frozen Stage-2 surface in the exact form Stage 3 consumes: the surface
+/// mesh plus, per vertex and per facet, the geometric CARRIER. The volume stage
+/// inserts each vertex exactly ([`Site::exact`]) and recovers each curved facet
+/// onto its carrier ([`crate::cdt3`]); planar facets carry their plane (so a
+/// Steiner, if ever needed, stays on it) and need no recovery.
+pub struct FrozenSurface {
+    /// Surface vertex positions (parallel to [FrozenSurface::vert_carrier]).
+    pub points: Vec<V3>,
+    /// The carrier each vertex lives on (plane / analytic surface / corner).
+    pub vert_carrier: Vec<Carrier>,
+    /// The surface triangulation, tagged (region pair, face tag, surface, patch).
+    pub faces: Vec<SurfaceFace>,
+    /// The carrier each facet lies on: a plane (`Plane`) for planar patches,
+    /// the analytic surface (`Surface`) for curved groups.
+    pub face_carrier: Vec<Carrier>,
+    /// Analytic surfaces, parallel to [SurfaceFace::surface].
+    pub surfaces: Vec<SurfaceKind>,
+    /// Per-surface owner solid, parallel to `surfaces`.
+    pub surface_owners: Vec<u32>,
+}
+
+/// Builds the [`FrozenSurface`] by attaching carriers to the Stage-2 surface
+/// mesh. A planar facet's carrier is the plane through its (exact, on-plane)
+/// vertices: for an axis-aligned face the normal is exact, so `Site::exact`
+/// keeps every vertex bit-exactly on it. A curved facet carries its analytic
+/// surface. A vertex on one plane gets that plane; a vertex where several
+/// surfaces meet (a corner/feature edge) stays an explicit (`Vertex`) carrier,
+/// which on the exact fixtures is already its exact coordinate.
+pub fn frozen_surface(plc: &TaggedPlc, params: &MeshParams) -> FrozenSurface {
+    let sm = surface_mesh(plc, params);
+    let is_planar = |sid: u32| matches!(sm.surfaces[sid as usize], SurfaceKind::Plane);
+    let unit = |v: V3| {
+        let l = dot(v, v).sqrt();
+        if l > 0.0 {
+            scale(v, 1.0 / l)
+        } else {
+            [0.0, 0.0, 0.0]
+        }
+    };
+
+    // Per-facet carrier.
+    let face_carrier: Vec<Carrier> = sm
+        .faces
+        .iter()
+        .map(|f| {
+            if is_planar(f.surface) {
+                let (a, b, c) = (sm.points[f.tri[0]], sm.points[f.tri[1]], sm.points[f.tri[2]]);
+                Carrier::Plane { p0: a, n: unit(cross(sub(b, a), sub(c, a))) }
+            } else {
+                Carrier::Surface(sm.surfaces[f.surface as usize].clone())
+            }
+        })
+        .collect();
+
+    // Per-vertex carrier: aggregate the incident facets. Any curved incidence
+    // pins it to that surface; a single plane pins it to that plane; several
+    // distinct planes (a corner or feature edge) stay an explicit vertex.
+    let n = sm.points.len();
+    let mut curved_kind: Vec<Option<SurfaceKind>> = vec![None; n];
+    let mut plane: Vec<Option<(V3, V3)>> = vec![None; n];
+    let mut multi_plane = vec![false; n];
+    for (fi, f) in sm.faces.iter().enumerate() {
+        for &v in &f.tri {
+            match &face_carrier[fi] {
+                Carrier::Surface(k) => curved_kind[v] = Some(k.clone()),
+                Carrier::Plane { p0, n } => match plane[v] {
+                    None => plane[v] = Some((*p0, *n)),
+                    Some((_, n0)) if dot(*n, n0).abs() < 0.999 => multi_plane[v] = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    let vert_carrier: Vec<Carrier> = (0..n)
+        .map(|v| {
+            if let Some(k) = &curved_kind[v] {
+                Carrier::Surface(k.clone())
+            } else if let (Some((p0, nrm)), false) = (plane[v], multi_plane[v]) {
+                Carrier::Plane { p0, n: nrm }
+            } else {
+                Carrier::Vertex
+            }
+        })
+        .collect();
+
+    FrozenSurface {
+        points: sm.points,
+        vert_carrier,
+        faces: sm.faces,
+        face_carrier,
+        surfaces: sm.surfaces,
+        surface_owners: sm.surface_owners,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1280,6 +1376,26 @@ mod tests {
     use num_traits::Zero;
     use rapidmesh_geom::{extrude_spline_profile, icosphere, solid_box, NurbsCurve, Scene};
     use rapidmesh_testutil::rat;
+
+    #[test]
+    fn frozen_surface_box_carries_exact_planes() {
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
+        let plc = scene.assemble();
+        let fs = frozen_surface(&plc, &MeshParams { maxh: 1.0, ..Default::default() });
+        // Every facet of a box is planar -> a Plane carrier (recovery-free).
+        assert!(fs.face_carrier.iter().all(|c| matches!(c, Carrier::Plane { .. })));
+        assert!(!fs.faces.is_empty());
+        // Every vertex's exact() reconstructs its position and lands on a box face
+        // (bit-exact for these axis-aligned planes).
+        for i in 0..fs.points.len() {
+            let e = Site::at(fs.vert_carrier[i].clone(), fs.points[i]).exact();
+            let p = e.approx().expect("valid");
+            assert!(dist(p, fs.points[i]) < 1e-9, "carrier moved the vertex");
+            let on = p[0] == 0.0 || p[0] == 2.0 || p[1] == 0.0 || p[1] == 3.0 || p[2] == 0.0 || p[2] == 4.0;
+            assert!(on, "frozen vertex {p:?} is not on the box surface");
+        }
+    }
 
     fn region_volume6(m: &TetMesh, r: u32) -> BigRational {
         let mut acc = BigRational::zero();

@@ -202,8 +202,12 @@ watertight/exakt bei vertretbarer Perf. Reihenfolge = Risiko zuerst, dann Perf
    Das billigste Experiment, das die teuerste Unsicherheit (gekruemmte Recovery) aufloest.
 3. **C1 (#104)** — `piercing_edge`/Recovery via Octree (6x→~1.5x). Frueh, damit der
    67er-Benchmark als laufendes Gate bezahlbar wird.
-4. **A5 (#105)** — periodische Barrel-Tris (Zyl/Kegel/Torus/Extrudat). Voraussetzung,
-   dass mesh_cdt diese Solids ueberhaupt constrainen kann (heute: Sites, keine Tris).
+4. **A5 (#105) — teilweise** — Voll-Revolution mit 2 Rims (Zylinder, Kegel-Frustum,
+   partieller Torus-Tube) = geschlossenes Tri-Band (Spalten=gemeinsame Rim-Thetas,
+   Wrap schliesst die Naht). Zylinder watertight via mesh_cdt verifiziert. OFFEN:
+   Kegel mit Apex (1 Rim + Punkt), voller Torus (doppelt-periodisch, kein Rim),
+   Extrudat-Barrel. **PERF-BEFUND**: Barrel-Recovery (nicht near-Delaunay) dauert ~90s
+   (Kugel war steiner=0/ms) -> C1 ist jetzt der akute Blocker, vor A5-Rest.
 5. **C2 (#107)** — Multi-Region-Interfaces (`cylinder_via`, `em_scene`).
 6. **C3 (#108)** — gekruemmte Recovery robust (Torus watertight; Cavity-Retet). Haengt an B2+A5.
 7. **A4 (#106)** — adaptiver groebste-Stelle-Insert (nur gekruemmt). Qualitaet, spaet.

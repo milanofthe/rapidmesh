@@ -13,24 +13,20 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{xcolor}
-\usepackage{sectsty}
 \usepackage[hidelinks]{hyperref}
 \usepackage{microtype}
 
 % ---- rapidfem / rapidmesh palette (kept in sync with site/src/lib/theme.ts) --
-% Plot/figure colour cycle: accent, amber, green, purple, blue, olive.
+% Defined for FIGURES and PLOTS only; the document itself is classic LaTeX
+% (black Computer Modern, no coloured headings). Plot/figure colour cycle:
+% accent, amber, green, purple, blue, olive.
 \definecolor{rmaccent}{HTML}{D9513C}   % lava accent
 \definecolor{rmamber}{HTML}{E8944A}
 \definecolor{rmgreen}{HTML}{6BBF8A}
 \definecolor{rmpurple}{HTML}{7B5E8A}
 \definecolor{rmblue}{HTML}{4A9EC2}
 \definecolor{rmolive}{HTML}{C4C46B}
-\definecolor{rmink}{HTML}{232329}      % near-black ink for headings
-\definecolor{rmrule}{HTML}{35353D}     % border / rule grey
 \newcommand{\rmcycle}{{rmaccent, rmamber, rmgreen, rmpurple, rmblue, rmolive}}
-\sectionfont{\color{rmaccent}}
-\subsectionfont{\color{rmink}}
-\hypersetup{linkcolor=rmaccent, citecolor=rmaccent, urlcolor=rmaccent}
 
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
@@ -49,7 +45,7 @@
 \theoremstyle{plain}
 \newtheorem{proposition}{Proposition}
 
-\title{\textbf{\color{rmaccent}rapidmesh}\\[2pt]
+\title{\textbf{rapidmesh}\\[2pt]
 \large A Hierarchical Bottom-Up Centroidal-Voronoi Meshing Algorithm\\
 \large for B-Rep Solids with Analytic and NURBS Geometry}
 \author{Specification and mathematical derivation}

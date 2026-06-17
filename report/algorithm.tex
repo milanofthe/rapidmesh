@@ -240,8 +240,9 @@ any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
  \draw[rm flow] (s2)--(s3) node[midway,right,font=\scriptsize]{barrier};
  \draw[rm flow] (s3)--(mesh);
 \end{tikzpicture}
-\caption{The bottom-up pipeline. Exact booleans produce the B-Rep; the mesher
-then meshes $0$-, $1$-, $2$-, $3$-cells in order. Within each of stages 1--3 the
+\caption{The bottom-up pipeline. Exact booleans produce the B-Rep
+(\cref{sec:booleans}); the mesher then meshes $0$-, $1$-, $2$-, $3$-cells in
+order. Within each of stages 1--3 the
 entities are independent and run in parallel (the stacked boxes); the only
 synchronisation is the barrier between levels (\cref{prin:parallel}).}
 \label{fig:pipeline}
@@ -268,6 +269,71 @@ $h_{\text{vol}}\gets$ \textsc{BuildSizingField}$(\mathcal{S},\,$thickness$,h_{\m
    $M_R \gets$ \textsc{MeshVolume}$(\mathcal{S}|_R,\,h_{\text{vol}})$
    \hfill\tcp*[h]{Stage 3}}
 \Return $\bigcup_R M_R$, merged in fixed id order\;
+\end{algorithm}
+
+% ============================================================================
+\section{Exact booleans: the B-Rep from a region predicate}
+\label{sec:booleans}
+% ============================================================================
+The mesher's input is produced upstream by an \emph{exact} boolean stage; no
+boolean logic lives in the mesher. All operands (closed, outward-oriented
+analytic or NURBS solids) are arranged together into one exact arrangement: every
+pairwise surface intersection is computed with exact predicates
+\cite{Shewchuk1997}, splitting the input faces into sub-faces and producing the
+intersection curves and triple points as exact geometry (rational / implicit
+points, never snapped to floating point).
+
+\paragraph{Region as a predicate over a containment bit-vector.}
+Each cell of the arrangement (a maximal region crossed by no surface) carries a
+containment bit-vector $\vv{b}\in\{0,1\}^n$ with $b_k=1$ iff the cell lies inside
+operand $k$, decided \emph{once} by an exact point-in-solid test at the cell's
+barycenter. A boolean \emph{operation} is then nothing but a labelling rule --- a
+map $\omega:\{0,1\}^n\to\text{region tag}$ applied to $\vv{b}$:
+\begin{equation}
+\label{eq:regionpred}
+\underbrace{\omega=\textstyle\bigvee_k b_k}_{\text{union}},\quad
+\underbrace{\textstyle\bigwedge_k b_k}_{\text{intersection}},\quad
+\underbrace{b_A\wedge\neg b_B}_{\text{difference}},\quad
+\underbrace{b_A\oplus b_B}_{\text{xor}},\quad
+\underbrace{\omega(\vv{b})}_{\substack{\text{multi-material:}\\\text{a tag per pattern}}} .
+\end{equation}
+A sub-face survives iff the region differs across it,
+$\omega(\vv{b}_{\text{front}})\neq\omega(\vv{b}_{\text{back}})$, and that pair
+labels the resulting B-rep face. Same-region sub-faces ($\omega$ equal on both
+sides) are interior and dropped --- which is exactly what \emph{fuses} a union.
+The background carries the reserved tag $0$ (a \emph{void}: not meshed, but its
+walls survive as boundary). The construction is $N$-ary and compositional: an
+arbitrary CSG expression tree evaluates to a single $\omega$, so union,
+intersection, difference, xor and genuine multi-material assemblies are
+\emph{one} mechanism, not special cases.
+
+\paragraph{From arrangement to B-Rep.}
+The surviving sub-faces, grouped by (surface, region pair, face tag, connected
+component), become the B-rep faces; the intersection curves that bound them
+become the edges (recovered analytically, \cref{sec:intersection}); the points
+where three or more surfaces meet become the corners. The boolean result
+therefore enters the mesher as precisely the cell complex that stages $0$--$3$
+consume (\cref{fig:pipeline}), with exact geometry and per-side region labels ---
+and the classification is itself embarrassingly parallel over sub-faces.
+
+\begin{algorithm}[H]
+\caption{\textsc{AssembleBRep}$(\{\vv{S}_k\}_{k=1}^n,\ \omega)$ -- exact boolean
+$\to$ B-rep}
+\label{alg:brep}
+\KwIn{operand solids $\vv{S}_1,\dots,\vv{S}_n$; region predicate
+      $\omega:\{0,1\}^n\to$ tag}
+\KwOut{B-rep (corners, edges, faces with region pairs)}
+$\mathcal{A}\gets$ exact arrangement of all $\vv{S}_k$ (intersections, sub-faces)\;
+\ForEach{sub-face $\phi\in\mathcal{A}$ \normalfont(\emph{in parallel})}{
+  $\vv{b}\gets$ containment bit-vector at $\phi$'s barycenter
+     \hfill\tcp*[h]{exact point-in-solid}\;
+  $(\vv b^+,\vv b^-)\gets\vv b$ with $\phi$'s own bit set on each side\;
+  keep $\phi$ with pair $(\omega(\vv b^+),\omega(\vv b^-))$ iff
+     $\omega(\vv b^+)\neq\omega(\vv b^-)$\;
+}
+group kept sub-faces $\to$ faces; intersection curves $\to$ edges;
+   triple points $\to$ corners\;
+\Return B-rep\;
 \end{algorithm}
 
 % ============================================================================
@@ -381,11 +447,25 @@ Delaunay} triangulation \cite{EdelsbrunnerShah1997,BoissonnatOudot2005}; in
 practice we relax in a 2D chart (\cref{sec:faces}) so \eqref{eq:disc_centroid}
 applies in the chart and the move is lifted back onto the surface.
 
-\subsection{Robust predicates}
-All combinatorial decisions (orientation, in-circle/in-sphere) use exact
-adaptive-precision predicates \cite{Shewchuk1997}; only non-decision quantities
-(centroid weights, sizing values) are floating point. Map/iteration order is
-made deterministic (seedless hashing), so the mesh is reproducible.
+\subsection{Robustness, exactness, and determinism}
+\label{sec:determinism}
+Three properties make the output trustworthy and reproducible.
+\emph{(i) Exactness.} Every combinatorial decision (orientation,
+in-circle/in-sphere, point-in-solid) uses exact adaptive-precision predicates
+\cite{Shewchuk1997}; only non-decision quantities (centroid weights, sizing
+values) are floating point, and the boolean stage never snaps a coordinate.
+\emph{(ii) Determinism.} The result must not vary between runs, so every hash map
+whose \emph{iteration order} can influence geometry uses a seedless hash (no
+per-run random seed), and every reduction across parallel work is merged in a
+fixed id order. Parallelism (\cref{prin:parallel}) therefore does not perturb the
+mesh: each entity is independently deterministic and the merge order is fixed, so
+the mesh is bit-identical run to run.
+\emph{(iii) Robustness.} Where two surfaces meet near-tangentially the boolean
+can place points within an ulp of each other; the incremental Delaunay
+\emph{skips} an insertion that would swallow an existing vertex's star rather
+than corrupting the triangulation, dropping the redundant near-duplicate. The
+exact predicates guarantee the remaining construction is always a valid
+triangulation.
 
 % ============================================================================
 \section{Stage 0 -- Vertices}
@@ -1036,6 +1116,28 @@ interior.
 Because each stage only ever lowers $h$ and then re-smooths, the field is
 monotone and Lipschitz, and the element-size contract (a documented
 $1.5\times$ max-edge bound, as in gmsh) holds globally.
+
+% ============================================================================
+\section{Complexity and parallel scaling}
+% ============================================================================
+Let $N$ be the output vertex count. Every stage is dominated by an incremental
+Delaunay or a fast-marching sweep, each $O(N\log N)$ with exact predicates: the
+gradation field \eqref{eq:gradenvelope} by heap fast-marching (\cref{alg:grad}),
+the surface/volume triangulations by Bowyer--Watson with octree-accelerated point
+location. The CVT relaxation is a fixed number of passes, each a (rebuilt or
+locally updated) Delaunay plus a linear centroid sweep \eqref{eq:disc_centroid};
+because the sites are already near-uniform, boundary recovery (\cref{alg:recover})
+inserts only a bounded, in practice tiny, number of Steiner points, and slivers
+left for the cleanup pass are rare \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
+
+The structure is what makes it scale. Within a level the entities are independent
+(\cref{prin:parallel}), so with $P$ workers the wall-clock of a stage is the
+\emph{slowest single} edge / face / region, not their sum; the only global
+synchronisations are the two barriers between the three stages. Multi-region and
+boolean-heavy scenes parallelise for free over regions, since each region's
+constrained tetrahedralization is independent and shares only read-only interface
+facets. All relaxation queries are local (octree neighbours), so memory and the
+per-pass cost stay $O(N)$.
 
 % ============================================================================
 \section{Why this guarantees conformity}

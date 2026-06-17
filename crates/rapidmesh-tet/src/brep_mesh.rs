@@ -7,13 +7,13 @@
 //! volume Lloyd, region classification and restricted-Delaunay extraction are
 //! unchanged.
 
-use crate::conform::MeshParams;
+use crate::conform::{MeshParams, SurfaceFace};
 use crate::curve::{distribute, Curve, PolylineCurve};
-use crate::site::Site;
-use crate::surf2d::cvt_fill;
+use crate::site::{Carrier, Site};
+use crate::surf2d::{cvt_fill, triangulate_constrained};
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::{FaceTag, SurfaceKind, TaggedPlc};
+use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::sync::Arc;
 
 type V3 = [f64; 3];
@@ -272,6 +272,14 @@ pub struct SurfaceSites {
     pub tiles: Vec<(u32, FaceTag)>,
     /// Number of pinned corner points (the `plc_points` count).
     pub plc_points: usize,
+    /// The frozen surface triangulation (indices into `sites`), tagged with each
+    /// face's region pair / tag / analytic surface. This is what makes the
+    /// brep-based surface a complete `FrozenSurface` for the constrained volume
+    /// stage (it carries the per-entity sizing of `sites`).
+    pub tris: Vec<SurfaceFace>,
+    /// Carrier of each triangle (its plane / analytic surface), for exact
+    /// boundary recovery (parallel to `tris`).
+    pub tri_carrier: Vec<Carrier>,
 }
 
 /// Deterministic splitmix64 -> uniform f64 in `[0, 1)` (the mesher must be
@@ -404,6 +412,8 @@ pub fn surface_sites(
     let mut sites: Vec<Site> = Vec::new();
     let mut point_tile: Vec<u32> = Vec::new();
     let mut point_size: Vec<f64> = Vec::new();
+    let mut tris: Vec<SurfaceFace> = Vec::new();
+    let mut tri_carrier: Vec<Carrier> = Vec::new();
 
     // ---- stage 1a: corners (pinned) -------------------------------------
     for v in &brep.vertices {
@@ -440,7 +450,12 @@ pub fn surface_sites(
     // ---- stage 1b: edge points (shared). Edges of a structured face keep the
     // input vertices; others are distributed at OVERSAMPLE * (finest H) -- finer
     // than the volume so the restricted-Delaunay boundary recovers without straddles.
+    // Per edge: the ordered ON-edge point positions AND their global site
+    // indices, so a face can build its boundary loops in site indices (for the
+    // triangulation) without re-locating points. Endpoints are the two corner
+    // sites (vertex ids); the interior points are freshly pushed sites.
     let mut edge_pts: Vec<Vec<V3>> = Vec::with_capacity(brep.edges.len());
+    let mut edge_sidx: Vec<Vec<usize>> = Vec::with_capacity(brep.edges.len());
     for (ei, edge) in brep.edges.iter().enumerate() {
         let pts3: Vec<V3> = if edge_keep_input[ei] {
             edge.chain.clone()
@@ -455,12 +470,22 @@ pub fn surface_sites(
             }
         };
         let esz = params.edge_maxh_for(ei);
+        // Site indices along the edge: corner a, interior points, corner b.
+        let mut sidx: Vec<usize> = Vec::with_capacity(pts3.len());
+        sidx.push(edge.ends[0].0 as usize);
         for &p in pts3.iter().take(pts3.len().saturating_sub(1)).skip(1) {
             sites.push(Site::vertex(p));
             point_tile.push(u32::MAX);
             point_size.push(esz);
+            sidx.push(sites.len() - 1);
+        }
+        sidx.push(edge.ends[1].0 as usize);
+        // A degenerate/closed chain may not match ends; fall back to length match.
+        if sidx.len() != pts3.len() {
+            sidx = Vec::new();
         }
         edge_pts.push(pts3);
+        edge_sidx.push(sidx);
     }
     let fine = (OVERSAMPLE * domain.finest()).max(1e-9);
 
@@ -526,49 +551,74 @@ pub fn surface_sites(
         let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
         if let Some((o, n)) = surf.exact_plane() {
             // PLANAR: 2D Lloyd in the in-plane (u,v) (orthonormal frame -> isometric,
-            // so 2D distance == arc length). Boundary = the loop edge points (fixed);
-            // interior generated + relaxed by `cvt_fill`, lifted back exactly.
-            let mut segs: Vec<(P2, P2)> = Vec::new();
-            let mut boundary2d: Vec<P2> = Vec::new();
+            // so 2D distance == arc length). The boundary loops are the frozen edge
+            // points (carried as global site indices); interior points are filled +
+            // relaxed by `cvt_fill`, lifted back exactly. The face is then triangulated
+            // CONSTRAINED to its loops (so non-convex/holed faces tile correctly), and
+            // the tagged triangles + plane carrier go to the frozen surface.
+            let mut loc_uv: Vec<P2> = Vec::new(); // local point coords (boundary then interior)
+            let mut loc_sidx: Vec<usize> = Vec::new(); // global site index per local
+            let mut segs: Vec<(usize, usize)> = Vec::new(); // boundary segments (local indices)
+            let mut segs_uv: Vec<(P2, P2)> = Vec::new(); // same, as uv (for the inside test)
             for lp in &face.loops {
-                let mut poly: Vec<P2> = Vec::new();
+                let start = loc_uv.len();
                 for &cid in &lp.coedges {
                     let ce = brep.coedge(cid);
-                    let pts = &edge_pts[ce.edge.0 as usize];
-                    let n = pts.len();
-                    if n < 2 {
+                    let sidx = &edge_sidx[ce.edge.0 as usize];
+                    if sidx.len() < 2 {
                         continue;
                     }
-                    if ce.forward {
-                        poly.extend(pts.iter().take(n - 1).map(|&p| surf.project_uv(p)));
+                    // ordered site indices along this coedge, dropping the last
+                    // (shared with the next coedge's first); reversed if backward.
+                    let chain: Vec<usize> = if ce.forward {
+                        sidx[..sidx.len() - 1].to_vec()
                     } else {
-                        poly.extend(pts.iter().rev().take(n - 1).map(|&p| surf.project_uv(p)));
+                        sidx.iter().rev().take(sidx.len() - 1).copied().collect()
+                    };
+                    for &si in &chain {
+                        loc_uv.push(surf.project_uv(sites[si].pos()));
+                        loc_sidx.push(si);
                     }
                 }
-                for k in 0..poly.len() {
-                    segs.push((poly[k], poly[(k + 1) % poly.len()]));
+                let m = loc_uv.len() - start;
+                for k in 0..m {
+                    let (a, b) = (start + k, start + (k + 1) % m);
+                    segs.push((a, b));
+                    segs_uv.push((loc_uv[a], loc_uv[b]));
                 }
-                boundary2d.extend_from_slice(&poly);
             }
-            if boundary2d.len() < 3 {
+            let nb = loc_uv.len();
+            if nb < 3 {
                 continue;
             }
             let mut lo = [f64::INFINITY; 2];
             let mut hi = [f64::NEG_INFINITY; 2];
-            for &q in &boundary2d {
+            for &q in &loc_uv {
                 for k in 0..2 {
                     lo[k] = lo[k].min(q[k]);
                     hi[k] = hi[k].max(q[k]);
                 }
             }
             let target2d = |q: P2| (OVERSAMPLE * h_at(surf.eval_uv(q))).max(fine * 0.5).min(params.surf_maxh_for(fid));
-            let inside = |q: P2| in_loops(q, &segs);
-            let interior =
-                cvt_fill(&boundary2d, lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
+            let inside = |q: P2| in_loops(q, &segs_uv);
+            let interior = cvt_fill(&loc_uv[..nb], lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
             for q in interior {
                 sites.push(Site::on_plane(o, n, surf.eval_uv(q)));
                 point_tile.push(fid as u32);
                 point_size.push(params.surf_maxh_for(fid));
+                loc_uv.push(q);
+                loc_sidx.push(sites.len() - 1);
+            }
+            let car = Carrier::Plane { p0: o, n };
+            for t in triangulate_constrained(&loc_uv, &segs, inside) {
+                tris.push(SurfaceFace {
+                    tri: [loc_sidx[t[0]], loc_sidx[t[1]], loc_sidx[t[2]]],
+                    face_tag: face.face_tag,
+                    regions: face.regions,
+                    patch: fid as u32,
+                    surface: face.plc_surface,
+                });
+                tri_carrier.push(car.clone());
             }
         } else {
             // non-planar, non-structured (trimmed NURBS): dart-seed fallback.
@@ -587,7 +637,7 @@ pub fn surface_sites(
     }
 
     let n_surf = sites.len();
-    SurfaceSites { sites, n_surf, point_tile, point_size, tiles, plc_points }
+    SurfaceSites { sites, n_surf, point_tile, point_size, tiles, plc_points, tris, tri_carrier }
 }
 
 #[cfg(test)]
@@ -668,5 +718,36 @@ mod tests {
             assert!(off.abs() < 1e-9, "face point off its plane by {off}");
         }
         assert!(n_face_pts > 0, "faces produced interior points");
+    }
+
+    #[test]
+    fn box_surface_sites_triangulate_the_planar_faces() {
+        // The unified surface (per-entity-aware) also triangulates planar faces:
+        // a 2x3x4 box's six planar faces must tile to the exact surface area 52,
+        // as a closed manifold (every edge shared by two triangles).
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
+        let plc = scene.assemble();
+        let b = from_plc(&plc);
+        let params = MeshParams { maxh: 0.7, ..Default::default() };
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
+        assert!(!ss.tris.is_empty(), "planar faces are triangulated");
+        let mut area = 0.0;
+        let mut edges: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        for f in &ss.tris {
+            let (a, bb, c) = (ss.sites[f.tri[0]].pos(), ss.sites[f.tri[1]].pos(), ss.sites[f.tri[2]].pos());
+            let ab = [bb[0] - a[0], bb[1] - a[1], bb[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cr = cross(ab, ac);
+            area += 0.5 * dot(cr, cr).sqrt();
+            for k in 0..3 {
+                let (u, v) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edges.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        assert!((area - 52.0).abs() < 1e-9, "box surface area should be 52, got {area}");
+        assert!(edges.values().all(|&c| c == 2), "surface is a closed manifold");
+        assert_eq!(ss.tris.len(), ss.tri_carrier.len());
     }
 }

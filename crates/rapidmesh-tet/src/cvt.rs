@@ -1068,19 +1068,27 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let domain = DomainTree::build(plc, params);
     let patches = build_patches(plc);
 
-    // ---- stages 1+2: the frozen surface, with carriers --------------------
+    // ---- stages 1+2: the UNIFIED surface (B1) -----------------------------
+    // The one chart/oracle-driven surface (`brep_mesh::surface_sites`) IS the frozen
+    // surface for the constrained volume: it already returns `Site`s (carrier + pos),
+    // its constrained per-face triangles, and a carrier per triangle, all carrying
+    // the per-entity sizing. mesh_cdt freezes these as hard constraints (watertight by
+    // construction) -- no separate `frozen_surface` patch path.
     let t_surf = std::time::Instant::now();
-    let frozen = frozen_surface(plc, params);
-    let surf_sites: Vec<Site> =
-        frozen.points.iter().zip(&frozen.vert_carrier).map(|(&p, c)| Site::at(c.clone(), p)).collect();
-    let surf_tris: Vec<[usize; 3]> = frozen.faces.iter().map(|f| f.tri).collect();
-    rmlog::stat("mesh_cdt.surf_points", frozen.points.len() as f64);
-    rmlog::stat("mesh_cdt.surf_faces", frozen.faces.len() as f64);
+    let brep = rapidmesh_brep::build::from_plc(plc);
+    let ss = crate::brep_mesh::surface_sites(&brep, plc, params, &domain);
+    let surf_points: Vec<V3> = ss.sites.iter().map(|s| s.pos()).collect();
+    let surf_tris: Vec<[usize; 3]> = ss.tris.iter().map(|f| f.tri).collect();
+    let surf_sites: Vec<Site> = ss.sites;
+    let face_carrier: Vec<Carrier> = ss.tri_carrier;
+    let surf_faces: Vec<SurfaceFace> = ss.tris;
+    rmlog::stat("mesh_cdt.surf_points", surf_points.len() as f64);
+    rmlog::stat("mesh_cdt.surf_faces", surf_faces.len() as f64);
     rmlog::stage("mesh_cdt.surface", t_surf.elapsed().as_secs_f64());
 
     // ---- stage 3 seeding: graded interior, clear of the surface -----------
     let t_seed = std::time::Instant::now();
-    let surf_tree = Octree::build(&frozen.points);
+    let surf_tree = Octree::build(&surf_points);
     // Local target size: the graded field, capped by the region's own maxh (a
     // region-wide size the boundary-grown field does not enforce in the interior).
     let region_cap = |r: u32| -> f64 {
@@ -1114,7 +1122,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 let h = hloc(p);
                 // Clearance from the surface: a seed within one local element of
                 // the boundary makes a tet the recovery cannot emit. Non-negotiable.
-                if surf_tree.nearest(p).map(|q| dist(p, frozen.points[q as usize]) < h).unwrap_or(false) {
+                if surf_tree.nearest(p).map(|q| dist(p, surf_points[q as usize]) < h).unwrap_or(false) {
                     continue;
                 }
                 let r2 = (0.6 * h).powi(2);
@@ -1149,7 +1157,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // only needs approximate cells; the final build below is constrained). Out-of
     // domain or too-close-to-surface targets are rejected.
     let t_lloyd = std::time::Instant::now();
-    let n_surf = frozen.points.len();
+    let n_surf = surf_points.len();
     let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
         let order = crate::spatial::morton_order(all_pos);
         let mut db = DelaunayBuilder::enclosing(lo, hi);
@@ -1162,7 +1170,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
     };
     for _ in 0..LLOYD_ITERS {
-        let mut all: Vec<V3> = frozen.points.clone();
+        let mut all: Vec<V3> = surf_points.clone();
         all.extend_from_slice(&interior);
         let tets = build_full(&all);
         let mut num = vec![[0.0f64; 3]; all.len()];
@@ -1180,7 +1188,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         // Rebuild the crowding hash from the surface + interior each pass.
         let mut grid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
-        for &p in frozen.points.iter().chain(interior.iter()) {
+        for &p in surf_points.iter().chain(interior.iter()) {
             let (kx, ky, kz) = ckey(p);
             grid.entry((kx, ky, kz)).or_default().push(p);
         }
@@ -1195,7 +1203,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 continue;
             }
             let h = hloc(tgt);
-            if surf_tree.nearest(tgt).map(|q| dist(tgt, frozen.points[q as usize]) < h).unwrap_or(false) {
+            if surf_tree.nearest(tgt).map(|q| dist(tgt, surf_points[q as usize]) < h).unwrap_or(false) {
                 continue;
             }
             // Crowding: keep clear of every OTHER point by the local radius.
@@ -1252,7 +1260,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 if len <= h {
                     continue; // already fine enough here
                 }
-                if surf_tree.nearest(mid).map(|q| dist(mid, frozen.points[q as usize]) < h).unwrap_or(false) {
+                if surf_tree.nearest(mid).map(|q| dist(mid, surf_points[q as usize]) < h).unwrap_or(false) {
                     continue; // one local element clear of the fixed surface
                 }
                 let r2 = (SEPARATION_FRAC * h).powi(2);
@@ -1289,7 +1297,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
-    let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &frozen.face_carrier, &interior, lo, hi);
+    let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &face_carrier, &interior, lo, hi);
     let pts = con.points;
     rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
 
@@ -1311,7 +1319,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- boundary faces: between differing regions, tagged from the frozen
     // surface (curved facets match exactly; planar fall back to the patch) -----
     let mut tag: DMap<[usize; 3], (u32, FaceTag, u32)> = DMap::default();
-    for f in &frozen.faces {
+    for f in &surf_faces {
         let mut s = f.tri;
         s.sort_unstable();
         tag.insert(s, (f.surface, f.face_tag, f.patch));

@@ -1222,7 +1222,66 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 interior[k] = tgt;
             }
         }
-        if max_move < LLOYD_CONVERGE_FRAC * spacing {
+
+        // ---- adaptive insertion at the COARSEST spots --------------------
+        // Insert at the longest edge of any tet whose length exceeds the local
+        // target (where the grid is too coarse, NOT where an error peaks -- that
+        // would over-densify), then let the next pass relax the new density in:
+        // robust coarse-to-fine refinement (the report's relax-insert loop).
+        let mut inserted = 0usize;
+        if n_surf + interior.len() < params.max_points {
+            let mut newgrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
+            let mut adds: Vec<V3> = Vec::new();
+            for t in &tets {
+                if n_surf + interior.len() + adds.len() >= params.max_points {
+                    break;
+                }
+                let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
+                let mut best = (0.0f64, [0.0; 3]);
+                for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                    let len = dist(p[a], p[b]);
+                    if len > best.0 {
+                        best = (len, [(p[a][0] + p[b][0]) * 0.5, (p[a][1] + p[b][1]) * 0.5, (p[a][2] + p[b][2]) * 0.5]);
+                    }
+                }
+                let (len, mid) = best;
+                if !inside(mid) {
+                    continue;
+                }
+                let h = hloc(mid);
+                if len <= h {
+                    continue; // already fine enough here
+                }
+                if surf_tree.nearest(mid).map(|q| dist(mid, frozen.points[q as usize]) < h).unwrap_or(false) {
+                    continue; // one local element clear of the fixed surface
+                }
+                let r2 = (SEPARATION_FRAC * h).powi(2);
+                let (kx, ky, kz) = ckey(mid);
+                let mut clear = true;
+                'ins: for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            for g in [&grid, &newgrid] {
+                                if let Some(v) = g.get(&(kx + dx, ky + dy, kz + dz)) {
+                                    if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
+                                        clear = false;
+                                        break 'ins;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if clear {
+                    newgrid.entry((kx, ky, kz)).or_default().push(mid);
+                    adds.push(mid);
+                }
+            }
+            inserted = adds.len();
+            interior.extend(adds);
+        }
+
+        if inserted == 0 && max_move < LLOYD_CONVERGE_FRAC * spacing {
             break;
         }
     }

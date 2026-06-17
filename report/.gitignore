@@ -18,3 +18,4 @@ validation/meshes/
 
 # regenerable gallery renders (report/render_gallery.py)
 figures/gallery/
+validation/benchmark.json

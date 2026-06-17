@@ -679,7 +679,12 @@ pub fn surface_sites(
                     base.min(defl).max(1e-9)
                 };
                 let inside = |q: P2| in_loops(q, &segs_uv);
-                let interior = cvt_fill(&loc_uv[..nb], lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
+                // Scatter step = the FINEST local target on this face (so a per-entity
+                // `surf_maxh`/`tol` or curvature actually resolves the grid, not just
+                // the separation radius). Defaults to `fine` when no surface cap/curve
+                // applies, so the exact-volume planar balance is unchanged.
+                let step = loc_uv[..nb].iter().map(|&q| target2d(q)).fold(fine, f64::min).max(1e-9);
+                let interior = cvt_fill(&loc_uv[..nb], lo, hi, step, target2d, SURF_LLOYD_ITERS, inside, true);
                 for q in interior {
                     let p = chart.to_xyz(q);
                     let site = match &carrier {

@@ -1298,6 +1298,10 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
     let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &face_carrier, &interior, lo, hi);
+    // Steiner points cdt3 had to insert during facet recovery (beyond surface +
+    // interior): the health signal for curved recovery -- small/bounded = GO.
+    let steiner = con.points.len().saturating_sub(con.n_surf_verts + interior.len());
+    rmlog::stat("mesh_cdt.steiner", steiner as f64);
     let pts = con.points;
     rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
 
@@ -1861,6 +1865,56 @@ mod tests {
             }
         }
         assert!(edge.values().all(|&c| c == 2), "surface is not a closed manifold");
+    }
+
+    /// B2 GATE: a RADIAL UV `sphere()` (not a geodesic input) must mesh watertight
+    /// through `mesh_cdt`. This proves the geodesic icosphere that `surface_sites`
+    /// now generates for a closed sphere flows through `cdt3` curved-facet recovery
+    /// as a hard constraint -- watertight, single region, volume near the ball, and
+    /// WITHOUT a Steiner blow-up (recovery converges).
+    #[test]
+    fn gate_uv_sphere_meshes_watertight_via_cdt() {
+        let mut scene = Scene::new();
+        scene.add_solid(rapidmesh_geom::sphere([0.2, -0.1, 0.3], 1.0, 24, 12)); // radial input
+        let plc = scene.assemble();
+        let m = mesh_cdt(&plc, &MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
+        assert!(!m.tets.is_empty(), "uv sphere produced tets");
+        assert!(m.tet_regions.iter().all(|r| r.0 == 1), "single region");
+        let vol: f64 = m
+            .tets
+            .iter()
+            .map(|t| tet_det([m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]]).abs() / 6.0)
+            .sum();
+        let ball = 4.0 / 3.0 * std::f64::consts::PI;
+        assert!(vol > 0.80 * ball && vol < 1.02 * ball, "uv sphere volume {vol} vs ball {ball}");
+        let mut edge: DMap<(usize, usize), usize> = DMap::default();
+        for f in &m.faces {
+            for k in 0..3 {
+                let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edge.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        assert!(edge.values().all(|&c| c == 2), "uv sphere boundary is a closed manifold");
+    }
+
+    /// B2 GATE: surface sizing flows through `mesh_cdt` -- a finer `maxh_surf` makes a
+    /// denser boundary triangulation (the per-entity sizing that previously did NOT
+    /// reach mesh_cdt because it used `frozen_surface`).
+    #[test]
+    fn gate_surf_sizing_flows_through_cdt() {
+        let build = |hs: f64| {
+            let mut scene = Scene::new();
+            scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
+            let plc = scene.assemble();
+            let m = mesh_cdt(
+                &plc,
+                &MeshParams { maxh: 4.0, maxh_surf: hs, ..Default::default() },
+            );
+            m.faces.len()
+        };
+        let coarse = build(4.0);
+        let fine = build(1.0);
+        assert!(fine > 2 * coarse, "finer maxh_surf must densify the boundary ({coarse} -> {fine})");
     }
 
     #[test]

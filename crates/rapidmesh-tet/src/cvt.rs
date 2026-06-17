@@ -816,7 +816,77 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 max_move = max_move.max(dist(pos[i], sites[i].pos()));
             }
         }
-        if max_move < LLOYD_CONVERGE_FRAC * spacing {
+
+        // ---- adaptive insertion: fill the COARSE spots -------------------
+        // Where a tet edge is longer than the LOCAL target `h`, the interior is
+        // under-seeded (a per-region/per-face refinement the initial grid was too
+        // coarse to honour). Drop a free site at that edge's midpoint; the next
+        // pass relaxes the new density into place (the report's relax-insert
+        // loop). Insert in the bulk only (one local element clear of the fixed
+        // surface), separation-guarded against existing and newly added sites.
+        let mut inserted = 0usize;
+        if sites.len() < params.max_points {
+            domain.rebucket(&positions(&sites));
+            let cell = (SEPARATION_FRAC * spacing).max(1e-9);
+            let nkey = |p: V3| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64, (p[2] / cell).floor() as i64);
+            let mut newgrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
+            for t in &tets {
+                if sites.len() + inserted >= params.max_points {
+                    break;
+                }
+                let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
+                // The longest edge of this tet.
+                let mut best = (0.0f64, [0.0; 3]);
+                for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                    let len = dist(p[a], p[b]);
+                    if len > best.0 {
+                        best = (len, [(p[a][0] + p[b][0]) * 0.5, (p[a][1] + p[b][1]) * 0.5, (p[a][2] + p[b][2]) * 0.5]);
+                    }
+                }
+                let (len, mid) = best;
+                if !inside(mid) {
+                    continue;
+                }
+                let h = vol_field.at(mid).min(region_cap(domain.region_at(mid))).max(1e-9);
+                if len <= h {
+                    continue; // already fine enough here
+                }
+                // Clear of the fixed surface by one local element (a seed nearer
+                // than that makes a boundary tet the restricted boundary cannot emit).
+                if surf_tree.nearest(mid).map(|j| dist(mid, sites[j as usize].pos()) < h).unwrap_or(false) {
+                    continue;
+                }
+                let r = SEPARATION_FRAC * h;
+                if domain.neighbors(mid, r).into_iter().next().is_some() {
+                    continue; // too close to an existing site
+                }
+                // Separation from sites added THIS pass (query enough rings for r).
+                let (kx, ky, kz) = nkey(mid);
+                let reach = (r / cell).ceil() as i64 + 1;
+                let r2 = r * r;
+                let mut clear = true;
+                'ins: for dx in -reach..=reach {
+                    for dy in -reach..=reach {
+                        for dz in -reach..=reach {
+                            if let Some(v) = newgrid.get(&(kx + dx, ky + dy, kz + dz)) {
+                                if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
+                                    clear = false;
+                                    break 'ins;
+                                }
+                            }
+                        }
+                    }
+                }
+                if clear {
+                    newgrid.entry((kx, ky, kz)).or_default().push(mid);
+                    sites.push(Site::free(mid));
+                    inserted += 1;
+                }
+            }
+        }
+        rmlog::stat("mesh.lloyd_inserts", inserted as f64);
+
+        if inserted == 0 && max_move < LLOYD_CONVERGE_FRAC * spacing {
             break;
         }
     }

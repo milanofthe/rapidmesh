@@ -949,6 +949,184 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     mesh
 }
 
+/// Boundary-constrained variant of [`mesh`] (the report's Stage 3): build the
+/// frozen Stage-2 surface ([`frozen_surface`]), fill the interior at the sizing
+/// density, and tetrahedralize with the surface as a HARD constraint
+/// ([`crate::cdt3`]) so the boundary is watertight by construction (no straddling
+/// tetrahedra). Region tags are by centroid, which is exact now that no tet
+/// straddles; boundary faces are the ones between differing regions. Built
+/// alongside [`mesh`] and validated incrementally before it becomes the default.
+pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
+    use rapidmesh_exact::log as rmlog;
+    use rayon::prelude::*;
+    let t_start = std::time::Instant::now();
+
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in &plc.vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max);
+
+    let regions = regions_of(plc);
+    let field = SizingField::new(params);
+    let cap = field.finest_cap(&regions);
+    let spacing = if cap.is_finite() && cap > 0.0 { cap } else { diag / DEFAULT_SUBDIV };
+
+    let soup = domain_soup(plc);
+    let boxes = TriBoxes::build(&soup, BOX_PAD_FRAC * diag.max(1.0));
+    let inside = |p: V3| point_inside_solid(&Point3::Explicit(p), p, &soup, &boxes, (lo, hi));
+    let domain = DomainTree::build(plc, params);
+    let patches = build_patches(plc);
+
+    // ---- stages 1+2: the frozen surface, with carriers --------------------
+    let t_surf = std::time::Instant::now();
+    let frozen = frozen_surface(plc, params);
+    let surf_sites: Vec<Site> =
+        frozen.points.iter().zip(&frozen.vert_carrier).map(|(&p, c)| Site::at(c.clone(), p)).collect();
+    let surf_tris: Vec<[usize; 3]> = frozen.faces.iter().map(|f| f.tri).collect();
+    rmlog::stat("mesh_cdt.surf_points", frozen.points.len() as f64);
+    rmlog::stat("mesh_cdt.surf_faces", frozen.faces.len() as f64);
+    rmlog::stage("mesh_cdt.surface", t_surf.elapsed().as_secs_f64());
+
+    // ---- stage 3 seeding: graded interior, clear of the surface -----------
+    let t_seed = std::time::Instant::now();
+    let surf_tree = Octree::build(&frozen.points);
+    let hloc = |p: V3| domain.h_at(p).max(1e-9);
+    let step = (0.7 * spacing).max(1e-9);
+    let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let ncell = (0.6 * spacing).max(1e-9);
+    let ckey = |p: V3| ((p[0] / ncell).floor() as i64, (p[1] / ncell).floor() as i64, (p[2] / ncell).floor() as i64);
+    let mut igrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
+    let mut interior: Vec<V3> = Vec::new();
+    let (nx, ny, nz) = (
+        ((span[0] / step).ceil() as i64).max(1),
+        ((span[1] / step).ceil() as i64).max(1),
+        ((span[2] / step).ceil() as i64).max(1),
+    );
+    for i in 1..nx {
+        for j in 1..ny {
+            for k in 1..nz {
+                let p: V3 = [lo[0] + i as f64 * step, lo[1] + j as f64 * step, lo[2] + k as f64 * step];
+                if !inside(p) {
+                    continue;
+                }
+                let h = hloc(p);
+                // Clearance from the surface: a seed within one local element of
+                // the boundary makes a tet the recovery cannot emit. Non-negotiable.
+                if surf_tree.nearest(p).map(|q| dist(p, frozen.points[q as usize]) < h).unwrap_or(false) {
+                    continue;
+                }
+                let r2 = (0.6 * h).powi(2);
+                let (kx, ky, kz) = ckey(p);
+                let mut clear = true;
+                'scan: for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            if let Some(v) = igrid.get(&(kx + dx, ky + dy, kz + dz)) {
+                                if v.iter().any(|&q| dot(sub(p, q), sub(p, q)) < r2) {
+                                    clear = false;
+                                    break 'scan;
+                                }
+                            }
+                        }
+                    }
+                }
+                if clear {
+                    igrid.entry((kx, ky, kz)).or_default().push(p);
+                    interior.push(p);
+                }
+            }
+        }
+    }
+    rmlog::stat("mesh_cdt.vol_seeds", interior.len() as f64);
+    rmlog::stage("mesh_cdt.seed", t_seed.elapsed().as_secs_f64());
+
+    // ---- constrained tetrahedralization -----------------------------------
+    let t_build = std::time::Instant::now();
+    let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &frozen.face_carrier, &interior, lo, hi);
+    let pts = con.points;
+    rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
+
+    // ---- region classification (centroid; exact, no straddlers) -----------
+    let region: Vec<u32> = con
+        .tets
+        .par_iter()
+        .map(|t| domain.region_at(centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]])))
+        .collect();
+    let mut kept: Vec<[usize; 4]> = Vec::new();
+    let mut tet_regions: Vec<RegionTag> = Vec::new();
+    for (t, &r) in con.tets.iter().zip(&region) {
+        if r != 0 {
+            kept.push(*t);
+            tet_regions.push(RegionTag(r));
+        }
+    }
+
+    // ---- boundary faces: between differing regions, tagged from the frozen
+    // surface (curved facets match exactly; planar fall back to the patch) -----
+    let mut tag: DMap<[usize; 3], (u32, FaceTag, u32)> = DMap::default();
+    for f in &frozen.faces {
+        let mut s = f.tri;
+        s.sort_unstable();
+        tag.insert(s, (f.surface, f.face_tag, f.patch));
+    }
+    let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
+    for (ti, t) in con.tets.iter().enumerate() {
+        for fv in &TET_FACES {
+            let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
+            f.sort_unstable();
+            face_owners.entry(f).or_default().push(ti as u32);
+        }
+    }
+    let eps = 1e-9 * diag.max(1.0);
+    let mut faces: Vec<SurfaceFace> = Vec::new();
+    for (key, owners) in &face_owners {
+        let (ra, rb) = match owners.as_slice() {
+            [a, b] => (region[*a as usize], region[*b as usize]),
+            [a] => (region[*a as usize], 0),
+            _ => continue,
+        };
+        if ra == rb {
+            continue;
+        }
+        let (surface, face_tag, patch) = if let Some(&(s, ft, p)) = tag.get(key) {
+            (s, ft, p)
+        } else if let Some(pi) = patch_of_face(plc, &patches, &pts, *key, eps) {
+            (patches[pi].surface, patches[pi].face_tag, pi as u32)
+        } else {
+            (0, FaceTag(0), u32::MAX)
+        };
+        faces.push(SurfaceFace {
+            tri: *key,
+            face_tag,
+            regions: [RegionTag(ra.min(rb)), RegionTag(ra.max(rb))],
+            patch,
+            surface,
+        });
+    }
+
+    let point_size: Vec<f64> = pts.iter().map(|&p| domain.h_at(p)).collect();
+    let mesh = TetMesh {
+        points: pts,
+        tets: kept,
+        tet_regions,
+        faces,
+        surfaces: plc.surfaces.clone(),
+        surface_owners: plc.surface_owners.clone(),
+        abandoned_patches: Vec::new(),
+        plc_points: plc.vertices.len(),
+        point_size,
+    };
+    let q = quality_stats(&mesh);
+    rmlog::stat("mesh_cdt.tets", mesh.tets.len() as f64);
+    rmlog::stat("mesh_cdt.min_dihedral_deg", q.min_dihedral_deg);
+    rmlog::stage("mesh_cdt.total", t_start.elapsed().as_secs_f64());
+    mesh
+}
+
 /// Reflection of `p` across the plane (`p0`, unit `n`).
 fn reflect(p: V3, p0: V3, n: V3) -> V3 {
     sub(p, scale(n, 2.0 * dot(sub(p, p0), n)))
@@ -1376,6 +1554,34 @@ mod tests {
     use num_traits::Zero;
     use rapidmesh_geom::{extrude_spline_profile, icosphere, solid_box, NurbsCurve, Scene};
     use rapidmesh_testutil::rat;
+
+    #[test]
+    fn mesh_cdt_box_is_watertight_and_volume_correct() {
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
+        let plc = scene.assemble();
+        let m = mesh_cdt(&plc, &MeshParams { maxh: 1.0, ..Default::default() });
+        assert!(!m.tets.is_empty(), "box produced tets");
+        // Filled volume = box volume (24).
+        let vol: f64 = m
+            .tets
+            .iter()
+            .map(|t| tet_det([m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]]).abs() / 6.0)
+            .sum();
+        assert!((vol - 24.0).abs() < 1e-6, "box volume should be 24, got {vol}");
+        // Single region inside the box.
+        assert!(m.tet_regions.iter().all(|r| r.0 == 1), "all tets in region 1");
+        // Watertight boundary: the surface faces tile the box (area 52).
+        let area: f64 = m
+            .faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (m.points[f.tri[0]], m.points[f.tri[1]], m.points[f.tri[2]]);
+                0.5 * dot(cross(sub(b, a), sub(c, a)), cross(sub(b, a), sub(c, a))).sqrt()
+            })
+            .sum();
+        assert!((area - 52.0).abs() < 1e-6, "box surface area should be 52, got {area}");
+    }
 
     #[test]
     fn frozen_surface_box_carries_exact_planes() {

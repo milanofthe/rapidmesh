@@ -18,7 +18,7 @@
 
 use crate::delaunay::DelaunayBuilder;
 use crate::site::{Carrier, Site};
-use rapidmesh_exact::Point3;
+use rapidmesh_exact::{orient3d, Point3, Sign};
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
@@ -27,6 +27,96 @@ type DMap<K, V> = HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
 
 fn sorted2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
+}
+
+// ---- 3D bistellar flips (the engine of flip-based boundary recovery) --------
+//
+// A surface facet from Stage 2 that the Delaunay does not contain as a face is
+// pierced by a tet edge; a flip removes that edge and makes the facet appear
+// (the 3D analogue of the 2D constrained-edge flip). Both flips reuse the
+// builder's [`DelaunayBuilder::replace_cavity`], which validates orientation and
+// the oriented-boundary balance, so an invalid flip is rejected; we pre-check
+// validity (convexity) so we never trigger that panic.
+
+/// Exact orientation sign of the tet `(a,b,c,d)` (public builder indices).
+fn orient(db: &DelaunayBuilder, a: usize, b: usize, c: usize, d: usize) -> Sign {
+    orient3d(&db.exact_point(a), &db.exact_point(b), &db.exact_point(c), &db.exact_point(d))
+        .unwrap_or(Sign::Zero)
+}
+
+/// The tet vertices reordered to positive orientation, or `None` if degenerate.
+fn positive(db: &DelaunayBuilder, t: [usize; 4]) -> Option<[usize; 4]> {
+    match orient(db, t[0], t[1], t[2], t[3]) {
+        Sign::Positive => Some(t),
+        Sign::Negative => Some([t[0], t[1], t[3], t[2]]),
+        Sign::Zero => None,
+    }
+}
+
+/// 2-3 flip across the interior face shared by slots `s1`, `s2`: replaces the two
+/// tets by three sharing the new edge `(d,e)` (the two apexes). Returns the
+/// created edge on success, or `None` if the union is not convex (the edge `d-e`
+/// does not pierce the shared triangle, so the flip is invalid).
+fn flip23(db: &mut DelaunayBuilder, s1: u32, s2: u32) -> Option<(usize, usize)> {
+    let t1 = db.tet_at(s1)?;
+    let t2 = db.tet_at(s2)?;
+    let shared: Vec<usize> = t1.iter().copied().filter(|v| t2.contains(v)).collect();
+    if shared.len() != 3 {
+        return None;
+    }
+    let d = *t1.iter().find(|v| !shared.contains(v))?;
+    let e = *t2.iter().find(|v| !shared.contains(v))?;
+    let (a, b, c) = (shared[0], shared[1], shared[2]);
+    // Valid iff edge (d,e) passes through triangle (a,b,c): the three tets
+    // d-e-(edge of abc) are consistently oriented (the orient3d signs agree).
+    let s_ab = orient(db, d, e, a, b);
+    let s_bc = orient(db, d, e, b, c);
+    let s_ca = orient(db, d, e, c, a);
+    if s_ab == Sign::Zero || s_ab != s_bc || s_bc != s_ca {
+        return None;
+    }
+    let n1 = positive(db, [d, e, a, b])?;
+    let n2 = positive(db, [d, e, b, c])?;
+    let n3 = positive(db, [d, e, c, a])?;
+    db.replace_cavity(&[s1, s2], &[n1, n2, n3]);
+    Some((d, e))
+}
+
+/// 3-2 flip removing edge `(d,e)` when it is shared by exactly three tets:
+/// replaces them by two tets sharing the new face `(a,b,c)` (the edge's ring).
+/// Returns the created face, or `None` if `(d,e)` is not shared by exactly three
+/// tets or the flip is not convex.
+fn flip32(db: &mut DelaunayBuilder, d: usize, e: usize) -> Option<[usize; 3]> {
+    let slots: Vec<u32> = db
+        .star_slots(d)
+        .into_iter()
+        .filter(|&s| db.tet_at(s).map_or(false, |t| t.contains(&e)))
+        .collect();
+    if slots.len() != 3 {
+        return None;
+    }
+    let mut ring: Vec<usize> = Vec::new();
+    for &s in &slots {
+        for v in db.tet_at(s)? {
+            if v != d && v != e && !ring.contains(&v) {
+                ring.push(v);
+            }
+        }
+    }
+    if ring.len() != 3 {
+        return None;
+    }
+    let (a, b, c) = (ring[0], ring[1], ring[2]);
+    // Valid iff d and e are on opposite sides of the new face's plane.
+    let sd = orient(db, a, b, c, d);
+    let se = orient(db, a, b, c, e);
+    if sd == Sign::Zero || se == Sign::Zero || sd == se {
+        return None;
+    }
+    let n1 = positive(db, [a, b, c, d])?;
+    let n2 = positive(db, [a, b, c, e])?;
+    db.replace_cavity(&slots, &[n1, n2]);
+    Some([a, b, c])
 }
 
 /// Output of [`tetrahedralize_constrained`].
@@ -277,6 +367,44 @@ fn recover_facets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flip_23_then_32_round_trips() {
+        // Five points: a triangle a,b,c with apexes d (above) and e (below).
+        let pts = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.3, 0.3, 1.0],
+            [0.3, 0.3, -1.0],
+        ];
+        let mut db = DelaunayBuilder::enclosing([-2.0; 3], [2.0; 3]);
+        for p in pts {
+            db.insert(p);
+        }
+        let n0 = db.tets_with_slots().len();
+        // Find an interior face shared by two all-real tets and 2-3 flip it.
+        let mut flipped = None;
+        'find: for (s1, _) in db.tets_with_slots() {
+            for i in 0..4 {
+                if let Some(s2) = db.neighbor_at(s1, i) {
+                    if db.tet_at(s2).is_some() {
+                        if let Some(edge) = flip23(&mut db, s1, s2) {
+                            flipped = Some(edge);
+                            break 'find;
+                        }
+                    }
+                }
+            }
+        }
+        let (d, e) = flipped.expect("a 2-3 flip should apply to this bipyramid");
+        assert_eq!(db.tets_with_slots().len(), n0 + 1, "2-3 flip adds one tet");
+        assert!(db.edge_exists(d, e), "the flip created edge (d,e)");
+        // 3-2 flip the created edge back.
+        flip32(&mut db, d, e).expect("the created edge is shared by exactly 3 tets");
+        assert_eq!(db.tets_with_slots().len(), n0, "3-2 flip restores the count");
+        assert!(!db.edge_exists(d, e), "the 3-2 flip removed edge (d,e)");
+    }
 
     /// A unit-cube surface subdivided `n`x`n` per face: vertices on each face
     /// grid (shared edges/corners deduplicated), triangulated with outward

@@ -11,6 +11,36 @@ alte `cvt::mesh` (unconstrained + Oversampling + statistische Rand-Erholung) wir
 Flächen-Arten. Toleranz (`tol_surf`/`tol_edge`, rel. Sagitta) + gröbste-Stelle-
 Insert sind besonders für **gekrümmte** Flächen zentral.
 
+## Architektur-Entscheidung: Oracle statt globaler Karte (2026-06-17)
+
+Die globale 2D-Karte kann **prinzipiell nicht** der universelle Mechanismus sein:
+Hairy-Ball (kein reguläres Gitter ohne Pol auf S²) + Theorema Egregium (K≠0 ⇒ keine
+Isometrie zur Ebene). Karten sind exakt nur für **Developables** (K=0: Ebene/Zyl/
+Kegel/Extrudat).
+
+Der vereinheitlichende Entwurf (SOTA: CGAL Mesh_3, restricted Delaunay/CVT) ist:
+
+- **Repräsentation = dualer Carrier** (haben wir bereits in `site.rs`):
+  - Float-Oracle `project`/`frame`/`curvature_radius` → Verteilung/Relaxation/Sizing.
+  - Exakter Konstruktor `Carrier::exact()` → Konformität + exaktes Volumen. Exakt
+    nur auf **rationalen** Trägern (Ebene `Pac`, Gerade `Lnc`); gekrümmt ist per
+    Konstruktion relativ-tol (transzendent — kein exakter rationaler Punkt auf S²).
+- **Mechanismus = intrinsisches CVT + Delaunay**, lokale **Tangentialebene als
+  universelle Karte pro Punkt** (Exponentialmap). Globale Developable-Karte = der
+  Spezialfall, in dem alle lokalen Frames zu einer Karte zusammenkleben.
+- **Nicht-Oracle, bleibt explizit** (korrekt, kein Hack): der B-Rep-Feature-Komplex
+  (Ecken/Feature-Kurven/Trim-Loops/Region-Adjazenz) als harte Constraints, und das
+  `inside`-Oracle fürs Volumen. Genau hier scheitern reine implizite Mesher; SOTA
+  fügt das als „feature protection" wieder hinzu — wir haben es als B-Rep.
+
+Watertight bleibt: wir extrahieren Flächen-Tris und **frieren sie als harte
+Constraints** für `cdt3` ein (nicht statistisches Volumen-Readback wie der alte Pfad).
+
+Folge für die Kugel: **flächen-nativ statt radialer Karte**. Geschlossene Kugel →
+geodätische Icosphere (isotrop, polfrei, nahtlos). Getrimmter Cap (≤ Hemisphäre) →
+azimutaler Chart, Frame aus **Facet-Centroid** (Randmittel ist bei Hemisphäre
+nulldeutig). Developables/Ebene → Chart-Fastpath (Ebene exakt).
+
 ## Die zwei Ansätze (warum es aktuell zwei Pfade gibt)
 
 - **Alt `cvt::mesh`** (aktueller Default via `mesh_plc_with`): unconstrained
@@ -113,16 +143,20 @@ Direkte Platzierung = konvergiertes 1D-CVT (gröbste-Stelle-äquiv., kein Spikin
 
 ## Phasenplan
 
-**Phase A — der eine chart-getriebene Surface-Pfad**
-- A1: `PlaneChart` als `SurfaceChart` (In-Plane-Frame) → Ebene = triviale Karte.
-- A2: in `surface_sites` die Verzweigung (planar/revolution/fallback) durch EINEN
-  Pfad ersetzen: `chart = PlaneChart | build_chart | RevolutionChart`; Scatter →
-  Relax-Insert → `triangulate_constrained` → Lift. (planarer Code ist der Spezialfall)
-- A3: Sizing `h(uv)=min(Caps, √(8·tol·R))` mit `surf_tol_for`/`surf_maxh_for`.
-- A4: gröbste-Stelle-Insert (`ℓ>h`) im Relax-Loop für ALLE Surfaces.
-- A5: geschlossene/periodische Faces als Revolution-Karte (rim-aligned, nahtlos).
-- Verif.: Sphere/Cyl/Torus → Tris auf analytischer Fläche, Deflection≤tol, geschlossene
-  Mannigfaltigkeit; `tol_surf`/`surf_maxh` wirksam.
+**Phase A — der eine chart-/oracle-getriebene Surface-Pfad**
+- A1: `PlaneChart` als `SurfaceChart` (In-Plane-Frame, exakt isometrisch). ✓ committet
+- A2: in `surface_sites` EIN chart-getriebener Pfad (Plane/Developable/curved);
+  Scatter → Lloyd → `triangulate_constrained` → Lift; planar = Spezialfall. ✓ committet
+- A3: Sizing `h(uv)=min(Caps, √(8·tol·R))`, `surf_tol_for`/`surf_maxh_for`. ✓ committet
+- A-Kugel: geschlossen → geodätische Icosphere; Cap → Chart aus Facet-Centroid;
+  Round-trip-Filter projiziert erst auf die Fläche (Facettierung ≠ Chart-Fehler). ✓ committet
+- A4 (offen): gröbste-Stelle-Insert (`ℓ>h`) im Relax-Loop — NUR für gekrümmte (planar
+  nicht, sonst bricht die Oversample-Balance des alten Pfades / exakte Volumina).
+- A5 (offen): Voll-Revolution-Barrels (Zyl/Kegel/Torus) + Extrudat-Barrels: aktuell
+  `revolution_grid`/pinned-Fallback → später nahtloser periodischer Pfad.
+- Torus/NURBS (offen): nicht-konvex → kein Hüllen-Trick; near-isometrischer Chart bzw.
+  tangential-CVT + restricted Delaunay. Aktuell Chart bzw. pinned-Fallback.
+- Verif.: Sphere ✓ (icosphere isotrop+watertight, Cap on-surface≤tol). Cyl/Torus offen.
 
 **Phase B — `mesh_cdt` nutzt die eine Surface**
 - `surface_sites` = vollständiger FrozenSurface-Producer (alle Faces, Carrier,

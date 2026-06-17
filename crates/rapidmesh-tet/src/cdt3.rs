@@ -98,8 +98,15 @@ fn edge_pierces_facet(db: &DelaunayBuilder, p: usize, q: usize, a: usize, b: usi
 
 /// A tet edge that pierces triangle `(a,b,c)`'s interior, if any (the obstruction
 /// that keeps the facet from being a mesh face).
+///
+/// A piercing edge is spatially LOCAL to the facet: its segment crosses the
+/// triangle interior, so its tet is (almost always) incident to a vertex of the
+/// facet. We therefore search the STARS of `a`, `b`, `c` first -- `O(star)` rather
+/// than `O(tets)`, which is what makes curved-facet recovery affordable on a dense
+/// constraint surface (a barrel band). A full scan is the safety fallback for the
+/// rare non-local obstruction, so the result is identical to scanning all tets.
 fn piercing_edge(db: &DelaunayBuilder, a: usize, b: usize, c: usize) -> Option<(usize, usize)> {
-    for (_, t) in db.tets_with_slots() {
+    let check = |t: [usize; 4]| -> Option<(usize, usize)> {
         for &(i, j) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
             let (p, q) = (t[i], t[j]);
             if p == a || p == b || p == c || q == a || q == b || q == c {
@@ -108,6 +115,30 @@ fn piercing_edge(db: &DelaunayBuilder, a: usize, b: usize, c: usize) -> Option<(
             if edge_pierces_facet(db, p, q, a, b, c) {
                 return Some((p, q));
             }
+        }
+        None
+    };
+    // Local: tets incident to the facet's vertices.
+    let mut seen: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+    for v in [a, b, c] {
+        for s in db.star_slots(v) {
+            if !seen.insert(s) {
+                continue;
+            }
+            if let Some(t) = db.tet_at(s) {
+                if let Some(e) = check(t) {
+                    return Some(e);
+                }
+            }
+        }
+    }
+    // Fallback: the rest of the mesh (rare; preserves exact correctness).
+    for (s, t) in db.tets_with_slots() {
+        if seen.contains(&s) {
+            continue;
+        }
+        if let Some(e) = check(t) {
+            return Some(e);
         }
     }
     None

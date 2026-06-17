@@ -177,6 +177,29 @@ Reihenfolge: A liefert die einheitliche, per-Entität-aware Surface (Voraussetzu
 für B). C macht mesh_cdt über den ganzen Korpus tragfähig. D macht Default + löscht.
 Benchmark (67) durchgehend als Gate.
 
+## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
+
+Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform
+watertight/exakt bei vertretbarer Perf. Reihenfolge = Risiko zuerst, dann Perf
+(macht iterieren bezahlbar), dann Breite, dann Umschalten.
+
+1. **B1 (#102)** — `mesh_cdt` konsumiert `surface_sites` (tris+tri_carrier+per-Entitaet)
+   statt `frozen_surface`. Schliesst die Schleife; raeumt Sizing-Blocker ab.
+2. **B2 (#103) — GATE** — Box (exakt+watertight) + geschlossene Kugel (<=tol+watertight,
+   Steiner beschraenkt). **GO** → weiter. **NO-GO** → Eskalation (Cavity-Retet in cdt3).
+   Das billigste Experiment, das die teuerste Unsicherheit (gekruemmte Recovery) aufloest.
+3. **C1 (#104)** — `piercing_edge`/Recovery via Octree (6x→~1.5x). Frueh, damit der
+   67er-Benchmark als laufendes Gate bezahlbar wird.
+4. **A5 (#105)** — periodische Barrel-Tris (Zyl/Kegel/Torus/Extrudat). Voraussetzung,
+   dass mesh_cdt diese Solids ueberhaupt constrainen kann (heute: Sites, keine Tris).
+5. **C2 (#107)** — Multi-Region-Interfaces (`cylinder_via`, `em_scene`).
+6. **C3 (#108)** — gekruemmte Recovery robust (Torus watertight; Cavity-Retet). Haengt an B2+A5.
+7. **A4 (#106)** — adaptiver groebste-Stelle-Insert (nur gekruemmt). Qualitaet, spaet.
+8. **D1 (#109)** — `mesh_plc_with`→`mesh_cdt`; `cvt::mesh` + Patch-Pfad + RAPIDMESH_CDT-Flag loeschen.
+9. **D2 (#110)** — 67er-Benchmark/Gallery vorher/nachher; Ergebnisse in `report.tex`.
+
+Abhaengigkeiten: B1→B2(GATE)→{C1, A5}→{C2, C3, A4}→D1→D2. B2 ist das Go/No-Go fuer alles.
+
 ## Schlüsseldateien
 
 - `crates/rapidmesh-tet/src/cvt.rs` — `mesh` (alt), `mesh_cdt` (neu), `surface_mesh`/

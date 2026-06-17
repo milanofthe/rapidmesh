@@ -636,7 +636,8 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.5, ..Default::default() };
-        let ss = surface_sites(&b, &plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
 
         assert_eq!(ss.plc_points, 8, "8 box corners pinned");
         assert!(ss.n_surf > 8, "edge + face interior points added");

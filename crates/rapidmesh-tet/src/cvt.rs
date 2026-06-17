@@ -1071,23 +1071,41 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let drop = drop_axis(n);
         let mut loc2: Vec<[f64; 2]> = Vec::new();
         let mut gidx: Vec<usize> = Vec::new();
+        let mut g2l: DMap<usize, usize> = DMap::default();
         let mut seen: DSet<usize> = DSet::default();
+        let push_pt = |g: usize, uv: [f64; 2], loc2: &mut Vec<[f64; 2]>, gidx: &mut Vec<usize>, g2l: &mut DMap<usize, usize>| {
+            let l = loc2.len();
+            loc2.push(uv);
+            gidx.push(g);
+            g2l.insert(g, l);
+        };
         for &(a, b) in &pbe[li] {
             for cv in [a, b] {
                 if seen.insert(cv) {
-                    loc2.push(project2(points[cv], drop));
-                    gidx.push(cv);
+                    push_pt(cv, project2(points[cv], drop), &mut loc2, &mut gidx, &mut g2l);
                 }
             }
             for &gi in &edge_pts[&sorted2(a, b)] {
                 if seen.insert(gi) {
-                    loc2.push(project2(points[gi], drop));
-                    gidx.push(gi);
+                    push_pt(gi, project2(points[gi], drop), &mut loc2, &mut gidx, &mut g2l);
                 }
             }
         }
         if loc2.len() < 3 {
             continue;
+        }
+        // The frozen boundary chains (corner -> graded edge points -> corner) are
+        // the constraint segments: forcing them as mesh edges makes a non-convex
+        // or holed plate triangulate to the face, not its convex hull (the 2D
+        // analogue of the boundary-constrained volume).
+        let mut bsegs: Vec<(usize, usize)> = Vec::new();
+        for &(a, b) in &pbe[li] {
+            let mut chain = vec![a];
+            chain.extend(edge_pts[&sorted2(a, b)].iter().copied());
+            chain.push(b);
+            for w in chain.windows(2) {
+                bsegs.push((g2l[&w[0]], g2l[&w[1]]));
+            }
         }
         let nb = loc2.len();
         let (mut lo2, mut hi2) = (loc2[0], loc2[0]);
@@ -1106,7 +1124,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             loc2.push(uv);
             gidx.push(points.len() - 1);
         }
-        for t in crate::surf2d::delaunay2(&loc2) {
+        for t in crate::surf2d::triangulate_constrained(&loc2, &bsegs, inside2) {
             faces.push(SurfaceFace {
                 tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
                 face_tag: patch.face_tag,

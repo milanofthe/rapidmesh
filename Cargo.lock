@@ -134,6 +134,7 @@ dependencies = [
  "rapidmesh-exact",
  "rapidmesh-geom",
  "rapidmesh-testutil",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -147,6 +148,7 @@ dependencies = [
  "rapidmesh-exact",
  "rapidmesh-testutil",
  "rayon",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -170,6 +172,7 @@ dependencies = [
  "rapidmesh-exact",
  "rapidmesh-testutil",
  "rayon",
+ "rustc-hash",
 ]
 
 [[package]]

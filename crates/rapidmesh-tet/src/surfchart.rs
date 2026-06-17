@@ -61,6 +61,45 @@ pub fn build_chart(kind: &SurfaceKind, pts: &[V3]) -> Option<Box<dyn SurfaceChar
     }
 }
 
+/// The trivial chart of a plane: an orthonormal in-plane frame `(u, v)` at origin
+/// `o` with normal `n`. It is EXACTLY isometric (2D chart distance == 3D distance),
+/// so the planar face meshes with the same machinery as the curved ones -- the
+/// plane is just the chart with infinite curvature radius (`h = h_max`, size only).
+/// The frame is taken verbatim from the carrier surface, so `to_uv`/`to_xyz` are
+/// bit-for-bit the surface's own `project_uv`/`eval_uv`: the unified path produces
+/// the identical planar point set the dedicated planar path did.
+#[derive(Clone, Debug)]
+pub struct PlaneChart {
+    o: V3,
+    u: V3,
+    v: V3,
+    n: V3,
+}
+
+impl PlaneChart {
+    /// Builds the chart from the plane's own frame (origin `o`, orthonormal in-plane
+    /// `u`/`v`, unit normal `n`).
+    pub fn new(o: V3, u: V3, v: V3, n: V3) -> PlaneChart {
+        PlaneChart { o, u, v, n }
+    }
+}
+
+impl SurfaceChart for PlaneChart {
+    fn to_uv(&self, p: V3) -> P2 {
+        let d = sub(p, self.o);
+        [dot(d, self.u), dot(d, self.v)]
+    }
+    fn to_xyz(&self, uv: P2) -> V3 {
+        add(self.o, add(scale(self.u, uv[0]), scale(self.v, uv[1])))
+    }
+    fn curvature_radius(&self, _uv: P2) -> f64 {
+        f64::INFINITY
+    }
+    fn project(&self, p: V3) -> V3 {
+        sub(p, scale(self.n, dot(sub(p, self.o), self.n)))
+    }
+}
+
 /// Chart of a linearly extruded profile curve: developable, so the chart is
 /// EXACTLY isometric, `u = arc length along the profile`, `v = extrusion
 /// height`. The profile is sampled once into an arc-length table for the
@@ -512,6 +551,29 @@ mod tests {
             let q = chart.to_xyz(chart.to_uv(p));
             assert!(dist(p, q) < 1e-9, "roundtrip {p:?} -> {q:?}");
         }
+    }
+
+    #[test]
+    fn plane_chart_is_isometric_and_roundtrips() {
+        // An orthonormal frame -> the chart is an exact isometry: chart distances
+        // equal 3D distances and every in-plane point round-trips bit-for-bit.
+        let o = [1.0, 2.0, 3.0];
+        let u = normalize([1.0, 1.0, 0.0]);
+        let n = normalize([1.0, -1.0, 1.0]);
+        let u = normalize(sub(u, scale(n, dot(u, n)))); // re-orthogonalize u against n
+        let v = cross(n, u);
+        let chart = PlaneChart::new(o, u, v, n);
+        let pa = add(o, add(scale(u, 0.7), scale(v, -1.3)));
+        let pb = add(o, add(scale(u, 2.1), scale(v, 0.4)));
+        // round-trip
+        assert!(dist(pa, chart.to_xyz(chart.to_uv(pa))) < 1e-12);
+        // isometry: chart distance == 3D distance
+        let (ua, ub) = (chart.to_uv(pa), chart.to_uv(pb));
+        let duv = ((ua[0] - ub[0]).powi(2) + (ua[1] - ub[1]).powi(2)).sqrt();
+        assert!((duv - dist(pa, pb)).abs() < 1e-12, "chart not isometric");
+        // an off-plane point projects onto the plane (normal component removed)
+        let off = add(pa, scale(n, 5.0));
+        assert!(dist(chart.project(off), pa) < 1e-12);
     }
 
     #[test]

@@ -994,7 +994,18 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- stage 3 seeding: graded interior, clear of the surface -----------
     let t_seed = std::time::Instant::now();
     let surf_tree = Octree::build(&frozen.points);
-    let hloc = |p: V3| domain.h_at(p).max(1e-9);
+    // Local target size: the graded field, capped by the region's own maxh (a
+    // region-wide size the boundary-grown field does not enforce in the interior).
+    let region_cap = |r: u32| -> f64 {
+        params
+            .region_maxh
+            .iter()
+            .find(|(rr, _)| *rr == r)
+            .map(|&(_, h)| h)
+            .unwrap_or(params.maxh)
+            .min(params.maxh)
+    };
+    let hloc = |p: V3| domain.h_at(p).min(region_cap(domain.region_at(p))).max(1e-9);
     let step = (0.7 * spacing).max(1e-9);
     let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     let ncell = (0.6 * spacing).max(1e-9);

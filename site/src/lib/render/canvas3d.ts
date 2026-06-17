@@ -669,6 +669,8 @@ export function fitCamera(min: [number, number, number], max: [number, number, n
 	// projected bbox onto the camera plane is < the full diagonal).
 	const diag = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-9);
 	const halfFov = Math.PI / 12; // half of the 30° perspective FOV
-	const distance = (diag * 0.6) / Math.tan(halfFov) * 1.05;
+	// 0.5*diag is close to the projected silhouette at a 45° view; a tight 1.0
+	// margin so the model fills the frame (minimal padding).
+	const distance = (diag * 0.5) / Math.tan(halfFov);
 	return { theta: Math.PI / 4, phi: Math.PI / 4, distance, target: [cx, cy, cz] };
 }

@@ -217,7 +217,9 @@ def render(
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page(
                 viewport={"width": int(width), "height": int(height)},
-                device_scale_factor=1,
+                # 2x pixel density: the canvas is devicePixelRatio-aware, so this
+                # renders at double resolution (crisp PNGs) for the same framing.
+                device_scale_factor=2,
             )
             page.goto(url, wait_until="load")
             page.wait_for_function(

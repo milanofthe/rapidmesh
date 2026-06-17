@@ -63,18 +63,20 @@ def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
         str(mp), str(out_png),
         azim=32, elev=20,
         clip=clip, clip_axis=1, edges=(kind != "surf"),
-        width=900, height=740,
+        width=1100, height=900,
     )
     return f"{out_png.name}: {n} elems, {dt:.1f}s"
 
 
-def render_corpus() -> None:
-    """Renders every geometry in the unified corpus with BOTH meshers."""
+def render_corpus(meshers=("default",)) -> None:
+    """Renders every geometry in the unified corpus. The default (oversampling)
+    mesher is fast and covers all 67; the constrained `cdt` mesher is opt-in
+    (``--cdt``) because it is still slow on curved/boolean geometries."""
     out = GAL / "corpus"
     out.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
     for name, _cat, kind, make in C.CORPUS:
-        for mesher in ("default", "cdt"):
+        for mesher in meshers:
             _set_cdt(mesher == "cdt")
             png = out / f"{name}__{mesher}.png"
             try:
@@ -123,7 +125,7 @@ def render_sizing() -> None:
             vd = m.to_viewer_dict(label)
             mp = MESHES / f"gal_{label}.json"
             mp.write_text(json.dumps(vd))
-            render(str(mp), str(png), azim=32, elev=20, clip=0.7, clip_axis=1, edges=True, width=900, height=740)
+            render(str(mp), str(png), azim=32, elev=20, clip=0.7, clip_axis=1, edges=True, width=1100, height=900)
             print(f"  {png.name}: {int(m.stats['n_tets'])} tets")
         except Exception as e:
             print(f"  {label}: FAILED ({type(e).__name__}: {e})")
@@ -133,11 +135,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", action="store_true", help="only the geometry corpus")
     ap.add_argument("--sizing", action="store_true", help="only the sizing permutations")
+    ap.add_argument("--cdt", action="store_true", help="also render the constrained mesh_cdt (slow)")
     args = ap.parse_args()
     do_all = not (args.corpus or args.sizing)
     if args.corpus or do_all:
-        print("== corpus (default vs cdt) ==")
-        render_corpus()
+        meshers = ("default", "cdt") if args.cdt else ("default",)
+        print(f"== corpus ({' + '.join(meshers)}) ==")
+        render_corpus(meshers)
     if args.sizing or do_all:
         print("== sizing permutations ==")
         render_sizing()

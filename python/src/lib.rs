@@ -13,7 +13,7 @@ use rapidmesh_geom::{
     solid_box, sphere, torus, wedge, FaceTag, Scene,
 };
 use rapidmesh_tet::{
-    mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
+    mesh_cdt, mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
     QualityStats, SurfaceMesh, TetMesh,
 };
 
@@ -356,7 +356,13 @@ impl SceneBuilder {
                 surface_deflection,
             };
             let tm = std::time::Instant::now();
-            let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
+            // Opt-in to the new boundary-constrained Stage-3 pipeline for
+            // side-by-side inspection; the default stays the proven path.
+            let mut mesh: TetMesh = if std::env::var_os("RAPIDMESH_CDT").is_some() {
+                mesh_cdt(&plc, &params)
+            } else {
+                mesh_plc_with(&plc, &params)
+            };
             let t_mesh = tm.elapsed();
             rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             let opt = OptimizeParams {

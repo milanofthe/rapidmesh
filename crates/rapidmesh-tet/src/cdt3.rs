@@ -19,8 +19,13 @@
 use crate::delaunay::DelaunayBuilder;
 use crate::site::{Carrier, Site};
 use rapidmesh_exact::{orient3d, Point3, Sign};
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
 type V3 = [f64; 3];
+/// Deterministic hashing: region flooding iterates face buckets, and the mesh
+/// must be reproducible run to run.
+type BH = BuildHasherDefault<rustc_hash::FxHasher>;
 
 // ---- 3D bistellar flips (the engine of flip-based boundary recovery) --------
 //
@@ -179,6 +184,83 @@ fn flip32(db: &mut DelaunayBuilder, d: usize, e: usize) -> Option<[usize; 3]> {
     let n2 = positive(db, [a, b, c, e])?;
     db.replace_cavity(&slots, &[n1, n2]);
     Some([a, b, c])
+}
+
+// ---- region classification by flood fill ------------------------------------
+
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Assigns each tet a region tag by flood fill, blocked by the surface. The
+/// oracle `surface_face(&sorted_tri)` returns `Some((front, back, n))` if that
+/// tet face lies on the surface, with the region tags on the side the outward
+/// normal `n` points to (front) and the opposite side (back), else `None` for an
+/// interior face. Seeds each surface face's two incident tets by which side of
+/// the face they sit on, then floods the tag across non-surface faces. This is
+/// exact-conformant: no centroid test, the surface partitions the tets directly
+/// (\cref{prop:watertight}). Tags follow the surface's region labelling; `0` is
+/// the background void.
+pub fn classify_regions(
+    tets: &[[usize; 4]],
+    points: &[V3],
+    surface_face: impl Fn(&[usize; 3]) -> Option<(u32, u32, V3)>,
+) -> Vec<u32> {
+    let sorted = |f: [usize; 3]| {
+        let mut s = f;
+        s.sort_unstable();
+        s
+    };
+    // Face -> incident tets (1 on the hull, 2 in the interior).
+    let mut face_tets: HashMap<[usize; 3], Vec<usize>, BH> = HashMap::default();
+    for (ti, t) in tets.iter().enumerate() {
+        for f in &[[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
+            face_tets.entry(sorted(*f)).or_default().push(ti);
+        }
+    }
+    let mut region = vec![u32::MAX; tets.len()];
+    // Seed: each surface face sets the region of its incident tet(s) by side.
+    for (f, owners) in &face_tets {
+        let (front, back, n) = match surface_face(f) {
+            Some(x) => x,
+            None => continue,
+        };
+        for &ti in owners {
+            let apex = *tets[ti].iter().find(|v| !f.contains(v)).unwrap();
+            // The tet is on the front side iff its apex is on the normal side.
+            let s = dot(sub(points[apex], points[f[0]]), n);
+            region[ti] = if s > 0.0 { front } else { back };
+        }
+    }
+    // Flood the tag across non-surface shared faces.
+    let mut stack: Vec<usize> = (0..tets.len()).filter(|&i| region[i] != u32::MAX).collect();
+    while let Some(ti) = stack.pop() {
+        let t = tets[ti];
+        for f in &[[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
+            let key = sorted(*f);
+            if surface_face(&key).is_some() {
+                continue; // a surface face does not connect two regions
+            }
+            if let Some(owners) = face_tets.get(&key) {
+                for &nb in owners {
+                    if nb != ti && region[nb] == u32::MAX {
+                        region[nb] = region[ti];
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    // Any tet the flood never reached (isolated by degeneracy) is background.
+    for r in &mut region {
+        if *r == u32::MAX {
+            *r = 0;
+        }
+    }
+    region
 }
 
 /// Output of [`tetrahedralize_constrained`].
@@ -537,5 +619,30 @@ mod tests {
             area += 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
         }
         assert!((area - 6.0).abs() < 1e-9, "cube surface area must be 6, got {area}");
+    }
+
+    #[test]
+    fn cube_region_flood_fill_tags_every_interior_tet() {
+        let (verts, tris, carr) = subdivided_cube(3);
+        let interior = vec![[0.5, 0.5, 0.5], [0.3, 0.6, 0.4], [0.7, 0.4, 0.6]];
+        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3]);
+        // Oracle: a face on a cube plane separates inside (region 1) from the
+        // background void (0); the outward normal points out of the cube.
+        let oracle = |f: &[usize; 3]| -> Option<(u32, u32, V3)> {
+            let p = [c.points[f[0]], c.points[f[1]], c.points[f[2]]];
+            for k in 0..3 {
+                for (val, dir) in [(0.0, -1.0), (1.0, 1.0)] {
+                    if p.iter().all(|q| q[k] == val) {
+                        let mut n = [0.0, 0.0, 0.0];
+                        n[k] = dir;
+                        return Some((0, 1, n)); // front (out) = 0, back (in) = 1
+                    }
+                }
+            }
+            None
+        };
+        let region = classify_regions(&c.tets, &c.points, oracle);
+        assert_eq!(region.len(), c.tets.len());
+        assert!(region.iter().all(|&r| r == 1), "every tet inside the cube is region 1");
     }
 }

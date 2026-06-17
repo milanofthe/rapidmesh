@@ -29,6 +29,7 @@ import rapidmesh as rm
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from report import corpus as C  # noqa: E402
 from report import validate as V  # noqa: E402
 from report.viewer import render  # noqa: E402
 
@@ -43,18 +44,15 @@ def _set_cdt(on: bool) -> None:
         os.environ.pop("RAPIDMESH_CDT", None)
 
 
-def _render_mesh(name: str, kind: str, build, h: float, out_png: Path) -> str:
-    """Builds + meshes one geometry and renders it. Returns a short status line."""
-    g = rm.Geometry(maxh=h)
-    build(g, h)
+def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
+    """Meshes one corpus geometry (via its `make`) and renders it."""
     t0 = time.time()
+    m = make()
     if kind == "surf":
-        m = g.surface_mesh(maxh=h)
         vd = V._surface_viewer_dict(m, name)
         n = len(m.faces)
         clip = None
     else:
-        m = g.mesh(maxh=h)
         vd = m.to_viewer_dict(name)
         n = int(m.stats["n_tets"])
         clip = 0.7
@@ -71,19 +69,19 @@ def _render_mesh(name: str, kind: str, build, h: float, out_png: Path) -> str:
 
 
 def render_corpus() -> None:
+    """Renders every geometry in the unified corpus with BOTH meshers."""
     out = GAL / "corpus"
     out.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
-    for name, _cat, kind, base_h, build in V.CASES:
-        h = base_h * V.RENDER_FACTOR
+    for name, _cat, kind, make in C.CORPUS:
         for mesher in ("default", "cdt"):
             _set_cdt(mesher == "cdt")
             png = out / f"{name}__{mesher}.png"
             try:
-                status = _render_mesh(name, kind, build, h, png)
+                status = _render_mesh(name, kind, make, png)
                 print(f"  [{mesher:7s}] {status}")
-            except Exception as e:  # a mesher gap should not stop the gallery
-                print(f"  [{mesher:7s}] {name}: FAILED ({type(e).__name__}: {e})")
+            except BaseException as e:  # a mesher gap / panic must not stop the gallery
+                print(f"  [{mesher:7s}] {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
     _set_cdt(False)
 
 

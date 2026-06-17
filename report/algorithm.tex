@@ -297,10 +297,15 @@ which equidistributes spacing $\propto h$. Adaptivity wraps the relaxation:
 \State place $s_1,\dots,s_n$ equidistributing $h$ (cumulative-$\rho$ inversion)
 \Repeat
   \For{a few iterations} relax all $s_i$ by \eqref{eq:cvt1d} \EndFor
-  \State $e^\star,\,s^\star \gets \max_i$ deflection of the chord
-         $[\vv{C}(s_i),\vv{C}(s_{i+1})]$ vs.\ the arc, and its location
-  \If{$e^\star > \varepsilon$} insert a site at $s^\star$; $n\!\mathrel{+}\!=\!1$ \EndIf
-\Until{$e^\star \le \varepsilon$ \textbf{and} max site move $<\tau_{\text{move}}$}
+  \State $e^\star,s^\star \gets$ worst chord--arc deflection and its location
+         \Comment{error-driven}
+  \State $\ell^\star,m^\star \gets$ longest segment length and its midpoint
+         \Comment{$h_{\max}$-driven}
+  \If{$e^\star > \varepsilon$ \textbf{or} $\ell^\star > h_{\max}$}
+       insert a site (at $s^\star$ if $e^\star{>}\varepsilon$, else $m^\star$);
+       $n\!\mathrel{+}\!=\!1$ \EndIf
+\Until{$e^\star \le \varepsilon$ \textbf{and} $\ell^\star \le h_{\max}$
+       \textbf{and} max site move $<\tau_{\text{move}}$}
 \State \Return $\{\vv{C}(s_i)\}$ \Comment{frozen edge points; corners included}
 \end{algorithmic}
 \end{algorithm}
@@ -322,6 +327,18 @@ there with a 2D surface-CVT (boundary = frozen edge points, held fixed), insert
 where the surface deflection tolerance is violated, and lift every chart point
 exactly onto $\vv{S}$. The output is a \emph{conforming triangulation of the
 face} that the volume stage will treat as a hard constraint.
+
+\paragraph{Face categories and the face sizing field.}
+Three chart families cover all modalities (\S\ref{sec:charts}): \emph{planar}
+faces use the plane chart; \emph{developable} analytic faces (cylinder, cone,
+extruded) use an exact isometric unroll; \emph{doubly-curved} analytic faces
+(sphere, torus) and \emph{periodic} full revolutions use a distance-faithful
+chart or the periodic revolution construction, with a restricted-CVT fallback
+for general NURBS. Before any face is seeded, its sizing field is assembled from
+the \emph{now-frozen edge sampling} on its boundary (the edge spacings and any
+per-region $h_{\max}$) combined with the surface deflection bound
+\eqref{eq:surf_defl}, then Lipschitz-smoothed \eqref{eq:lipschitz} across the
+face. The frozen edges therefore both bound the face and seed its density.
 
 \subsection{First fundamental form and area}
 With $\Su=\partial\vv{S}/\partial u$, $\Sv=\partial\vv{S}/\partial v$, the metric
@@ -473,10 +490,14 @@ their longitude reference from the \emph{shared} rim so their rings align.
             clamp inside the loops; keep $B$ fixed
   \EndFor
   \State $e^\star \gets \max$ triangle deflection vs.\ $\vv{S}$
-         (sagitta, \eqref{eq:surf_defl})
-  \If{$e^\star>\varepsilon$} insert a site at the worst triangle's circumcentre
-     (in the chart) \EndIf
-\Until{$e^\star\le\varepsilon$ \textbf{and} max move $<\tau_{\text{move}}$}
+         (sagitta, \eqref{eq:surf_defl}) \Comment{error-driven}
+  \State $\ell^\star \gets \max$ triangle edge length (in arc length)
+         \Comment{$h_{\max}$-driven}
+  \If{$e^\star>\varepsilon$ \textbf{or} $\ell^\star>h_{\max}$}
+     insert a site at the offending triangle's circumcentre (in the chart)
+     \EndIf
+\Until{$e^\star\le\varepsilon$ \textbf{and} $\ell^\star\le h_{\max}$
+       \textbf{and} max move $<\tau_{\text{move}}$}
 \State lift: $\vv{p}_k=\vv{S}(\Phi^{-1}(\text{chart site}_k))$ -- exact on surface
 \State \Return conforming triangulation of the face (its triangles + vertices)
 \end{algorithmic}

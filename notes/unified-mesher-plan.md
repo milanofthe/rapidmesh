@@ -177,6 +177,18 @@ Reihenfolge: A liefert die einheitliche, per-Entität-aware Surface (Voraussetzu
 für B). C macht mesh_cdt über den ganzen Korpus tragfähig. D macht Default + löscht.
 Benchmark (67) durchgehend als Gate.
 
+## B2-GATE: GO (2026-06-17)
+
+`mesh_cdt` konsumiert die einheitliche `surface_sites` (B1). Messung via mesh_cdt:
+Box 300 Tets/0.02s, UV-Kugel(radial) 909/0.04s, fein 5521/0.27s — alle **Steiner=0**,
+watertight, exaktes/≤tol-Volumen, Einzelregion. Die geschlossene gekrümmte Constraint
+(Icosphere) wird rein per Flip rekonstruiert (geodätische Seedung → nah-Delaunay →
+keine Steiner nötig), in ms statt den befürchteten 509 s. **Tiefste Unsicherheit der
+Vision aufgelöst → GO.** Zylinder läuft (1746 Tets), aber Barrel noch nicht
+watertight-by-construction (keine Constraint-Tris) → A5. Perf-Befund: der einfache
+Spine ist schnell; die 509 s betreffen den vollen 67er-Korpus → C1 misst sich am
+Benchmark, nicht an diesen Fällen.
+
 ## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
 
 Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform

@@ -714,12 +714,100 @@ pub fn surface_sites(
 
         // ---- structured / pinned fallback (no chart bijection) -----------------
         if is_revolution && is_full_revolution(surf, &boundary) {
-            // FULL-REVOLUTION barrel: a structured (theta, v) grid on the rim rays
-            // at the target arc-length density -- the theta rings close with no seam.
+            // FULL-REVOLUTION barrel (cyl/cone, partial-torus tube): a structured
+            // (theta, v) grid triangulated into a CLOSED band. Columns = the shared
+            // rim theta rays (both rims align on the axis frame); rows = bottom rim ->
+            // interior rows -> top rim, the rims REUSING the shared edge site indices
+            // so the band conforms to the caps; the seam closes by wrapping the last
+            // column to the first. Interior points are on the analytic surface.
+            let rays = rim_theta_rays(surf, &boundary);
+            let n = rays.len();
+            let tau = std::f64::consts::TAU;
+            let col_of = |theta: f64| -> usize {
+                let mut best = (f64::INFINITY, 0usize);
+                for (ci, &r) in rays.iter().enumerate() {
+                    let mut d = (theta - r).abs();
+                    d = d.min(tau - d);
+                    if d < best.0 {
+                        best = (d, ci);
+                    }
+                }
+                best.1
+            };
+            // Each loop -> (mean v, ring of site indices indexed by column).
+            let mut rings: Vec<(f64, Vec<usize>)> = Vec::new();
+            let mut ok = n >= 3;
+            for lp in &face.loops {
+                let mut ring = vec![usize::MAX; n];
+                let (mut vsum, mut vn) = (0.0f64, 0.0f64);
+                for &cid in &lp.coedges {
+                    let sidx = &edge_sidx[brep.coedge(cid).edge.0 as usize];
+                    if sidx.len() < 2 {
+                        ok = false;
+                        break;
+                    }
+                    for &si in sidx {
+                        let uv = surf.project_uv(sites[si].pos());
+                        ring[col_of(uv[0])] = si; // a closure duplicate overwrites its own column
+                        vsum += uv[1];
+                        vn += 1.0;
+                    }
+                }
+                if !ok || ring.iter().any(|&x| x == usize::MAX) {
+                    ok = false;
+                    break;
+                }
+                rings.push((vsum / vn.max(1.0), ring));
+            }
+            if ok && rings.len() == 2 {
+                if rings[0].0 > rings[1].0 {
+                    rings.swap(0, 1);
+                }
+                let (v0, v1) = (rings[0].0, rings[1].0);
+                // interior row count from arc length / local target along v.
+                let vmid = 0.5 * (v0 + v1);
+                let eps = (v1 - v0) * 1e-4 + 1e-12;
+                let dv_arc =
+                    dist3(surf.eval_uv([rays[0], vmid + eps]), surf.eval_uv([rays[0], vmid - eps])) / (2.0 * eps);
+                let tgt = target(surf.eval_uv([rays[0], vmid])).max(1e-9);
+                let nv = (((dv_arc * (v1 - v0)) / tgt).round() as usize).max(1);
+                let mut grid: Vec<Vec<usize>> = Vec::with_capacity(nv + 1);
+                grid.push(rings[0].1.clone());
+                for j in 1..nv {
+                    let vj = v0 + (v1 - v0) * j as f64 / nv as f64;
+                    let mut row = Vec::with_capacity(n);
+                    for &theta in &rays {
+                        sites.push(Site::on_surface(kind.clone(), surf.eval_uv([theta, vj])));
+                        point_tile.push(fid as u32);
+                        point_size.push(params.surf_maxh_for(fid));
+                        row.push(sites.len() - 1);
+                    }
+                    grid.push(row);
+                }
+                grid.push(rings[1].1.clone());
+                let car = Carrier::Surface(kind.clone());
+                for j in 0..grid.len() - 1 {
+                    for i in 0..n {
+                        let i2 = (i + 1) % n;
+                        let (a, b, c, d) = (grid[j][i], grid[j][i2], grid[j + 1][i2], grid[j + 1][i]);
+                        for tri in [[a, b, c], [a, c, d]] {
+                            tris.push(SurfaceFace {
+                                tri,
+                                face_tag: face.face_tag,
+                                regions: face.regions,
+                                patch: fid as u32,
+                                surface: face.plc_surface,
+                            });
+                            tri_carrier.push(car.clone());
+                        }
+                    }
+                }
+                continue;
+            }
+            // rings did not resolve -> sites only (no tris), as before
             let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
             let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
             let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let rays = rim_theta_rays(surf, &boundary);
             for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
                 sites.push(Site::on_surface(kind.clone(), p));
                 point_tile.push(fid as u32);
@@ -912,6 +1000,48 @@ mod tests {
         assert!(curved_tris > 0, "the trimmed sphere cap must be chart-triangulated");
         assert!(n_interior > 0, "the cap must have chart-lifted interior points");
         assert!(max_off < 1e-7, "chart-lifted interior vertices must lie on the sphere (off {max_off})");
+    }
+
+    #[test]
+    fn cylinder_barrel_is_a_closed_triangulated_band() {
+        // A5: the full-revolution barrel is triangulated into a closed band on the
+        // analytic cylinder (not just seeded points). Verify the curved tris (1) lie
+        // on the cylinder, (2) reuse the shared rim points, and (3) together with the
+        // caps make the whole surface a closed manifold (every edge shared twice).
+        use rapidmesh_geom::cylinder;
+        let (r, hgt) = (1.0, 3.0);
+        let mut scene = Scene::new();
+        scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, hgt], r, 24));
+        let plc = scene.assemble();
+        let b = from_plc(&plc);
+        let params = MeshParams { maxh: 0.5, ..Default::default() };
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
+
+        let mut curved = 0usize;
+        let mut max_off = 0.0f64;
+        for (t, c) in ss.tris.iter().zip(&ss.tri_carrier) {
+            if !matches!(c, Carrier::Surface(_)) {
+                continue;
+            }
+            curved += 1;
+            for &si in &t.tri {
+                let p = ss.sites[si].pos();
+                let radial = (p[0] * p[0] + p[1] * p[1]).sqrt(); // distance to z-axis
+                max_off = max_off.max((radial - r).abs());
+            }
+        }
+        assert!(curved > 0, "the barrel must be triangulated");
+        assert!(max_off < 1e-9, "barrel tri vertices lie on the cylinder (off {max_off})");
+        // whole surface (barrel + 2 caps) is a closed manifold
+        let mut edges: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        for f in &ss.tris {
+            for k in 0..3 {
+                let (u, v) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edges.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        assert!(edges.values().all(|&c| c == 2), "cylinder surface is a closed manifold");
     }
 
     #[test]

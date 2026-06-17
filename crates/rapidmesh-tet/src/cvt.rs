@@ -1897,6 +1897,37 @@ mod tests {
         assert!(edge.values().all(|&c| c == 2), "uv sphere boundary is a closed manifold");
     }
 
+    /// A5: a full cylinder now meshes WATERTIGHT through `mesh_cdt` -- the barrel is
+    /// a closed triangulated band (a hard constraint), not just seeded points.
+    /// IGNORED until C1: barrel curved-facet recovery hits the O(tets) `piercing_edge`
+    /// scan (~90s); the octree acceleration (task #104) brings it back into the suite.
+    #[test]
+    #[ignore]
+    fn cylinder_meshes_watertight_via_cdt() {
+        let (r, hgt) = (1.0, 3.0);
+        let mut scene = Scene::new();
+        scene.add_solid(rapidmesh_geom::cylinder([0.0, 0.0, 0.0], [0.0, 0.0, hgt], r, 24));
+        let plc = scene.assemble();
+        let m = mesh_cdt(&plc, &MeshParams { maxh: 0.5, ..Default::default() });
+        assert!(!m.tets.is_empty(), "cylinder produced tets");
+        assert!(m.tet_regions.iter().all(|rr| rr.0 == 1), "single region");
+        let vol: f64 = m
+            .tets
+            .iter()
+            .map(|t| tet_det([m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]]).abs() / 6.0)
+            .sum();
+        let exact = std::f64::consts::PI * r * r * hgt;
+        assert!(vol > 0.90 * exact && vol < 1.001 * exact, "cylinder volume {vol} vs {exact}");
+        let mut edge: DMap<(usize, usize), usize> = DMap::default();
+        for f in &m.faces {
+            for k in 0..3 {
+                let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edge.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        assert!(edge.values().all(|&c| c == 2), "cylinder boundary is a closed manifold");
+    }
+
     /// B2 GATE: surface sizing flows through `mesh_cdt` -- a finer `maxh_surf` makes a
     /// denser boundary triangulation (the per-entity sizing that previously did NOT
     /// reach mesh_cdt because it used `frozen_surface`).

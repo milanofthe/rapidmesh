@@ -24,8 +24,10 @@ use std::sync::Arc;
 
 pub mod build;
 pub mod surface;
+pub mod topology;
 
 pub use surface::Surface;
+pub use topology::{extract_topology, EdgeKind, EdgeTopo, FaceTopo, Topology};
 
 type V3 = [f64; 3];
 type P2 = [f64; 2];

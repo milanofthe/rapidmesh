@@ -729,63 +729,36 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     rmlog::stage("mesh.seed", t_seed.elapsed().as_secs_f64());
 
-    // ---- 3D Lloyd on the volume sites (surface fixed) --------------------
-    // The surface is fixed now. Build its Delaunay ONCE; each pass clones it and
-    // inserts only the moving volume points (incremental: no surface re-insert).
-    // Its octree (for mirror-in) is built once too.
-    let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
-    let surf_tree = Octree::build(&surf_pos);
-    let order_surf = crate::spatial::morton_order(&surf_pos);
-    let mut surf_db = DelaunayBuilder::enclosing(lo, hi);
-    for &si in &order_surf {
-        surf_db.insert(surf_pos[si]);
-    }
-    // Full Delaunay = surface clone + Morton-ordered volume inserts; returns tets
-    // remapped from insertion indices back to site indices.
-    let build = |vol_pos: &[V3]| -> Vec<[usize; 4]> {
-        let order_vol = crate::spatial::morton_order(vol_pos);
-        let mut db = surf_db.clone();
-        for &vi in &order_vol {
-            db.insert(vol_pos[vi]);
+    // ---- volume (3D) CVT Lloyd: relax INTERIOR sites only -----------------
+    // Bottom-up: the surface points were already relaxed in their own dimension
+    // (1D edges, 2D per-face Lloyd in `surface_sites`), so here they are FIXED --
+    // they ARE the boundary the volume conforms to. The volume sites move to their
+    // density-weighted tet centroid; the full Delaunay is rebuilt each pass. The
+    // octree of surface points is the mirror-in fallback for an out-of-domain
+    // volume centroid.
+    let surf_tree = Octree::build(&sites[..n_surf].iter().map(|s| s.pos()).collect::<Vec<_>>());
+    let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
+        let order = crate::spatial::morton_order(all_pos);
+        let mut db = DelaunayBuilder::enclosing(lo, hi);
+        for &i in &order {
+            db.insert(all_pos[i]);
         }
-        db.tets()
-            .into_iter()
-            .map(|t| {
-                std::array::from_fn(|j| {
-                    let p = t[j];
-                    if p < n_surf {
-                        order_surf[p]
-                    } else {
-                        n_surf + order_vol[p - n_surf]
-                    }
-                })
-            })
-            .collect()
+        db.tets().into_iter().map(|t| std::array::from_fn(|j| order[t[j]])).collect()
     };
 
     let t_lloyd = std::time::Instant::now();
     let mut lloyd_passes = 0usize;
     for _ in 0..LLOYD_ITERS {
-        if !sites.iter().any(|s| s.is_volume()) {
-            break;
-        }
         lloyd_passes += 1;
         let pos = positions(&sites);
-        let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
-        let tets = build(&vol_pos);
+        let tets = build_full(&pos);
         let mut num = vec![[0.0f64; 3]; sites.len()];
         let mut den = vec![0.0f64; sites.len()];
         for t in &tets {
             let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
             let c = centroid4(p);
-            // DENSITY-WEIGHTED CVT (adaptive mode): weight each tet by
-            // volume * rho, with the sizing-field density rho = 1/h^3 (spacing ~
-            // h), pulling sites toward finer regions so a graded field relaxes
-            // into a SMOOTH gradient instead of fanning at a fine/coarse
-            // transition. Gated with `density_weighted`: it concentrates sites
-            // near curved boundaries, which can flip a near-boundary tet's region
-            // (the exact-volume fixtures need the plain uniform CVT). Uniform h
-            // would make rho constant anyway.
+            // DENSITY-WEIGHTED CVT (adaptive): weight by volume * rho, rho = 1/h^3,
+            // pulling sites toward finer regions (gated; uniform h => rho const).
             let w = if params.density_weighted {
                 let h = vol_field.at(c).min(region_cap(domain.region_at(c))).max(1e-9);
                 tet_det(p).abs() / (h * h * h)
@@ -799,18 +772,17 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 den[i] += w;
             }
         }
-        // Crowding neighbor search runs on the central domain octree: refill its
-        // per-leaf site buckets with this pass's positions, then query a radius.
         domain.rebucket(&pos);
         let mut max_move = 0.0f64;
         for i in 0..sites.len() {
+            // ONLY interior (volume) sites relax; surface sites (corners, edges,
+            // faces) are fixed -- they were meshed bottom-up in their own dimension.
             if !sites[i].is_volume() || den[i] == 0.0 {
                 continue;
             }
             let mut tgt: V3 = std::array::from_fn(|k| num[i][k] / den[i]);
-            // Out of the domain: mirror back in across the nearest boundary face
-            // (the planar carrier of the closest surface site). If that does not
-            // land inside, keep the point where it was.
+            // A volume centroid outside the domain: mirror it back in across the
+            // nearest carrier plane.
             if !inside(tgt) {
                 let mirrored = surf_tree.nearest(tgt).and_then(|j| {
                     if let Carrier::Plane { p0, n } = sites[j as usize].carrier {
@@ -825,17 +797,14 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     None => continue,
                 }
             }
-            let crowded = domain
-                .neighbors(tgt, SEPARATION_FRAC * vol_field.at(tgt).min(region_cap(domain.region_at(tgt))))
-                .into_iter()
-                .any(|j| j as usize != i);
+            let h = vol_field.at(tgt).min(region_cap(domain.region_at(tgt)));
+            let sep = SEPARATION_FRAC * h;
+            let crowded = domain.neighbors(tgt, sep).into_iter().any(|j| j as usize != i);
             if !crowded {
                 sites[i].move_to(tgt);
                 max_move = max_move.max(dist(pos[i], sites[i].pos()));
             }
         }
-        // Converged: the largest move this pass is a tiny fraction of the finest
-        // spacing, so further passes (and their Delaunay rebuilds) buy little.
         if max_move < LLOYD_CONVERGE_FRAC * spacing {
             break;
         }
@@ -844,9 +813,8 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stat("mesh.lloyd_passes", lloyd_passes as f64);
 
     // ---- final triangulation, tilings, region classification --------------
-    let vol_pos: Vec<V3> = sites[n_surf..].iter().map(|s| s.pos()).collect();
     let t_build = std::time::Instant::now();
-    let all_tets = build(&vol_pos);
+    let all_tets = build_full(&positions(&sites));
     rmlog::stage("mesh.build_final", t_build.elapsed().as_secs_f64());
     let t_classify = std::time::Instant::now();
     let pts = positions(&sites);

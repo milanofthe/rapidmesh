@@ -25,10 +25,11 @@ const SURF_LLOYD_ITERS: usize = 4;
 /// restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
 /// the exact PLC boundary (the conformity requirement). Surface element size =
 /// `OVERSAMPLE * H`; the volume is at the size field `H`.
-const OVERSAMPLE: f64 = 0.7;
+pub(crate) const OVERSAMPLE: f64 = 0.7;
 
-fn dist2(a: P2, b: P2) -> f64 {
-    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+/// Exact bit pattern of a 3D point, for de-duplicating pinned vertices.
+fn bits(p: V3) -> [u64; 3] {
+    [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
 }
 
 /// Even-odd point-in-region test over a planar face's loop segments (in (u,v)).
@@ -316,55 +317,7 @@ fn fill_face_points(
             interior.push(p);
         }
     }
-
-    // On-surface relaxation: a few repulsion passes drive the blue-noise toward a
-    // CVT-like (uniform) distribution -- the dart set alone has sparse spots that
-    // leave volume slivers. Each point is pushed off its too-close neighbours
-    // (boundary points included, so the interior stays clear of the edges), then
-    // reprojected onto the analytic surface.
-    for _ in 0..8 {
-        let mut g: HashGrid = HashGrid::new();
-        for &b in boundary {
-            g.entry(cell_key(b, cell)).or_default().push(b);
-        }
-        for &p in &interior {
-            g.entry(cell_key(p, cell)).or_default().push(p);
-        }
-        let snap = interior.clone();
-        for i in 0..interior.len() {
-            let p = snap[i];
-            let r = (0.9 * target(p)).max(1e-12);
-            let (kx, ky, kz) = cell_key(p, cell);
-            let span = (r / cell).ceil() as i64;
-            let mut disp = [0.0f64; 3];
-            for dx in -span..=span {
-                for dy in -span..=span {
-                    for dz in -span..=span {
-                        if let Some(v) = g.get(&(kx + dx, ky + dy, kz + dz)) {
-                            for &q in v {
-                                let d = sub(p, q);
-                                let dl = dot(d, d).sqrt();
-                                if dl > 1e-12 && dl < r {
-                                    let w = (r - dl) / r;
-                                    for k in 0..3 {
-                                        disp[k] += d[k] / dl * w;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let dn = dot(disp, disp).sqrt();
-            if dn > 1.0 {
-                for k in 0..3 {
-                    disp[k] /= dn;
-                }
-            }
-            let moved: V3 = std::array::from_fn(|k| p[k] + 0.3 * r * disp[k]);
-            interior[i] = proj(moved);
-        }
-    }
+    // Just a seed -- the on-surface Lloyd (volume stage) relaxes these to a CVT.
     interior
 }
 
@@ -395,21 +348,21 @@ pub fn surface_sites(
     }
     let plc_points = sites.len();
 
-    // Surface meshing strategy per face:
-    //  * STRUCTURED (cylinder / cone / torus / extruded): ruled or tube-like, so a
-    //    blue-noise fill leaves flat slivers; the clean structured INPUT
-    //    tessellation is kept instead.
-    //  * PLANE: 2D Lloyd (`cvt_fill`) in the plane -- best quality on sharp/acute
-    //    faces (gears, wedges).
-    //  * SPHERE / other curved: randomized on-surface fill (the fused-sphere win).
-    // An edge bordering a structured face keeps its input vertices too, so the
-    // shared rim stays conforming between the kept barrel and the filled cap.
+    // A curved analytic surface (cylinder / cone / torus / sphere / extruded) keeps
+    // its clean structured INPUT tessellation: the tessellator already produced a
+    // near-uniform on-surface mesh, so it IS the 2D surface CVT -- re-relaxing it
+    // would need periodic-seam / pole handling for no gain, and a dart fill leaves
+    // flat slivers on ruled surfaces. Its bounding edges keep the input vertices
+    // too, so the shared rim stays conforming. PLANAR faces (whose input is an
+    // arbitrary coarse fan) are meshed by a true 2D Lloyd (`cvt_fill`) in their
+    // in-plane (u,v) parameter space -- that is where points must be generated.
     let structured = |f: &rapidmesh_brep::Face| {
         matches!(
             plc.surfaces[f.plc_surface as usize],
             SurfaceKind::Cylinder { .. }
                 | SurfaceKind::Cone { .. }
                 | SurfaceKind::Torus { .. }
+                | SurfaceKind::Sphere { .. }
                 | SurfaceKind::Extruded { .. }
         )
     };
@@ -419,8 +372,9 @@ pub fn surface_sites(
         .map(|e| e.coedges.iter().any(|&c| structured(brep.face(brep.coedge(c).face))))
         .collect();
 
-    // ---- stage 1b: edge points (shared); kept per edge for face boundaries ---
-    // Each edge is distributed at OVERSAMPLE * (finest H along it).
+    // ---- stage 1b: edge points (shared). Edges of a structured face keep the
+    // input vertices; others are distributed at OVERSAMPLE * (finest H) -- finer
+    // than the volume so the restricted-Delaunay boundary recovers without straddles.
     let mut edge_pts: Vec<Vec<V3>> = Vec::with_capacity(brep.edges.len());
     for (ei, edge) in brep.edges.iter().enumerate() {
         let pts3: Vec<V3> = if edge_keep_input[ei] {
@@ -435,7 +389,6 @@ pub fn surface_sites(
                 None => edge.chain.clone(),
             }
         };
-        // interior points only; endpoints are the (already pinned) corners
         for &p in pts3.iter().take(pts3.len().saturating_sub(1)).skip(1) {
             sites.push(Site::vertex(p));
             point_tile.push(u32::MAX);
@@ -447,85 +400,98 @@ pub fn surface_sites(
     let tiles: Vec<(u32, FaceTag)> =
         brep.faces.iter().map(|f| (f.plc_surface, f.face_tag)).collect();
 
-    // ---- stage 2: per face, randomized Poisson-disk fill on the surface ------
-    // Darts are thrown on the face's own facet triangles and projected onto the
-    // analytic surface; the boundary (the face's edge points) repels them. This
-    // is one mechanism for planar AND curved faces -- no (u,v) seam, the region
-    // test is free (darts land on the face), and the density follows the size
-    // field. Planar points keep an exact on-plane carrier; curved points sit on
-    // the analytic surface.
-    let bits = |p: V3| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+    // ---- stage 2: per-face surface mesh (the 2D stage of the hierarchy) --------
+    // Curved analytic faces pin their clean input tessellation; planar faces are
+    // meshed by a true 2D Lloyd (`cvt_fill`) in their in-plane (u,v) parameter
+    // space and lifted back exactly onto the carrier plane. Both are FIXED for the
+    // volume stage (the 3D Lloyd relaxes only interior sites). A rare non-planar,
+    // non-structured face (a trimmed NURBS patch) falls back to a dart seed.
     for (fid, face) in brep.faces.iter().enumerate() {
         if face.facets.is_empty() {
             continue;
         }
         let surf = brep.surface(face.surface);
-        let mut boundary: Vec<V3> = Vec::new();
-        for lp in &face.loops {
-            for &cid in &lp.coedges {
-                boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
-            }
-        }
         if structured(face) {
-            // keep the clean structured input tessellation: pin the face's interior
-            // input vertices (those not already on a boundary edge), on the surface.
-            let kind = plc.surfaces[face.plc_surface as usize].clone();
-            let mut seen: std::collections::HashSet<[u64; 3]> = boundary.iter().map(|&p| bits(p)).collect();
+            // clean structured input tessellation, pinned FIXED (Carrier::Vertex):
+            // it already is a near-uniform on-surface mesh; ruled surfaces stay
+            // sliver-free and the points match the PLC exactly.
+            let mut seen: std::collections::HashSet<[u64; 3]> = std::collections::HashSet::new();
+            for lp in &face.loops {
+                for &cid in &lp.coedges {
+                    for &p in &edge_pts[brep.coedge(cid).edge.0 as usize] {
+                        seen.insert(bits(p));
+                    }
+                }
+            }
             for &tfi in &face.facets {
                 for &v in &plc.triangles[tfi as usize] {
                     let p = plc.vertices[v as usize];
                     if seen.insert(bits(p)) {
-                        sites.push(Site::on_surface(kind.clone(), p));
+                        sites.push(Site::vertex(p));
                         point_tile.push(fid as u32);
                     }
                 }
             }
             continue;
         }
+        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
         if let Some((o, n)) = surf.exact_plane() {
-            // planar face: 2D Lloyd in the plane (sharp/acute faces stay clean).
-            let bnd: Vec<P2> = boundary.iter().map(|&p| surf.project_uv(p)).collect();
+            // PLANAR: 2D Lloyd in the in-plane (u,v) (orthonormal frame -> isometric,
+            // so 2D distance == arc length). Boundary = the loop edge points (fixed);
+            // interior generated + relaxed by `cvt_fill`, lifted back exactly.
             let mut segs: Vec<(P2, P2)> = Vec::new();
+            let mut boundary2d: Vec<P2> = Vec::new();
             for lp in &face.loops {
-                let mut luv: Vec<P2> = Vec::new();
+                let mut poly: Vec<P2> = Vec::new();
                 for &cid in &lp.coedges {
-                    for &uv in &brep.coedge(cid).pcurve.uv {
-                        if luv.last().map(|&q| dist2(q, uv) > 1e-18).unwrap_or(true) {
-                            luv.push(uv);
-                        }
+                    let ce = brep.coedge(cid);
+                    let pts = &edge_pts[ce.edge.0 as usize];
+                    let n = pts.len();
+                    if n < 2 {
+                        continue;
+                    }
+                    if ce.forward {
+                        poly.extend(pts.iter().take(n - 1).map(|&p| surf.project_uv(p)));
+                    } else {
+                        poly.extend(pts.iter().rev().take(n - 1).map(|&p| surf.project_uv(p)));
                     }
                 }
-                for w in 0..luv.len() {
-                    segs.push((luv[w], luv[(w + 1) % luv.len()]));
+                for k in 0..poly.len() {
+                    segs.push((poly[k], poly[(k + 1) % poly.len()]));
                 }
+                boundary2d.extend_from_slice(&poly);
             }
-            if bnd.len() < 3 {
+            if boundary2d.len() < 3 {
                 continue;
             }
-            let (mut lo, mut hi) = (bnd[0], bnd[0]);
-            for &p in &bnd {
+            let mut lo = [f64::INFINITY; 2];
+            let mut hi = [f64::NEG_INFINITY; 2];
+            for &q in &boundary2d {
                 for k in 0..2 {
-                    lo[k] = lo[k].min(p[k]);
-                    hi[k] = hi[k].max(p[k]);
+                    lo[k] = lo[k].min(q[k]);
+                    hi[k] = hi[k].max(q[k]);
                 }
             }
-            // oversampled (OVERSAMPLE * H): the surface is finer than the volume
-            // so the restricted-Delaunay boundary recovers without straddling tets.
-            let target = |uv: P2| (OVERSAMPLE * h_at(surf.eval_uv(uv))).max(fine * 0.5);
-            let step = (fine * 0.8).max(1e-9);
-            let inside = |uv: P2| in_loops(uv, &segs);
-            for uv in cvt_fill(&bnd, lo, hi, step, target, SURF_LLOYD_ITERS, inside, params.density_weighted) {
-                sites.push(Site::on_plane(o, n, surf.eval_uv(uv)));
+            let target2d = |q: P2| (OVERSAMPLE * h_at(surf.eval_uv(q))).max(fine * 0.5);
+            let inside = |q: P2| in_loops(q, &segs);
+            let interior =
+                cvt_fill(&boundary2d, lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
+            for q in interior {
+                sites.push(Site::on_plane(o, n, surf.eval_uv(q)));
                 point_tile.push(fid as u32);
             }
-            continue;
-        }
-        // sphere / other doubly-curved: randomized on-surface fill (oversampled;
-        // curvature refinement is already in H = domain.h_at).
-        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
-        for p in fill_face_points(surf, &face.facets, plc, &boundary, &target, fid as u64) {
-            sites.push(Site::on_surface(plc.surfaces[face.plc_surface as usize].clone(), p));
-            point_tile.push(fid as u32);
+        } else {
+            // non-planar, non-structured (trimmed NURBS): dart-seed fallback.
+            let mut boundary: Vec<V3> = Vec::new();
+            for lp in &face.loops {
+                for &cid in &lp.coedges {
+                    boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
+                }
+            }
+            for p in fill_face_points(surf, &face.facets, plc, &boundary, &target, fid as u64) {
+                sites.push(Site::on_surface(plc.surfaces[face.plc_surface as usize].clone(), p));
+                point_tile.push(fid as u32);
+            }
         }
     }
 

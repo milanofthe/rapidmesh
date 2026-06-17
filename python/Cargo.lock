@@ -251,6 +251,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rapidmesh-brep"
+version = "0.2.1"
+dependencies = [
+ "rapidmesh-csg",
+ "rapidmesh-exact",
+ "rapidmesh-geom",
+]
+
+[[package]]
 name = "rapidmesh-csg"
 version = "0.2.1"
 dependencies = [
@@ -291,6 +300,7 @@ name = "rapidmesh-tet"
 version = "0.2.1"
 dependencies = [
  "geometry-predicates",
+ "rapidmesh-brep",
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",

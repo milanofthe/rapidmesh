@@ -297,8 +297,16 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     let mut coedges: Vec<CoEdge> = Vec::new();
     for fid in 0..faces.len() {
         let signed = order_loops(&face_edges[fid], &edges);
-        let frame_pts = signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default();
-        // Build this face's self-contained surface and point the face at it.
+        // Frame for the surface. For a plane this must be EXACT (so on-plane
+        // carriers stay bit-exact on the PLC plane -> exact region volumes): use an
+        // originating facet triangle (exact PLC vertices, cross-product normal),
+        // not the float edge points. Other kinds ignore the frame (self-contained).
+        let frame_pts: Vec<V3> = if let Some(&tfi) = faces[fid].facets.first() {
+            let t = plc.triangles[tfi as usize];
+            vec![plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]]
+        } else {
+            signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default()
+        };
         let kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
         let sid = SurfaceId(surfaces.len() as u32);
         surfaces.push(Surface::from_kind(&kind, &frame_pts));

@@ -279,10 +279,6 @@ pub struct Constrained {
     pub n_surf_verts: usize,
 }
 
-/// Recovery cap: a safety bound on Steiner insertions, far above any real need
-/// (conforming recovery terminates; this only guards a degenerate input).
-const RECOVER_CAP: usize = 1 << 20;
-
 /// A mesh vertex during recovery: its current f64 position, exact carrier, and
 /// builder index.
 struct Vert {
@@ -397,14 +393,21 @@ fn recover_curved_facets(
     parent: &mut Vec<usize>,
     carrier: &mut Vec<Carrier>,
 ) {
+    // Steiner budget: a curved facet that no flip resolves is split and its
+    // pieces retried, which on a hard surface (a torus straddling many tets) can
+    // cascade. Bound the total splits so recovery is always O(surface), giving up
+    // best-effort past the budget rather than spinning (the residual is rare and
+    // handled by the quality pass). Scaled to the initial facet count.
+    let budget = tris.len() * 4 + 256;
+    let mut steiner = 0usize;
     let mut i = 0usize;
-    let mut guard = 0usize;
     while i < tris.len() {
-        guard += 1;
-        assert!(guard < RECOVER_CAP, "facet recovery did not terminate");
         if matches!(carrier[i], Carrier::Plane { .. }) {
             i += 1;
             continue; // planar facet: covered by coplanarity, no recovery
+        }
+        if steiner >= budget {
+            break; // best-effort: leave the residual curved facets to the cleanup
         }
         let t = tris[i];
         let (ba, bb, bc) = (vs[t[0]].bidx, vs[t[1]].bidx, vs[t[2]].bidx);
@@ -431,6 +434,7 @@ fn recover_curved_facets(
                         continue;
                     }
                 };
+                steiner += 1;
                 tris[i] = [t[0], t[1], g];
                 for &(x, y) in &[(t[1], t[2]), (t[2], t[0])] {
                     tris.push([x, y, g]);

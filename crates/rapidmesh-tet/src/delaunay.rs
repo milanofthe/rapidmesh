@@ -358,6 +358,25 @@ impl DelaunayBuilder {
         self.refill(p)
     }
 
+    /// Like [`insert`], but returns `None` instead of panicking when the point
+    /// would swallow an existing vertex's star (a near-duplicate). The pushed
+    /// point is rolled back, leaving the triangulation unchanged -- the caller
+    /// drops the coincident point (two surfaces meeting near-tangent at an
+    /// intersection can generate points within an ulp of each other).
+    pub fn try_insert(&mut self, point: [f64; 3]) -> Option<usize> {
+        let p = self.pts.len() as u32;
+        self.pts.push(point);
+        self.exact.push(None);
+        let ok = self.compute_cavity(p, -1.0, usize::MAX)
+            || self.compute_cavity_from(p, -1.0, usize::MAX, true);
+        if !ok {
+            self.pts.pop();
+            self.exact.pop();
+            return None;
+        }
+        Some(self.refill(p))
+    }
+
     /// Inserts an implicit exact point (a CDT Steiner point): every predicate
     /// involving it evaluates the exact position, `pts` only caches the
     /// rounded approximation for walk heuristics. The point must be valid

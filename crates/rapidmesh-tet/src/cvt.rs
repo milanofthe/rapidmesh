@@ -740,10 +740,15 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
         let order = crate::spatial::morton_order(all_pos);
         let mut db = DelaunayBuilder::enclosing(lo, hi);
+        // `orig[k]` = original index of the k-th SUCCESSFULLY inserted point;
+        // near-duplicates are skipped (robust to near-tangent intersections).
+        let mut orig: Vec<usize> = Vec::with_capacity(order.len());
         for &i in &order {
-            db.insert(all_pos[i]);
+            if db.try_insert(all_pos[i]).is_some() {
+                orig.push(i);
+            }
         }
-        db.tets().into_iter().map(|t| std::array::from_fn(|j| order[t[j]])).collect()
+        db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
     };
 
     let t_lloyd = std::time::Instant::now();

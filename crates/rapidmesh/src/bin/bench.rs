@@ -121,6 +121,10 @@ fn main() {
             maxh_edge: f64::INFINITY,
             maxh_surf: f64::INFINITY,
             maxh_vol: f64::INFINITY,
+            edge_maxh: Vec::new(),
+            edge_tol: Vec::new(),
+            surf_maxh: Vec::new(),
+            surf_tol: Vec::new(),
         };
         records.push(run_one(
             bs.name,
@@ -200,6 +204,10 @@ fn main() {
             maxh_edge: f64::INFINITY,
             maxh_surf: f64::INFINITY,
             maxh_vol: f64::INFINITY,
+            edge_maxh: Vec::new(),
+            edge_tol: Vec::new(),
+            surf_maxh: Vec::new(),
+            surf_tol: Vec::new(),
         };
         records.push(run_one(
             &name,

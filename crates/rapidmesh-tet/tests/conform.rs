@@ -181,6 +181,10 @@ fn sized_box_respects_maxh_and_quality() {
         maxh_edge: f64::INFINITY,
         maxh_surf: f64::INFINITY,
         maxh_vol: f64::INFINITY,
+        edge_maxh: Vec::new(),
+        edge_tol: Vec::new(),
+        surf_maxh: Vec::new(),
+        surf_tol: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -241,6 +245,10 @@ fn sized_em_scene_stays_exact_and_conforming() {
         maxh_edge: f64::INFINITY,
         maxh_surf: f64::INFINITY,
         maxh_vol: f64::INFINITY,
+        edge_maxh: Vec::new(),
+        edge_tol: Vec::new(),
+        surf_maxh: Vec::new(),
+        surf_tol: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -292,6 +300,10 @@ fn per_region_sizing_creates_density_transition() {
         maxh_edge: f64::INFINITY,
         maxh_surf: f64::INFINITY,
         maxh_vol: f64::INFINITY,
+        edge_maxh: Vec::new(),
+        edge_tol: Vec::new(),
+        surf_maxh: Vec::new(),
+        surf_tol: Vec::new(),
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(
@@ -507,6 +519,10 @@ fn size_points_refine_locally() {
         maxh_edge: f64::INFINITY,
         maxh_surf: f64::INFINITY,
         maxh_vol: f64::INFINITY,
+        edge_maxh: Vec::new(),
+        edge_tol: Vec::new(),
+        surf_maxh: Vec::new(),
+        surf_tol: Vec::new(),
         grading: 0.5,
         ..MeshParams::default()
     };
@@ -921,4 +937,34 @@ fn surface_owners_track_solids_and_voids() {
         }
     }
     assert!(bore_faces > 0, "no bore faces found");
+}
+
+/// Per-entity sizing: a per-edge `maxh` override refines exactly that edge
+/// (the hierarchical `g....edge(..).maxh` resolves to `MeshParams.edge_maxh`).
+#[test]
+fn per_edge_maxh_refines_that_edge() {
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
+    let plc = scene.assemble();
+    let brep = rapidmesh_brep::build::from_plc(&plc);
+    let topo = rapidmesh_brep::extract_topology(&plc, &brep);
+    let e0 = &topo.edges[0];
+    let (a, b) = (e0.p0, e0.p1);
+    // Count mesh points lying on the segment (a, b).
+    let near = |m: &TetMesh| -> usize {
+        m.points
+            .iter()
+            .filter(|p| {
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+                let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                let t = ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2).clamp(0.0, 1.0);
+                let q = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+                (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2) < 1e-12
+            })
+            .count()
+    };
+    let coarse = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, ..Default::default() });
+    let fine = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, edge_maxh: vec![(0, 0.5)], ..Default::default() });
+    assert!(near(&fine) > near(&coarse), "per-edge maxh should add points on edge 0: {} -> {}", near(&coarse), near(&fine));
 }

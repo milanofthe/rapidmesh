@@ -395,7 +395,7 @@ pub fn surface_sites(
     // The geometry size field H (finite even when params.maxh is INFINITY -- it
     // falls back to diag/8). The surface is placed at OVERSAMPLE*H, the volume at
     // H, so the surface is finer than the volume (the conformity requirement).
-    let h_at = |p: V3| domain.h_at(p).min(params.surf_cap()).max(1e-9);
+    let h_at = |p: V3| domain.h_at(p).max(1e-9);
     let mut sites: Vec<Site> = Vec::new();
     let mut point_tile: Vec<u32> = Vec::new();
 
@@ -441,7 +441,7 @@ pub fn surface_sites(
             let cap = OVERSAMPLE * edge.chain.iter().map(|&p| h_at(p)).fold(f64::INFINITY, f64::min);
             match edge_curve(edge) {
                 Some(curve) => {
-                    let ps = distribute(&*curve, params.tol_edge, cap.min(params.maxh_edge), grad);
+                    let ps = distribute(&*curve, params.edge_tol_for(ei), cap.min(params.edge_maxh_for(ei)), grad);
                     ps.iter().map(|&s| curve.point_at(s)).collect()
                 }
                 None => edge.chain.clone(),
@@ -490,7 +490,7 @@ pub fn surface_sites(
                 let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
                 let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 let rays = rim_theta_rays(surf, &boundary);
-                let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
+                let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
                 for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
                     sites.push(Site::on_surface(kind.clone(), p));
                     point_tile.push(fid as u32);
@@ -512,7 +512,7 @@ pub fn surface_sites(
             }
             continue;
         }
-        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5);
+        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
         if let Some((o, n)) = surf.exact_plane() {
             // PLANAR: 2D Lloyd in the in-plane (u,v) (orthonormal frame -> isometric,
             // so 2D distance == arc length). Boundary = the loop edge points (fixed);
@@ -550,7 +550,7 @@ pub fn surface_sites(
                     hi[k] = hi[k].max(q[k]);
                 }
             }
-            let target2d = |q: P2| (OVERSAMPLE * h_at(surf.eval_uv(q))).max(fine * 0.5);
+            let target2d = |q: P2| (OVERSAMPLE * h_at(surf.eval_uv(q))).max(fine * 0.5).min(params.surf_maxh_for(fid));
             let inside = |q: P2| in_loops(q, &segs);
             let interior =
                 cvt_fill(&boundary2d, lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);

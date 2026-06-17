@@ -262,6 +262,19 @@ pub struct MeshParams {
     /// Maximum element edge length in the VOLUME (3-cells); `min(maxh, maxh_vol)`.
     /// Per-region overrides come from [`MeshParams::region_maxh`].
     pub maxh_vol: f64,
+    /// Per-EDGE size override `(brep edge id, maxh)`: the hierarchical
+    /// `g.region(..).surf(..).edge(..).maxh` resolves to entries here, overriding
+    /// the global [`MeshParams::maxh_edge`] on that specific edge.
+    pub edge_maxh: Vec<(u32, f64)>,
+    /// Per-EDGE deflection override `(brep edge id, tol)`, overriding
+    /// [`MeshParams::tol_edge`] on that edge.
+    pub edge_tol: Vec<(u32, f64)>,
+    /// Per-FACE size override `(brep face id, maxh)`, overriding
+    /// [`MeshParams::maxh_surf`] on that face.
+    pub surf_maxh: Vec<(u32, f64)>,
+    /// Per-FACE deflection override `(brep face id, tol)`, overriding
+    /// [`MeshParams::tol_surf`] on that face.
+    pub surf_tol: Vec<(u32, f64)>,
 }
 
 impl Default for MeshParams {
@@ -281,8 +294,16 @@ impl Default for MeshParams {
             maxh_edge: f64::INFINITY,
             maxh_surf: f64::INFINITY,
             maxh_vol: f64::INFINITY,
+            edge_maxh: Vec::new(),
+            edge_tol: Vec::new(),
+            surf_maxh: Vec::new(),
+            surf_tol: Vec::new(),
         }
     }
+}
+
+fn lookup(table: &[(u32, f64)], id: usize) -> Option<f64> {
+    table.iter().find(|&&(i, _)| i as usize == id).map(|&(_, v)| v)
 }
 
 impl MeshParams {
@@ -298,6 +319,22 @@ impl MeshParams {
     /// Effective edge-length cap in the 3-cell (volume).
     pub fn vol_cap(&self) -> f64 {
         self.maxh.min(self.maxh_vol)
+    }
+    /// Size cap for brep edge `id`: its per-edge override, else the edge cap.
+    pub fn edge_maxh_for(&self, id: usize) -> f64 {
+        lookup(&self.edge_maxh, id).unwrap_or(f64::INFINITY).min(self.edge_cap())
+    }
+    /// Deflection for brep edge `id`: its per-edge override, else `tol_edge`.
+    pub fn edge_tol_for(&self, id: usize) -> f64 {
+        lookup(&self.edge_tol, id).unwrap_or(self.tol_edge)
+    }
+    /// Size cap for brep face `id`: its per-face override, else the surface cap.
+    pub fn surf_maxh_for(&self, id: usize) -> f64 {
+        lookup(&self.surf_maxh, id).unwrap_or(f64::INFINITY).min(self.surf_cap())
+    }
+    /// Deflection for brep face `id`: its per-face override, else `tol_surf`.
+    pub fn surf_tol_for(&self, id: usize) -> f64 {
+        lookup(&self.surf_tol, id).unwrap_or(self.tol_surf)
     }
 }
 

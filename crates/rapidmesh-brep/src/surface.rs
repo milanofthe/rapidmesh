@@ -248,6 +248,16 @@ impl Surface {
             _ => None,
         }
     }
+
+    /// The plane's full orthonormal frame `(origin, u, v, normal)` if planar -- the
+    /// input to a [`crate`]-side `PlaneChart` so the unified chart-driven path runs
+    /// in the SAME in-plane coordinates the surface's own `project_uv` uses.
+    pub fn plane_frame(&self) -> Option<(V3, V3, V3, V3)> {
+        match self {
+            Surface::Plane { o, u, v, normal } => Some((*o, *u, *v, *normal)),
+            _ => None,
+        }
+    }
 }
 
 /// Fits an orthonormal plane frame to points: centroid origin, Newell normal, an

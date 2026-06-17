@@ -11,6 +11,7 @@ use crate::conform::{MeshParams, SurfaceFace};
 use crate::curve::{distribute, Curve, PolylineCurve};
 use crate::site::{Carrier, Site};
 use crate::surf2d::{cvt_fill, triangulate_constrained};
+use crate::surfchart::{build_chart, PlaneChart, SurfaceChart};
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
 use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
@@ -492,81 +493,75 @@ pub fn surface_sites(
     let tiles: Vec<(u32, FaceTag)> =
         brep.faces.iter().map(|f| (f.plc_surface, f.face_tag)).collect();
 
-    // ---- stage 2: per-face surface mesh (the 2D stage of the hierarchy) --------
-    // Curved analytic faces pin their clean input tessellation; planar faces are
-    // meshed by a true 2D Lloyd (`cvt_fill`) in their in-plane (u,v) parameter
-    // space and lifted back exactly onto the carrier plane. Both are FIXED for the
-    // volume stage (the 3D Lloyd relaxes only interior sites). A rare non-planar,
-    // non-structured face (a trimmed NURBS patch) falls back to a dart seed.
+    // ---- stage 2: per-face surface mesh -- ONE chart-driven path (Algorithm 1)
+    // Every face is meshed the same way; the only thing that varies is the chart
+    // `Phi`: a plane is the trivial isometric `PlaneChart` (exact on-plane carrier),
+    // a developable/quadric is its distance-faithful unroll (`build_chart`, analytic
+    // carrier). In the chart we scatter + Lloyd-relax interior points at a tol- and
+    // curvature-aware size `h = min(caps, sqrt(8*tol*R))`, triangulate CONSTRAINED to
+    // the frozen boundary loops, and lift every point back onto the surface. Faces
+    // with no single-chart bijection (full-revolution barrels, closed spheres,
+    // extruded barrels, or a boundary that did not resolve to shared site indices)
+    // take the structured fallback below (a revolution grid, else the pinned input
+    // tessellation) -- those still produce sites, their tris land in a later step.
     for (fid, face) in brep.faces.iter().enumerate() {
         if face.facets.is_empty() {
             continue;
         }
         let surf = brep.surface(face.surface);
-        if structured(face) {
-            let kind = plc.surfaces[face.plc_surface as usize].clone();
-            let is_revolution = matches!(
-                kind,
-                SurfaceKind::Cylinder { .. } | SurfaceKind::Cone { .. } | SurfaceKind::Torus { .. }
-            );
-            let mut boundary: Vec<V3> = Vec::new();
-            for lp in &face.loops {
-                for &cid in &lp.coedges {
-                    boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
-                }
+        let kind = plc.surfaces[face.plc_surface as usize].clone();
+        let is_revolution = matches!(
+            kind,
+            SurfaceKind::Cylinder { .. } | SurfaceKind::Cone { .. } | SurfaceKind::Torus { .. }
+        );
+        // The boundary as on-surface positions (frame-fitting for a curved chart).
+        let mut boundary: Vec<V3> = Vec::new();
+        for lp in &face.loops {
+            for &cid in &lp.coedges {
+                boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
             }
-            // FULL REVOLUTION (cylinder/cone/torus barrel): generate a structured
-            // (theta, v) grid at the mesher's target density -- refinement-
-            // independent, the theta rings close with no seam. Interior rows only;
-            // the rims are the shared edges.
-            if is_revolution && is_full_revolution(surf, &boundary) {
-                let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
-                let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
-                let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let rays = rim_theta_rays(surf, &boundary);
-                let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
-                for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
-                    sites.push(Site::on_surface(kind.clone(), p));
-                    point_tile.push(fid as u32);
-                point_size.push(params.surf_maxh_for(fid));
-                }
-                continue;
-            }
-            // fallback: pin the input tessellation (closed sphere, trimmed/cut
-            // curved faces, extruded) until their param meshing lands.
-            let mut seen: std::collections::HashSet<[u64; 3]> =
-                boundary.iter().map(|&p| bits(p)).collect();
-            for &tfi in &face.facets {
-                for &v in &plc.triangles[tfi as usize] {
-                    let p = plc.vertices[v as usize];
-                    if seen.insert(bits(p)) {
-                        sites.push(Site::vertex(p));
-                        point_tile.push(fid as u32);
-                point_size.push(params.surf_maxh_for(fid));
-                    }
-                }
-            }
-            continue;
         }
         let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
-        if let Some((o, n)) = surf.exact_plane() {
-            // PLANAR: 2D Lloyd in the in-plane (u,v) (orthonormal frame -> isometric,
-            // so 2D distance == arc length). The boundary loops are the frozen edge
-            // points (carried as global site indices); interior points are filled +
-            // relaxed by `cvt_fill`, lifted back exactly. The face is then triangulated
-            // CONSTRAINED to its loops (so non-convex/holed faces tile correctly), and
-            // the tagged triangles + plane carrier go to the frozen surface.
-            let mut loc_uv: Vec<P2> = Vec::new(); // local point coords (boundary then interior)
+
+        // Build the chart + the carrier the lifted points get pinned to. A plane is
+        // always chart-able; a full-revolution barrel and an extruded barrel wrap
+        // (no single-chart bijection) and go to the structured fallback; every other
+        // curved face attempts its analytic chart and is validated by a round-trip.
+        let (chart, carrier): (Option<Box<dyn SurfaceChart>>, Carrier) =
+            if let Some((o, u, v, n)) = surf.plane_frame() {
+                (Some(Box::new(PlaneChart::new(o, u, v, n)) as Box<dyn SurfaceChart>),
+                 Carrier::Plane { p0: o, n })
+            } else if matches!(kind, SurfaceKind::Extruded { .. })
+                || (is_revolution && is_full_revolution(surf, &boundary))
+            {
+                (None, Carrier::Surface(kind.clone()))
+            } else {
+                (build_chart(&kind, &boundary), Carrier::Surface(kind.clone()))
+            };
+        // A curved chart must be a bijection over THIS boundary: every boundary
+        // point round-trips (a seam/pole straddle fails this). Planes always pass.
+        let chart = chart.filter(|c| {
+            surf.exact_plane().is_some()
+                || boundary
+                    .iter()
+                    .all(|&p| dist3(c.to_xyz(c.to_uv(p)), p) < 1e-6 * (1.0 + dist3(p, [0.0; 3])))
+        });
+
+        // ---- the unified chart-driven face mesh --------------------------------
+        if let Some(chart) = chart.as_ref() {
+            let mut loc_uv: Vec<P2> = Vec::new(); // boundary then interior, in the chart
             let mut loc_sidx: Vec<usize> = Vec::new(); // global site index per local
             let mut segs: Vec<(usize, usize)> = Vec::new(); // boundary segments (local indices)
             let mut segs_uv: Vec<(P2, P2)> = Vec::new(); // same, as uv (for the inside test)
+            let mut resolved = true;
             for lp in &face.loops {
                 let start = loc_uv.len();
                 for &cid in &lp.coedges {
                     let ce = brep.coedge(cid);
                     let sidx = &edge_sidx[ce.edge.0 as usize];
                     if sidx.len() < 2 {
-                        continue;
+                        resolved = false;
+                        break;
                     }
                     // ordered site indices along this coedge, dropping the last
                     // (shared with the next coedge's first); reversed if backward.
@@ -576,9 +571,12 @@ pub fn surface_sites(
                         sidx.iter().rev().take(sidx.len() - 1).copied().collect()
                     };
                     for &si in &chain {
-                        loc_uv.push(surf.project_uv(sites[si].pos()));
+                        loc_uv.push(chart.to_uv(sites[si].pos()));
                         loc_sidx.push(si);
                     }
+                }
+                if !resolved {
+                    break;
                 }
                 let m = loc_uv.len() - start;
                 for k in 0..m {
@@ -587,49 +585,91 @@ pub fn surface_sites(
                     segs_uv.push((loc_uv[a], loc_uv[b]));
                 }
             }
-            let nb = loc_uv.len();
-            if nb < 3 {
+            if resolved && loc_uv.len() >= 3 {
+                let nb = loc_uv.len();
+                let mut lo = [f64::INFINITY; 2];
+                let mut hi = [f64::NEG_INFINITY; 2];
+                for &q in &loc_uv {
+                    for k in 0..2 {
+                        lo[k] = lo[k].min(q[k]);
+                        hi[k] = hi[k].max(q[k]);
+                    }
+                }
+                let tol = params.surf_tol_for(fid);
+                let smaxh = params.surf_maxh_for(fid);
+                // h(uv) = min(size caps, sqrt(8*tol*R(uv))): the tolerance enters the
+                // size field via the sagitta bound, so a face refines automatically
+                // where it curves. A plane has R = INF -> the caps alone (size only),
+                // bit-identical to the dedicated planar path it replaces.
+                let target2d = |q: P2| {
+                    let base = (OVERSAMPLE * h_at(chart.to_xyz(q))).max(fine * 0.5).min(smaxh);
+                    let r = chart.curvature_radius(q);
+                    let defl = if r.is_finite() { (8.0 * tol * r).sqrt() } else { f64::INFINITY };
+                    base.min(defl).max(1e-9)
+                };
+                let inside = |q: P2| in_loops(q, &segs_uv);
+                let interior = cvt_fill(&loc_uv[..nb], lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
+                for q in interior {
+                    let p = chart.to_xyz(q);
+                    let site = match &carrier {
+                        Carrier::Plane { p0, n } => Site::on_plane(*p0, *n, p),
+                        _ => Site::on_surface(kind.clone(), p),
+                    };
+                    sites.push(site);
+                    point_tile.push(fid as u32);
+                    point_size.push(smaxh);
+                    loc_uv.push(q);
+                    loc_sidx.push(sites.len() - 1);
+                }
+                for t in triangulate_constrained(&loc_uv, &segs, inside) {
+                    tris.push(SurfaceFace {
+                        tri: [loc_sidx[t[0]], loc_sidx[t[1]], loc_sidx[t[2]]],
+                        face_tag: face.face_tag,
+                        regions: face.regions,
+                        patch: fid as u32,
+                        surface: face.plc_surface,
+                    });
+                    tri_carrier.push(carrier.clone());
+                }
                 continue;
             }
-            let mut lo = [f64::INFINITY; 2];
-            let mut hi = [f64::NEG_INFINITY; 2];
-            for &q in &loc_uv {
-                for k in 0..2 {
-                    lo[k] = lo[k].min(q[k]);
-                    hi[k] = hi[k].max(q[k]);
-                }
-            }
-            let target2d = |q: P2| (OVERSAMPLE * h_at(surf.eval_uv(q))).max(fine * 0.5).min(params.surf_maxh_for(fid));
-            let inside = |q: P2| in_loops(q, &segs_uv);
-            let interior = cvt_fill(&loc_uv[..nb], lo, hi, fine, target2d, SURF_LLOYD_ITERS, inside, true);
-            for q in interior {
-                sites.push(Site::on_plane(o, n, surf.eval_uv(q)));
+            // boundary did not resolve to shared site indices -> structured fallback
+        }
+
+        // ---- structured / pinned fallback (no chart bijection) -----------------
+        if is_revolution && is_full_revolution(surf, &boundary) {
+            // FULL-REVOLUTION barrel: a structured (theta, v) grid on the rim rays
+            // at the target arc-length density -- the theta rings close with no seam.
+            let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
+            let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
+            let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let rays = rim_theta_rays(surf, &boundary);
+            for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
+                sites.push(Site::on_surface(kind.clone(), p));
                 point_tile.push(fid as u32);
                 point_size.push(params.surf_maxh_for(fid));
-                loc_uv.push(q);
-                loc_sidx.push(sites.len() - 1);
             }
-            let car = Carrier::Plane { p0: o, n };
-            for t in triangulate_constrained(&loc_uv, &segs, inside) {
-                tris.push(SurfaceFace {
-                    tri: [loc_sidx[t[0]], loc_sidx[t[1]], loc_sidx[t[2]]],
-                    face_tag: face.face_tag,
-                    regions: face.regions,
-                    patch: fid as u32,
-                    surface: face.plc_surface,
-                });
-                tri_carrier.push(car.clone());
-            }
-        } else {
-            // non-planar, non-structured (trimmed NURBS): dart-seed fallback.
-            let mut boundary: Vec<V3> = Vec::new();
-            for lp in &face.loops {
-                for &cid in &lp.coedges {
-                    boundary.extend_from_slice(&edge_pts[brep.coedge(cid).edge.0 as usize]);
+        } else if surf.exact_plane().is_none() {
+            // closed/wrapping curved face (closed sphere, extruded barrel): pin the
+            // clean input tessellation until its periodic chart lands (A5).
+            let mut seen: std::collections::HashSet<[u64; 3]> =
+                boundary.iter().map(|&p| bits(p)).collect();
+            for &tfi in &face.facets {
+                for &v in &plc.triangles[tfi as usize] {
+                    let p = plc.vertices[v as usize];
+                    if seen.insert(bits(p)) {
+                        sites.push(Site::vertex(p));
+                        point_tile.push(fid as u32);
+                        point_size.push(params.surf_maxh_for(fid));
+                    }
                 }
             }
+        } else {
+            // a planar face whose boundary did not resolve (rare): dart-seed fill on
+            // its exact carrier plane so it still gets interior points.
+            let (o, n) = surf.exact_plane().unwrap();
             for p in fill_face_points(surf, &face.facets, plc, &boundary, &target, fid as u64) {
-                sites.push(Site::on_surface(plc.surfaces[face.plc_surface as usize].clone(), p));
+                sites.push(Site::on_plane(o, n, p));
                 point_tile.push(fid as u32);
                 point_size.push(params.surf_maxh_for(fid));
             }

@@ -13,6 +13,7 @@
 //!    PLC surface back-references (`project`), for curved boundaries.
 
 pub mod brep_mesh;
+pub mod cdt3;
 pub mod conform;
 pub mod curve;
 pub mod cvt;

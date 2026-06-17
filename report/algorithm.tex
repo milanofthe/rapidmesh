@@ -1,0 +1,666 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================================
+%  rapidmesh -- Hierarchical Bottom-Up CVT Meshing Algorithm
+%  Specification & mathematical derivation (basis for the implementation)
+% ============================================================================
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+\usepackage{sectsty}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+% ---- rapidfem / rapidmesh palette (kept in sync with site/src/lib/theme.ts) --
+% Plot/figure colour cycle: accent, amber, green, purple, blue, olive.
+\definecolor{rmaccent}{HTML}{D9513C}   % lava accent
+\definecolor{rmamber}{HTML}{E8944A}
+\definecolor{rmgreen}{HTML}{6BBF8A}
+\definecolor{rmpurple}{HTML}{7B5E8A}
+\definecolor{rmblue}{HTML}{4A9EC2}
+\definecolor{rmolive}{HTML}{C4C46B}
+\definecolor{rmink}{HTML}{232329}      % near-black ink for headings
+\definecolor{rmrule}{HTML}{35353D}     % border / rule grey
+\newcommand{\rmcycle}{{rmaccent, rmamber, rmgreen, rmpurple, rmblue, rmolive}}
+\sectionfont{\color{rmaccent}}
+\subsectionfont{\color{rmink}}
+\hypersetup{linkcolor=rmaccent, citecolor=rmaccent, urlcolor=rmaccent}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\vv}[1]{\mathbf{#1}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\Su}{\vv{S}_u}
+\newcommand{\Sv}{\vv{S}_v}
+\DeclareMathOperator{\proj}{proj}
+\DeclareMathOperator{\dist}{dist}
+\DeclareMathOperator{\sgn}{sgn}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{principle}{Principle}
+\theoremstyle{plain}
+\newtheorem{proposition}{Proposition}
+
+\title{\textbf{\color{rmaccent}rapidmesh}\\[2pt]
+\large A Hierarchical Bottom-Up Centroidal-Voronoi Meshing Algorithm\\
+\large for B-Rep Solids with Analytic and NURBS Geometry}
+\author{Specification and mathematical derivation}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies the meshing algorithm rapidmesh uses to turn a
+boundary representation (B-Rep) of one or more material regions into a
+conforming, isotropic, high-quality tetrahedral mesh. The algorithm is
+\emph{dimensionally hierarchical}: it meshes $0$-cells (corners), then $1$-cells
+(edges), then $2$-cells (faces), then the $3$-cell (volume), and \emph{freezes}
+each level before the next consumes it. Within every dimension it combines
+\emph{error-driven adaptive sampling} (insert where a geometric tolerance is
+violated) with \emph{sizing-weighted Centroidal Voronoi Tessellation} (Lloyd
+relaxation) for point quality. The frozen surface triangulation is a
+\emph{hard constraint} on the volume Delaunay, which is what makes the boundary
+watertight by construction. We derive, with a computer-algebra system, the
+arc-length, curvature, deflection-sizing, first/second fundamental form and
+distance-faithful chart formulae for every edge and face modality the geometry
+kernel supports (line, circle/arc, surface--surface intersection, NURBS curve,
+extruded profile; plane, cylinder, cone, sphere, torus, extruded/ruled, NURBS),
+and give pseudocode for each stage.
+\end{abstract}
+
+\tableofcontents
+
+% ============================================================================
+\section{Design philosophy}
+% ============================================================================
+
+\begin{principle}[Dimensional hierarchy]
+A $k$-cell is meshed only after every $(k{-}1)$-cell on its boundary is meshed
+and \emph{frozen}. Corners pin edges; edges pin faces; faces pin the volume.
+Shared lower-dimensional entities are meshed once and reused, so adjacent
+cells agree on their common boundary exactly (conformity across seams is
+inherited, not reconstructed).
+\end{principle}
+
+\begin{principle}[Two orthogonal mechanisms per level]
+Each dimension uses (i) \emph{error-driven adaptivity} to decide \emph{how many}
+points and \emph{where} (insert at the worst geometric-error location, then
+re-relax, until a tolerance is met), and (ii) \emph{CVT/Lloyd relaxation} to
+decide \emph{point quality} (move each free site to the density-weighted
+centroid of its (restricted) Voronoi cell). Adaptivity controls density;
+CVT controls regularity.
+\end{principle}
+
+\begin{principle}[Constrained volume, not recovered boundary]
+The frozen surface triangulation enters the volume stage as a set of
+\emph{constraint facets}. The volume tetrahedralization is required to contain
+them as faces. The boundary is therefore \emph{enforced}, not statistically
+recovered: there are no straddling tetrahedra, hence no ``noses'' protruding
+into a void and no gaps. This is the decisive structural property and the
+reason the surface must be completed \emph{before} the volume is seeded.
+\end{principle}
+
+\noindent
+The geometry source is a B-Rep assembled from the exact CSG arrangement: faces
+are trimmed analytic (or NURBS) surfaces, edges are analytic curves (including
+the intersection curves booleans create), vertices are corner points, and the
+radial-edge topology records which faces meet along each edge and the material
+region on each side. The mesh is built \emph{from this geometry}, independent of
+any input tessellation.
+
+% ============================================================================
+\section{Notation and preliminaries}
+% ============================================================================
+
+\subsection{The sizing field}
+A scalar \emph{sizing field} $h:\R^3\to\R_{>0}$ prescribes the target element
+edge length. It is assembled bottom-up (edges set it on $1$-cells, faces refine
+it on $2$-cells, the volume smooths it through the interior) and is always
+made \emph{Lipschitz} (gradation-limited):
+\begin{equation}
+\label{eq:lipschitz}
+h(\vv{x}) \;\le\; h(\vv{y}) + \alpha\,\norm{\vv{x}-\vv{y}}
+\qquad\forall\,\vv{x},\vv{y},
+\end{equation}
+with grading constant $\alpha\in(0,1]$ (the default $\alpha=\tfrac12$ grows
+neighbouring elements by at most $\sim\!1.5\times$). Equation
+\eqref{eq:lipschitz} is the standard mesh-gradation constraint
+\cite{Borouchaki1998}; it is enforced by a fast-marching / sweep over the
+size sources.
+
+\subsection{Centroidal Voronoi Tessellation}
+Given a density $\rho:\Omega\to\R_{>0}$ on a domain $\Omega$ and sites
+$\{\vv{z}_i\}_{i=1}^n$, the Voronoi region of $\vv{z}_i$ is
+$V_i=\{\vv{x}\in\Omega:\norm{\vv{x}-\vv{z}_i}\le\norm{\vv{x}-\vv{z}_j}\ \forall j\}$.
+The tessellation is \emph{centroidal} when each site coincides with the
+mass centroid of its region,
+\begin{equation}
+\label{eq:cvt}
+\vv{z}_i \;=\; \vv{c}_i \;:=\;
+\frac{\displaystyle\int_{V_i}\rho(\vv{x})\,\vv{x}\dd\vv{x}}
+     {\displaystyle\int_{V_i}\rho(\vv{x})\dd\vv{x}}.
+\end{equation}
+A CVT is a critical point of the energy
+$\mathcal{F}(\{\vv{z}_i\})=\sum_i\int_{V_i}\rho(\vv{x})\norm{\vv{x}-\vv{z}_i}^2\dd\vv{x}$
+\cite{DuFaberGunzburger1999}. \emph{Lloyd's algorithm} \cite{Lloyd1982}
+alternates ``recompute $V_i$'' and ``move $\vv{z}_i\!\leftarrow\!\vv{c}_i$''
+and converges to a CVT; the resulting point set is blue-noise / isotropic,
+which is precisely the input a Delaunay mesher needs for well-shaped elements.
+
+\paragraph{Density that realises a sizing field.}
+To make the local point spacing follow $h$, choose
+\begin{equation}
+\label{eq:density}
+\rho(\vv{x}) \;=\; h(\vv{x})^{-(d+2)} \quad\text{(theory, $d$ dimensions)},
+\qquad
+\rho(\vv{x}) \;=\; h(\vv{x})^{-d}\ \text{(used in practice)},
+\end{equation}
+because a CVT equidistributes the energy density, giving local spacing
+$\propto\rho^{-1/(d+2)}$; the simpler $h^{-d}$ (number density
+$\propto$ points per unit volume) is robust and is what we weight cells by.
+See \cite{DuWang2005,LevyLiu2010} for the exponent discussion.
+
+\subsection{Discrete centroids and the restricted setting}
+On a triangulation, the integral \eqref{eq:cvt} is approximated by summing over
+the simplices incident to $\vv{z}_i$, each weighted by its measure times the
+density at its centroid. In dimension $d$ with incident simplices $T$ of
+centroid $\vv{g}_T$, measure $\abs{T}$,
+\begin{equation}
+\label{eq:disc_centroid}
+\vv{c}_i \;\approx\;
+\frac{\sum_{T\ni \vv{z}_i} \abs{T}\,\rho(\vv{g}_T)\,\vv{g}_T}
+     {\sum_{T\ni \vv{z}_i} \abs{T}\,\rho(\vv{g}_T)}.
+\end{equation}
+On a curved surface, the relevant object is the \emph{restricted} Voronoi
+diagram (Voronoi cells clipped to the surface) and its dual \emph{restricted
+Delaunay} triangulation \cite{EdelsbrunnerShah1997,BoissonnatOudot2005}; in
+practice we relax in a 2D chart (\S\ref{sec:faces}) so \eqref{eq:disc_centroid}
+applies in the chart and the move is lifted back onto the surface.
+
+\subsection{Robust predicates}
+All combinatorial decisions (orientation, in-circle/in-sphere) use exact
+adaptive-precision predicates \cite{Shewchuk1997}; only non-decision quantities
+(centroid weights, sizing values) are floating point. Map/iteration order is
+made deterministic (seedless hashing), so the mesh is reproducible.
+
+% ============================================================================
+\section{Stage 0 -- Vertices}
+% ============================================================================
+Every B-Rep corner $\vv{p}$ becomes a \emph{pinned} site: it never moves and is
+present in every downstream triangulation. Pinning corners preserves sharp
+features exactly. Formally these are the $0$-cells of the cell complex and the
+fixed points of all relaxations below.
+
+% ============================================================================
+\section{Stage 1 -- Edges}
+\label{sec:edges}
+% ============================================================================
+
+A B-Rep edge is a curve $\vv{C}:[t_0,t_1]\to\R^3$ between two corners. We
+support the modalities in Table~\ref{tab:curves}.
+
+\begin{table}[h]\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Modality & $\vv{C}(t)$ & Source \\
+\midrule
+Line & $\vv{p}_0 + t\,\vv{d}$ & straight B-Rep edge\\
+Circle / arc & $\vv{c} + r(\cos t\,\vv{x} + \sin t\,\vv{y})$ & rim, fillet, boolean of quadrics\\
+Intersection & implicit $\vv{S}_a\cap\vv{S}_b$, seeded by the chain & generic surface--surface boolean\\
+NURBS & $\dfrac{\sum_i N_{i,p}(t)\,w_i\,\vv{P}_i}{\sum_i N_{i,p}(t)\,w_i}$ & imported / profile curve \cite{PieglTiller1997}\\
+Extruded profile & $\vv{b}+z\,\vv{a}+u_x\,P_x(t)+u_y\,P_y(t)$ & lifted 2D profile (airfoil)\\
+Polyline & piecewise linear chain & faceted fallback\\
+\bottomrule
+\end{tabular}
+\caption{Edge curve modalities. All expose $\vv{C}(t),\vv{C}'(t),\vv{C}''(t)$.}
+\label{tab:curves}
+\end{table}
+
+\subsection{Arc length}
+The arc length and the natural (unit-speed) parameter are
+\begin{equation}
+\label{eq:arclen}
+s(t)=\int_{t_0}^{t}\norm{\vv{C}'(\tau)}\dd\tau,\qquad
+\dd s = \norm{\vv{C}'(t)}\dd t .
+\end{equation}
+We tabulate $s(t)$ once (adaptive Gauss/Simpson) and invert $t(s)$ by table
+lookup + a Newton step using $\dd t/\dd s = 1/\norm{\vv{C}'}$, so points can be
+placed at prescribed arc-length spacings. For a circle $\norm{\vv{C}'}=r$ and
+$s=r\,\Delta t$ exactly; for a line it is exact; for NURBS / extruded profiles
+the table is used.
+
+\subsection{Curvature}
+For a space curve the (unsigned) curvature is
+\begin{equation}
+\label{eq:curv}
+\kappa(t) \;=\; \frac{\norm{\vv{C}'(t)\times\vv{C}''(t)}}{\norm{\vv{C}'(t)}^{3}},
+\qquad R(t)=\frac{1}{\kappa(t)}\ \text{(radius of curvature)},
+\end{equation}
+derived from the Frenet apparatus and verified symbolically. A straight segment
+has $\kappa\equiv0$, $R\equiv\infty$; a circle of radius $r$ has $\kappa\equiv
+1/r$.
+
+\subsection{Deflection sizing}
+\label{sec:defl}
+The chord between two samples a parametric distance apart deviates from the true
+arc by the \emph{sagitta}. For an arc of radius $R$ subtending a half-angle
+$\theta/2$, with chord length $\ell=2R\sin(\theta/2)$, the maximum chord--arc
+deviation is
+\begin{equation}
+\label{eq:sagitta}
+\varepsilon \;=\; R\bigl(1-\cos\tfrac{\theta}{2}\bigr)
+            \;=\; \frac{R\,\theta^2}{8}+O(\theta^4)
+            \;\approx\; \frac{\ell^2}{8R}.
+\end{equation}
+Solving the small-angle relation for the admissible edge length given a
+\emph{deflection tolerance} $\varepsilon$ gives the local target
+\begin{equation}
+\boxed{\;\ell(\vv{x}) \;=\; \sqrt{8\,\varepsilon\,R(\vv{x})}\;}
+\qquad\Bigl(\text{exact: } \ell=2\sqrt{R^2-(R-\varepsilon)^2}\Bigr),
+\label{eq:defl_len}
+\end{equation}
+both verified with sympy. The edge sizing field is then
+\begin{equation}
+\label{eq:edge_h}
+h_{\text{edge}}(\vv{x}) \;=\; \min\!\Bigl(h_{\max},\ \sqrt{8\,\varepsilon\,R(\vv{x})}\Bigr),
+\end{equation}
+i.e.\ refine where the curve bends ($R$ small), coast at $h_{\max}$ where it is
+straight. This is the curve analogue of the surface bound \eqref{eq:surf_defl}.
+
+\subsection{1D CVT and error-driven adaptivity}
+On a fixed edge the $n$ interior sites $s_1<\dots<s_n$ (arc-length coordinates,
+endpoints pinned) relax by the 1D centroid rule (the segment analogue of
+\eqref{eq:disc_centroid}): with neighbours $s_{i-1},s_{i+1}$ and density
+$\rho=h^{-1}$,
+\begin{equation}
+\label{eq:cvt1d}
+s_i \;\leftarrow\;
+\frac{\rho_{i-\frac12}\,\tfrac{s_{i-1}+s_i}{2}
+     +\rho_{i+\frac12}\,\tfrac{s_i+s_{i+1}}{2}}
+     {\rho_{i-\frac12}+\rho_{i+\frac12}},
+\qquad \rho_{i\pm\frac12}=h\!\bigl(\tfrac{s_i+s_{i\pm1}}{2}\bigr)^{-1},
+\end{equation}
+which equidistributes spacing $\propto h$. Adaptivity wraps the relaxation:
+
+\begin{algorithm}[H]
+\caption{\textsc{MeshEdge}$(\vv{C},h,\varepsilon)$}
+\label{alg:edge}
+\begin{algorithmic}[1]
+\State sample $s(t)$ table; $L\gets s(t_1)$
+\State $n \gets \max\bigl(1,\ \lceil \int_0^{L} h(s)^{-1}\dd s\rceil\bigr)$
+       \Comment{initial count from the sizing field}
+\State place $s_1,\dots,s_n$ equidistributing $h$ (cumulative-$\rho$ inversion)
+\Repeat
+  \For{a few iterations} relax all $s_i$ by \eqref{eq:cvt1d} \EndFor
+  \State $e^\star,\,s^\star \gets \max_i$ deflection of the chord
+         $[\vv{C}(s_i),\vv{C}(s_{i+1})]$ vs.\ the arc, and its location
+  \If{$e^\star > \varepsilon$} insert a site at $s^\star$; $n\!\mathrel{+}\!=\!1$ \EndIf
+\Until{$e^\star \le \varepsilon$ \textbf{and} max site move $<\tau_{\text{move}}$}
+\State \Return $\{\vv{C}(s_i)\}$ \Comment{frozen edge points; corners included}
+\end{algorithmic}
+\end{algorithm}
+
+\noindent
+The relax--insert loop is the 1D instance of the general scheme: relax for
+quality, insert at the worst error, repeat until the tolerance holds. Shared
+edges are meshed once and cached, so both incident faces read identical points.
+
+% ============================================================================
+\section{Stage 2 -- Faces}
+\label{sec:faces}
+% ============================================================================
+
+A face is a trimmed surface $\vv{S}:\Omega\subset\R^2\to\R^3$, $(u,v)\mapsto
+\vv{S}(u,v)$, bounded by oriented loops of frozen edges. The strategy is:
+parameterise the face by a \emph{distance-faithful chart}, relax interior points
+there with a 2D surface-CVT (boundary = frozen edge points, held fixed), insert
+where the surface deflection tolerance is violated, and lift every chart point
+exactly onto $\vv{S}$. The output is a \emph{conforming triangulation of the
+face} that the volume stage will treat as a hard constraint.
+
+\subsection{First fundamental form and area}
+With $\Su=\partial\vv{S}/\partial u$, $\Sv=\partial\vv{S}/\partial v$, the metric
+(first fundamental form) coefficients and area element are
+\begin{equation}
+\label{eq:fff}
+E=\Su\!\cdot\!\Su,\quad F=\Su\!\cdot\!\Sv,\quad G=\Sv\!\cdot\!\Sv,
+\qquad \dd A=\sqrt{EG-F^2}\;\dd u\dd v .
+\end{equation}
+A curve $t\mapsto(u(t),v(t))$ in parameter space has length
+$\int\sqrt{E\dot u^2+2F\dot u\dot v+G\dot v^2}\,\dd t$; this is the metric the
+chart must reproduce for Euclidean 2D operations (separation, centroid) to mean
+arc length on the surface. Table~\ref{tab:fff} lists $E,F,G,\dd A$ for every
+analytic modality, all derived with sympy.
+
+\begin{table}[h]\centering
+\begin{tabular}{@{}llllll@{}}
+\toprule
+Surface & $\vv{S}(u,v)$ & $E$ & $F$ & $G$ & $\dd A$\\
+\midrule
+Plane & $\vv{o}+u\vv{e}_1+v\vv{e}_2$ & $1$ & $0$ & $1$ & $\dd u\dd v$\\
+Cylinder $(\theta,h)$ & $r(\cos\theta,\sin\theta)+h\vv{a}$ & $r^2$ & $0$ & $1$ & $r\,\dd u\dd v$\\
+Sphere $(\lambda,\varphi)$ & $r(\cos\varphi\cos\lambda,\cos\varphi\sin\lambda,\sin\varphi)$ & $r^2\cos^2\varphi$ & $0$ & $r^2$ & $r^2\abs{\cos\varphi}\,\dd u\dd v$\\
+Cone $(\theta,s)$ & $s\tan\!\alpha(\cos\theta,\sin\theta)+s\vv{a}$ & $s^2\tan^2\!\alpha$ & $0$ & $\sec^2\!\alpha$ & $\abs{s}\tan\!\alpha\sec\!\alpha\,\dd u\dd v$\\
+Torus $(\theta,\phi)$ & $(R{+}r\cos\phi)(\cos\theta,\sin\theta){+}r\sin\phi\,\vv{a}$ & $(R{+}r\cos\phi)^2$ & $0$ & $r^2$ & $r\abs{R{+}r\cos\phi}\,\dd u\dd v$\\
+Extruded $(t,h)$ & $\vv{b}+P(t)+h\vv{a}$ & $\norm{P'(t)}^2$ & $0$ & $1$ & $\norm{P'(t)}\dd u\dd v$\\
+NURBS $(u,v)$ & tensor B-spline \cite{PieglTiller1997} & $\Su\!\cdot\!\Su$ & $\Su\!\cdot\!\Sv$ & $\Sv\!\cdot\!\Sv$ & $\sqrt{EG{-}F^2}$\\
+\bottomrule
+\end{tabular}
+\caption{First fundamental form per modality ($\vv{a}$ the unit axis;
+$\alpha$ the cone half-angle). All but the NURBS row are diagonal ($F=0$),
+which is what makes the charts below clean.}
+\label{tab:fff}
+\end{table}
+
+\subsection{Curvature and surface deflection sizing}
+The shape operator's eigenvalues are the principal curvatures
+$\kappa_1,\kappa_2$; from the second fundamental form
+$L=\vv{S}_{uu}\!\cdot\!\vv{n}$, $M=\vv{S}_{uv}\!\cdot\!\vv{n}$,
+$N=\vv{S}_{vv}\!\cdot\!\vv{n}$ ($\vv{n}=\Su\times\Sv/\norm{\Su\times\Sv}$), the
+Gaussian and mean curvatures are
+\begin{equation}
+\label{eq:KH}
+K=\kappa_1\kappa_2=\frac{LN-M^2}{EG-F^2},\qquad
+H=\tfrac12(\kappa_1+\kappa_2)=\frac{EN-2FM+GL}{2(EG-F^2)},
+\end{equation}
+and $\kappa_{1,2}=H\pm\sqrt{H^2-K}$. Verified values
+(Table~\ref{tab:curv}) confirm the geometric intuition: developables have
+$K=0$, the sphere is umbilic.
+
+\begin{table}[h]\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+Surface & $K$ & principal curvatures & $\kappa_{\max}=1/R_{\min}$\\
+\midrule
+Plane & $0$ & $0,\ 0$ & $0$\\
+Cylinder & $0$ & $1/r,\ 0$ & $1/r$\\
+Cone & $0$ & $1/(s\tan\alpha\sec\alpha),\ 0$ & $1/(s\tan\alpha\sec\alpha)$\\
+Sphere & $1/r^2$ & $1/r,\ 1/r$ & $1/r$\\
+Torus & $\dfrac{\cos\phi}{r(R+r\cos\phi)}$ & $\dfrac{1}{r},\ \dfrac{\cos\phi}{R+r\cos\phi}$ & $1/r$\\
+Extruded & $0$ & $\kappa_P(t),\ 0$ & $\kappa_P(t)=\dfrac{\abs{P'\times P''}}{\norm{P'}^3}$\\
+\bottomrule
+\end{tabular}
+\caption{Principal/Gaussian curvature per modality (sympy-verified).
+$R_{\min}=1/\kappa_{\max}$ feeds the surface deflection bound.}
+\label{tab:curv}
+\end{table}
+
+\noindent
+The surface sagitta argument mirrors \eqref{eq:sagitta} with $R=R_{\min}=
+1/\kappa_{\max}$: a triangle edge of length $\ell$ on a surface of smallest
+principal radius $R_{\min}$ deviates from the surface by
+$\varepsilon\approx \ell^2/(8R_{\min})$, so the face sizing field is
+\begin{equation}
+\label{eq:surf_defl}
+h_{\text{face}}(\vv{x}) \;=\;
+\min\!\Bigl(h_{\max},\ \sqrt{8\,\varepsilon\,R_{\min}(\vv{x})}\Bigr),
+\qquad R_{\min}=1/\kappa_{\max}.
+\end{equation}
+
+\subsection{Distance-faithful charts}
+\label{sec:charts}
+A chart $\Phi:\,\text{face}\to\R^2$ lets the planar CVT machinery act on the
+surface. We want $\Phi$ as close to an \emph{isometry} as possible so Euclidean
+2D distance equals surface arc length.
+
+\paragraph{Developables (cylinder, cone, extruded): exact isometry.}
+A surface with $K\equiv0$ unrolls into the plane without distortion.
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Cylinder}: $\Phi(\theta,h)=(r\theta,\ h)$. Then $E=G=1,F=0$ in the
+chart -- exact.
+\item \emph{Cone}: polar unroll $\Phi(\theta,s)=\bigl(\rho\cos\psi,\rho\sin\psi
+\bigr)$ with slant $\rho=s/\cos\alpha$ and sweep $\psi=\theta\sin\alpha$. The
+induced chart metric is $E=s^2\tan^2\alpha,\ F=0,\ G=\sec^2\alpha$ -- identical
+to the cone's first fundamental form (Table~\ref{tab:fff}), i.e.\ \emph{exactly
+isometric} (sympy-verified).
+\item \emph{Extruded}: $\Phi(t,h)=(\sigma(t),\,h)$ with $\sigma(t)=\int^t\norm
+{P'}$ the profile arc length; $E=G=1,F=0$ -- exact.
+\end{itemize}
+
+\paragraph{Sphere: azimuthal-equidistant.}
+The sphere ($K=1/r^2\neq0$) admits no isometry to the plane. We use the
+azimuthal-equidistant chart about a cap centre: the chart radial coordinate is
+the exact geodesic distance $r\psi$ ($\psi$ the geodesic colatitude), so radial
+distances are exact; the circumferential direction stretches by
+\begin{equation}
+\label{eq:azeq}
+\text{stretch}(\psi)=\frac{\psi}{\sin\psi}
+   = 1+\frac{\psi^2}{6}+\frac{7\psi^4}{360}+O(\psi^6),
+\end{equation}
+(sympy-verified) which is $\le 1.05$ for caps up to $\psi\approx 32^\circ$ and
+stays bounded well past a hemisphere. The chart is a bijection on any cap that
+excludes the antipode; bijectivity is validated by a round-trip test
+$\dist\!\bigl(\proj_{\vv{S}}(\vv{p}),\,\Phi^{-1}\Phi(\vv{p})\bigr)<\text{tol}$.
+
+\paragraph{General NURBS / non-developable: metric-scaled or restricted CVT.}
+For a NURBS patch we scale the parameters by the local metric
+$(\sqrt{E},\sqrt{G})$ at the patch centroid (a first-order isometry) and, when a
+single chart distorts too much, fall back to a genuine restricted-Voronoi
+relaxation on the surface \cite{YanLevy2009,LevyLiu2010}: the centroid
+\eqref{eq:disc_centroid} is computed from the restricted cells and the move is
+projected back onto $\vv{S}$ by closest-point.
+
+\paragraph{Revolution faces and periodicity.}
+A full revolution (cylinder/cone/torus barrel) is periodic in $\theta$; its
+boundary loops are rim circles that do not close in the unrolled rectangle.
+Such a face is meshed by a structured $(\theta,v)$ grid whose rings reuse the
+\emph{rim} longitudes (radial alignment, no seam) and whose row spacing follows
+$h$ in arc length -- the uniform grid is the on-surface CVT optimum of a
+developable. A sphere cap meeting an intersection circle is itself a revolution
+about the line of centres (the circle lies in a plane $\perp$ that axis), so the
+same latitude/longitude construction applies, with both incident caps deriving
+their longitude reference from the \emph{shared} rim so their rings align.
+
+\subsection{Surface CVT and adaptivity}
+\begin{algorithm}[H]
+\caption{\textsc{MeshFace}$(\vv{S},\text{loops},h,\varepsilon)$}
+\label{alg:face}
+\begin{algorithmic}[1]
+\State build chart $\Phi$ (Table-driven by modality); validate bijectivity
+\State $B \gets \Phi(\text{frozen edge points of all loops})$
+       \Comment{fixed boundary in chart}
+\State scatter interior sites in $\Phi(\text{face})$ at spacing $h$
+       (greedy graded Poisson) inside the trim loops
+\Repeat
+  \For{a few iterations}
+     \State 2D Delaunay of $B\cup\{$interior$\}$ (exact predicates)
+     \State move each interior site by \eqref{eq:disc_centroid}, $\rho=h^{-2}$,
+            clamp inside the loops; keep $B$ fixed
+  \EndFor
+  \State $e^\star \gets \max$ triangle deflection vs.\ $\vv{S}$
+         (sagitta, \eqref{eq:surf_defl})
+  \If{$e^\star>\varepsilon$} insert a site at the worst triangle's circumcentre
+     (in the chart) \EndIf
+\Until{$e^\star\le\varepsilon$ \textbf{and} max move $<\tau_{\text{move}}$}
+\State lift: $\vv{p}_k=\vv{S}(\Phi^{-1}(\text{chart site}_k))$ -- exact on surface
+\State \Return conforming triangulation of the face (its triangles + vertices)
+\end{algorithmic}
+\end{algorithm}
+
+\noindent
+After Stage 2 every face carries a frozen, conforming triangulation; shared
+edges guarantee face-to-face conformity. The union of all face triangulations is
+a watertight surface mesh $\mathcal{S}$.
+
+% ============================================================================
+\section{Stage 3 -- Volume}
+\label{sec:volume}
+% ============================================================================
+
+\subsection{Sizing field from the surface}
+The volume sizing field is grown from the completed surface: at each surface
+vertex the local feature size and the surface element size seed
+$h_{\text{vol}}$, which is then propagated through the interior and
+gradation-limited by \eqref{eq:lipschitz}. Crucially this is computed
+\emph{after} the surface is final, so it already reflects curvature- and
+feature-driven refinement, including \emph{local thickness}: where two boundary
+sheets are closer than $h_{\max}$ (a thin web, a blunt trailing edge, a slender
+bore wall) the field shrinks so the interior is resolved.
+
+\subsection{Interior seeding}
+Interior sites are thrown at the field density: a randomised, separation-guarded
+dart pattern (or a body-centred-cubic lattice graded by $h$
+\cite{LabelleShewchuk2007}) with a per-point clearance from $\mathcal{S}$ of one
+local element, and a global budget $\int_\Omega h^{-3}\dd V$ so a sharp feature
+does not inflate the count. Surface vertices are \emph{not} re-seeded; they are
+the boundary of the volume point set.
+
+\subsection{3D CVT and quality-driven adaptivity}
+Interior sites relax by the 3D centroid rule \eqref{eq:disc_centroid} with
+$\rho=h^{-3}$; surface vertices stay fixed. A site whose centroid leaves the
+domain is mirrored back across the nearest boundary plane. After relaxation,
+sites are inserted where the local edge length exceeds $h_{\max}$ or where
+element quality (minimum dihedral angle, radius--edge ratio) is poor, and the
+relaxation is repeated.
+
+\subsection{Boundary-constrained tetrahedralization}
+This is the structural heart of the method. The volume is the \emph{constrained
+Delaunay tetrahedralization} (CDT) of the interior sites \emph{plus} the frozen
+surface mesh $\mathcal{S}$ as constraint facets
+\cite{Si2015,ShewchukCDT2002,ChengDeyShewchuk2012}:
+\begin{equation}
+\text{Tetrahedralize}\bigl(\{\text{interior sites}\}\cup V(\mathcal{S})\bigr)
+\quad\text{s.t. every } \triangle\in\mathcal{S} \text{ is a union of tet faces.}
+\end{equation}
+Because $\mathcal{S}$ is watertight and every constraint triangle is recovered
+as tetrahedron faces, each surface triangle has a tetrahedron exactly on each
+side; region labels are then assigned by flood fill across non-constraint faces
+starting from the region tag attached to each surface triangle's two sides.
+No tetrahedron straddles the boundary, so:
+
+\begin{proposition}[Watertightness]
+If $\mathcal{S}$ is a closed, non-self-intersecting, conforming surface mesh and
+the CDT recovers all of its facets, then for every constraint triangle the two
+incident tetrahedra carry the region labels prescribed by that triangle's
+front/back tags, and the boundary of each meshed region is exactly the
+corresponding subset of $\mathcal{S}$. In particular there are no protrusions
+into a void and no gaps.
+\end{proposition}
+
+\noindent
+Facet recovery in a CDT may require a bounded number of Steiner points
+\emph{on the constraint facets}; these are inserted on $\mathcal{S}$ (never
+off it), so the boundary geometry is preserved exactly
+\cite{ShewchukCDT2002,Si2015}. Sliver tetrahedra (near-zero volume, good
+circumradius) that survive Delaunay refinement are removed by a final
+quality pass -- vertex smoothing constrained to carriers, plus
+flips/exudation \cite{ChengDeyEdelsbrunner2000,TournoisAlliez2009} -- which is
+volume- and conformity-preserving because boundary vertices move only within
+their surface/edge carrier.
+
+\begin{algorithm}[H]
+\caption{\textsc{MeshVolume}$(\mathcal{S},h)$}
+\label{alg:vol}
+\begin{algorithmic}[1]
+\State build $h_{\text{vol}}$ from $\mathcal{S}$ (feature size, thickness),
+       gradation-limit by \eqref{eq:lipschitz}
+\State seed interior sites at density $h_{\text{vol}}^{-3}$,
+       clearance $\ge h$ from $\mathcal{S}$
+\Repeat
+  \State CDT of (interior $\cup\ V(\mathcal{S})$) with $\mathcal{S}$ as constraints
+  \For{a few iterations} relax interior sites by \eqref{eq:disc_centroid},
+       $\rho=h^{-3}$ \EndFor
+  \State insert sites where edge length $>h_{\max}$ or quality is poor
+\Until{size and quality targets met \textbf{and} max move $<\tau_{\text{move}}$}
+\State flood-fill region labels across non-constraint faces from surface tags
+\State quality post-pass (carrier-constrained smoothing, flips); drop slivers
+\State \Return tetrahedra, per-tet region, boundary faces (= $\mathcal{S}$)
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================================
+\section{The sizing field, end to end}
+% ============================================================================
+The single field $h$ threads all stages and is only ever \emph{refined}
+downward in size:
+\begin{enumerate}[leftmargin=1.6em]
+\item \textbf{Edges} set $h$ from curve deflection \eqref{eq:edge_h} and
+$h_{\max}$ / per-region overrides.
+\item \textbf{Faces} take the min of the edge field and the surface deflection
+bound \eqref{eq:surf_defl}; the smoothed result drives the surface CVT.
+\item \textbf{Volume} takes the min of the face field and the local-thickness /
+feature-size estimate, then gradation-limits \eqref{eq:lipschitz} through the
+interior.
+\end{enumerate}
+Because each stage only ever lowers $h$ and then re-smooths, the field is
+monotone and Lipschitz, and the element-size contract (a documented
+$1.5\times$ max-edge bound, as in gmsh) holds globally.
+
+% ============================================================================
+\section{Why this guarantees conformity}
+% ============================================================================
+The earlier rapidmesh path built one \emph{unconstrained} Delaunay over all
+points and recovered the boundary by labelling each tetrahedron with the region
+of its centroid. That recovers the boundary only \emph{statistically}: where the
+surface sample is coarser than a feature, a tetrahedron straddles the true
+surface, and whole-tet labelling then produces a protrusion (centroid inside) or
+a gap (centroid outside). The present algorithm removes the failure mode at its
+root by (a) completing a watertight, error-controlled surface mesh
+\emph{first}, and (b) making that mesh a \emph{constraint} on the volume rather
+than a target to be rediscovered. Conformity is then a theorem
+(Proposition~1), not a sampling-density gamble. The cost is the constrained
+Delaunay / facet recovery, which is exactly the machinery the method must keep;
+the variational (CVT) relaxation supplies the well-shaped interior that keeps
+recovery cheap and slivers rare \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
+
+% ============================================================================
+\begin{thebibliography}{99}
+% ============================================================================
+\bibitem{DuFaberGunzburger1999} Q.~Du, V.~Faber, M.~Gunzburger.
+  \emph{Centroidal Voronoi Tessellations: Applications and Algorithms.}
+  SIAM Review 41(4), 1999.
+\bibitem{Lloyd1982} S.~P.~Lloyd. \emph{Least squares quantization in PCM.}
+  IEEE Trans.\ Information Theory 28(2), 1982.
+\bibitem{DuWang2005} Q.~Du, D.~Wang. \emph{Anisotropic centroidal Voronoi
+  tessellations and their applications.} SIAM J.\ Sci.\ Comput.\ 26(3), 2005.
+\bibitem{LevyLiu2010} B.~L\'evy, Y.~Liu. \emph{$L_p$ Centroidal Voronoi
+  Tessellation and its applications.} ACM TOG (SIGGRAPH) 29(4), 2010.
+\bibitem{YanLevy2009} D.-M.~Yan, B.~L\'evy, Y.~Liu, F.~Sun, W.~Wang.
+  \emph{Isotropic Remeshing with Fast and Exact Computation of Restricted
+  Voronoi Diagram.} Computer Graphics Forum (SGP) 28(5), 2009.
+\bibitem{EdelsbrunnerShah1997} H.~Edelsbrunner, N.~R.~Shah.
+  \emph{Triangulating topological spaces.} Int.\ J.\ Comp.\ Geom.\ Appl., 1997.
+\bibitem{BoissonnatOudot2005} J.-D.~Boissonnat, S.~Oudot.
+  \emph{Provably good sampling and meshing of surfaces.} Graphical Models 67,
+  2005.
+\bibitem{AlliezCohenSteiner2005} P.~Alliez, D.~Cohen-Steiner, M.~Yvinec,
+  M.~Desbrun. \emph{Variational Tetrahedral Meshing.} ACM TOG (SIGGRAPH) 24(3),
+  2005.
+\bibitem{TournoisAlliez2009} J.~Tournois, C.~Wormser, P.~Alliez, M.~Desbrun.
+  \emph{Interleaving Delaunay Refinement and Optimization for Practical Isotropic
+  Tetrahedron Mesh Generation.} ACM TOG (SIGGRAPH) 28(3), 2009.
+\bibitem{ChengDeyShewchuk2012} S.-W.~Cheng, T.~K.~Dey, J.~R.~Shewchuk.
+  \emph{Delaunay Mesh Generation.} CRC Press, 2012.
+\bibitem{ChengDeyEdelsbrunner2000} S.-W.~Cheng, T.~K.~Dey, H.~Edelsbrunner,
+  M.~Facello, S.-H.~Teng. \emph{Sliver Exudation.} J.\ ACM 47(5), 2000.
+\bibitem{ShewchukCDT2002} J.~R.~Shewchuk. \emph{Constrained Delaunay
+  Tetrahedralizations and Provably Good Boundary Recovery.} 11th Int.\ Meshing
+  Roundtable, 2002.
+\bibitem{Si2015} H.~Si. \emph{TetGen, a Delaunay-Based Quality Tetrahedral Mesh
+  Generator.} ACM TOMS 41(2), 2015.
+\bibitem{Shewchuk1997} J.~R.~Shewchuk. \emph{Adaptive Precision Floating-Point
+  Arithmetic and Fast Robust Geometric Predicates.} Discrete \& Comp.\ Geom.\
+  18, 1997.
+\bibitem{LabelleShewchuk2007} F.~Labelle, J.~R.~Shewchuk. \emph{Isosurface
+  Stuffing: Fast Tetrahedral Meshes with Good Dihedral Angles.} ACM TOG
+  (SIGGRAPH) 26(3), 2007.
+\bibitem{Borouchaki1998} H.~Borouchaki, F.~Hecht, P.~J.~Frey.
+  \emph{Mesh gradation control.} Int.\ J.\ Numer.\ Meth.\ Eng.\ 43, 1998.
+\bibitem{PieglTiller1997} L.~Piegl, W.~Tiller. \emph{The NURBS Book.}
+  2nd ed., Springer, 1997.
+\bibitem{doCarmo1976} M.~P.~do~Carmo. \emph{Differential Geometry of Curves and
+  Surfaces.} Prentice-Hall, 1976.
+\bibitem{FreyGeorge2008} P.~J.~Frey, P.-L.~George. \emph{Mesh Generation:
+  Application to Finite Elements.} 2nd ed., Wiley, 2008.
+\end{thebibliography}
+
+\end{document}

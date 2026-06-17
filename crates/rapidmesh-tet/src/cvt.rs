@@ -1584,6 +1584,35 @@ mod tests {
     }
 
     #[test]
+    fn mesh_cdt_sphere_recovers_curved_facets() {
+        // A curved single region: exercises flip-based curved-facet recovery
+        // end to end. The result must be a closed, single-region mesh whose
+        // volume approaches the ball (the PL surface slightly undershoots).
+        let mut scene = Scene::new();
+        scene.add_solid(icosphere([0.0, 0.0, 0.0], 1.0, 2));
+        let plc = scene.assemble();
+        let m = mesh_cdt(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
+        assert!(!m.tets.is_empty(), "sphere produced tets");
+        assert!(m.tet_regions.iter().all(|r| r.0 == 1), "all tets in region 1");
+        let vol: f64 = m
+            .tets
+            .iter()
+            .map(|t| tet_det([m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]]).abs() / 6.0)
+            .sum();
+        let ball = 4.0 / 3.0 * std::f64::consts::PI;
+        assert!(vol > 0.80 * ball && vol < 1.02 * ball, "sphere volume {vol} vs ball {ball}");
+        // Closed manifold: every boundary edge is shared by exactly two faces.
+        let mut edge: DMap<(usize, usize), usize> = DMap::default();
+        for f in &m.faces {
+            for k in 0..3 {
+                let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *edge.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        assert!(edge.values().all(|&c| c == 2), "surface is not a closed manifold");
+    }
+
+    #[test]
     fn frozen_surface_box_carries_exact_planes() {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));

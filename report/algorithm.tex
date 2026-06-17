@@ -95,6 +95,7 @@
 \newcommand{\Sv}{\vv{S}_v}
 \DeclareMathOperator{\proj}{proj}
 \DeclareMathOperator{\dist}{dist}
+\newcommand{\T}{\mathsf{T}}
 \DeclareRobustCommand{\code}[1]{\texttt{#1}}
 \setlength{\emergencystretch}{3em}
 
@@ -263,8 +264,18 @@ h(\vv{x}) \;\le\; h(\vv{y}) + \alpha\,\norm{\vv{x}-\vv{y}}
 \end{equation}
 with grading constant $\alpha\in(0,1]$ (the default $\alpha=\tfrac12$ grows
 neighbouring elements by at most $\sim\!1.5\times$). \Cref{eq:lipschitz} is the
-standard mesh-gradation constraint \cite{Borouchaki1998}; it is enforced by a
-fast-marching / sweep over the size sources.
+standard mesh-gradation constraint \cite{Borouchaki1998}. Given raw (ungraded)
+size requests $h_0(\vv{y})$ from the geometry, the largest field that satisfies
+both $h\le h_0$ and \eqref{eq:lipschitz} is the lower envelope
+\begin{equation}
+\label{eq:gradenvelope}
+h(\vv{x}) \;=\; \min_{\vv{y}}\ \bigl(h_0(\vv{y})+\alpha\norm{\vv{x}-\vv{y}}\bigr),
+\end{equation}
+the viscosity solution of the Eikonal inequality $\norm{\nabla h}\le\alpha$ with
+obstacle $h\le h_0$. It is computed by a single fast-marching (or a few
+Gauss--Seidel sweeps) over the size sources, $O(N\log N)$ in the number of grid
+nodes -- the same machinery at every stage, fed first by edges, then faces,
+then the volume.
 
 \subsection{Centroidal Voronoi Tessellation}
 Given a density $\rho:\Omega\to\R_{>0}$ on a domain $\Omega$ and sites
@@ -278,9 +289,25 @@ mass centroid of its region,
 \frac{\displaystyle\int_{V_i}\rho(\vv{x})\,\vv{x}\dd\vv{x}}
      {\displaystyle\int_{V_i}\rho(\vv{x})\dd\vv{x}}.
 \end{equation}
-A CVT is a critical point of the energy
-$\mathcal{F}(\{\vv{z}_i\})=\sum_i\int_{V_i}\rho(\vv{x})\norm{\vv{x}-\vv{z}_i}^2\dd\vv{x}$
-\cite{DuFaberGunzburger1999}. \emph{Lloyd's algorithm} \cite{Lloyd1982}
+A CVT is a critical point of the quantization energy
+\begin{equation}
+\label{eq:cvtenergy}
+\mathcal{F}(\{\vv{z}_i\})=\sum_i\int_{V_i}\rho(\vv{x})\norm{\vv{x}-\vv{z}_i}^2\dd\vv{x}
+\end{equation}
+\cite{DuFaberGunzburger1999}. Holding the cells fixed and differentiating with
+respect to a single site,
+\begin{equation}
+\label{eq:cvtgrad}
+\frac{\partial\mathcal{F}}{\partial\vv{z}_i}
+   = -2\int_{V_i}\rho(\vv{x})\,(\vv{x}-\vv{z}_i)\dd\vv{x},
+\end{equation}
+where the boundary terms from moving $\partial V_i$ cancel because the integrand
+$\rho\norm{\vv{x}-\vv{z}_i}^2$ is continuous across the shared Voronoi faces
+(each face contributes equal and opposite to its two cells). Setting
+\eqref{eq:cvtgrad} to zero gives $\vv{z}_i=\int_{V_i}\rho\vv{x}/\int_{V_i}\rho
+=\vv{c}_i$ -- exactly the centroid \eqref{eq:cvt}. The one-dimensional case is
+immediate: $\partial_z\!\int_a^b(x-z)^2\dd x=0\Rightarrow z=\tfrac{a+b}{2}$.
+\emph{Lloyd's algorithm} \cite{Lloyd1982}
 alternates ``recompute $V_i$'' and ``move $\vv{z}_i\!\leftarrow\!\vv{c}_i$''
 and converges to a CVT; the resulting point set is blue-noise / isotropic,
 which is precisely the input a Delaunay mesher needs for well-shaped elements.
@@ -376,7 +403,51 @@ For a space curve the (unsigned) curvature is
 \end{equation}
 derived from the Frenet apparatus and verified symbolically. A straight segment
 has $\kappa\equiv0$, $R\equiv\infty$; a circle of radius $r$ has $\kappa\equiv
-1/r$.
+1/r$. For a NURBS curve $\vv{C}=\vv{A}/w$ (homogeneous numerator
+$\vv{A}=\sum_iN_{i,p}w_i\vv{P}_i$, weight $w=\sum_iN_{i,p}w_i$) the derivatives
+follow from the quotient rule,
+\begin{equation}
+\label{eq:nurbsder}
+\vv{C}'=\frac{\vv{A}'w-\vv{A}w'}{w^2},\qquad
+\vv{C}''=\frac{\vv{A}''-2\vv{C}'w'-\vv{C}w''}{w},
+\end{equation}
+with $\vv{A}^{(k)},w^{(k)}$ from the de Boor recurrence \cite{PieglTiller1997};
+\eqref{eq:arclen}--\eqref{eq:curv} then apply unchanged.
+
+\subsection{Intersection curves}
+\label{sec:intersection}
+A boolean between two surfaces $\vv{S}_a,\vv{S}_b$ creates an edge along their
+intersection. Writing the surfaces locally as implicit $f(\vv{x})=0$,
+$g(\vv{x})=0$ (signed distance to the analytic surface, so $\nabla f$ is the unit
+normal $\vv{n}_a$), the curve $\{f=g=0\}$ has unit tangent
+\begin{equation}
+\label{eq:interT}
+\vv{T} \;=\; \frac{\nabla f\times\nabla g}{\norm{\nabla f\times\nabla g}}
+        \;=\; \frac{\vv{n}_a\times\vv{n}_b}{\norm{\vv{n}_a\times\vv{n}_b}},
+\end{equation}
+which degenerates only where the surfaces are tangent ($\vv{n}_a\parallel
+\vv{n}_b$). A point near the curve is projected \emph{onto both surfaces}
+simultaneously by a constrained Newton iteration on $\vv{F}=(f,g)^\T$ with
+Jacobian $J=[\nabla f^\T;\nabla g^\T]\in\R^{2\times3}$; the minimum-norm step is
+\begin{equation}
+\label{eq:interNewton}
+\vv{x}\;\leftarrow\;\vv{x}-J^{+}\vv{F}(\vv{x}),\qquad
+J^{+}=J^\T\!\bigl(JJ^\T\bigr)^{-1}\ \ (2\times2\text{ inverse}),
+\end{equation}
+quadratically convergent off the tangency locus. The B-rep chain seeds the
+iteration, and arc length / sizing then use the recovered $\vv{T}$ and the curve
+curvature
+\begin{equation}
+\label{eq:interkappa}
+\kappa \;=\; \frac{\norm{\vv{C}'\times\vv{C}''}}{\norm{\vv{C}'}^3},\qquad
+\vv{C}'\parallel\vv{T},\quad
+\vv{C}'' \;=\; \text{(rate of change of $\vv{T}$ along the curve)},
+\end{equation}
+obtained by differentiating \eqref{eq:interT} along $\vv{T}$ (or, where both
+surfaces are analytic with known second fundamental forms, from their normal
+curvatures in the direction $\vv{T}$). A circle is recovered exactly when both
+operands are quadrics sharing an axis, in which case the modality collapses to
+the \emph{Circle} row of \cref{tab:curves}.
 
 \subsection{Deflection sizing}
 \label{sec:defl}
@@ -515,6 +586,23 @@ chart must reproduce for Euclidean 2D operations (separation, centroid) to mean
 arc length on the surface. \Cref{tab:geom} lists $E,F,G,\dd A$ for every analytic
 modality, all derived with a computer-algebra system.
 
+\paragraph{Worked example (sphere).}
+For $\vv{S}(\lambda,\varphi)=r(\cos\varphi\cos\lambda,\cos\varphi\sin\lambda,
+\sin\varphi)$,
+\[
+\Su=r(-\cos\varphi\sin\lambda,\ \cos\varphi\cos\lambda,\ 0),\qquad
+\Sv=r(-\sin\varphi\cos\lambda,\ -\sin\varphi\sin\lambda,\ \cos\varphi),
+\]
+so $E=\Su\!\cdot\!\Su=r^2\cos^2\varphi$, $F=\Su\!\cdot\!\Sv=0$, $G=\Sv\!\cdot\!
+\Sv=r^2$, giving $\dd A=r^2\abs{\cos\varphi}\dd\lambda\dd\varphi$ (the
+$\cos\varphi$ is the polar foreshortening). With outward normal $\vv{n}=\vv{S}/r$
+the second fundamental form is $L=\vv{S}_{\lambda\lambda}\!\cdot\!\vv{n}=
+-r\cos^2\varphi$, $M=\vv{S}_{\lambda\varphi}\!\cdot\!\vv{n}=0$,
+$N=\vv{S}_{\varphi\varphi}\!\cdot\!\vv{n}=-r$, hence the principal curvatures
+$\kappa_1=L/E=-1/r$ and $\kappa_2=N/G=-1/r$ are equal (the sphere is umbilic) and
+$K=\kappa_1\kappa_2=1/r^2$ -- the \cref{tab:geom} sphere row. The other rows
+follow the same computation.
+
 \begin{sidewaystable}\centering
 \caption{Per-modality geometric quantities (all verified by computer algebra):
 the parameterization $\vv{S}(u,v)$, the first fundamental form $E,F,G$ and area
@@ -623,6 +711,30 @@ well past a hemisphere. The chart is a bijection on any cap that excludes the
 antipode; bijectivity is validated by a round-trip test
 $\dist\!\bigl(\proj_{\vv{S}}(\vv{p}),\,\Phi^{-1}\Phi(\vv{p})\bigr)<\text{tol}$.
 
+\paragraph{Forward and inverse maps.}
+Each chart provides $\Phi$ (surface point $\to$ chart, to place the fixed
+boundary) and $\Phi^{-1}$ (chart $\to$ surface, to lift relaxed interior points):
+\begin{align}
+\label{eq:chartmaps}
+\text{cylinder}&: & \Phi(\theta,h)&=(r\theta,h), &
+   \Phi^{-1}(x,y)&=\vv{S}\bigl(x/r,\,y\bigr);\notag\\
+\text{cone}&: & \Phi(\theta,s)&=\tfrac{s}{\cos\alpha}(\cos\psi,\sin\psi),\
+   \psi=\theta\sin\alpha, &
+   \Phi^{-1}(x,y)&=\vv{S}\!\Bigl(\tfrac{\operatorname{atan2}(y,x)}{\sin\alpha},\,
+     \cos\alpha\sqrt{x^2{+}y^2}\Bigr);\\
+\text{extruded}&: & \Phi(t,h)&=(\sigma(t),h), &
+   \Phi^{-1}(x,y)&=\vv{S}\bigl(\sigma^{-1}(x),\,y\bigr);\notag\\
+\text{sphere}&: & \Phi&=\log_{\vv c},\ \Phi^{-1}=\exp_{\vv c}
+   &&\text{(geodesic polar about $\vv c$).}\notag
+\end{align}
+For the sphere, $\log_{\vv c}(\vv{p})$ returns the chart point at radius $r\psi$
+($\psi=\arccos(\hat{\vv c}\!\cdot\!\hat{\vv p})$ the geodesic colatitude) along
+the bearing of the tangent toward $\vv{p}$; $\exp_{\vv c}(\vv{u})$ walks the
+geodesic of length $\norm{\vv{u}}$ from $\vv c$. The extruded $\sigma^{-1}$ is
+the arc-length table inversion of \cref{sec:edges}.1. Every lift lands
+\emph{exactly} on the analytic surface, so the resulting boundary vertices
+satisfy the same on-surface guarantee as an explicit closest-point projection.
+
 \paragraph{General NURBS / non-developable: metric-scaled or restricted CVT.}
 For a NURBS patch we scale the parameters by the local metric
 $(\sqrt{E},\sqrt{G})$ at the patch centroid (a first-order isometry) and, when a
@@ -691,6 +803,24 @@ feature-driven refinement, including \emph{local thickness}: where two boundary
 sheets are closer than $h_{\max}$ (a thin web, a blunt trailing edge, a slender
 bore wall) the field shrinks so the interior is resolved.
 
+\paragraph{Local feature size and thickness.}
+The local feature size $\operatorname{lfs}(\vv{x})$ is the distance from
+$\vv{x}\in\mathcal{S}$ to the medial axis; sampling at spacing
+$\le\operatorname{lfs}$ guarantees a topologically faithful, well-shaped mesh
+\cite{BoissonnatOudot2005}. We use the cheaper one-sided estimate
+\begin{equation}
+\label{eq:thickness}
+\operatorname{thk}(\vv{x}) \;=\; \tfrac12\,\dist\!\bigl(\vv{x},\ \mathcal{S}\!
+   \setminus\!\mathcal{S}_{\text{local}}(\vv{x})\bigr),
+\end{equation}
+the half-distance along the inward normal ray from $\vv{x}$ to the first
+\emph{opposite} surface sheet (excluding the patch $\mathcal{S}_{\text{local}}$
+that $\vv{x}$ belongs to), and set the volume field to
+$h_{\text{vol}}=\min\!\bigl(h_{\text{face}},\,\operatorname{thk}/n_{\min}\bigr)$
+so at least $n_{\min}$ elements span the thinnest gap. This is exactly what
+removes the straddling-tetrahedron failure mode at thin features before the CDT
+is built.
+
 \subsection{Interior seeding}
 Interior sites are thrown at the field density: a randomised, separation-guarded
 dart pattern (or a body-centred-cubic lattice graded by $h$
@@ -743,15 +873,27 @@ into a void and no gaps.
 \end{proposition}
 
 \noindent
-Facet recovery in a CDT may require a bounded number of Steiner points
-\emph{on the constraint facets}; these are inserted on $\mathcal{S}$ (never
-off it), so the boundary geometry is preserved exactly
-\cite{ShewchukCDT2002,Si2015}. Sliver tetrahedra (near-zero volume, good
-circumradius) that survive Delaunay refinement are removed by a final
-quality pass -- vertex smoothing constrained to carriers, plus
-flips/exudation \cite{ChengDeyEdelsbrunner2000,TournoisAlliez2009} -- which is
-volume- and conformity-preserving because boundary vertices move only within
-their surface/edge carrier.
+Boundary recovery proceeds in two classical stages \cite{ShewchukCDT2002,Si2015}:
+\emph{edge recovery} forces each missing constraint edge by inserting Steiner
+points on it until it appears as a union of mesh edges; \emph{facet recovery}
+locally re-tetrahedralizes the cavity straddling each constraint triangle so the
+triangle becomes a union of tetrahedron faces. Every Steiner point lies
+\emph{on} $\mathcal{S}$ (never off it), so the boundary geometry is preserved
+exactly and \cref{prop:watertight} still holds.
+
+\paragraph{Quality measures and the cleanup pass.}
+Element quality is reported as the minimum dihedral angle and the
+\emph{radius--edge ratio} $\rho=R_{\text{circ}}/\ell_{\min}$; Delaunay refinement
+bounds $\rho$, but \emph{slivers} (near-zero volume, dihedral $\to0$, yet
+acceptable $\rho$) can survive and are the residual enemy. They are removed by a
+conformity-preserving post-pass: \emph{(i)} smoothing each free vertex toward its
+quality-weighted optimum, with boundary vertices smoothed only \emph{within their
+surface/edge carrier} (a tangential move; to first order it leaves each region's
+enclosed volume unchanged and keeps interface vertices exactly on their analytic
+carrier); \emph{(ii)} topological flips and weighted-Delaunay \emph{exudation}
+\cite{ChengDeyEdelsbrunner2000,TournoisAlliez2009}, which assign vertex weights
+that ``exude'' slivers without moving any point. Both leave $\mathcal{S}$ and the
+region partition intact.
 
 \begin{algorithm}[H]
 \caption{\textsc{MeshVolume}$(\mathcal{S},h)$}

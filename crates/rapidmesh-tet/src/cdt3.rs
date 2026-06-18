@@ -357,13 +357,15 @@ pub fn tetrahedralize_constrained(
         }
     }
 
-    // Constraint triangles, each tagged with the index of its parent (original)
-    // triangle so region/tag survive recovery splits, and with its facet carrier.
-    let mut tris: Vec<[usize; 3]> = tris.to_vec();
-    let mut parent: Vec<usize> = (0..tris.len()).collect();
-    let mut carrier: Vec<Carrier> = tri_carrier.to_vec();
-
-    recover_curved_facets(&mut db, &mut vs, &mut tris, &mut parent, &mut carrier);
+    // Constraint triangles, tagged with their parent index (for region/tag) and
+    // facet carrier. PLANAR facets are conformed by coplanarity (the Delaunay tiles
+    // the plane; region volumes stay bit-exact). CURVED facets are NOT forced: the
+    // curved boundary is the restricted Delaunay of the surface points (extracted
+    // downstream by region difference). Forcing a chosen curved triangulation needed
+    // unbounded Steiner (a barrel band is not near-Delaunay); the restricted Delaunay
+    // is recovery-free and curved geometry is tolerance-based anyway (the pivot).
+    let tris: Vec<[usize; 3]> = tris.to_vec();
+    let parent: Vec<usize> = (0..tris.len()).collect();
 
     let b2a = invert(&vs, db.len());
     let tets: Vec<[usize; 4]> = db

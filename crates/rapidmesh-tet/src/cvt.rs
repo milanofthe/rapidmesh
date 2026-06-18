@@ -1897,12 +1897,10 @@ mod tests {
         assert!(edge.values().all(|&c| c == 2), "uv sphere boundary is a closed manifold");
     }
 
-    /// A5: a full cylinder now meshes WATERTIGHT through `mesh_cdt` -- the barrel is
-    /// a closed triangulated band (a hard constraint), not just seeded points.
-    /// IGNORED until C1: barrel curved-facet recovery hits the O(tets) `piercing_edge`
-    /// scan (~90s); the octree acceleration (task #104) brings it back into the suite.
+    /// A full cylinder meshes WATERTIGHT through `mesh_cdt`. After the C3 pivot the
+    /// curved barrel boundary is the restricted Delaunay of the surface points (no
+    /// forced recovery, no Steiner): ~0.8s, down from 87s.
     #[test]
-    #[ignore]
     fn cylinder_meshes_watertight_via_cdt() {
         let (r, hgt) = (1.0, 3.0);
         let mut scene = Scene::new();

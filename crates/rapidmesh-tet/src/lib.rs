@@ -18,6 +18,7 @@ pub mod conform;
 pub mod curve;
 pub mod cvt;
 pub mod delaunay;
+pub mod diagnostics;
 pub mod domain;
 pub mod facetbvh;
 pub mod optimize;

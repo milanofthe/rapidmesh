@@ -180,6 +180,15 @@ fn recover_facet(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize) -> Reco
     Recover::NeedSteiner
 }
 
+/// Number of live tets sharing edge `(p,q)` (the edge's tet-degree). A 3-2 flip
+/// applies only at degree 3; this is the diagnostic for why recovery stalls.
+fn edge_degree(db: &DelaunayBuilder, p: usize, q: usize) -> usize {
+    db.star_slots(p)
+        .into_iter()
+        .filter(|&s| db.tet_at(s).map_or(false, |t| t.contains(&q)))
+        .count()
+}
+
 /// 3-2 flip removing edge `(d,e)` when it is shared by exactly three tets:
 /// replaces them by two tets sharing the new face `(a,b,c)` (the edge's ring).
 /// Returns the created face, or `None` if `(d,e)` is not shared by exactly three

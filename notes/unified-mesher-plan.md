@@ -189,6 +189,46 @@ watertight-by-construction (keine Constraint-Tris) → A5. Perf-Befund: der einf
 Spine ist schnell; die 509 s betreffen den vollen 67er-Korpus → C1 misst sich am
 Benchmark, nicht an diesen Fällen.
 
+## PIVOT (2026-06-18): Konformität pro Carrier-Typ, keine forcierte gekrümmte Recovery
+
+Befund aus C1/C3-Messung: das einzige harte Problem des neuen Meshers ist die
+Oberflächenkonformität. Forcierte gekrümmte Recovery (Edge-Removal/Steiner, TetGen-
+Stil) ist der falsche Kampf: der Zylinder-Barrel braucht steiner=4192, weil eine
+*willkürliche* gekrümmte Triangulierung erzwungen wird. Die Kugel war steiner=0, weil
+ihre Tris schon Delaunay-Flächen waren.
+
+SOTA-Einsicht für UNSEREN Fall (wir erzeugen die Surface selbst, gekrümmt ist ohnehin
+tol): Konformität **pro Carrier-Typ** lösen:
+
+- **Planar**: koplanare Punkte auf exaktem `Point3::Pac`-Carrier → die Delaunay tilet
+  die Ebene von selbst, Region-Trennung exakt → **bit-exakte rationale Volumina**.
+  Recovery uebersprungen (schon heute). Das ist die Staerke, die wir behalten.
+- **Gekrümmt** (tol, nie exakt): KEINE forcierte Recovery. Die gekrümmte Boundary IST
+  die restricted Delaunay der Surface-Punkte (= Flaechen zwischen Innen/Aussen-Tets,
+  via Inside-Oracle/Centroid-Klassifikation, die mesh_cdt schon macht). Bei Unter-
+  Sampling verfeinern (Surface-Punkt einfuegen) — das einzige, was sauber sein muss,
+  und genau das, was der alte Pfad falsch machte (blind oversamplen statt verfeinern).
+
+Folge: gekrümmte Faces brauchen fuers Volumen nur **Punkte** (an Sizing-Dichte), keine
+erzwungene Triangulierung. Die Surface-Tris (Icosphere/Band/Cap) bleiben als Surface-
+Level-Referenz + Tagging-Hint, sind aber keine harten Volumen-Constraints mehr. Das
+macht Edge-Removal/Cavity-Retet ueberfluessig und vereinfacht A5 (Barrel = Punkte
+genuegen) und C2 (gekrümmte Interfaces gleich behandelt).
+
+Watertight: planar als Theorem (exakt), gekrümmt unter adaequatem Sampling + Refinement
+(SOTA-Standard, CGAL Mesh_3 / Boissonnat-Oudot). Gekrümmte Carrier waren nie bit-exakt
+(float `Point3`), also kein Exaktheits-Verlust.
+
+### C3 neu (ersetzt Edge-Removal/Cavity-Retet):
+- **C3a (#108)**: in `tetrahedralize_constrained` die gekrümmte Recovery zum No-Op
+  machen (gekrümmt wie planar uebersprungen). Boundary kommt aus der Delaunay (Region-
+  Differenz, schon vorhanden). Messen: Zylinder steiner=0, schnell, watertight, Vol<=tol.
+- **C3b (#111)**: robustes Tagging der gekrümmten Boundary-Flaechen (per-Punkt
+  plc_surface-Id statt nur Input-Tri-Match), damit Output-Surface-Tags stimmen.
+- **C3c (#112)**: Straddler-Refinement-Kriterium — eine Boundary-Flaeche mit einem
+  Innen-(Volume)-Vertex oder Deflection > tol heisst unter-sampled → Surface-Punkt auf
+  dem Carrier einfuegen, neu bauen, iterieren. Nur falls der Korpus Straddler zeigt.
+
 ## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
 
 Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform
@@ -209,19 +249,22 @@ watertight/exakt bei vertretbarer Perf. Reihenfolge = Risiko zuerst, dann Perf
    Design-Fork fuer C3: (A) Recovery staerken (2-3/4-4-Flips, Cavity-Retet) — generell,
    hilft auch Torus; (B) Surface-Tris near-3D-Delaunay erzeugen (z.B. konvexe Huelle
    fuer konvexe Solids) — steiner~0, aber nicht fuer konkav/Torus. (A) ist holistisch.
-4. **A5 (#105) — teilweise** — Voll-Revolution mit 2 Rims (Zylinder, Kegel-Frustum,
-   partieller Torus-Tube) = geschlossenes Tri-Band (Spalten=gemeinsame Rim-Thetas,
-   Wrap schliesst die Naht). Zylinder watertight via mesh_cdt verifiziert. OFFEN:
-   Kegel mit Apex (1 Rim + Punkt), voller Torus (doppelt-periodisch, kein Rim),
-   Extrudat-Barrel. **PERF-BEFUND**: Barrel-Recovery (nicht near-Delaunay) dauert ~90s
-   (Kugel war steiner=0/ms) -> C1 ist jetzt der akute Blocker, vor A5-Rest.
-5. **C2 (#107)** — Multi-Region-Interfaces (`cylinder_via`, `em_scene`).
-6. **C3 (#108)** — gekruemmte Recovery robust (Torus watertight; Cavity-Retet). Haengt an B2+A5.
-7. **A4 (#106)** — adaptiver groebste-Stelle-Insert (nur gekruemmt). Qualitaet, spaet.
-8. **D1 (#109)** — `mesh_plc_with`→`mesh_cdt`; `cvt::mesh` + Patch-Pfad + RAPIDMESH_CDT-Flag loeschen.
-9. **D2 (#110)** — 67er-Benchmark/Gallery vorher/nachher; Ergebnisse in `report.tex`.
+4. **A5 (#105)** — Barrel-PUNKTE an Sizing-Dichte (Zyl/Kegel/Torus/Extrudat). Nach dem
+   Pivot brauchen gekrümmte Faces fuers Volumen nur Punkte; das Tri-Band ist Surface-
+   Level/Tagging. revolution_grid liefert die Punkte schon. Cone-Apex/Torus = Punkte
+   genuegen ebenfalls. Damit weitgehend durch C3a abgedeckt.
+5. **C3a (#108)** — gekrümmte Recovery zum No-Op; Boundary = restricted Delaunay.
+   Messen: Zylinder steiner=0/schnell/watertight. DER zentrale Pivot-Schritt.
+6. **C3b (#111)** — robustes gekrümmtes Boundary-Tagging (per-Punkt plc_surface).
+7. **C2 (#107)** — Multi-Region-Interfaces (`cylinder_via`, `em_scene`); gleiches
+   Prinzip (planar forciert-exakt, gekrümmte Interfaces via restricted Delaunay).
+8. **C3c (#112)** — Straddler-Refinement-Kriterium (nur falls Korpus es zeigt).
+9. **A4 (#106)** — adaptiver groebste-Stelle-Insert (nur gekrümmt). Qualitaet, spaet.
+10. **D1 (#109)** — `mesh_plc_with`→`mesh_cdt`; `cvt::mesh` + Patch-Pfad + Flag loeschen.
+11. **D2 (#110)** — 67er-Benchmark/Gallery vorher/nachher; Ergebnisse in `report.tex`.
 
-Abhaengigkeiten: B1→B2(GATE)→{C1, A5}→{C2, C3, A4}→D1→D2. B2 ist das Go/No-Go fuer alles.
+Abhaengigkeiten: B1→B2(GATE)→C1→**C3a**→{C3b, A5-Punkte}→{C2, C3c, A4}→D1→D2.
+C3a ist nach dem Pivot der Dreh- und Angelpunkt (loest die gekrümmte Konformitaet).
 
 ## Schlüsseldateien
 

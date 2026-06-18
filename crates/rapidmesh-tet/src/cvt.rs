@@ -1847,6 +1847,23 @@ mod tests {
             d0.n_tets, d0.min_dihedral_deg, s0, b0, i0);
         eprintln!("AFTER  optimize: tets={} minDih={:.2} slivers={} (boundary {} / interior {})",
             d1.n_tets, d1.min_dihedral_deg, s1, b1, i1);
+        // characterise the residual boundary slivers: how many verts on the
+        // boundary (4 = surface-on-surface; 3 = one free interior apex), to choose
+        // the exudation strategy.
+        let bnd2: std::collections::HashSet<usize> = m.faces.iter().flat_map(|f| f.tri).collect();
+        let (mut on4, mut on3, mut on_le2) = (0, 0, 0);
+        for t in &m.tets {
+            let p = [m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]];
+            if crate::diagnostics::tet_min_dihedral(p) >= SLIVER_DEG {
+                continue;
+            }
+            match t.iter().filter(|v| bnd2.contains(v)).count() {
+                4 => on4 += 1,
+                3 => on3 += 1,
+                _ => on_le2 += 1,
+            }
+        }
+        eprintln!("residual boundary slivers by #boundary-verts: 4-on-bnd={on4}  3-on-bnd={on3}  <=2={on_le2}");
     }
 
     #[test]

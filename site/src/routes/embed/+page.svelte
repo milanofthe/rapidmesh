@@ -22,6 +22,7 @@
 	let layer_surface = $state(true);
 	let layer_wire = $state(true);
 	let layer_tets = $state(true);
+	let layer_defects = $state(false);
 	let clip_enable = $state(false);
 	let clip_axis = $state<0 | 1 | 2>(1);
 	let clip_t = $state(0.6);
@@ -53,6 +54,7 @@
 		layer_surface = bool('tets', true);
 		layer_wire = bool('wire', true);
 		layer_tets = bool('edges', true);
+		layer_defects = bool('defects', false);
 		clip_enable = bool('clip', false);
 		clip_axis = Math.max(0, Math.min(2, Math.round(num('clipaxis', 1)))) as 0 | 1 | 2;
 		clip_t = num('clipt', 0.6);
@@ -117,6 +119,7 @@
 		{layer_surface}
 		{layer_wire}
 		{layer_tets}
+		{layer_defects}
 		{clip_enable}
 		{clip_axis}
 		{clip_t}

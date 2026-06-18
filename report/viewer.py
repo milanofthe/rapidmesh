@@ -122,6 +122,7 @@ def _embed_url(
     wireframe: bool,
     tets: bool,
     edges: bool,
+    defects: bool,
     clip: float | None,
     clip_axis: int,
     width: int | None,
@@ -136,6 +137,7 @@ def _embed_url(
         "wire": "1" if wireframe else "0",
         "tets": "1" if tets else "0",
         "edges": "1" if edges else "0",
+        "defects": "1" if defects else "0",
     }
     if dist is not None:
         q["dist"] = f"{dist:g}"
@@ -171,6 +173,7 @@ def render(
     clip_axis: int = 1,
     tets: bool = True,
     edges: bool = True,
+    defects: bool = False,
     controls: bool = False,
     timeout_ms: int = 30000,
 ) -> Path:
@@ -208,6 +211,7 @@ def render(
             wireframe=wireframe,
             tets=tets,
             edges=edges,
+            defects=defects,
             clip=clip,
             clip_axis=clip_axis,
             width=width,
@@ -255,6 +259,7 @@ def inspect(
     clip_axis: int = 1,
     tets: bool = True,
     edges: bool = True,
+    defects: bool = False,
     title: str = "rapidmesh viewer",
 ) -> None:
     """Open the mesh in an interactive window and block until it is closed.
@@ -275,6 +280,7 @@ def inspect(
             wireframe=wireframe,
             tets=tets,
             edges=edges,
+            defects=defects,
             clip=clip,
             clip_axis=clip_axis,
             width=None,

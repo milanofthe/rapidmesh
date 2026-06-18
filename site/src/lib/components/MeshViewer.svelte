@@ -20,6 +20,13 @@
 	const TAG_WIRE_SURF  = -11;  // surface wireframe overlay
 	const TAG_FEAT_EDGES = -12;  // feature edges from payload
 	const TAG_TET_WIRE   = -13;  // interior tet wireframe
+	const TAG_DEFECTS    = -14;  // diagnostics defect markers (crosses)
+	// Defect-marker colors by kind (sliver/non-manifold/straddler).
+	const DEFECT_COLORS: Record<string, [number, number, number]> = {
+		sliver:           [1.0, 0.75, 0.0],   // amber
+		nonmanifold_edge: [1.0, 0.1, 0.1],    // red
+		straddler:        [1.0, 0.1, 0.8],    // magenta
+	};
 
 	// Axis descriptors for the crinkle-clip toolbar buttons.
 	const CLIP_AXES: { lbl: string; ax: 0 | 1 | 2 }[] = [
@@ -69,6 +76,7 @@
 		layer_wire = $bindable(true),
 		layer_edges = $bindable(false),
 		layer_tets = $bindable(true),
+		layer_defects = $bindable(false),
 		clip_enable = $bindable(true),
 		clip_axis = $bindable(1 as 0 | 1 | 2),
 		clip_t = $bindable(0.6),
@@ -102,6 +110,7 @@
 		layer_wire?: boolean;
 		layer_edges?: boolean;
 		layer_tets?: boolean;
+		layer_defects?: boolean;
 		clip_enable?: boolean;
 		clip_axis?: 0 | 1 | 2;
 		clip_t?: number;
@@ -716,6 +725,7 @@
 		setTagVisible(state, TAG_WIRE_SURF,  layer_wire);
 		setTagVisible(state, TAG_FEAT_EDGES, layer_edges);
 		setTagVisible(state, TAG_TET_WIRE,   layer_tets);
+		setTagVisible(state, TAG_DEFECTS,    layer_defects);
 		// SHOWCASE CHANGE: per-group lines additionally follow their group's
 		// legend toggle (the tag check guards against stale indices outside
 		// inspection mode, where the line meshes are rebuilt differently).
@@ -943,6 +953,24 @@
 			}
 			// Not in prefix_meshes: feature edges are not affected by the clip slider.
 			addLineMesh(state, pos, FEAT_EDGE_COLOR, TAG_FEAT_EDGES);
+		}
+
+		// ---- Diagnostics defect markers (3D crosses, colored by kind) ------
+		if (m.defects && m.defects.length > 0) {
+			const d = m.bbox;
+			const diag = Math.hypot(d.max[0] - d.min[0], d.max[1] - d.min[1], d.max[2] - d.min[2]);
+			const r = 0.012 * (diag || 1); // half-arm length of the cross
+			// One line buffer per kind so each gets its own color; one tag toggles all.
+			const byKind = new Map<string, number[]>();
+			for (const f of m.defects) {
+				const [x, y, z] = f.pos;
+				const arr = byKind.get(f.kind) ?? (byKind.set(f.kind, []), byKind.get(f.kind)!);
+				arr.push(x - r, y, z, x + r, y, z, x, y - r, z, x, y + r, z, x, y, z - r, x, y, z + r);
+			}
+			for (const [kind, lines] of byKind) {
+				const color = DEFECT_COLORS[kind] ?? ([0.6, 0.6, 0.6] as [number, number, number]);
+				addLineMesh(state, Float32Array.from(lines), color, TAG_DEFECTS);
+			}
 		}
 
 		built_axis = axis;
@@ -1295,7 +1323,7 @@
 	$effect(() => {
 		mesh; wireframe; show_geometry; show_wireframe; show_field; field; point_density;
 		td_trajectory;
-		layer_surface; layer_wire; layer_edges; layer_tets;
+		layer_surface; layer_wire; layer_edges; layer_tets; layer_defects;
 		clip_enable; clip_axis;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;

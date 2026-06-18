@@ -20,4 +20,7 @@ export interface MeshData {
 		n_edges?: number;
 		min_dihedral_deg?: number;
 	};
+	/** Optional located diagnostics defects (slivers, non-manifold edges,
+	 *  straddlers) for the defect overlay; each carries a 3D position. */
+	defects?: { kind: string; pos: [number, number, number]; value: number }[];
 }

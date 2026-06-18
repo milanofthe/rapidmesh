@@ -150,5 +150,6 @@ export function adaptMesh(j: MeshJson): MeshData {
 			n_edges: edges ? edges.length / 2 : 0,
 			min_dihedral_deg: j.stats?.min_dihedral_deg,
 		},
+		defects: j.defects,
 	};
 }

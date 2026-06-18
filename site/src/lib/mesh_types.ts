@@ -40,6 +40,8 @@ export interface MeshJson {
 		max_edge: number;
 		millis: number;
 	};
+	/** Located diagnostics defects (optional): each {kind, pos:[x,y,z], value}. */
+	defects?: { kind: string; pos: [number, number, number]; value: number }[];
 }
 
 export interface ViewSettings {

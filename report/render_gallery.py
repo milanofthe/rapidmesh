@@ -36,6 +36,66 @@ from report.viewer import render  # noqa: E402
 GAL = REPO / "report" / "figures" / "gallery"
 MESHES = REPO / "report" / "validation" / "meshes"
 
+# Defect-marker colours (match the viewer's DEFECT_COLORS), for the legend.
+DEFECT_LEGEND = [
+    ("sliver", (255, 191, 0)),            # amber
+    ("straddler", (255, 26, 204)),        # magenta
+    ("nonmanifold_edge", (255, 26, 26)),  # red
+]
+
+
+def _font(size: int):
+    from PIL import ImageFont
+    for name in ("arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> None:
+    """Overlays the metrics text (top-left) and the defect-colour legend
+    (bottom-left) onto a rendered diagnostic PNG."""
+    from PIL import Image, ImageDraw
+
+    im = Image.open(png).convert("RGBA")
+    dr = ImageDraw.Draw(im)
+    title_f, body_f = _font(26), _font(19)
+    fg, dim = (235, 235, 240, 255), (170, 175, 185, 255)
+
+    # ---- metrics block (top-left) ----
+    lines: list[tuple[str, tuple]] = [(name, fg)]
+    if diag is not None:
+        wt = diag["watertight"]
+        lines += [
+            (f"{n} tets   min-dih {diag['min_dihedral_deg']:.1f} deg", dim),
+            (f"watertight: {'yes' if wt else 'NO'}", (120, 220, 130, 255) if wt else (255, 90, 90, 255)),
+            (f"slivers {diag['n_slivers']}   straddlers {diag['n_straddlers']}   "
+             f"non-manifold {diag['n_nonmanifold_edges']}", dim),
+            (f"max surface dev {diag['max_surface_deviation']:.4f}", dim),
+        ]
+    else:
+        lines.append((f"{n} surface faces", dim))
+    x, y = 16, 14
+    dr.text((x, y), lines[0][0], font=title_f, fill=lines[0][1])
+    y += 34
+    for txt, col in lines[1:]:
+        dr.text((x, y), txt, font=body_f, fill=col)
+        y += 24
+
+    # ---- defect legend (bottom-left), only the kinds actually present ----
+    present = {d["kind"] for d in diag["defects"]} if diag else set()
+    legend = [(lbl, c) for (lbl, c) in DEFECT_LEGEND if lbl in present]
+    if legend:
+        ly = im.height - 16 - 26 * len(legend)
+        dr.text((16, ly - 26), "defects:", font=body_f, fill=dim)
+        for lbl, (r, g, b) in legend:
+            dr.rectangle([16, ly + 4, 32, ly + 20], fill=(r, g, b, 255))
+            dr.text((40, ly), lbl, font=body_f, fill=fg)
+            ly += 26
+    im.save(png)
+
 
 def _set_cdt(on: bool) -> None:
     if on:
@@ -55,22 +115,26 @@ def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
     if kind == "surf":
         vd = V._surface_viewer_dict(m, name)
         n = len(m.faces)
+        diag = None
     else:
         vd = m.to_viewer_dict(name)
         n = int(m.stats["n_tets"])
+        diag = m.diagnostics
     dt = time.time() - t0
     mp = MESHES / f"gal_{out_png.stem}.json"
     mp.write_text(json.dumps(vd))
     render(
         str(mp), str(out_png),
         azim=32, elev=20,
-        clip=None,            # no clip: show the whole boundary, not a cut
-        tets=True,            # surface fill ON (region colours -> face assignment)
+        transparent=False,    # dark background, so the metrics overlay is legible
+        clip=None,            # no clip
+        tets=False,           # NO solid fill -- just the mesh
         edges=False,          # no interior tet wireframe
-        wireframe=True,       # surface triangulation edges
-        defects=True,         # the metric overlay: located defect markers
+        wireframe=True,       # the surface triangulation (the mesh)
+        defects=True,         # located defect markers
         width=1100, height=900,
     )
+    _annotate(out_png, name, kind, n, diag)
     return f"{out_png.name}: {n} elems, {dt:.1f}s"
 
 

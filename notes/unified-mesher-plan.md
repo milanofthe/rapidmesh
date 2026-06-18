@@ -281,6 +281,45 @@ Tasks: **R1 (#117)** Refinement-Kern (subsumiert C3c #112 = Surface-Seite/encroa
 A4 #106 = Groessen-Insert), **R2 (#119)** Exudation. Gate: Probe (98 Wand-Slivers muessen
 strukturell verschwinden) + 67er-Karte.
 
+## DEFINITIVE QUALITAETS-ARCHITEKTUR (2026-06-18, Schule A: konformes Delaunay)
+
+Zwei moderne Schulen: (A) konformes Delaunay-Refinement + Feature-Protection +
+Exudation (CGAL Mesh_3; Boissonnat-Oudot, Cheng-Dey-*, Tournois et al.) — beweisbar,
+feature-erhaltend, exakt-konform. (B) Envelope + aggressive Improvement (TetWild/
+fTetWild) — robust gegen dirty input, aber NICHT exakt-konform (Netz in einer Huelle,
+nicht ON der Geometrie). (B) widerspricht unserer Philosophie (exakte planare Volumina,
+watertight-by-construction, Carrier-on-surface) -> **Schule A**.
+
+Verbindender Faden: **local feature size (lfs)** als Sizing-Oracle. lfs(x) = Abstand
+zum naechsten nicht-inzidenten Feature; das Sizing-Feld h(x) = min(maxh, sqrt(8 tol R(x)),
+K * lfs(x)), Lipschitz-gradiert. Fein an Verschneidungen/duennen Stellen (killt Straddler
+UND boundary-layer-Slivers an der Quelle), grob im Bulk. Ein Feld wie unsere anderen Oracles.
+
+Pipeline (alles auf B-Rep + Carrier/Oracle + exakt-wo-rational):
+```
+B-Rep-Feature-Komplex (Ecken + Kurven = CSG-Verschneidungen)
+  -> 1D-Feature-Protection (protecting balls auf den Feature-Kurven)        [Problem 1]
+  -> restricted-Delaunay-Surface-Refinement, gesizt durch lfs               [Problem 1]
+  -> CVT/ODT-Distribution (Lloyd, vorhanden)
+  -> optimize (Smoothing/Flips/Edge-Removal, vorhanden, Klingner-Shewchuk)
+  -> Sliver-Exudation (weighted/regular Delaunay) + Carrier-Perturbation     [Problem 2]
+```
+
+**Problem 1 (Straddler, gekruemmte CSG):** die Flaeche ist nahe Verschneidungskurven
+kein eps-Sample (lfs->0 dort). Fix: Feature-Kurven mit protecting balls schuetzen +
+restricted Delaunay per lfs verfeinern -> provabel watertight/homoeomorph (Boissonnat-
+Oudot). Wir HABEN den Feature-Komplex (B-Rep-Kanten) + 1D-Distribution + Clearance.
+
+**Problem 2 (Slivers):** optimize raeumt Innen-Slivers; der Rand-Schwanz braucht
+Exudation (Cheng-Dey-Edelsbrunner-Facello-Teng 2000): Vertex-GEWICHTE so setzen, dass die
+regulaere Delaunay den Sliver auslaesst -- bewegt KEINE Punkte -> exakte Volumina
+unangetastet. Plus Carrier-beschraenkte Perturbation (in-Ebene planar / on-surface curved).
+
+Herleitungen (sympy, `report/derivations/`): lfs-Sizing + Lipschitz-Grading; protecting-
+ball-Radien; restricted-Facet-Kriterium (surface Delaunay ball vs lfs); weighted/power
+in-sphere-Praedikat + Exudations-Gewichtsschranke (exakt-Praedikat-tauglich). CGAL-
+Referenz unter `C:/Repositories/TEMP/cgal` (Mesh_3, Weighted Delaunay).
+
 ## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
 
 Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform

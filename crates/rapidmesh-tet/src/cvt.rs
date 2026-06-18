@@ -1864,6 +1864,40 @@ mod tests {
             }
         }
         eprintln!("residual boundary slivers by #boundary-verts: 4-on-bnd={on4}  3-on-bnd={on3}  <=2={on_le2}");
+
+        // For the 4-on-boundary slivers: do their 4 verts lie on ONE surface
+        // (bad surface tris) or span MULTIPLE (thin region / sharp edge)?
+        let mut vsurf: std::collections::HashMap<usize, std::collections::BTreeSet<u32>> =
+            std::collections::HashMap::new();
+        for f in &m.faces {
+            for &v in &f.tri {
+                vsurf.entry(v).or_default().insert(f.surface);
+            }
+        }
+        let mut by_distinct: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut examples = 0;
+        for t in &m.tets {
+            let p = [m.points[t[0]], m.points[t[1]], m.points[t[2]], m.points[t[3]]];
+            if crate::diagnostics::tet_min_dihedral(p) >= SLIVER_DEG {
+                continue;
+            }
+            if t.iter().filter(|v| bnd2.contains(v)).count() != 4 {
+                continue;
+            }
+            let mut surfs: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+            for v in t {
+                if let Some(s) = vsurf.get(v) {
+                    surfs.extend(s.iter().copied());
+                }
+            }
+            *by_distinct.entry(surfs.len()).or_default() += 1;
+            if examples < 4 {
+                let c: V3 = std::array::from_fn(|k| p.iter().map(|q| q[k]).sum::<f64>() / 4.0);
+                eprintln!("  ex 4-on-bnd sliver: surfaces={:?} centroid=[{:.2},{:.2},{:.2}]", surfs, c[0], c[1], c[2]);
+                examples += 1;
+            }
+        }
+        eprintln!("4-on-bnd slivers by #distinct-surfaces-touched: {:?}", by_distinct);
     }
 
     #[test]

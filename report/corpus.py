@@ -91,6 +91,17 @@ def bench(meshers=("default", "cdt"), only=None) -> list[dict]:
                     min_dihedral=None if kind == "surf" else round(float(s["min_dihedral_deg"]), 2),
                     millis=int((time.time() - t0) * 1000),
                 )
+                # Located diagnostics (volume meshes): the conformity/quality map.
+                if kind == "vol":
+                    d = m.diagnostics
+                    rec.update(
+                        watertight=bool(d["watertight"]),
+                        n_slivers=int(d["n_slivers"]),
+                        n_straddlers=int(d["n_straddlers"]),
+                        n_nonmanifold=int(d["n_nonmanifold_edges"]),
+                        max_surf_dev=round(float(d["max_surface_deviation"]), 6),
+                        n_defects=len(d["defects"]),
+                    )
             except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
                 rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
             rows.append(rec)
@@ -99,16 +110,33 @@ def bench(meshers=("default", "cdt"), only=None) -> list[dict]:
 
 
 if __name__ == "__main__":
+    import argparse
     import json
 
-    print(f"corpus: {len(CORPUS)} geometries")
-    rows = bench(meshers=("default",))
-    out = REPO / "report" / "validation" / "benchmark.json"
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mesher", default="cdt", choices=["default", "cdt"], help="which mesher to map")
+    args = ap.parse_args()
+
+    print(f"corpus: {len(CORPUS)} geometries, mesher={args.mesher}")
+    rows = bench(meshers=(args.mesher,))
+    out = REPO / "report" / "validation" / f"benchmark_{args.mesher}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1))
-    ok = sum(1 for r in rows if r["status"] == "ok")
-    print(f"default mesher: {ok}/{len(rows)} ok")
+
+    ok = [r for r in rows if r["status"] == "ok"]
+    vol = [r for r in ok if r["kind"] == "vol"]
+    print(f"\n{len(ok)}/{len(rows)} meshed ok ({len(rows) - len(ok)} failed)")
+    leaky = [r for r in vol if not r.get("watertight", True)]
+    strad = [r for r in vol if r.get("n_straddlers", 0) > 0]
+    sliv = [r for r in vol if r.get("n_slivers", 0) > 0]
+    print(f"volume: {len(vol)} | not watertight: {len(leaky)} | with straddlers: {len(strad)} | with slivers: {len(sliv)}")
+    # the territory map: per-geometry headline
+    print(f"\n{'geometry':<26}{'tets':>7}{'minDih':>8}{'sliv':>6}{'strad':>6}{'wtr':>5}{'maxDev':>9}{'ms':>7}")
+    for r in sorted(vol, key=lambda x: (x.get("watertight", True), x.get("n_straddlers", 0) == 0, x.get("min_dihedral", 99))):
+        print(f"{r['name']:<26}{r['n_elems']:>7}{r.get('min_dihedral', 0):>8.1f}"
+              f"{r.get('n_slivers', 0):>6}{r.get('n_straddlers', 0):>6}"
+              f"{'Y' if r.get('watertight', True) else 'N':>5}{r.get('max_surf_dev', 0):>9.4f}{r['millis']:>7}")
     for r in rows:
         if r["status"] != "ok":
-            print(f"  {r['name']:<20} {r['error']}")
-    print(f"-> {out}")
+            print(f"  FAIL {r['name']:<22} {r['error']}")
+    print(f"\n-> {out}")

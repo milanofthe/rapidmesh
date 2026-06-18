@@ -1810,6 +1810,45 @@ mod tests {
     use rapidmesh_geom::{extrude_spline_profile, icosphere, solid_box, NurbsCurve, Scene};
     use rapidmesh_testutil::rat;
 
+    /// PROBE (Q1 investigation): does `optimize` clean mesh_cdt's slivers, and are
+    /// the residual slivers on the BOUNDARY (constrained, untouchable) or interior?
+    #[test]
+    #[ignore]
+    fn probe_optimize_on_slivers() {
+        use crate::diagnostics::{diagnose, SLIVER_DEG};
+        let mut scene = Scene::new();
+        scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
+        scene.add_void(rapidmesh_geom::cylinder([2.0, 2.0, -0.1], [0.0, 0.0, 2.2], 1.0, 32));
+        let plc = scene.assemble();
+        let params = MeshParams { maxh: 0.4, ..Default::default() };
+        let mut m = mesh_cdt(&plc, &params);
+
+        // boundary vertices = those on any surface face
+        let bnd: std::collections::HashSet<usize> =
+            m.faces.iter().flat_map(|f| f.tri).collect();
+        let classify = |mesh: &TetMesh| -> (usize, usize, usize) {
+            let (mut total, mut on_bnd, mut interior) = (0, 0, 0);
+            for t in &mesh.tets {
+                let p = [mesh.points[t[0]], mesh.points[t[1]], mesh.points[t[2]], mesh.points[t[3]]];
+                if crate::diagnostics::tet_min_dihedral(p) < SLIVER_DEG {
+                    total += 1;
+                    if t.iter().any(|v| bnd.contains(v)) { on_bnd += 1; } else { interior += 1; }
+                }
+            }
+            (total, on_bnd, interior)
+        };
+        let d0 = diagnose(&m);
+        let (s0, b0, i0) = classify(&m);
+        let opt = crate::optimize::OptimizeParams { maxh: 0.4, ..Default::default() };
+        crate::optimize::optimize(&mut m, &opt);
+        let d1 = diagnose(&m);
+        let (s1, b1, i1) = classify(&m);
+        eprintln!("BEFORE optimize: tets={} minDih={:.2} slivers={} (boundary {} / interior {})",
+            d0.n_tets, d0.min_dihedral_deg, s0, b0, i0);
+        eprintln!("AFTER  optimize: tets={} minDih={:.2} slivers={} (boundary {} / interior {})",
+            d1.n_tets, d1.min_dihedral_deg, s1, b1, i1);
+    }
+
     #[test]
     fn mesh_cdt_box_is_watertight_and_volume_correct() {
         let mut scene = Scene::new();

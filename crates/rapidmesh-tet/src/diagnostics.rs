@@ -82,7 +82,7 @@ fn centroid(ps: &[V3]) -> V3 {
 }
 
 /// Smallest dihedral angle (degrees) of one tet, or `f64::MAX` if degenerate.
-fn tet_min_dihedral(p: [V3; 4]) -> f64 {
+pub(crate) fn tet_min_dihedral(p: [V3; 4]) -> f64 {
     let mut m = f64::MAX;
     for i in 0..4 {
         for j in i + 1..4 {

@@ -68,22 +68,24 @@ def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
     return f"{out_png.name}: {n} elems, {dt:.1f}s"
 
 
-def render_corpus(meshers=("default",)) -> None:
-    """Renders every geometry in the unified corpus. The default (oversampling)
-    mesher is fast and covers all 67; the constrained `cdt` mesher is opt-in
-    (``--cdt``) because it is still slow on curved/boolean geometries."""
+def render_corpus() -> None:
+    """Renders every geometry in the unified corpus with the NEW constrained
+    mesher (`mesh_cdt`), one image `<name>.png`. The corpus directory is cleared
+    first so no stale image from the retired oversampling path survives."""
     out = GAL / "corpus"
+    if out.exists():
+        for old in out.glob("*.png"):
+            old.unlink()
     out.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
+    _set_cdt(True)  # the new constrained path is the gallery's mesher
     for name, _cat, kind, make in C.CORPUS:
-        for mesher in meshers:
-            _set_cdt(mesher == "cdt")
-            png = out / f"{name}__{mesher}.png"
-            try:
-                status = _render_mesh(name, kind, make, png)
-                print(f"  [{mesher:7s}] {status}")
-            except BaseException as e:  # a mesher gap / panic must not stop the gallery
-                print(f"  [{mesher:7s}] {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
+        png = out / f"{name}.png"
+        try:
+            status = _render_mesh(name, kind, make, png)
+            print(f"  {status}")
+        except BaseException as e:  # a mesher gap / panic must not stop the gallery
+            print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
     _set_cdt(False)
 
 
@@ -113,8 +115,11 @@ SIZING_PERMS = [
 
 def render_sizing() -> None:
     out = GAL / "sizing"
+    if out.exists():
+        for old in out.glob("*.png"):
+            old.unlink()
     out.mkdir(parents=True, exist_ok=True)
-    _set_cdt(False)
+    _set_cdt(True)  # new constrained mesher
     for label, h, setup in SIZING_PERMS:
         png = out / f"{label}.png"
         try:
@@ -127,22 +132,21 @@ def render_sizing() -> None:
             mp.write_text(json.dumps(vd))
             render(str(mp), str(png), azim=32, elev=20, clip=0.7, clip_axis=1, edges=True, width=1100, height=900)
             print(f"  {png.name}: {int(m.stats['n_tets'])} tets")
-        except Exception as e:
+        except BaseException as e:
             print(f"  {label}: FAILED ({type(e).__name__}: {e})")
+    _set_cdt(False)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", action="store_true", help="only the geometry corpus")
     ap.add_argument("--sizing", action="store_true", help="only the sizing permutations")
-    ap.add_argument("--cdt", action="store_true", help="also render the constrained mesh_cdt (slow)")
     args = ap.parse_args()
     do_all = not (args.corpus or args.sizing)
     if args.corpus or do_all:
-        meshers = ("default", "cdt") if args.cdt else ("default",)
-        print(f"== corpus ({' + '.join(meshers)}) ==")
-        render_corpus(meshers)
+        print("== corpus (mesh_cdt) ==")
+        render_corpus()
     if args.sizing or do_all:
-        print("== sizing permutations ==")
+        print("== sizing permutations (mesh_cdt) ==")
         render_sizing()
     print(f"\ngallery -> {GAL}")

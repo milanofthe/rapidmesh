@@ -247,6 +247,40 @@ Fazit: Pivot reif fuer saubere Geometrie, noch nicht korpustauglich — fehlen C
 Metrik muss multi-region-korrekt (Diag5). Alles absehbare Ingenieursarbeit. Artefakt:
 `report/validation/benchmark_cdt.json`.
 
+## HOLISTISCHE QUALITAETS-PIPELINE (2026-06-18, ohne Shortcuts)
+
+Befund aus der Q1-Untersuchung: optimize raeumt Innen-Slivers (37->0) + reduziert
+Rand-Slivers 8.5x, aber 338 Rand-Slivers bleiben. Charakterisierung: 199 sind
+3-auf-Rand (freier Innen-Apex), 113 sind 4-auf-Rand, davon 98 flache Tets GANZ auf
+der Zylinderwand. Dichte-Angleich (OVERSAMPLE 1.0) half nur ~11% und bricht den alten
+Pfad -> verworfen.
+
+Wurzel: mesh_cdt hat einheitliche Surface -> Seed -> CVT-Lloyd -> restricted-Delaunay-
+Boundary -> optimize. Es FEHLT der SOTA-Kern: **qualitaetsgetriebene Delaunay-
+Verfeinerung mit Radius-Edge-Schranke**. Der „adaptive Insert" im Lloyd ist GROESSEN-
+Verfeinerung (Kante>h), nicht QUALITAET. Niemand stuetzt die Boundary-Schicht auf ->
+die 98 Wand-Slivers.
+
+Die holistische Pipeline (CGAL Mesh_3-Rezept + unsere Exakt-Planar-Schicht):
+```
+einheitliche Surface (planar exakt / curved restricted-Delaunay)
+  -> Delaunay-REFINEMENT (Radius-Edge-Schranke + Boundary-Protection/Encroachment)   [FEHLT, der Kern]
+  -> Sliver-EXUDATION (weighted Delaunay, der Sliver-Schwanz)                          [FEHLT]
+  -> optimize (Glaetten/Flips, Politur)                                                 [da]
+```
+- **Refinement** (Ruppert/Shewchuk/Chew): Steiner am Umkreismittelpunkt jedes Tets, das
+  die Radius-Edge-Schranke verletzt; eine encroachte Boundary-Facette wird zuerst AUF
+  IHREM CARRIER verfeinert (exakt planar / on-surface curved) -> watertight + exakte
+  Volumina bleiben (Innen-Steiner beruehren den Rand nicht). Beweisbar Radius-Edge-
+  beschraenkt -> eliminiert strukturell fast alle Slivers inkl. Boundary-Schicht.
+- **Exudation** (weighted Delaunay): der Sliver-Spezialfall (gute Radius-Edge, schlechter
+  Dihedral), den Refinement nicht killt.
+- CVT-Lloyd bleibt Seeding/Distribution (kein Ersatz fuers Refinement).
+
+Tasks: **R1 (#117)** Refinement-Kern (subsumiert C3c #112 = Surface-Seite/encroachment +
+A4 #106 = Groessen-Insert), **R2 (#119)** Exudation. Gate: Probe (98 Wand-Slivers muessen
+strukturell verschwinden) + 67er-Karte.
+
 ## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
 
 Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform

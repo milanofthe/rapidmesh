@@ -43,7 +43,11 @@ def _from_showcase(model):
     return (model.id, "Showcase", "vol", lambda m=model: m.build().mesh())
 
 
-_RF_FNS = ("coax_step", "microstrip_line", "dielectric_resonator", "iris_filter", "patch_antenna")
+_RF_FNS = (
+    "coax_step", "microstrip_line", "dielectric_resonator", "iris_filter", "patch_antenna",
+    # magnetics: coils / transformers (the EM target geometries)
+    "solenoid", "cored_inductor", "transformer", "toroid_core",
+)
 
 
 def _from_rf(fn_name):

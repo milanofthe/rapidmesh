@@ -130,12 +130,68 @@ def patch_antenna() -> rm.Mesh:
     return g.mesh()
 
 
+# ---- magnetics: coils / transformers (the rapidfem EM target geometries) ----
+# Built from rapidmesh primitives (helix = round-wire swept tube, the hardest
+# curved CSG; cylinder/torus cores; air box). Each conductor/core overlapping the
+# air box is a distinct material region -> curved multi-material interfaces, which
+# is exactly the EM use case (coils, transformers, inductors).
+
+
+def solenoid() -> rm.Mesh:
+    """Air-cored solenoid: a helical round-wire coil embedded in an air box
+    (the canonical inductor; a curved swept-tube conductor in a dielectric)."""
+    r, pitch, turns, wire = 3 * mm, 2 * mm, 4.0, 0.6 * mm
+    h = (turns + 1) * pitch
+    g = rm.Geometry(maxh=2 * mm)
+    g.box(12 * mm, 12 * mm, h + 4 * mm, position=(-6 * mm, -6 * mm, -2 * mm))  # air
+    g.helix(r, pitch, turns, wire, position=(0, 0, 0), maxh=0.5 * mm)  # copper
+    return g.mesh()
+
+
+def cored_inductor() -> rm.Mesh:
+    """Solenoid with a cylindrical ferrite core through its axis: coil + core +
+    air -> three materials and two curved interfaces (wire/air, core/air)."""
+    r, pitch, turns, wire = 3.5 * mm, 2 * mm, 4.0, 0.6 * mm
+    h = (turns + 1) * pitch
+    g = rm.Geometry(maxh=2 * mm)
+    g.box(14 * mm, 14 * mm, h + 4 * mm, position=(-7 * mm, -7 * mm, -2 * mm))  # air
+    g.cylinder(radius=2 * mm, height=h, position=(0, 0, 0), maxh=0.8 * mm)  # core
+    g.helix(r, pitch, turns, wire, position=(0, 0, 0), maxh=0.5 * mm)  # winding
+    return g.mesh()
+
+
+def transformer() -> rm.Mesh:
+    """Two helical windings stacked on a common cylindrical core (a 2-winding
+    transformer): primary + secondary + core + air."""
+    pitch, turns, wire = 2 * mm, 3.0, 0.5 * mm
+    h = (turns + 1) * pitch
+    g = rm.Geometry(maxh=2 * mm)
+    g.box(16 * mm, 16 * mm, 2 * h + 6 * mm, position=(-8 * mm, -8 * mm, -3 * mm))  # air
+    g.cylinder(radius=1.8 * mm, height=2 * h + 2 * mm, position=(0, 0, -1 * mm), maxh=0.8 * mm)  # core
+    g.helix(3 * mm, pitch, turns, wire, position=(0, 0, 0), maxh=0.5 * mm)  # primary
+    g.helix(3 * mm, pitch, turns, wire, position=(0, 0, h), maxh=0.5 * mm)  # secondary
+    return g.mesh()
+
+
+def toroid_core() -> rm.Mesh:
+    """A toroidal ferrite core in an air box (toroidal-inductor core; the
+    torus is an analytic surface)."""
+    g = rm.Geometry(maxh=2 * mm)
+    g.box(20 * mm, 20 * mm, 8 * mm, position=(-10 * mm, -10 * mm, -4 * mm))  # air
+    g.torus(major_radius=5 * mm, minor_radius=1.8 * mm, position=(0, 0, 0), maxh=0.8 * mm)  # core
+    return g.mesh()
+
+
 EXAMPLES = {
     "coax_step": coax_step,
     "microstrip_line": microstrip_line,
     "dielectric_resonator": dielectric_resonator,
     "iris_filter": iris_filter,
     "patch_antenna": patch_antenna,
+    "solenoid": solenoid,
+    "cored_inductor": cored_inductor,
+    "transformer": transformer,
+    "toroid_core": toroid_core,
 }
 
 

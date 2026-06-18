@@ -1280,12 +1280,17 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
-    // R1 (Delaunay refinement) is being re-scoped (encroachment is a mismatch for the
-    // restricted-Delaunay boundary); disabled here so the corpus runs the validated
-    // C3a + cone-fix + optimize pipeline. Re-enable with Some(&Refine{..}).
-    let _ = (&inside, &hloc); // (kept live for the re-scoped refinement)
+    // Raycast straddler avoidance: where an inside tet's edge leaves the solid, the
+    // restricted-Delaunay boundary deviates from the curved surface -- insert the
+    // crossing so the boundary follows it. Targeted + convergent (not a global
+    // density field, which only multiplies straddling facets).
+    let rf = crate::cdt3::Refine {
+        inside: &inside,
+        size_at: &hloc,
+        max_points: params.max_points,
+    };
     let con = crate::cdt3::tetrahedralize_constrained(
-        &surf_sites, &surf_tris, &face_carrier, &interior, lo, hi, None,
+        &surf_sites, &surf_tris, &face_carrier, &interior, lo, hi, Some(&rf),
     );
     // Steiner points cdt3 had to insert during facet recovery (beyond surface +
     // interior): the health signal for curved recovery -- small/bounded = GO.

@@ -804,6 +804,75 @@ pub fn surface_sites(
                 }
                 continue;
             }
+            // FULL CONE: one base rim + an apex tip. Build rings from the base
+            // toward the apex but STOP a ring before they collapse (where adjacent
+            // column points get closer than the target); the apex is a single shared
+            // corner vertex (never duplicated), and the innermost ring fans to it.
+            // This replaces the old revolution_grid, which generated coincident point
+            // clusters at the tip (the cone-is-garbage degeneracy).
+            if ok && rings.len() == 1 {
+                if let SurfaceKind::Cone { apex, .. } = kind {
+                    // The cone tip is a degenerate point, NOT a brep corner, so create
+                    // the apex site here (a single pinned vertex the fan converges to).
+                    sites.push(Site::vertex(apex));
+                    point_tile.push(fid as u32);
+                    point_size.push(params.surf_maxh_for(fid));
+                    let apex_si = sites.len() - 1;
+                    {
+                        let base_v = rings[0].0;
+                        let v_apex = surf.project_uv(apex)[1];
+                        let vmid = 0.5 * (base_v + v_apex);
+                        let eps = (v_apex - base_v).abs() * 1e-4 + 1e-12;
+                        let dv_arc = dist3(surf.eval_uv([rays[0], vmid + eps]), surf.eval_uv([rays[0], vmid - eps]))
+                            / (2.0 * eps);
+                        let tgt = target(surf.eval_uv([rays[0], vmid])).max(1e-9);
+                        let nv = (((dv_arc * (v_apex - base_v).abs()) / tgt).round() as usize).max(1);
+                        let mut grid: Vec<Vec<usize>> = vec![rings[0].1.clone()];
+                        for j in 1..nv {
+                            let vj = base_v + (v_apex - base_v) * j as f64 / nv as f64;
+                            // stop once a ring would be over-dense (collapsing at the tip).
+                            let pa = surf.eval_uv([rays[0], vj]);
+                            let pb = surf.eval_uv([rays[1 % n], vj]);
+                            if dist3(pa, pb) < 0.5 * tgt {
+                                break;
+                            }
+                            let mut row = Vec::with_capacity(n);
+                            for &theta in &rays {
+                                sites.push(Site::on_surface(kind.clone(), surf.eval_uv([theta, vj])));
+                                point_tile.push(fid as u32);
+                                point_size.push(params.surf_maxh_for(fid));
+                                row.push(sites.len() - 1);
+                            }
+                            grid.push(row);
+                        }
+                        let car = Carrier::Surface(kind.clone());
+                        let mut push = |tri: [usize; 3], tris: &mut Vec<SurfaceFace>, tc: &mut Vec<Carrier>| {
+                            tris.push(SurfaceFace {
+                                tri,
+                                face_tag: face.face_tag,
+                                regions: face.regions,
+                                patch: fid as u32,
+                                surface: face.plc_surface,
+                            });
+                            tc.push(car.clone());
+                        };
+                        for j in 0..grid.len() - 1 {
+                            for i in 0..n {
+                                let i2 = (i + 1) % n;
+                                let (a, b, c, d) = (grid[j][i], grid[j][i2], grid[j + 1][i2], grid[j + 1][i]);
+                                push([a, b, c], &mut tris, &mut tri_carrier);
+                                push([a, c, d], &mut tris, &mut tri_carrier);
+                            }
+                        }
+                        // fan the innermost ring to the apex tip
+                        let last = grid.last().unwrap().clone();
+                        for i in 0..n {
+                            push([last[i], last[(i + 1) % n], apex_si], &mut tris, &mut tri_carrier);
+                        }
+                        continue;
+                    }
+                }
+            }
             // rings did not resolve -> sites only (no tris), as before
             let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
             let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -1042,6 +1111,52 @@ mod tests {
             }
         }
         assert!(edges.values().all(|&c| c == 2), "cylinder surface is a closed manifold");
+    }
+
+    #[test]
+    fn full_cone_apex_is_a_clean_fan_not_a_collapsed_cluster() {
+        // A full cone (frustum, top radius 0) has a base rim + an apex tip. The
+        // lateral surface must mesh as rings + a single-vertex apex fan, NOT a
+        // cluster of coincident points at the tip (the old revolution_grid bug).
+        use rapidmesh_geom::frustum;
+        let apex = [0.0, 0.0, 1.5];
+        let mut scene = Scene::new();
+        scene.add_solid(frustum([0.0, 0.0, 0.0], [0.0, 0.0, 1.5], 0.8, 0.0, 40));
+        let plc = scene.assemble();
+        let b = from_plc(&plc);
+        let params = MeshParams { maxh: 0.22, ..Default::default() };
+        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let ss = surface_sites(&b, &plc, &params, &domain);
+
+        // the apex is created as a single site at the cone tip; find it
+        let apex_si = (0..ss.sites.len())
+            .find(|&i| dist3(ss.sites[i].pos(), apex) < 1e-7)
+            .expect("apex vertex present");
+        let mut fan = 0usize;
+        let mut curved = 0usize;
+        for (t, c) in ss.tris.iter().zip(&ss.tri_carrier) {
+            if !matches!(c, Carrier::Surface(_)) {
+                continue;
+            }
+            curved += 1;
+            if t.tri.contains(&apex_si) {
+                fan += 1;
+            }
+        }
+        assert!(curved > 0, "the cone lateral surface is triangulated");
+        assert!(fan >= 3, "the apex is the centre of a triangle fan, got {fan}");
+        // no two DISTINCT cone-surface points coincide (no collapse at the tip)
+        let cone_pts: Vec<V3> = (0..ss.sites.len())
+            .filter(|&i| ss.point_tile[i] != u32::MAX)
+            .map(|i| ss.sites[i].pos())
+            .collect();
+        let mut min_sep = f64::INFINITY;
+        for i in 0..cone_pts.len() {
+            for j in i + 1..cone_pts.len() {
+                min_sep = min_sep.min(dist3(cone_pts[i], cone_pts[j]));
+            }
+        }
+        assert!(min_sep > 1e-4, "cone surface points must not collapse (min sep {min_sep})");
     }
 
     #[test]

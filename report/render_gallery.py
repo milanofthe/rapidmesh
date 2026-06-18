@@ -45,24 +45,30 @@ def _set_cdt(on: bool) -> None:
 
 
 def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
-    """Meshes one corpus geometry (via its `make`) and renders it."""
+    """Meshes one corpus geometry (via its `make`) and renders it in DIAGNOSTIC
+    style: the boundary surface (region-coloured, so face assignment is visible)
+    with its triangulation edges and the located defect markers (slivers, straddlers,
+    non-manifold edges) overlaid. No clip and no interior tet wireframe -- the focus
+    is surface conformity, face assignment and where the defects sit, not the bulk."""
     t0 = time.time()
     m = make()
     if kind == "surf":
         vd = V._surface_viewer_dict(m, name)
         n = len(m.faces)
-        clip = None
     else:
         vd = m.to_viewer_dict(name)
         n = int(m.stats["n_tets"])
-        clip = 0.7
     dt = time.time() - t0
     mp = MESHES / f"gal_{out_png.stem}.json"
     mp.write_text(json.dumps(vd))
     render(
         str(mp), str(out_png),
         azim=32, elev=20,
-        clip=clip, clip_axis=1, edges=(kind != "surf"),
+        clip=None,            # no clip: show the whole boundary, not a cut
+        tets=True,            # surface fill ON (region colours -> face assignment)
+        edges=False,          # no interior tet wireframe
+        wireframe=True,       # surface triangulation edges
+        defects=True,         # the metric overlay: located defect markers
         width=1100, height=900,
     )
     return f"{out_png.name}: {n} elems, {dt:.1f}s"

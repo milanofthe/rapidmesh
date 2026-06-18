@@ -6,10 +6,8 @@
 
 type V3 = [f64; 3];
 
-/// Max points in a leaf before it splits, and the depth cap (a backstop against
-/// many coincident points forcing infinite subdivision).
-const LEAF_CAP: usize = 16;
-const MAX_DEPTH: u32 = 24;
+// Leaf capacity + depth cap: see crate::constants.
+use crate::constants::{OCTREE_LEAF_CAP as LEAF_CAP, OCTREE_MAX_DEPTH as MAX_DEPTH};
 
 fn dist2(a: V3, b: V3) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

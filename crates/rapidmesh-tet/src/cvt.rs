@@ -44,28 +44,11 @@ type DHasher = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DHasher>;
 type DSet<T> = HashSet<T, DHasher>;
 
-/// The four vertex-index triples spanning a tet's faces.
-const TET_FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
-
-/// Volume (3D) Lloyd relaxation passes (the cap; the loop stops earlier when it
-/// converges, see `LLOYD_CONVERGE_FRAC`).
-const LLOYD_ITERS: usize = 8;
-/// Lloyd convergence: stop once the largest site move in a pass falls below this
-/// fraction of the finest spacing. Each saved pass is a saved Delaunay rebuild
-/// (the dominant cost), and late passes that barely move sites add little.
-const LLOYD_CONVERGE_FRAC: f64 = 0.02;
-/// Surface (2D) Lloyd passes (a planar grid scatter needs little relaxation).
-const SURF_LLOYD_ITERS: usize = 4;
-/// Bounding-box subdivisions for the default spacing when no `maxh` is given.
-const DEFAULT_SUBDIV: f64 = 8.0;
-/// Per-triangle bounding-box pad for the inside test, fraction of the diagonal.
-const BOX_PAD_FRAC: f64 = 1e-6;
-/// Minimum separation of a seeded/moved site from any other, fraction of spacing.
-const SEPARATION_FRAC: f64 = 0.45;
-/// The surface (edges + faces) is seeded finer than the volume by this factor so
-/// the restricted Delaunay recovers the boundary without explicit recovery.
-/// 0.5 is the conformity threshold here; coarser (0.7) reintroduces straddlers.
-pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
+// All tuning constants are centralised in crate::constants.
+use crate::constants::{
+    BOX_PAD_FRAC, DEFAULT_SUBDIV, LLOYD_CONVERGE_FRAC, LLOYD_ITERS, SEPARATION_FRAC,
+    SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS, TET_FACES,
+};
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

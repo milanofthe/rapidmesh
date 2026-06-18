@@ -97,8 +97,7 @@ struct Node {
     count: u32,
 }
 
-/// Maximum facets per BVH leaf.
-const LEAF_MAX: usize = 4;
+use crate::constants::BVH_LEAF_MAX as LEAF_MAX;
 
 pub struct FacetBvh {
     tris: Vec<Tri>,

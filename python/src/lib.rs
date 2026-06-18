@@ -382,6 +382,9 @@ impl SceneBuilder {
                 edge_tol,
                 surf_maxh,
                 surf_tol,
+                // lfs feature sizing: on for the new constrained path (mesh_cdt),
+                // off for the old oversampling path (fragile to denser sizing).
+                feature_sizing: std::env::var_os("RAPIDMESH_CDT").is_some(),
             };
             let tm = std::time::Instant::now();
             // Opt-in to the new boundary-constrained Stage-3 pipeline for
@@ -499,6 +502,7 @@ impl SceneBuilder {
                 edge_tol: vec![],
                 surf_maxh: vec![],
                 surf_tol: vec![],
+                feature_sizing: false, // old surface path: no lfs (fragile to denser sizing)
             };
             surface_mesh(&plc, &params)
         });

@@ -20,13 +20,7 @@ use std::sync::Arc;
 type V3 = [f64; 3];
 type P2 = [f64; 2];
 
-/// Surface 2D Lloyd passes for planar faces (`cvt_fill`).
-const SURF_LLOYD_ITERS: usize = 4;
-/// The surface is meshed FINER than the volume by this factor, so the
-/// restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
-/// the exact PLC boundary (the conformity requirement). Surface element size =
-/// `OVERSAMPLE * H`; the volume is at the size field `H`.
-pub(crate) const OVERSAMPLE: f64 = 0.7;
+use crate::constants::{OVERSAMPLE, SURF_LLOYD_ITERS};
 
 /// Exact bit pattern of a 3D point, for de-duplicating pinned vertices.
 fn bits(p: V3) -> [u64; 3] {

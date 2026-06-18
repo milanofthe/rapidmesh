@@ -20,25 +20,18 @@ use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
+// All tuning constants centralised in crate::constants (see there for docs).
+use crate::constants::{
+    COARSEN_FRACTION, EDGE_CONTRACT, INSERT_BELOW_DEG, INSERT_RE_ALLOW, MAX_RING, MIN_REL_MOVE,
+    QUALITY_EPS, TARGET_Q, TET_FACES as TET_FACES_OPT,
+};
+
 type DState = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
 
-/// Strict-improvement epsilon on the comparison quality scale (minus max
-/// dihedral cosine, in [-1, 1]): guards float noise and accept/reject
-/// cycling.
-const QUALITY_EPS: f64 = 1e-12;
-/// Smoothing moves below this fraction of the local edge length are
-/// discarded: their quality effect is immeasurable, but accepting them keeps
-/// neighborhoods dirty for dozens of micro-converging passes.
-const MIN_REL_MOVE: f64 = 1e-3;
-/// Largest tet ring handled by edge removal. Sliver fans hub around a vertex
-/// with a dozen incident tets; the Klincsek DP is O(k^3), so a generous cap
-/// stays cheap.
-const MAX_RING: usize = 12;
 /// Radius-edge ratio (circumradius over shortest edge) of a tet on explicit
-/// coordinates; `MAX` for degenerate tets. Guards vertex insertion against
-/// trading sliver dihedrals for huge-circumradius cones.
+/// coordinates; `MAX` for degenerate tets. (Tuning constants: crate::constants.)
 fn radius_edge(p: [[f64; 3]; 4]) -> f64 {
     // Solve 2 (p_i - p_0) . c = |p_i|^2 - |p_0|^2 for the circumcenter.
     let mut m = [[0.0f64; 3]; 3];
@@ -81,18 +74,6 @@ fn radius_edge(p: [[f64; 3]; 4]) -> f64 {
     (r2 / lmin2).sqrt()
 }
 
-/// Tets whose dihedral angles leave this band (below it, or above its
-/// 180-degree complement) become vertex-insertion
-/// candidates: boundary slivers with every vertex pinned to the surface are
-/// unreachable for smoothing, and their near-coplanar rings defeat edge
-/// removal; splitting their star from an interior Steiner point hands the
-/// region a FREE vertex that later smoothing passes position optimally.
-const INSERT_BELOW_DEG: f64 = 10.0;
-/// Cone tets of a vertex insertion may have radius-edge ratios up to this
-/// value unconditionally; beyond it only when not exceeding the cavity's
-/// own worst ratio (no minting of huge-circumsphere tets).
-const INSERT_RE_ALLOW: f64 = 16.0;
-
 /// Parameters for [`optimize`].
 #[derive(Debug, Clone)]
 pub struct OptimizeParams {
@@ -127,27 +108,6 @@ impl Default for OptimizeParams {
         }
     }
 }
-
-/// Edges up to this multiple of the local size target are legal (the same
-/// documented slack the mesher's own max-edge contract uses).
-const EDGE_CONTRACT: f64 = 1.5;
-
-/// Coarsening: an edge shorter than this fraction of the local size target
-/// is "too short" and is a collapse candidate, even when the tets around it
-/// are well shaped. The conforming mesh of a CSG arrangement is dense along
-/// intersection seams (thin input facets force short transverse edges, and
-/// refinement seeds a swarm of tiny Steiner points around them); pulling
-/// these in on a do-no-harm gate recovers the size target there. The band
-/// of accepted edge lengths is then [COARSEN_FRACTION, EDGE_CONTRACT] x h.
-const COARSEN_FRACTION: f64 = 0.5;
-
-/// Local complexes whose worst tet is already at or above this
-/// comparison-scale quality (min dihedral ~35 deg, max ~145 deg by the
-/// symmetric -max|cos| metric) are left alone: optimization effort
-/// concentrates on the sliver tail that actually hurts H(curl)
-/// conditioning (the HXT recipe). Fidelity snaps are constraints and remain
-/// exempt.
-const TARGET_Q: f64 = -0.8191520442889918; // -cos(35 deg)
 
 fn orient_positive(points: &[[f64; 3]], t: [usize; 4]) -> bool {
     Sign::of_f64(geometry_predicates::orient3d(
@@ -2089,7 +2049,6 @@ fn cached_q_free(points: &[[f64; 3]], tets: &[[usize; 4]], tet_q: &mut [f64], ti
 }
 
 /// The four vertex-index triples spanning a tet's faces (unoriented).
-const TET_FACES_OPT: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
 
 /// Collapse rejection diagnostics (RAPIDMESH_OPT_TRACE).
 pub static COLLAPSE_REJECTS: [std::sync::atomic::AtomicUsize; 6] = [

@@ -68,7 +68,7 @@ pub struct MeshDiagnostics {
 }
 
 /// Tets below this smallest-dihedral angle (degrees) are counted as slivers.
-pub const SLIVER_DEG: f64 = 10.0;
+pub use crate::constants::SLIVER_DEG;
 
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

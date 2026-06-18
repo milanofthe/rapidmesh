@@ -24,8 +24,7 @@ use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 
 type V3 = [f64; 3];
 
-/// Octree depth cap (a backstop; the sizing field normally stops refinement).
-const MAX_DEPTH: u32 = 18;
+use crate::constants::DOMAIN_MAX_DEPTH as MAX_DEPTH;
 /// Grading falloff cap distance is implicit in `grading`; the boundary target.
 fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -198,11 +197,11 @@ impl DomainTree {
         // is gated to near pairs (< maxh) so it stays cheap. h is then capped by
         // `LFS_K * lfs` -- a surface sample finer than the local feature size
         // (the eps-sample that makes the restricted Delaunay watertight).
-        const LFS_K: f64 = 1.0;
+        use crate::constants::{LFS_K, LFS_MIN_FRAC};
         // Floor: do NOT resolve features finer than this (a minimal feature size,
         // like CGAL's minimal_size). Without it lfs -> 0 at pinch points (sharp
         // trailing edges, tangential contacts) drives unbounded refinement.
-        let lfs_floor = 0.02 * diag;
+        let lfs_floor = LFS_MIN_FRAC * diag;
         let lfs: Vec<f64> = if !params.feature_sizing {
             vec![f64::INFINITY; plc.triangles.len()] // opt-in; off => no lfs term
         } else {

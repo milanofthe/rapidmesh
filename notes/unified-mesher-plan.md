@@ -231,6 +231,22 @@ Watertight: planar als Theorem (exakt), gekrümmt unter adaequatem Sampling + Re
   Innen-(Volume)-Vertex oder Deflection > tol heisst unter-sampled → Surface-Punkt auf
   dem Carrier einfuegen, neu bauen, iterieren. Nur falls der Korpus Straddler zeigt.
 
+## TERRAIN-KARTE (Diag4, 2026-06-18): mesh_cdt ueber 67 Geometrien
+
+66/67 gemeshed (pipe_junction = vorbestehender CSG-Panic). 57 Volumen: ~24 sauber
+(Box/Kugel/Zyl/Torus/Frustum/Prismen/meiste RF: watertight, min-Dih 12-25°, null
+Straddler/Sliver, schnell). Drei Lücken aufgedeckt:
+1. **Straddler (17 Geom)** auf gekrümmten CSG-Verschneidungen (pipe_cross 9164,
+   pressure_vessel 11869, orbs 3457) — restricted-Delaunay-Unter-Sampling. → **C3c nötig**.
+2. **Slivers (32 Geom)** breit, auch planar-lastig (perforated_plate 5883, lattice_cube
+   2907) und teils watertight. Der alte Pfad hatte optimize.rs-Quality-Pass; mesh_cdt
+   nicht. → **Q1 (#117) Quality-Pass** — von der Karte aufgedeckt, war nicht im Plan.
+3. **watertight-Metrik über-flaggt Multi-Region** (Triple-Linien sind korrekt). →
+   **Diag5 (#118)** Metrik pro Region-Paar.
+Fazit: Pivot reif fuer saubere Geometrie, noch nicht korpustauglich — fehlen C3c + Q1,
+Metrik muss multi-region-korrekt (Diag5). Alles absehbare Ingenieursarbeit. Artefakt:
+`report/validation/benchmark_cdt.json`.
+
 ## Roadmap zur Vision (Tasks #102-110, kritischer Pfad)
 
 Ziel: `mesh_cdt` einziger Mesher, alter Pfad geloescht, 67er-Korpus + conform

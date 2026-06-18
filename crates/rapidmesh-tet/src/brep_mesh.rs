@@ -479,20 +479,35 @@ pub fn surface_sites(
     // too, so the shared rim stays conforming. PLANAR faces (whose input is an
     // arbitrary coarse fan) are meshed by a true 2D Lloyd (`cvt_fill`) in their
     // in-plane (u,v) parameter space -- that is where points must be generated.
-    let structured = |f: &rapidmesh_brep::Face| {
-        matches!(
-            plc.surfaces[f.plc_surface as usize],
-            SurfaceKind::Cylinder { .. }
-                | SurfaceKind::Cone { .. }
-                | SurfaceKind::Torus { .. }
-                | SurfaceKind::Sphere { .. }
-                | SurfaceKind::Extruded { .. }
-        )
+    // An edge keeps its INPUT vertices ONLY if it bounds a face that takes the
+    // structured FALLBACK (a full-revolution / extruded barrel, or a closed
+    // surface with no rim) -- there the face mesh IS the input tessellation, so
+    // its rim must match. Every CHARTABLE (open / trimmed) curved face -- the
+    // norm after a boolean -- instead has its edges (INCLUDING the intersection
+    // curves) re-sampled at the adaptive field below, so the cvt_fill boundary it
+    // is constrained to follows the surface finely. (Removing the old "any curved
+    // face keeps input" shortcut: that capped intersection curves at the coarse
+    // arrangement density -- the straddler root cause.)
+    let face_uses_fallback = |f: &rapidmesh_brep::Face| -> bool {
+        match plc.surfaces[f.plc_surface as usize] {
+            // Extruded always takes the fallback; a full-revolution barrel does too.
+            SurfaceKind::Extruded { .. } => true,
+            SurfaceKind::Cylinder { .. } | SurfaceKind::Cone { .. } | SurfaceKind::Torus { .. } => {
+                let mut b: Vec<V3> = Vec::new();
+                for lp in &f.loops {
+                    for &cid in &lp.coedges {
+                        b.extend_from_slice(&brep.edges[brep.coedge(cid).edge.0 as usize].chain);
+                    }
+                }
+                b.is_empty() || is_full_revolution(brep.surface(f.surface), &b)
+            }
+            _ => false, // planes + sphere caps chart; a closed sphere has no rim edges
+        }
     };
     let edge_keep_input: Vec<bool> = brep
         .edges
         .iter()
-        .map(|e| e.coedges.iter().any(|&c| structured(brep.face(brep.coedge(c).face))))
+        .map(|e| e.coedges.iter().any(|&c| face_uses_fallback(brep.face(brep.coedge(c).face))))
         .collect();
 
     // ---- stage 1b: edge points (shared). Edges of a structured face keep the

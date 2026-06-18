@@ -123,95 +123,6 @@ struct Vert {
     pos: V3,
     bidx: usize,
 }
-
-/// Configuration for raycast straddler avoidance.
-pub struct Refine<'a> {
-    /// Inside-the-solid oracle (itself a ray-cast point-in-solid test).
-    pub inside: &'a dyn Fn(V3) -> bool,
-    /// Local target edge length `h(x)`; crossings are inserted no closer than
-    /// ~0.3 h apart (so refinement does not over-densify one straddle region).
-    pub size_at: &'a dyn Fn(V3) -> f64,
-    /// Vertex-count ceiling (best effort under it).
-    pub max_points: usize,
-}
-
-/// Binary-search the boundary crossing on the segment from `inside_pt` (in the
-/// solid) to `outside_pt` (outside), via the inside oracle. ~2^-24 of the segment.
-fn bsearch_boundary(inside_pt: V3, outside_pt: V3, inside: &dyn Fn(V3) -> bool) -> V3 {
-    let (mut lo, mut hi) = (inside_pt, outside_pt);
-    for _ in 0..24 {
-        let m: V3 = std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]));
-        if inside(m) {
-            lo = m;
-        } else {
-            hi = m;
-        }
-    }
-    std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]))
-}
-
-/// Raycast straddler avoidance. An INSIDE tet that pokes OUT of the solid (its
-/// boundary cuts across empty space, e.g. the concave neck of a curved CSG
-/// intersection) is detected by probing a point STRICTLY INSIDE the tet, behind
-/// each face: for a correct (convex) boundary that probe is inside the solid; only
-/// where the tet spans a concavity is it outside. The boundary crossing (tet
-/// centroid -> face centroid) is then inserted so the next Delaunay's boundary
-/// follows the surface there. On-surface ambiguity of edge/face midpoints (which
-/// would false-positive on every convex boundary facet) is thus avoided.
-/// Targeted (only real pokes -> no density blow-up, unlike a global lfs field),
-/// surface-following, convergent. Batched: collect, insert separated, rebuild.
-fn refine_straddlers(db: &mut DelaunayBuilder, vs: &mut Vec<Vert>, rf: &Refine) {
-    // The four faces of a tet (opposite each vertex), as the OTHER three indices.
-    const FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]];
-    for _round in 0..12 {
-        if vs.len() >= rf.max_points {
-            break;
-        }
-        let tets = db.tets();
-        let mut crossings: Vec<V3> = Vec::new();
-        for t in &tets {
-            let p: [V3; 4] = std::array::from_fn(|j| db.approx_point(t[j]));
-            let centroid: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k] + p[3][k]) / 4.0);
-            if !(rf.inside)(centroid) {
-                continue; // only domain (inside) tets define the boundary
-            }
-            for f in &FACES {
-                let fc: V3 = std::array::from_fn(|k| (p[f[0]][k] + p[f[1]][k] + p[f[2]][k]) / 3.0);
-                // a point 70% from the centroid toward the face: strictly inside the
-                // tet, so on-surface ambiguity cannot trigger it; outside only where
-                // the tet spans a concavity (a genuine straddle).
-                let probe: V3 = std::array::from_fn(|k| centroid[k] + 0.7 * (fc[k] - centroid[k]));
-                if !(rf.inside)(probe) {
-                    crossings.push(bsearch_boundary(centroid, fc, rf.inside));
-                }
-            }
-        }
-        if crossings.is_empty() {
-            break; // boundary follows the surface everywhere
-        }
-        // Insert separated by ~0.3 h via a cell hash (no two crossings per cell).
-        let mut taken: std::collections::HashSet<(i64, i64, i64)> = std::collections::HashSet::new();
-        let mut inserted = 0usize;
-        for x in crossings {
-            if vs.len() >= rf.max_points {
-                break;
-            }
-            let cell = (0.3 * (rf.size_at)(x).max(1e-9)).max(1e-9);
-            let key = ((x[0] / cell).floor() as i64, (x[1] / cell).floor() as i64, (x[2] / cell).floor() as i64);
-            if !taken.insert(key) {
-                continue;
-            }
-            if let Some(bx) = db.try_insert(x) {
-                vs.push(Vert { pos: db.approx_point(bx), bidx: bx });
-                inserted += 1;
-            }
-        }
-        if inserted == 0 {
-            break;
-        }
-    }
-}
-
 /// Boundary-constrained Delaunay tetrahedralization. `verts` are the frozen
 /// surface vertices (each on its exact carrier); `tris` index into `verts` and
 /// form the watertight surface; `tri_carrier[i]` is the carrier of triangle `i`
@@ -225,7 +136,6 @@ pub fn tetrahedralize_constrained(
     interior: &[V3],
     lo: V3,
     hi: V3,
-    refine: Option<&Refine>,
 ) -> Constrained {
     assert_eq!(tris.len(), tri_carrier.len());
     let mut db = DelaunayBuilder::enclosing(lo, hi);
@@ -241,14 +151,6 @@ pub fn tetrahedralize_constrained(
         if let Some(bidx) = db.try_insert(p) {
             vs.push(Vert { pos: p, bidx });
         }
-    }
-
-    // Raycast straddler avoidance: insert at boundary crossings so the restricted
-    // Delaunay boundary follows the surface (curved CSG intersections). Targeted,
-    // surface-following, convergent. Skipped when `refine` is None. Planar
-    // boundaries are coplanar (no crossings) -> exact volumes untouched.
-    if let Some(rf) = refine {
-        refine_straddlers(&mut db, &mut vs, rf);
     }
 
     // Constraint triangles, tagged with their parent index (for region/tag) and
@@ -364,7 +266,7 @@ mod tests {
             [0.5, 0.5, 0.5], [0.25, 0.5, 0.7], [0.7, 0.3, 0.4],
             [0.3, 0.7, 0.3], [0.6, 0.6, 0.6], [0.4, 0.4, 0.8],
         ];
-        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3], None);
+        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3]);
 
         // The geometry is exact (every boundary vertex lands on a cube plane,
         // checked below); the tiny residual here is only f64 summation rounding
@@ -405,7 +307,7 @@ mod tests {
     fn cube_region_flood_fill_tags_every_interior_tet() {
         let (verts, tris, carr) = subdivided_cube(3);
         let interior = vec![[0.5, 0.5, 0.5], [0.3, 0.6, 0.4], [0.7, 0.4, 0.6]];
-        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3], None);
+        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3]);
         // Oracle: a face on a cube plane separates inside (region 1) from the
         // background void (0); the outward normal points out of the cube.
         let oracle = |f: &[usize; 3]| -> Option<(u32, u32, V3)> {

@@ -275,6 +275,12 @@ pub struct MeshParams {
     /// Per-FACE deflection override `(brep face id, tol)`, overriding
     /// [`MeshParams::tol_surf`] on that face.
     pub surf_tol: Vec<(u32, f64)>,
+    /// Enable the local-feature-size sizing term (P1a): refine where DIFFERENT
+    /// features approach across the solid (thin regions, curved CSG intersections),
+    /// the eps-sample that keeps the restricted-Delaunay boundary watertight.
+    /// Opt-in (default off) while the old oversampling path is fragile to denser
+    /// sizing; the new constrained path turns it on.
+    pub feature_sizing: bool,
 }
 
 impl Default for MeshParams {
@@ -298,6 +304,7 @@ impl Default for MeshParams {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            feature_sizing: false,
         }
     }
 }

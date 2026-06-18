@@ -185,6 +185,7 @@ fn sized_box_respects_maxh_and_quality() {
         edge_tol: Vec::new(),
         surf_maxh: Vec::new(),
         surf_tol: Vec::new(),
+        feature_sizing: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -249,6 +250,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         edge_tol: Vec::new(),
         surf_maxh: Vec::new(),
         surf_tol: Vec::new(),
+        feature_sizing: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -304,6 +306,7 @@ fn per_region_sizing_creates_density_transition() {
         edge_tol: Vec::new(),
         surf_maxh: Vec::new(),
         surf_tol: Vec::new(),
+        feature_sizing: false,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(

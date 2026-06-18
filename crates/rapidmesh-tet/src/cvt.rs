@@ -1297,7 +1297,13 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
-    let con = crate::cdt3::tetrahedralize_constrained(&surf_sites, &surf_tris, &face_carrier, &interior, lo, hi);
+    // R1 (Delaunay refinement) is being re-scoped (encroachment is a mismatch for the
+    // restricted-Delaunay boundary); disabled here so the corpus runs the validated
+    // C3a + cone-fix + optimize pipeline. Re-enable with Some(&Refine{..}).
+    let _ = (&inside, &hloc); // (kept live for the re-scoped refinement)
+    let con = crate::cdt3::tetrahedralize_constrained(
+        &surf_sites, &surf_tris, &face_carrier, &interior, lo, hi, None,
+    );
     // Steiner points cdt3 had to insert during facet recovery (beyond surface +
     // interior): the health signal for curved recovery -- small/bounded = GO.
     let steiner = con.points.len().saturating_sub(con.n_surf_verts + interior.len());

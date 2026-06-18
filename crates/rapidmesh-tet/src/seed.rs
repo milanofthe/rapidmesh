@@ -138,7 +138,6 @@ mod tests {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
-            feature_sizing: false,
         }
     }
 

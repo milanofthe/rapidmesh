@@ -35,15 +35,6 @@ pub(crate) const BOX_PAD_FRAC: f64 = 1e-6;
 /// Interior-seed separation as a fraction of the local size (no sliver seeds).
 pub(crate) const SEPARATION_FRAC: f64 = 0.45;
 
-// ---- sizing field (local feature size) ------------------------------------
-/// Cap factor: `h <= LFS_K * lfs` -- a surface sample finer than the local
-/// feature size (the eps-sample that keeps the restricted Delaunay watertight).
-pub(crate) const LFS_K: f64 = 1.0;
-/// Minimal feature size as a fraction of the bbox diagonal: do NOT resolve
-/// features finer than this (lfs -> 0 at pinch points would diverge; CGAL's
-/// `minimal_size`).
-pub(crate) const LFS_MIN_FRAC: f64 = 0.02;
-
 // ---- quality diagnostics --------------------------------------------------
 /// A tet whose smallest dihedral angle is below this (degrees) is a sliver.
 pub const SLIVER_DEG: f64 = 10.0;

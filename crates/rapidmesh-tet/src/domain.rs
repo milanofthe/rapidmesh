@@ -189,71 +189,6 @@ impl DomainTree {
             crate::project::surface_curvature_radius(kind, facet_centroid(i)) * chord
         };
 
-        // ---- local feature size (P1a): density where DIFFERENT features approach
-        // lfs(facet) = distance to the nearest facet of a DIFFERENT surface that
-        // lies ACROSS the solid (the connecting-segment midpoint is inside). Thin
-        // regions and curved CSG intersections densify; CONVEX edges (midpoint
-        // outside) do NOT (no over-refinement of every box edge). The inside test
-        // is gated to near pairs (< maxh) so it stays cheap. h is then capped by
-        // `LFS_K * lfs` -- a surface sample finer than the local feature size
-        // (the eps-sample that makes the restricted Delaunay watertight).
-        use crate::constants::{LFS_K, LFS_MIN_FRAC};
-        // Floor: do NOT resolve features finer than this (a minimal feature size,
-        // like CGAL's minimal_size). Without it lfs -> 0 at pinch points (sharp
-        // trailing edges, tangential contacts) drives unbounded refinement.
-        let lfs_floor = LFS_MIN_FRAC * diag;
-        let lfs: Vec<f64> = if !params.feature_sizing {
-            vec![f64::INFINITY; plc.triangles.len()] // opt-in; off => no lfs term
-        } else {
-            let nsurf = plc.surfaces.len();
-            let mut groups: Vec<Vec<usize>> = vec![Vec::new(); nsurf];
-            for (i, sr) in plc.surface_refs.iter().enumerate() {
-                groups[sr.0 as usize].push(i);
-            }
-            let bvhs: Vec<FacetBvh> = groups
-                .iter()
-                .map(|g| {
-                    let f: Vec<(Tri, f64)> = g
-                        .iter()
-                        .map(|&i| {
-                            let t = plc.triangles[i];
-                            (
-                                Tri::new(
-                                    plc.vertices[t[0] as usize],
-                                    plc.vertices[t[1] as usize],
-                                    plc.vertices[t[2] as usize],
-                                ),
-                                0.0,
-                            )
-                        })
-                        .collect();
-                    FacetBvh::build(&f)
-                })
-                .collect();
-            (0..plc.triangles.len())
-                .map(|i| {
-                    let ci = facet_centroid(i);
-                    let si = plc.surface_refs[i].0 as usize;
-                    let mut best = f64::INFINITY;
-                    for (g, bvh) in bvhs.iter().enumerate() {
-                        if g == si {
-                            continue;
-                        }
-                        if let Some((d, loc)) = bvh.nearest(ci) {
-                            if d < best && d < maxh {
-                                let cj = facet_centroid(groups[g][loc]);
-                                let mid: V3 = std::array::from_fn(|k| 0.5 * (ci[k] + cj[k]));
-                                if region_of(mid) != 0 {
-                                    best = d;
-                                }
-                            }
-                        }
-                    }
-                    best
-                })
-                .collect()
-        };
-
         let facet_target = |i: usize| -> f64 {
             let ft = plc.face_tags[i].0;
             let base = if let Some(&(_, h)) = params.face_maxh.iter().find(|(t, _)| *t == ft) {
@@ -272,7 +207,7 @@ impl DomainTree {
                     h
                 }
             };
-            base.min(curvature_target(i)).min((LFS_K * lfs[i]).max(lfs_floor))
+            base.min(curvature_target(i))
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles
@@ -716,29 +651,6 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [s, s, s]));
         scene.assemble()
-    }
-
-    #[test]
-    fn lfs_refines_thin_slab_not_thick_box() {
-        // local feature size: a THIN slab (opposite faces 0.3 apart) must size
-        // FINER than maxh in its interior (lfs caps h ~ the gap), while a THICK
-        // box of the same maxh is unaffected (opposite faces far -> lfs gated out).
-        let thin = {
-            let mut s = Scene::new();
-            s.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 0.3]));
-            s.assemble()
-        };
-        let thick = {
-            let mut s = Scene::new();
-            s.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
-            s.assemble()
-        };
-        let p = MeshParams { maxh: 2.0, grading: 0.5, feature_sizing: true, ..Default::default() };
-        let h_thin = DomainTree::build(&thin, &p).h_at([2.0, 2.0, 0.15]);
-        let h_thick = DomainTree::build(&thick, &p).h_at([2.0, 2.0, 2.0]);
-        assert!(h_thin < 0.7, "thin slab interior sized by lfs ~ gap, got {h_thin}");
-        assert!(h_thick > 1.5, "thick box unaffected by lfs, got {h_thick}");
-        assert!(h_thin < h_thick, "thin {h_thin} must be finer than thick {h_thick}");
     }
 
     #[test]

@@ -220,9 +220,11 @@ Watertight: planar als Theorem (exakt), gekrümmt unter adaequatem Sampling + Re
 (float `Point3`), also kein Exaktheits-Verlust.
 
 ### C3 neu (ersetzt Edge-Removal/Cavity-Retet):
-- **C3a (#108)**: in `tetrahedralize_constrained` die gekrümmte Recovery zum No-Op
-  machen (gekrümmt wie planar uebersprungen). Boundary kommt aus der Delaunay (Region-
-  Differenz, schon vorhanden). Messen: Zylinder steiner=0, schnell, watertight, Vol<=tol.
+- **C3a (#108) — FERTIG**: forcierte Recovery aus `tetrahedralize_constrained` raus;
+  gekrümmte Boundary = restricted Delaunay (Region-Differenz). Zylinder steiner
+  4192→**0**, 87s→**0.18s**; Kugel/Box unveraendert; Lib gruen. 366 Zeilen Recovery-
+  Subsystem (flip23/32, recover_facet, piercing_edge, insert_steiner, Steiner-Budget,
+  Recover, Vert.carrier) GELOESCHT. Der Pivot ist vollzogen.
 - **C3b (#111)**: robustes Tagging der gekrümmten Boundary-Flaechen (per-Punkt
   plc_surface-Id statt nur Input-Tri-Match), damit Output-Surface-Tags stimmen.
 - **C3c (#112)**: Straddler-Refinement-Kriterium — eine Boundary-Flaeche mit einem

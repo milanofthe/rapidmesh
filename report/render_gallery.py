@@ -62,7 +62,11 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
     im = Image.open(png).convert("RGBA")
     dr = ImageDraw.Draw(im)
     title_f, body_f = _font(26), _font(19)
-    fg, dim = (235, 235, 240, 255), (170, 175, 185, 255)
+    # Transparent background -> BLACK annotation text (lands on the light report).
+    fg, dim = (0, 0, 0, 255), (40, 40, 40, 255)
+
+    def txt(xy, s, font, fill):
+        dr.text(xy, s, font=font, fill=fill)
 
     # ---- metrics block (top-left) ----
     lines: list[tuple[str, tuple]] = [(name, fg)]
@@ -70,7 +74,7 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
         wt = diag["watertight"]
         lines += [
             (f"{n} tets   min-dih {diag['min_dihedral_deg']:.1f} deg", dim),
-            (f"watertight: {'yes' if wt else 'NO'}", (120, 220, 130, 255) if wt else (255, 90, 90, 255)),
+            (f"watertight: {'yes' if wt else 'NO'}", (20, 120, 40, 255) if wt else (190, 30, 30, 255)),
             (f"slivers {diag['n_slivers']}   straddlers {diag['n_straddlers']}   "
              f"non-manifold {diag['n_nonmanifold_edges']}", dim),
             (f"max surface dev {diag['max_surface_deviation']:.4f}", dim),
@@ -78,10 +82,10 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
     else:
         lines.append((f"{n} surface faces", dim))
     x, y = 16, 14
-    dr.text((x, y), lines[0][0], font=title_f, fill=lines[0][1])
+    txt((x, y), lines[0][0], title_f, lines[0][1])
     y += 34
-    for txt, col in lines[1:]:
-        dr.text((x, y), txt, font=body_f, fill=col)
+    for s, col in lines[1:]:
+        txt((x, y), s, body_f, col)
         y += 24
 
     # ---- defect legend (bottom-left), only the kinds actually present ----
@@ -89,10 +93,10 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
     legend = [(lbl, c) for (lbl, c) in DEFECT_LEGEND if lbl in present]
     if legend:
         ly = im.height - 16 - 26 * len(legend)
-        dr.text((16, ly - 26), "defects:", font=body_f, fill=dim)
+        txt((16, ly - 26), "defects:", body_f, dim)
         for lbl, (r, g, b) in legend:
-            dr.rectangle([16, ly + 4, 32, ly + 20], fill=(r, g, b, 255))
-            dr.text((40, ly), lbl, font=body_f, fill=fg)
+            dr.rectangle([16, ly + 4, 32, ly + 20], fill=(r, g, b, 255), outline=(0, 0, 0, 210))
+            txt((40, ly), lbl, body_f, fg)
             ly += 26
     im.save(png)
 
@@ -104,12 +108,16 @@ def _set_cdt(on: bool) -> None:
         os.environ.pop("RAPIDMESH_CDT", None)
 
 
-def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
-    """Meshes one corpus geometry (via its `make`) and renders it in DIAGNOSTIC
-    style: the boundary surface (region-coloured, so face assignment is visible)
-    with its triangulation edges and the located defect markers (slivers, straddlers,
-    non-manifold edges) overlaid. No clip and no interior tet wireframe -- the focus
-    is surface conformity, face assignment and where the defects sit, not the bulk."""
+def _render_mesh(name: str, kind: str, make, out_normal: Path, out_debug: Path) -> str:
+    """Meshes one corpus geometry ONCE and renders TWO views from it:
+      * NORMAL (`out_normal`): the clean figure -- region-coloured solid (clipped
+        so the interior is visible) for volumes, or the surface wireframe for
+        surface meshes, on a transparent background, no overlays.
+      * DEBUG (`out_debug`): the DIAGNOSTIC view -- surface triangulation with the
+        located defect markers (slivers, straddlers, non-manifold edges) and a
+        metrics text overlay, on a dark background.
+    Meshing is the expensive step (heavy CSG geometries), so it runs once and both
+    PNGs come from the same viewer JSON."""
     t0 = time.time()
     m = make()
     if kind == "surf":
@@ -121,38 +129,58 @@ def _render_mesh(name: str, kind: str, make, out_png: Path) -> str:
         n = int(m.stats["n_tets"])
         diag = m.diagnostics
     dt = time.time() - t0
-    mp = MESHES / f"gal_{out_png.stem}.json"
+    mp = MESHES / f"gal_{name}.json"
     mp.write_text(json.dumps(vd))
+    # ---- normal view: clean, region-coloured SURFACE MESH (fill + triangulation),
+    # clipped for volumes so the interior shows. The surface mesh (fill + wire) is
+    # ALWAYS on, including for surface-only (2D) geometries. ----
     render(
-        str(mp), str(out_png),
+        str(mp), str(out_normal),
         azim=32, elev=20,
-        transparent=False,    # dark background, so the metrics overlay is legible
-        clip=None,            # no clip
+        transparent=True,
+        clip=0.55 if kind == "vol" else None,   # cutaway so interior tets show
+        clip_axis=1,
+        tets=True,                # surface fill (region-coloured) -- always
+        edges=(kind == "vol"),    # interior tet edges on the cutaway (volumes)
+        wireframe=True,           # surface triangulation -- always (fixes 2D tris)
+        defects=False,
+        width=1100, height=900,
+    )
+    # ---- debug view: the surface triangulation (WIREFRAME only, no fill) + located
+    # defect markers + metrics overlay, on a TRANSPARENT background (annotation text
+    # gets a dark stroke for legibility on any surface). ----
+    render(
+        str(mp), str(out_debug),
+        azim=32, elev=20,
+        transparent=True,
+        clip=None,
         tets=False,           # NO solid fill -- just the mesh
-        edges=False,          # no interior tet wireframe
-        wireframe=True,       # the surface triangulation (the mesh)
+        edges=False,
+        wireframe=True,       # surface triangulation
         defects=True,         # located defect markers
         width=1100, height=900,
     )
-    _annotate(out_png, name, kind, n, diag)
-    return f"{out_png.name}: {n} elems, {dt:.1f}s"
+    _annotate(out_debug, name, kind, n, diag)
+    return f"{name}: {n} elems, {dt:.1f}s"
 
 
 def render_corpus() -> None:
     """Renders every geometry in the unified corpus with the NEW constrained
-    mesher (`mesh_cdt`), one image `<name>.png`. The corpus directory is cleared
-    first so no stale image from the retired oversampling path survives."""
+    mesher (`mesh_cdt`) into TWO directories: `corpus/` (normal view) and
+    `corpus_debug/` (diagnostic view). Both are cleared first so no stale image
+    from the retired oversampling path survives."""
     out = GAL / "corpus"
-    if out.exists():
-        for old in out.glob("*.png"):
-            old.unlink()
-    out.mkdir(parents=True, exist_ok=True)
+    dbg = GAL / "corpus_debug"
+    for d in (out, dbg):
+        if d.exists():
+            for old in d.glob("*.png"):
+                old.unlink()
+        d.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
     _set_cdt(True)  # the new constrained path is the gallery's mesher
     for name, _cat, kind, make in C.CORPUS:
-        png = out / f"{name}.png"
         try:
-            status = _render_mesh(name, kind, make, png)
+            status = _render_mesh(name, kind, make, out / f"{name}.png", dbg / f"{name}.png")
             print(f"  {status}")
         except BaseException as e:  # a mesher gap / panic must not stop the gallery
             print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")

@@ -747,6 +747,69 @@ impl PyMesh {
         d.set_item("regions", PyList::new_bound(py, regions))?;
         Ok(d)
     }
+
+    /// Full mesh diagnostics with LOCATED defects: quality (dihedral histogram,
+    /// slivers, radius-edge), conformity (watertight, non-manifold edges, surface
+    /// deviation), region volumes, and a `defects` list of
+    /// `{kind, pos:[x,y,z], value}` (kind in sliver/nonmanifold_edge/straddler).
+    /// The map that drives refinement and the defect overlay.
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dg = rapidmesh_tet::diagnostics::diagnose(&self.mesh);
+        let d = PyDict::new_bound(py);
+        d.set_item("n_tets", dg.n_tets)?;
+        d.set_item("n_points", dg.n_points)?;
+        d.set_item("n_faces", dg.n_faces)?;
+        d.set_item("min_dihedral_deg", dg.min_dihedral_deg)?;
+        d.set_item("mean_min_dihedral_deg", dg.mean_min_dihedral_deg)?;
+        d.set_item("dihedral_histogram", dg.dihedral_histogram.to_vec())?;
+        d.set_item("n_slivers", dg.n_slivers)?;
+        d.set_item("max_radius_edge", dg.max_radius_edge)?;
+        d.set_item("watertight", dg.watertight)?;
+        d.set_item("n_nonmanifold_edges", dg.n_nonmanifold_edges)?;
+        d.set_item("n_straddlers", dg.n_straddlers)?;
+        d.set_item("max_surface_deviation", dg.max_surface_deviation)?;
+        let rv: Vec<Bound<'py, PyDict>> = dg
+            .region_volumes
+            .iter()
+            .map(|&(region, vol)| {
+                let r = PyDict::new_bound(py);
+                r.set_item("region", region).unwrap();
+                r.set_item("volume", vol).unwrap();
+                r
+            })
+            .collect();
+        d.set_item("region_volumes", PyList::new_bound(py, rv))?;
+        d.set_item("defects", defects_to_list(py, &dg.defects))?;
+        Ok(d)
+    }
+}
+
+/// Maps the diagnostics defect kinds to their string names for Python.
+fn defect_kind_str(k: rapidmesh_tet::diagnostics::DefectKind) -> &'static str {
+    use rapidmesh_tet::diagnostics::DefectKind::*;
+    match k {
+        Sliver => "sliver",
+        NonManifoldEdge => "nonmanifold_edge",
+        Straddler => "straddler",
+    }
+}
+
+/// Builds the Python list of `{kind, pos, value}` defect dicts.
+fn defects_to_list<'py>(
+    py: Python<'py>,
+    defects: &[rapidmesh_tet::diagnostics::Defect],
+) -> Bound<'py, PyList> {
+    let rows: Vec<Bound<'py, PyDict>> = defects
+        .iter()
+        .map(|f| {
+            let d = PyDict::new_bound(py);
+            d.set_item("kind", defect_kind_str(f.kind)).unwrap();
+            d.set_item("pos", f.pos.to_vec()).unwrap();
+            d.set_item("value", f.value).unwrap();
+            d
+        })
+        .collect();
+    PyList::new_bound(py, rows)
 }
 
 /// A boundary surface mesh (surface-only export): vertices plus the tagged

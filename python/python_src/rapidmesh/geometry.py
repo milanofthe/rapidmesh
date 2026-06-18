@@ -111,6 +111,10 @@ class Mesh:
         #: worst_region, max_radius_edge, max_edge, and a per-region breakdown
         #: under "regions"
         self.quality: dict = native.quality()
+        #: full diagnostics with located defects: dihedral histogram, slivers,
+        #: watertight, non-manifold edges, surface deviation, region volumes, and a
+        #: "defects" list of {kind, pos:[x,y,z], value}
+        self.diagnostics: dict = native.diagnostics()
 
     def __repr__(self) -> str:
         s = self.stats
@@ -201,6 +205,8 @@ class Mesh:
                 "max_edge": float(self.stats["max_edge"]),
                 "millis": int(self.stats["millis"]),
             },
+            # located mesh defects for the viewer overlay: each {kind, pos, value}
+            "defects": self.diagnostics["defects"],
         }
 
     def save_viewer_json(self, name: str, directory: str | Path) -> Path:

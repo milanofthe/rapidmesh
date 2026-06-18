@@ -193,24 +193,40 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     }
     let mean_dih = if mesh.tets.is_empty() { 0.0 } else { sum_dih / mesh.tets.len() as f64 };
 
-    // ---- conformity: non-manifold surface edges ---------------------------
-    let mut edge_count: std::collections::HashMap<(usize, usize), (u32, V3)> =
+    // ---- conformity: non-manifold surface edges, PER REGION (Diag5) -------
+    // Each region's boundary (the faces that touch it) must be a closed 2-manifold:
+    // every edge shared by exactly TWO of that region's faces. A triple curve --
+    // where an interface (region A|B) meets the outer boundary -- carries 3+ faces
+    // GLOBALLY but exactly 2 PER REGION, so it is NOT a defect (the old global count
+    // wrongly flagged it). A real non-manifold (a barrel-seam pinch, a crack) shows
+    // up within a single region and is still caught.
+    let mut region_edge: std::collections::HashMap<(u32, usize, usize), u32> =
         std::collections::HashMap::new();
     for f in &mesh.faces {
-        for k in 0..3 {
-            let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
-            let key = (a.min(b), a.max(b));
-            let mid = centroid(&[pt(a), pt(b)]);
-            let e = edge_count.entry(key).or_insert((0, mid));
-            e.0 += 1;
+        for &rt in &f.regions {
+            if rt.0 == 0 {
+                continue; // the void has no boundary of its own
+            }
+            for k in 0..3 {
+                let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+                *region_edge.entry((rt.0, a.min(b), a.max(b))).or_insert(0) += 1;
+            }
         }
     }
-    let mut n_nonmanifold = 0usize;
-    for (_, &(cnt, mid)) in &edge_count {
+    let mut nm: std::collections::HashMap<(usize, usize), u32> = std::collections::HashMap::new();
+    for (&(_, a, b), &cnt) in &region_edge {
         if cnt != 2 {
-            n_nonmanifold += 1;
-            defects.push(Defect { kind: DefectKind::NonManifoldEdge, pos: mid, value: cnt as f64 });
+            let e = nm.entry((a, b)).or_insert(0);
+            *e = (*e).max(cnt);
         }
+    }
+    let n_nonmanifold = nm.len();
+    for (&(a, b), &cnt) in &nm {
+        defects.push(Defect {
+            kind: DefectKind::NonManifoldEdge,
+            pos: centroid(&[pt(a), pt(b)]),
+            value: cnt as f64,
+        });
     }
 
     // ---- conformity: straddlers + surface deviation (curved faces) --------

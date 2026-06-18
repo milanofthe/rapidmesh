@@ -1309,11 +1309,39 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- boundary faces: between differing regions, tagged from the frozen
     // surface (curved facets match exactly; planar fall back to the patch) -----
     let mut tag: DMap<[usize; 3], (u32, FaceTag, u32)> = DMap::default();
+    // surface index -> a representative face tag (for the curved fallback below).
+    let mut surf_face_tag: DMap<u32, FaceTag> = DMap::default();
     for f in &surf_faces {
         let mut s = f.tri;
         s.sort_unstable();
         tag.insert(s, (f.surface, f.face_tag, f.patch));
+        surf_face_tag.entry(f.surface).or_insert(f.face_tag);
     }
+    // C3b: tag a curved boundary face (extracted by region difference, so NOT an
+    // exact surf_faces tri and not coplanar with a planar patch) with the analytic
+    // surface MOST of its vertices lie on -- so the surface-deviation / straddler
+    // diagnostics measure against the TRUE carrier (a torus interface as a torus,
+    // not the surface-0 plane), and a real straddler is counted against the surface
+    // it should sit on. Without this the fallback was surface 0 -> dev ~ 0 always.
+    let dist3 = |a: V3, b: V3| ((a[0]-b[0]).powi(2)+(a[1]-b[1]).powi(2)+(a[2]-b[2]).powi(2)).sqrt();
+    let curved_surface_of = |key: &[usize; 3], pts: &[V3]| -> Option<u32> {
+        let tri = [pts[key[0]], pts[key[1]], pts[key[2]]];
+        let longest = (0..3).map(|k| dist3(tri[k], tri[(k + 1) % 3])).fold(0.0, f64::max);
+        let tol = 0.1 * longest.max(1e-12);
+        let mut best: Option<(u32, usize, f64)> = None; // (surface, #on, sum dev)
+        for (si, kind) in plc.surfaces.iter().enumerate() {
+            if matches!(kind, rapidmesh_geom::SurfaceKind::Plane) {
+                continue; // planes handled by patch_of_face
+            }
+            let devs = tri.map(|q| dist3(q, crate::project::closest_on_surface(kind, q)));
+            let on = devs.iter().filter(|&&d| d < tol).count();
+            let tot: f64 = devs.iter().sum();
+            if on >= 1 && best.map_or(true, |(_, bon, btot)| on > bon || (on == bon && tot < btot)) {
+                best = Some((si as u32, on, tot));
+            }
+        }
+        best.map(|(si, _, _)| si)
+    };
     let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
     for (ti, t) in con.tets.iter().enumerate() {
         for fv in &TET_FACES {
@@ -1337,6 +1365,8 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             (s, ft, p)
         } else if let Some(pi) = patch_of_face(plc, &patches, &pts, *key, eps) {
             (patches[pi].surface, patches[pi].face_tag, pi as u32)
+        } else if let Some(si) = curved_surface_of(key, &pts) {
+            (si, surf_face_tag.get(&si).copied().unwrap_or(FaceTag(0)), u32::MAX)
         } else {
             (0, FaceTag(0), u32::MAX)
         };

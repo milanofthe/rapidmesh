@@ -398,7 +398,7 @@ class Geometry:
     """
 
     def __init__(self, *, maxh: float | None = None, grading: float = 0.5) -> None:
-        self._builder = _native.SceneBuilder()
+        self._builder = _native.SceneBuilder(maxh)
         self._maxh = maxh
         self._grading = grading
         self._face_maxh: dict[int, float] = {}

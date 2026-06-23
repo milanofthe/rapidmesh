@@ -177,6 +177,37 @@ pub fn cylinder(base_center: [f64; 3], axis: [f64; 3], radius: f64, segments: us
     frustum(base_center, axis, radius, radius, segments)
 }
 
+/// The azimuthal facet count a curved primitive of `radius` needs so its faceted
+/// tessellation tracks the analytic surface at a mesh of target size `maxh`: fine
+/// enough that the chord stays under the target (1.5x oversampled, like the edge
+/// sampling) AND the sagitta stays under the surface tolerance `tol`. Curved
+/// primitives are partly meshed FROM these facets (closed faces, the arrangement
+/// of intersection curves), so a fixed count too coarse for the requested `maxh`
+/// leaves the boundary off the true surface -- the straddler root cause. The CORE
+/// derives this so every embedder (not just the Python layer) gets it.
+pub fn facet_count(radius: f64, maxh: Option<f64>, tol: f64) -> usize {
+    use std::f64::consts::PI;
+    let n_tol = (PI / (1.0 - tol.clamp(1e-9, 0.5)).acos()).ceil() as usize;
+    let n_maxh = match maxh {
+        Some(h) if h.is_finite() && h > 0.0 => (1.5 * 2.0 * PI * radius / h).ceil() as usize,
+        _ => 0,
+    };
+    n_tol.max(n_maxh).max(12)
+}
+
+/// The geodesic (icosphere) subdivision level whose edge length matches the
+/// `facet_count` chord for a sphere of `radius` at target `maxh`. A geodesic
+/// tessellation is isotropic and POLE-FREE -- unlike a UV sphere, whose latitude
+/// rings cluster at the poles and seed slivers there -- so it is the right facet
+/// distribution for a curved primitive that gets refined to track `maxh`.
+pub fn facet_subdivisions(radius: f64, maxh: Option<f64>, tol: f64) -> usize {
+    use std::f64::consts::TAU;
+    // icosphere level-0 edge ~= 1.0515 R; each level halves it. Match it to the
+    // facet_count azimuthal chord (2*pi*R / n): level = log2(1.0515 n / (2 pi)).
+    let n = facet_count(radius, maxh, tol) as f64;
+    ((1.0515 * n / TAU).log2().ceil() as i64).clamp(1, 6) as usize
+}
+
 /// UV sphere: `segments` longitudes (>= 3), `rings` latitude bands (>= 2).
 pub fn sphere(center: [f64; 3], radius: f64, segments: usize, rings: usize) -> Faceted {
     assert!(segments >= 3 && rings >= 2, "sphere needs >= 3 segments, >= 2 rings");

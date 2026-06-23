@@ -512,19 +512,39 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 continue;
             }
             let old_pos = mesh.points[v];
-            let mut avg = [0.0f64; 3];
+            // longest incident edge: reference for the minimum-move gate.
             let mut lref2 = 0.0f64;
             for &w in &nbrs {
-                let mut d2 = 0.0;
-                for (k, a) in avg.iter_mut().enumerate() {
-                    *a += mesh.points[w][k];
-                    d2 += (mesh.points[w][k] - old_pos[k]).powi(2);
-                }
+                let d2: f64 = (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
                 lref2 = lref2.max(d2);
             }
-            for a in &mut avg {
-                *a /= nbrs.len() as f64;
+            // ODT relocation (volume-weighted): x* = Σ_T |T| · (sum of T's other
+            // three vertices) / (3 Σ_T |T|) -- the optimal-Delaunay update, far more
+            // sliver-resistant than the Laplacian neighbour average it replaces.
+            let mut onum = [0.0f64; 3];
+            let mut oden = 0.0f64;
+            for &ti in &inc {
+                let tet = mesh.tets[ti as usize];
+                let w6 = geometry_predicates::orient3d(
+                    mesh.points[tet[0]],
+                    mesh.points[tet[1]],
+                    mesh.points[tet[2]],
+                    mesh.points[tet[3]],
+                )
+                .abs();
+                for &u in &tet {
+                    if u != v {
+                        for k in 0..3 {
+                            onum[k] += w6 * mesh.points[u][k];
+                        }
+                    }
+                }
+                oden += w6;
             }
+            if oden < 1e-300 {
+                continue;
+            }
+            let avg: [f64; 3] = std::array::from_fn(|k| onum[k] / (3.0 * oden));
             let move2: f64 = (0..3).map(|k| (avg[k] - old_pos[k]).powi(2)).sum();
             if move2 < MIN_REL_MOVE * MIN_REL_MOVE * lref2 {
                 continue;

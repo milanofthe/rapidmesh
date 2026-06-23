@@ -247,7 +247,7 @@ impl DomainTree {
         //     point-to-segment graded distance). Filled by WP-R3; empty here.
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
-        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.tol_edge);
+        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.tol_edge, maxh);
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).
@@ -443,7 +443,7 @@ fn circumradius(a: V3, b: V3, c: V3) -> f64 {
 /// tri, so `FacetBvh` yields the graded point-to-segment distance). Where the edge
 /// curves no tighter than its surface (a cylinder rim), `R_edge` matches the face
 /// target and the MIN composition makes this a harmless no-op.
-fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64) -> Vec<(Tri, f64)> {
+fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri, f64)> {
     use rustc_hash::FxHashMap;
     let chord = (8.0 * deflection).sqrt();
     let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
@@ -469,21 +469,82 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64) -> Vec<(Tri, f64)> {
         .collect();
     feature.sort_unstable();
 
-    // Edge-curve neighbours of each feature vertex (its polyline link).
+    // Edge-curve neighbours of each feature vertex (its polyline link), and the
+    // CURVED analytic surfaces meeting along the curve at each vertex.
     let mut nbr: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+    let mut vert_surfs: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
     for &(a, b) in &feature {
         nbr.entry(a).or_default().push(b);
         nbr.entry(b).or_default().push(a);
+        if let Some(ss) = edge_surf.get(&key(a, b)) {
+            for &v in &[a, b] {
+                let e = vert_surfs.entry(v).or_default();
+                for &s in ss {
+                    if is_curved(s) && !e.contains(&s) {
+                        e.push(s);
+                    }
+                }
+            }
+        }
     }
-    // Osculating radius at a vertex: only where it has exactly two neighbours (a
-    // smooth interior point of the curve). Junctions / endpoints stay INFINITY.
+    // Project a point onto the ANALYTIC curved surface(s) meeting at the edge
+    // (alternating = POCS onto their intersection; planes are skipped, their
+    // `SurfaceKind::Plane` carries no geometry). This pulls the faceted chain onto
+    // the true curve, so the osculating radius below reflects the REAL curvature
+    // of the intersection -- not the spurious tiny radius a faceted polyline shows
+    // at every facet corner (the over-refinement that fanned out the borders).
+    let pocs = |p: V3, sids: &[u32]| -> V3 {
+        let mut q = p;
+        for _ in 0..8 {
+            for &s in sids {
+                q = crate::project::closest_on_surface(&plc.surfaces[s as usize], q);
+            }
+        }
+        q
+    };
+    // Osculating radius at a vertex (only where it has exactly two neighbours -- a
+    // smooth interior point; junctions/endpoints stay INFINITY). The radius is
+    // sampled with a CONTROLLED step `eps` along the curve tangent, each sample
+    // POCS-projected onto the curve, NOT from the raw faceted neighbours: the
+    // arrangement places intersection vertices at irregular spacing (often two
+    // almost coincident), whose 3-point circumradius is a spurious tiny value even
+    // on a straight edge. The fixed-baseline analytic estimate gives the TRUE
+    // curvature -- INFINITY on a straight intersection (e.g. plane-cut along a
+    // cylinder generator), the real radius on a genuinely curved one.
+    let eps = (0.35 * maxh).max(1e-9);
+    // Walk the polyline link away from `v` (first step toward `first`) until the
+    // accumulated arc length reaches `eps`, returning that on-curve vertex. A
+    // controlled baseline of REAL curve points -- robust to the arrangement's
+    // irregular vertex spacing AND, unlike a tangent-step + POCS, it does not
+    // collapse on a curved-curved intersection (where projecting a stepped point
+    // snaps back near `v`).
+    let walk = |start: u32, first: u32| -> u32 {
+        let (mut prev, mut cur) = (start, first);
+        let mut acc = dist(plc.vertices[start as usize], plc.vertices[first as usize]);
+        while acc < eps {
+            let next = match nbr.get(&cur) {
+                Some(ns) if ns.len() == 2 => {
+                    if ns[0] == prev { ns[1] } else { ns[0] }
+                }
+                _ => break, // junction / open end
+            };
+            acc += dist(plc.vertices[cur as usize], plc.vertices[next as usize]);
+            prev = cur;
+            cur = next;
+        }
+        cur
+    };
     let vert_radius = |v: u32| -> f64 {
-        match nbr.get(&v) {
-            Some(ns) if ns.len() == 2 => circumradius(
-                plc.vertices[ns[0] as usize],
-                plc.vertices[v as usize],
-                plc.vertices[ns[1] as usize],
-            ),
+        match (nbr.get(&v), vert_surfs.get(&v)) {
+            (Some(ns), Some(sids)) if ns.len() == 2 && !sids.is_empty() => {
+                let a = walk(v, ns[0]);
+                let b = walk(v, ns[1]);
+                circumradius(
+                    pocs(plc.vertices[a as usize], sids),
+                    pocs(plc.vertices[v as usize], sids),
+                    pocs(plc.vertices[b as usize], sids),
+                )
+            }
             _ => f64::INFINITY,
         }
     };

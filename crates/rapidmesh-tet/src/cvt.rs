@@ -751,8 +751,12 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         for t in &tets {
             let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
             let c = centroid4(p);
-            // DENSITY-WEIGHTED CVT (adaptive): weight by volume * rho, rho = 1/h^3,
-            // pulling sites toward finer regions (gated; uniform h => rho const).
+            let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
+            // DENSITY-WEIGHTED ODT (adaptive): weight by volume * rho (rho = 1/h^3,
+            // pulling sites toward finer regions). The ODT vertex update is
+            // x* = (Σ_T w · sum of T's OTHER three vertices) / (3 Σ_T w) -- the
+            // optimal-Delaunay relocation (sympy-derived), far more sliver-resistant
+            // than the CVT centroid it replaces.
             let w = if params.density_weighted {
                 let h = vol_field.at(c).min(region_cap(domain.region_at(c))).max(1e-9);
                 tet_det(p).abs() / (h * h * h)
@@ -761,7 +765,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             };
             for &i in t {
                 for k in 0..3 {
-                    num[i][k] += w * c[k];
+                    num[i][k] += w * (sum4[k] - pos[i][k]);
                 }
                 den[i] += w;
             }
@@ -774,7 +778,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if !sites[i].is_volume() || den[i] == 0.0 {
                 continue;
             }
-            let mut tgt: V3 = std::array::from_fn(|k| num[i][k] / den[i]);
+            let mut tgt: V3 = std::array::from_fn(|k| num[i][k] / (3.0 * den[i]));
             // A volume centroid outside the domain: mirror it back in across the
             // nearest carrier plane.
             if !inside(tgt) {

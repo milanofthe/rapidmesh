@@ -102,12 +102,98 @@ def _sizing_cases():
     return cases
 
 
+import math  # noqa: E402
+
+
+def _spiral(turns=3.0, r0=0.18, pitch=0.16, width=0.07, ppt=44):
+    """A planar spiral TRACK of constant width -> one closed outline (out along
+    the outer edge, back along the inner). The signature RF-inductor shape: thin
+    track, many near-parallel walls, a hard 2D meshing stress."""
+    n = int(turns * ppt)
+    cen = [(r0 + pitch * i / ppt, 2 * math.pi * i / ppt) for i in range(n + 1)]
+    out = [((r + width / 2) * math.cos(t), (r + width / 2) * math.sin(t)) for r, t in cen]
+    inn = [((r - width / 2) * math.cos(t), (r - width / 2) * math.sin(t)) for r, t in cen]
+    return out + inn[::-1]
+
+
+def _blob(n=170):
+    """An organic closed curve: radius = sum of low harmonics. Smooth, non-convex,
+    no straight edges -- the curvature-graded 2D case."""
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        r = 1.0 * (1 + 0.18 * math.cos(3 * a + 0.5) + 0.10 * math.cos(5 * a + 1.2) + 0.05 * math.cos(8 * a + 2.0))
+        pts.append((r * math.cos(a), r * math.sin(a)))
+    return pts
+
+
+def _gear(teeth=14, r_out=1.0, r_in=0.78):
+    """A cog: alternating radii -> many sharp reentrant corners."""
+    pts = []
+    for k in range(teeth):
+        a0 = 2 * math.pi * k / teeth
+        for frac, r in [(0.04, r_in), (0.18, r_out), (0.5, r_out), (0.64, r_in)]:
+            a = a0 + 2 * math.pi * frac / teeth
+            pts.append((r * math.cos(a), r * math.sin(a)))
+    return pts
+
+
+def _comb(fingers=5, w=1.8, base=0.25, fh=0.65):
+    """An interdigital-capacitor comb: a base bar with rectangular fingers (deep
+    slots, thin walls)."""
+    seg = w / (2 * fingers + 1)
+    pts = [(0.0, 0.0), (w, 0.0)]
+    for i in range(fingers):
+        x1 = w - (2 * i + 1) * seg
+        x2 = w - (2 * i + 2) * seg
+        pts += [(x1, base), (x1, base + fh), (x2, base + fh), (x2, base)]
+    pts.append((0.0, base))
+    return [(x - w / 2, y - 0.3) for x, y in pts]
+
+
+def _shape_cases():
+    """Complex / organic 2D polygon shapes (RF-passive-like and free-form), plus
+    extra graded 2D cases -- the 2D mesher's hardest inputs (thin tracks, sharp
+    reentrant corners, smooth curvature, strong grading)."""
+    cases = []
+
+    def add(name, h, fn, **mesh):
+        def make(_fn=fn, _h=h, _m=mesh):
+            g = rm.Geometry(maxh=_h)
+            g.polygon_plate(_fn())
+            return g.surface_mesh(**(_m or {"maxh": _h}))
+        cases.append((name, "Shape", "surf", make))
+
+    add("spiral_inductor", 0.05, _spiral, maxh=0.05)
+    add("organic_blob", 0.08, _blob, maxh=0.08)
+    add("gear", 0.07, _gear, maxh=0.07)
+    add("interdigital_comb", 0.06, _comb, maxh=0.06)
+
+    # graded 2D: a fine source point with the field growing linearly outward.
+    def blob_graded():
+        g = rm.Geometry()
+        g.polygon_plate(_blob())
+        g.refine_near_points([(1.18, 0.0, 0.0)], 0.025)
+        return g.surface_mesh(maxh=0.25, grading=0.3)
+    cases.append(("blob_graded", "Sizing", "surf", blob_graded))
+
+    # coarse-interior 2D: fine rim, coarse bulk (the classic FEM 2D layout).
+    def gear_coarse_interior():
+        g = rm.Geometry()
+        g.polygon_plate(_gear())
+        return g.surface_mesh(maxh_edge=0.035, maxh_surf=0.3)
+    cases.append(("gear_coarse_interior", "Sizing", "surf", gear_coarse_interior))
+
+    return cases
+
+
 #: The whole corpus: validate cases + showcase models + RF structures + sizing.
 CORPUS = (
     [_from_validate(*c) for c in V.CASES]
     + [_from_showcase(m) for m in _SC.MODELS]
     + [_from_rf(n) for n in _RF_FNS]
     + _sizing_cases()
+    + _shape_cases()
 )
 
 
@@ -167,6 +253,7 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--mesher", default="cdt", choices=["default", "cdt"], help="which mesher to map")
+    ap.add_argument("--no-render", action="store_true", help="skip the gallery render (metrics only)")
     args = ap.parse_args()
 
     print(f"corpus: {len(CORPUS)} geometries, mesher={args.mesher}")
@@ -192,3 +279,12 @@ if __name__ == "__main__":
         if r["status"] != "ok":
             print(f"  FAIL {r['name']:<22} {r['error']}")
     print(f"\n-> {out}")
+
+    # The gallery is part of every run: a benchmark with no fresh images leaves the
+    # human loop open (you can't eyeball what the metrics changed). Render unless
+    # explicitly skipped.
+    if not args.no_render:
+        print("\nrendering gallery (corpus)...")
+        from report import render_gallery
+        render_gallery.render_corpus()
+        print(f"-> {REPO / 'report' / 'figures' / 'gallery' / 'corpus'}")

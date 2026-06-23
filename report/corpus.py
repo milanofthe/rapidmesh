@@ -55,11 +55,59 @@ def _from_rf(fn_name):
     return (f"rf_{fn_name}", "RF", "vol", lambda f=fn: f())
 
 
-#: The whole corpus: validate cases + showcase models + RF structures.
+def _sizing_cases():
+    """Graded-sizing stress cases: LINEAR sizing (a fine size source, the field
+    growing linearly outward under the grading Lipschitz bound) and COARSE-INTERIOR
+    sizing (fine boundary, coarse bulk -- the classic FEM layout), in 2D and 3D."""
+    cases = []
+
+    def plate_linear():
+        g = rm.Geometry()
+        g.xy_plate(2.0, 1.2, position=(-1.0, -0.6, 0.0))
+        g.refine_near_points([(-1.0, -0.6, 0.0)], 0.04)  # fine at one corner
+        return g.surface_mesh(maxh=0.4, grading=0.3)
+    cases.append(("plate_linear", "Sizing", "surf", plate_linear))
+
+    def plate_coarse_interior():
+        g = rm.Geometry()
+        g.xy_plate(2.0, 1.2, position=(-1.0, -0.6, 0.0))
+        return g.surface_mesh(maxh_edge=0.05, maxh_surf=0.35)  # fine rim, coarse bulk
+    cases.append(("plate_coarse_interior", "Sizing", "surf", plate_coarse_interior))
+
+    def disc_coarse_interior():
+        g = rm.Geometry()
+        g.disc(1.0, segments=80)
+        return g.surface_mesh(maxh_edge=0.05, maxh_surf=0.4)
+    cases.append(("disc_coarse_interior", "Sizing", "surf", disc_coarse_interior))
+
+    def box_linear():
+        g = rm.Geometry()
+        g.box(2.0, 1.2, 1.0, position=(-1.0, -0.6, -0.5))
+        g.refine_near_points([(-1.0, -0.6, -0.5)], 0.08)  # fine at one corner
+        return g.mesh(maxh=0.5, grading=0.3)
+    cases.append(("box_linear", "Sizing", "vol", box_linear))
+
+    def box_coarse_interior():
+        g = rm.Geometry()
+        g.box(2.0, 1.2, 1.0, position=(-1.0, -0.6, -0.5))
+        return g.mesh(maxh_surf=0.12, maxh_vol=0.45)  # fine boundary, coarse bulk
+    cases.append(("box_coarse_interior", "Sizing", "vol", box_coarse_interior))
+
+    def sphere_coarse_interior():
+        g = rm.Geometry()
+        g.icosphere(1.0, subdivisions=3)
+        return g.mesh(maxh_surf=0.14, maxh_vol=0.5)
+    cases.append(("sphere_coarse_interior", "Sizing", "vol", sphere_coarse_interior))
+
+    return cases
+
+
+#: The whole corpus: validate cases + showcase models + RF structures + sizing.
 CORPUS = (
     [_from_validate(*c) for c in V.CASES]
     + [_from_showcase(m) for m in _SC.MODELS]
     + [_from_rf(n) for n in _RF_FNS]
+    + _sizing_cases()
 )
 
 

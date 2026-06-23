@@ -1164,11 +1164,14 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         let mut den = vec![0.0f64; all.len()];
         for t in &tets {
             let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
-            let c = centroid4(p);
+            let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
             let w = tet_det(p).abs();
+            // ODT relocation: x* = (Σ_T |T| · sum of T's OTHER three verts) /
+            // (3 Σ_T |T|) -- the optimal-Delaunay update (sympy-derived), far more
+            // sliver-resistant than the CVT/Voronoi centroid it replaces.
             for &i in t {
                 for k in 0..3 {
-                    num[i][k] += w * c[k];
+                    num[i][k] += w * (sum4[k] - all[i][k]);
                 }
                 den[i] += w;
             }
@@ -1185,7 +1188,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if den[i] == 0.0 {
                 continue;
             }
-            let tgt: V3 = std::array::from_fn(|c| num[i][c] / den[i]);
+            let tgt: V3 = std::array::from_fn(|c| num[i][c] / (3.0 * den[i]));
             if !inside(tgt) {
                 continue;
             }

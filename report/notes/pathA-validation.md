@@ -85,3 +85,26 @@ Boundary, aktiv pro Geometrie nur wenn *jede* Frozen-Facette eine Tet-Fläche is
    union_box_cyl, cyl_coarse_interior verlieren watertight) — Reconciliation an Region-
    Interfaces verfeinern.
 3. **WP #41** (fillcavity) für die unrecoverten Creases (orbs/bearing-Residuen).
+
+### Stufe-4-Befund (Boundary-Slivers) — Diagnose, nicht behoben
+
+Die min_dih→0 unter Path A (cylinder 14.41→0, ellipsoidish 20.58→0) sind ein
+**Flood-Klassifikations-Problem**, kein Reconciliation-Problem: der Flood behält einen
+flachen In-Domain-Tet, den die Centroid-Klassifikation droppt. Ein Reconciliation-
+Qualitäts-Guard (nur flippen wenn Band-Tets nicht-degeneriert) wurde versucht und war
+**kontraproduktiv** (watertight 47→45, neue non-manifold-Fälle) — falsche Ebene. Der
+korrekte Fix ist **Fixed-Boundary Interior-Insertion** (Klingner-Shewchuk: einen Interior-
+Steiner-Punkt neben den flachen Boundary-Tet setzen, der ihn splittet) — substanziell.
+
+### Validierter Path-A-Corpus-Stand (RAPIDMESH_PATHA, vs Baseline 47/61)
+
+- watertight 47, straddler-free 63.
+- **Sauber gefixt:** fused_unequal, rf_toroid_core, chain (→ watertight + straddler-frei).
+- **Regressionen:** Boundary-Slivers (cylinder/ellipsoidish min_dih→0, Stufe 4); non-manifold
+  Reconciliation auf Kreuzungs-/Union-Körpern (cross_cyl, frustum, union_box_cyl, fused_three).
+- **Default unverändert** (ohne RAPIDMESH_PATHA exakt die Baseline).
+
+Fazit: Path-A-Modus ist ein **validierter Teilerfolg** (fixt gezielte Straddler-Geometrien),
+aber wegen mehrerer unabhängiger Edge-Cases (Boundary-Slivers, non-manifold an Interfaces,
+unrecoverte Creases) **noch kein sauberer Default**. Jeder Edge-Case ist eigene fokussierte
+Arbeit.

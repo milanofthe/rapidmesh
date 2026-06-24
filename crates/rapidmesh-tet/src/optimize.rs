@@ -779,6 +779,20 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // apply does the conflict resolution (a tet claimed by an earlier flip is
         // skipped), exactly as the streaming `!alive` guard did.
         use rayon::prelude::*;
+        // Fill the quality cache for every active tet ONCE, in parallel, before the
+        // flip evals read it. A tet sits in many candidate faces/rings, so the old
+        // lazy `cached_q` recomputed it under contention; batch-filling it here (the
+        // same NaN-sentinel values) lets the parallel evals just look it up.
+        {
+            let q_pre: Vec<(usize, f64)> = map_tets
+                .par_iter()
+                .filter(|&&ti| tet_q[ti as usize].is_nan())
+                .map(|&ti| (ti as usize, quality(&mesh.points, mesh.tets[ti as usize])))
+                .collect();
+            for (ti, q) in q_pre {
+                tet_q[ti] = q;
+            }
+        }
         let mut groups23: Vec<([usize; 3], usize, usize)> = Vec::new();
         {
             let mut gi = 0;
@@ -813,7 +827,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
                 // `quality` is `cached_q` without the memo -- same value, and the
                 // cache cannot be shared across threads.
-                let old_q = quality(&mesh.points, mesh.tets[t1]).min(quality(&mesh.points, mesh.tets[t2]));
+                let old_q = tet_q[t1].min(tet_q[t2]);
                 if old_q >= TARGET_Q {
                     return None;
                 }
@@ -880,42 +894,67 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // new tet in the FIXED ring orientation (no flipping): a folded
         // triangulation triangle then shows up as a negative tet, so the
         // accepted complex tiles exactly the old star.
-        let mut gi = 0;
-        while gi < edge_entries.len() {
-            let key = edge_entries[gi].0;
-            let gj = gi + edge_entries[gi..].iter().take_while(|e| e.0 == key).count();
-            let owners = &edge_entries[gi..gj];
-            gi = gj;
-            let k = owners.len();
-            if !(3..=MAX_RING).contains(&k) || constrained_edges.contains(&key) {
-                continue;
+        // Same parallel-evaluate / sequential-apply pattern as the 2-3 flip: every
+        // ring around an edge is evaluated (ring walk + Klincsek DP, all read-only
+        // on the pass snapshot) in parallel, and the surviving plans are applied in
+        // group order under the `alive` guard -- bit-identical to the old streaming
+        // loop, with the DP work spread over the cores.
+        struct PlanEr {
+            ts: [usize; MAX_RING],
+            k: usize,
+            new_tets: Vec<[usize; 4]>,
+            ring: [usize; MAX_RING],
+            d: usize,
+            e: usize,
+            region: rapidmesh_geom::RegionTag,
+        }
+        let mut groups_er: Vec<((usize, usize), [usize; MAX_RING], usize)> = Vec::new();
+        {
+            let mut gi = 0;
+            while gi < edge_entries.len() {
+                let key = edge_entries[gi].0;
+                let gj = gi + edge_entries[gi..].iter().take_while(|e| e.0 == key).count();
+                let owners = &edge_entries[gi..gj];
+                gi = gj;
+                let k = owners.len();
+                if !(3..=MAX_RING).contains(&k) {
+                    continue;
+                }
+                let mut ts = [0usize; MAX_RING];
+                for (i, e) in owners.iter().enumerate() {
+                    ts[i] = e.1 as usize;
+                }
+                groups_er.push((key, ts, k));
             }
-            let mut ts = [0usize; MAX_RING];
-            for (i, e) in owners.iter().enumerate() {
-                ts[i] = e.1 as usize;
+        }
+        let plans_er: Vec<Option<PlanEr>> = groups_er
+            .par_iter()
+            .map(|&(key, ts_arr, k)| -> Option<PlanEr> {
+            let ts = &ts_arr[..k];
+            if constrained_edges.contains(&key) {
+                return None;
             }
-            let ts = &ts[..k];
             if ts.iter().any(|&t| !alive[t]) {
-                continue;
+                return None;
             }
             if !ts.iter().any(|&t| complex_changed(&mesh.tets[t])) {
-                continue;
+                return None;
             }
             if ts
                 .iter()
                 .any(|&t| mesh.tet_regions[t] != mesh.tet_regions[ts[0]])
             {
-                continue;
+                return None;
             }
             let old_q = {
                 let mut q = f64::MAX;
                 for &t in ts {
-                    q = q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, t));
+                    q = q.min(tet_q[t]);
                 }
                 q
             };
             if old_q >= TARGET_Q {
-                continue;
+                return None;
             }
             let (d, e) = key;
             // Each tet contributes the pair of its two non-(d,e) vertices;
@@ -953,7 +992,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
             if !ok || nv != k || deg[..k].iter().any(|&x| x != 2) {
-                continue;
+                return None;
             }
             let start = *vs[..k].iter().min().expect("nonempty");
             let mut ring = [usize::MAX; MAX_RING];
@@ -971,7 +1010,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             {
                 let slot = vs[..k].iter().position(|&w| w == ring[k - 1]).expect("in table");
                 if !adj[slot].contains(&start) {
-                    continue;
+                    return None;
                 }
             }
             // Orient the cycle so that consecutive pairs rotate positively
@@ -989,7 +1028,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 ring[..k].reverse();
             }
             if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
-                continue;
+                return None;
             }
             // Klincsek DP over the ring polygon: best[i][j] = max-min
             // quality of triangulating the sub-polygon ring[i..=j]. Each
@@ -1042,9 +1081,10 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
             if best[0][k - 1] <= old_q + QUALITY_EPS {
-                continue;
+                return None;
             }
             let region = mesh.tet_regions[ts[0]];
+            let mut new_tets: Vec<[usize; 4]> = Vec::new();
             let mut stack = [(0usize, 0usize); 2 * MAX_RING];
             stack[0] = (0, k - 1);
             let mut sp = 1usize;
@@ -1055,16 +1095,27 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     continue;
                 }
                 let m = cut[i][j];
-                added.push(([ring[i], ring[m], ring[j], e], region));
-                added.push(([ring[i], ring[j], ring[m], d], region));
+                new_tets.push([ring[i], ring[m], ring[j], e]);
+                new_tets.push([ring[i], ring[j], ring[m], d]);
                 stack[sp] = (i, m);
                 stack[sp + 1] = (m, j);
                 sp += 2;
             }
-            for &t in ts {
+            Some(PlanEr { ts: ts_arr, k, new_tets, ring, d, e, region })
+            })
+            .collect();
+        for plan in &plans_er {
+            let Some(p) = plan else { continue };
+            if p.ts[..p.k].iter().any(|&t| !alive[t]) {
+                continue; // a ring tet was claimed by an earlier apply this pass
+            }
+            for tn in &p.new_tets {
+                added.push((*tn, p.region));
+            }
+            for &t in &p.ts[..p.k] {
                 alive[t] = false;
             }
-            for &v in ring[..k].iter().chain([d, e].iter()) {
+            for &v in p.ring[..p.k].iter().chain([p.d, p.e].iter()) {
                 next_dirty.insert(v);
             }
             ops += 1;

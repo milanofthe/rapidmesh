@@ -24,6 +24,11 @@ pub(crate) const LLOYD_ITERS: usize = 8;
 /// Lloyd converges when the largest site move drops below this fraction of the
 /// spacing (and nothing new was inserted).
 pub(crate) const LLOYD_CONVERGE_FRAC: f64 = 0.02;
+/// Adaptive Lloyd termination: once no new seeds are being inserted, stop after
+/// this many consecutive passes that fail to shed any further interior slivers
+/// (the layout has plateaued; the geometric `max_move` criterion almost never
+/// bites, so this quality plateau is what actually ends easy geometries early).
+pub(crate) const LLOYD_QUALITY_STALL: usize = 2;
 /// 2D surface Lloyd passes for a planar/chart face (`cvt_fill`).
 pub(crate) const SURF_LLOYD_ITERS: usize = 4;
 

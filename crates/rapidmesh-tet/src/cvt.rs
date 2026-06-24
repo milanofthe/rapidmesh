@@ -46,8 +46,8 @@ type DSet<T> = HashSet<T, DHasher>;
 
 // All tuning constants are centralised in crate::constants.
 use crate::constants::{
-    BOX_PAD_FRAC, DEFAULT_SUBDIV, LLOYD_CONVERGE_FRAC, LLOYD_ITERS, SEPARATION_FRAC,
-    SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS, TET_FACES,
+    BOX_PAD_FRAC, DEFAULT_SUBDIV, LLOYD_CONVERGE_FRAC, LLOYD_ITERS, LLOYD_QUALITY_STALL,
+    SEPARATION_FRAC, SLIVER_DEG, SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS, TET_FACES,
 };
 
 fn sub(a: V3, b: V3) -> V3 {
@@ -1156,16 +1156,30 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
     };
+    // Adaptive termination state: the fewest interior slivers seen so far and a
+    // plateau counter (only armed once insertions stop). LLOYD_ITERS is the hard
+    // cap; the quality plateau ends easy geometries well before it.
+    let mut lloyd_passes = 0usize;
+    let mut best_slivers = usize::MAX;
+    let mut q_stall = 0usize;
     for _ in 0..LLOYD_ITERS {
+        lloyd_passes += 1;
         let mut all: Vec<V3> = surf_points.clone();
         all.extend_from_slice(&interior);
         let tets = build_full(&all);
         let mut num = vec![[0.0f64; 3]; all.len()];
         let mut den = vec![0.0f64; all.len()];
+        let mut slivers = 0usize;
         for t in &tets {
             let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
             let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
             let w = tet_det(p).abs();
+            // Quality monitor: count IN-DOMAIN slivers of this pass's layout to
+            // drive adaptive termination (exterior hull tets are excluded so the
+            // count tracks the mesh we actually keep).
+            if crate::diagnostics::tet_min_dihedral(p) < SLIVER_DEG && inside(centroid4(p)) {
+                slivers += 1;
+            }
             // ODT relocation: x* = (Σ_T |T| · sum of T's OTHER three verts) /
             // (3 Σ_T |T|) -- the optimal-Delaunay update (sympy-derived), far more
             // sliver-resistant than the CVT/Voronoi centroid it replaces.
@@ -1279,11 +1293,29 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             interior.extend(adds);
         }
 
-        if inserted == 0 && max_move < LLOYD_CONVERGE_FRAC * spacing {
-            break;
+        // Adaptive termination. While the field is still being seeded keep
+        // going (insertions transiently raise the sliver count); once seeding
+        // stops, end when the layout has settled geometrically OR stopped
+        // shedding slivers for LLOYD_QUALITY_STALL passes.
+        if inserted > 0 {
+            best_slivers = best_slivers.min(slivers);
+            q_stall = 0;
+        } else {
+            if slivers < best_slivers {
+                best_slivers = slivers;
+                q_stall = 0;
+            } else {
+                q_stall += 1;
+            }
+            if max_move < LLOYD_CONVERGE_FRAC * spacing || q_stall >= LLOYD_QUALITY_STALL {
+                break;
+            }
         }
     }
     rmlog::stage("mesh_cdt.lloyd", t_lloyd.elapsed().as_secs_f64());
+    if std::env::var_os("RAPIDMESH_LLOYD_TRACE").is_some() {
+        eprintln!("LLOYD_PASSES {lloyd_passes} surf {} interior {} slivers {} time_ms {:.0}", n_surf, interior.len(), best_slivers, t_lloyd.elapsed().as_secs_f64() * 1000.0);
+    }
 
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();

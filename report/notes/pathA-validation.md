@@ -108,3 +108,23 @@ Fazit: Path-A-Modus ist ein **validierter Teilerfolg** (fixt gezielte Straddler-
 aber wegen mehrerer unabhängiger Edge-Cases (Boundary-Slivers, non-manifold an Interfaces,
 unrecoverte Creases) **noch kein sauberer Default**. Jeder Edge-Case ist eigene fokussierte
 Arbeit.
+
+### Entscheidender Befund — die Residuen sind INTERCONNECTED
+
+Diese Session hat mit ~10 validierten Reverts empirisch gezeigt, dass die Path-A-Residuen
+sich **gegenseitig bedingen** — jeder Einzel-Mechanismus-Fix verschlechtert einen anderen:
+
+| Fix-Versuch | fixt | bricht |
+|---|---|---|
+| Steiner-Split (Recovery) | manche Creases | kaskadiert (mold_block surf_tris 1201→18562) |
+| fillcavity (Recovery) | Creases (theoretisch) | divergiert (missing wächst statt zu konvergieren) |
+| Reconciliation-Qualitäts-Guard | Idee: flache Bänder | kontraproduktiv (watertight 47→45) |
+| Boundary-Layer (Skin-Tets) | Qualität (ellipsoid 0→23.7) | Straddler (bearing 218→699) |
+
+Der gemeinsame Nenner: near-surface-Manipulation, die Konformität herstellt, erzeugt
+Interior-Leaks/Slivers, und umgekehrt. **Das ist die strukturelle Wurzel, warum Path A
+(separate gefrorene Surface mit dem Volumen versöhnen) kein sauberer Default wird.**
+
+→ Die Recherche-Empfehlung **Path B** (Restricted-Delaunay-Rand direkt aus dem analytischen
+Oracle, Rand aus dem Volumen abgeleitet statt versöhnt) umgeht diese Interconnection an der
+Wurzel und ist nach dieser exhaustiven Validierung die evidenzbasierte Richtung.

@@ -15,38 +15,17 @@ use crate::{
     Brep, CoEdge, CoEdgeId, Curve, Edge, EdgeId, Face, FaceId, Loop, PCurve, Surface, SurfaceId,
     Vertex, VertexId,
 };
+use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, dist, normalize as norm};
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 // Deterministic (seedless) hashers: from_plc's map ITERATION order sets the
 // B-rep edge / face / vertex order, which flows into the surface point order and
 // the mesh -- std's RandomState would make the whole mesh vary run to run.
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-type V3 = [f64; 3];
-
 /// Turn cosine below which a degree-2 vertex is still a corner (45 deg), matching
 /// the mesher's feature-edge splitter.
 const CORNER_COS: f64 = 0.707;
 
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-fn norm(a: V3) -> V3 {
-    let l = dot(a, a).sqrt();
-    if l > 0.0 {
-        [a[0] / l, a[1] / l, a[2] / l]
-    } else {
-        a
-    }
-}
-fn dist(a: V3, b: V3) -> f64 {
-    dot(sub(a, b), sub(a, b)).sqrt()
-}
 fn key2(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
@@ -490,13 +469,6 @@ fn recover_curve(
     }
 
     Curve::Polyline
-}
-
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// The chain's best-fit plane `(centroid, unit Newell normal)`; `None` if degenerate.

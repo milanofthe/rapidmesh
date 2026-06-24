@@ -6,19 +6,8 @@
 //! incidence (region -> faces -> edges) so a scope can walk down the hierarchy.
 
 use crate::{Brep, Curve};
+use rapidmesh_geom::vec3::{V3, sub, cross, len as norm};
 use rapidmesh_geom::TaggedPlc;
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-fn norm(a: V3) -> f64 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
-}
 
 /// Analytic curve kind of an edge, as a small code (for the Python selector to
 /// distinguish straight from curved edges without the full enum).

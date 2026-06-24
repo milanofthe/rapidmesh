@@ -17,22 +17,15 @@
 //! recovered the boundary only statistically (\cref{sec:conformity}).
 
 use crate::delaunay::DelaunayBuilder;
+use rapidmesh_geom::vec3::{V3, sub, dot};
 use crate::site::{Carrier, Site};
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
-type V3 = [f64; 3];
 /// Deterministic hashing: region flooding iterates face buckets, and the mesh
 /// must be reproducible run to run.
 type BH = BuildHasherDefault<rustc_hash::FxHasher>;
 // ---- region classification by flood fill ------------------------------------
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
 
 /// Assigns each tet a region tag by flood fill, blocked by the surface. The
 /// oracle `surface_face(&sorted_tri)` returns `Some((front, back, n))` if that

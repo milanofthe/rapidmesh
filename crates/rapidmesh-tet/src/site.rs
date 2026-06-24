@@ -9,29 +9,9 @@
 //! boundaries) and surface oversampling, not from exact coordinates.
 
 use crate::project;
+use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, len as norm};
 use rapidmesh_exact::Point3;
 use rapidmesh_geom::SurfaceKind;
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-fn norm(a: V3) -> f64 {
-    dot(a, a).sqrt()
-}
 
 /// A deterministic orthonormal in-plane basis `(e1, e2)` for the plane with unit
 /// normal `n`: cross `n` with whichever world axis is least aligned with it

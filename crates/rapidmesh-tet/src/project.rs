@@ -10,9 +10,8 @@
 //! is a tolerance property, matching the curved-scene fixtures).
 
 use rapidmesh_geom::nurbs::NurbsCurve;
+use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, len as norm, normalize};
 use rapidmesh_geom::SurfaceKind;
-
-type V3 = [f64; 3];
 
 /// Nearest parameter on a 2D curve to point `q` (the footpoint): a coarse scan
 /// for a basin, then Newton on `g(t) = (C(t) - q) . C'(t) = 0`.
@@ -46,37 +45,6 @@ pub fn curve_footpoint(curve: &NurbsCurve, q: [f64; 2]) -> f64 {
         }
     }
     t
-}
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-fn norm(a: V3) -> f64 {
-    dot(a, a).sqrt()
-}
-fn normalize(a: V3) -> V3 {
-    let l = norm(a);
-    if l == 0.0 {
-        a
-    } else {
-        scale(a, 1.0 / l)
-    }
 }
 
 /// Some unit vector perpendicular to `a` (for degenerate on-axis cases).

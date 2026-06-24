@@ -15,6 +15,7 @@ pub mod plc;
 pub mod polygon;
 pub mod prim;
 pub mod scene;
+pub mod vec3;
 
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
 pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, ImportError};

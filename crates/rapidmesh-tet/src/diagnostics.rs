@@ -10,10 +10,9 @@
 //! the picture so every later step is measurable and visible.
 
 use crate::conform::TetMesh;
+use rapidmesh_geom::vec3::{V3, sub, dist};
 use crate::project::closest_on_surface;
 use rapidmesh_geom::SurfaceKind;
-
-type V3 = [f64; 3];
 
 /// The kind of a located mesh defect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,12 +69,6 @@ pub struct MeshDiagnostics {
 /// Tets below this smallest-dihedral angle (degrees) are counted as slivers.
 pub use crate::constants::SLIVER_DEG;
 
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dist(a: V3, b: V3) -> f64 {
-    sub(a, b).iter().map(|x| x * x).sum::<f64>().sqrt()
-}
 fn centroid(ps: &[V3]) -> V3 {
     let n = ps.len() as f64;
     std::array::from_fn(|k| ps.iter().map(|p| p[k]).sum::<f64>() / n)

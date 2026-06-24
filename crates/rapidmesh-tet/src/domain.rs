@@ -16,26 +16,15 @@
 //! boundary into the coarse interior.
 
 use crate::conform::MeshParams;
+use rapidmesh_geom::vec3::{V3, sub, dot, dist};
 use crate::facetbvh::FacetBvh;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 
-type V3 = [f64; 3];
-
 use crate::constants::DOMAIN_MAX_DEPTH as MAX_DEPTH;
 /// Grading falloff cap distance is implicit in `grading`; the boundary target.
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn dist(a: V3, b: V3) -> f64 {
-    dot(sub(a, b), sub(a, b)).sqrt()
-}
-
 enum Node {
     Leaf(Leaf),
     Inner(Box<[Node; 8]>),

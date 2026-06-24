@@ -11,8 +11,7 @@
 //! inverse map (`(x,y,z) -> (u,v)`, a Newton projection) lands when the mesher
 //! needs it; point evaluation is exact and complete here.
 
-type V3 = [f64; 3];
-
+use crate::vec3::{V3};
 /// A tensor-product rational B-spline surface `S(u,v)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NurbsSurface {

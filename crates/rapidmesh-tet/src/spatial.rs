@@ -4,10 +4,9 @@
 //!
 //! `build` takes a point slice and queries return indices into that slice.
 
-type V3 = [f64; 3];
-
 // Leaf capacity + depth cap: see crate::constants.
 use crate::constants::{OCTREE_LEAF_CAP as LEAF_CAP, OCTREE_MAX_DEPTH as MAX_DEPTH};
+use rapidmesh_geom::vec3::{V3};
 
 fn dist2(a: V3, b: V3) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

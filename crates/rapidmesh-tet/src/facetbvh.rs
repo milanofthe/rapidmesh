@@ -10,15 +10,7 @@
 //! both queries prune by a node lower bound (branch and bound).
 
 use rapidmesh_csg::Tri;
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
+use rapidmesh_geom::vec3::{V3, sub, dot};
 
 /// Squared distance from point `p` to triangle `t` (closest-point clamp).
 pub fn point_tri_dist2(p: V3, t: &Tri) -> f64 {

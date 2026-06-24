@@ -8,6 +8,7 @@
 //! unchanged.
 
 use crate::conform::{MeshParams, SurfaceFace};
+use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross};
 use crate::curve::{distribute, Curve, PolylineCurve};
 use crate::site::{Carrier, Site};
 use crate::surf2d::{cvt_fill, triangulate_constrained};
@@ -17,7 +18,6 @@ use rapidmesh_geom::nurbs::NurbsCurve;
 use rapidmesh_geom::{FaceTag, SurfaceKind, TaggedPlc};
 use std::sync::Arc;
 
-type V3 = [f64; 3];
 type P2 = [f64; 2];
 
 use crate::constants::{OVERSAMPLE, SURF_LLOYD_ITERS};
@@ -97,22 +97,6 @@ fn in_loops(uv: P2, segs: &[(P2, P2)]) -> bool {
         }
     }
     c
-}
-
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
 /// Geodesic (icosphere) vertices + triangles, `subdivisions` Loop steps, every

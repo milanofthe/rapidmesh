@@ -22,11 +22,11 @@
 //! volume error.
 
 use crate::project::{closest_on_surface, curve_footpoint};
+use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, len as norm, normalize};
 use rapidmesh_geom::nurbs::NurbsCurve;
 use rapidmesh_geom::SurfaceKind;
 use std::sync::Arc;
 
-type V3 = [f64; 3];
 type P2 = [f64; 2];
 
 /// A 2D chart of a curved surface for the curved CVT: a (near) distance-faithful
@@ -212,32 +212,6 @@ impl SurfaceChart for ExtrudedChart {
     }
 }
 
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add(a: V3, b: V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-fn norm(a: V3) -> f64 {
-    dot(a, a).sqrt()
-}
-fn normalize(a: V3) -> V3 {
-    let l = norm(a);
-    if l == 0.0 {
-        a
-    } else {
-        scale(a, 1.0 / l)
-    }
-}
 fn any_perp(a: V3) -> V3 {
     let t = if a[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
     normalize(cross(a, t))

@@ -20,6 +20,7 @@
 //! no half-edge/pcurve/shell/region machinery here.
 
 use rapidmesh_geom::{FaceTag, RegionTag};
+use rapidmesh_geom::vec3::{V3};
 use std::sync::Arc;
 
 pub mod build;
@@ -29,7 +30,6 @@ pub mod topology;
 pub use surface::Surface;
 pub use topology::{extract_topology, EdgeKind, EdgeTopo, FaceTopo, Topology};
 
-type V3 = [f64; 3];
 type P2 = [f64; 2];
 
 // ---- ids -----------------------------------------------------------------

@@ -20,6 +20,7 @@
 //! rejected (kept).
 
 use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFace, SurfaceMesh, TetMesh};
+use rapidmesh_geom::vec3::{V3, sub, scale, dot, cross, dist};
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::seed::SizingField;
@@ -33,8 +34,6 @@ use rapidmesh_exact::Point3;
 use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-
-type V3 = [f64; 3];
 
 /// Deterministic hashing: the mesher iterates these containers (boundary edges,
 /// face owners, tilings), and the result must be reproducible run-to-run, so a
@@ -50,21 +49,6 @@ use crate::constants::{
     SEPARATION_FRAC, SLIVER_DEG, SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS, TET_FACES,
 };
 
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-}
-fn scale(a: V3, s: f64) -> V3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn dist(a: V3, b: V3) -> f64 {
-    dot(sub(a, b), sub(a, b)).sqrt()
-}
 fn tet_det(p: [V3; 4]) -> f64 {
     dot(sub(p[1], p[0]), cross(sub(p[2], p[0]), sub(p[3], p[0])))
 }

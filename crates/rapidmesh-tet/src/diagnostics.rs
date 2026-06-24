@@ -244,23 +244,34 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     // (centroid off-surface) is the realised geometric accuracy.
     let mut max_dev = 0.0f64;
     let mut n_straddlers = 0usize;
+    // The curved analytic surfaces, used as a best-fit basis. A boundary point is
+    // measured against the surface it ACTUALLY lies on (the nearest one), not the
+    // face's tagged surface: near an intersection ring a face is easily tagged with
+    // the wrong sphere, and a tagged-only test then reports a phantom straddler for
+    // every on-surface vertex it mislabels. Planes carry no geometry here
+    // (`closest_on_surface` is the identity), so they cannot anchor the fit.
+    let curved: Vec<&SurfaceKind> =
+        mesh.surfaces.iter().filter(|k| !matches!(k, SurfaceKind::Plane)).collect();
+    let nearest_off = |q: V3| -> f64 {
+        curved.iter().map(|k| dist(q, closest_on_surface(k, q))).fold(f64::INFINITY, f64::min)
+    };
     for f in &mesh.faces {
         let kind = &mesh.surfaces[f.surface as usize];
-        if matches!(kind, SurfaceKind::Plane) {
+        if matches!(kind, SurfaceKind::Plane) || curved.is_empty() {
             continue; // planar faces are exact; deviation is 0
         }
         let v = [pt(f.tri[0]), pt(f.tri[1]), pt(f.tri[2])];
         let longest = (0..3).map(|k| dist(v[k], v[(k + 1) % 3])).fold(0.0f64, f64::max);
-        // straddler: a VERTEX off the surface (surface points are on it, so any
-        // sizeable offset is an interior point that leaked in).
-        let vmax_off = v.iter().map(|&q| dist(q, closest_on_surface(kind, q))).fold(0.0f64, f64::max);
+        // straddler: a VERTEX off EVERY analytic surface (a genuinely leaked
+        // interior point), not merely off this face's tagged surface.
+        let vmax_off = v.iter().map(|&q| nearest_off(q)).fold(0.0f64, f64::max);
         if longest > 0.0 && vmax_off > 0.25 * longest {
             n_straddlers += 1;
             defects.push(Defect { kind: DefectKind::Straddler, pos: centroid(&v), value: vmax_off });
         }
-        // accuracy: chord sagitta = centroid off-surface.
-        let c = centroid(&v);
-        max_dev = max_dev.max(dist(c, closest_on_surface(kind, c)));
+        // accuracy: chord sagitta = centroid distance to the nearest true surface
+        // (a real bridge face -- flat over a concave crease -- still reports far off).
+        max_dev = max_dev.max(nearest_off(centroid(&v)));
     }
 
     MeshDiagnostics {

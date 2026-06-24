@@ -2348,6 +2348,77 @@ fn project_onto_all(cons: &[SurfConstraint], mut q: [f64; 3], tol: f64) -> Optio
     None
 }
 
+/// SOT-driven boundary snap. A boundary vertex sitting OFF the analytic surface
+/// its incident boundary faces approximate is a leaked interior point -- the
+/// restricted-Delaunay boundary dipped to grab it (a straddler). Project it back
+/// onto that source-of-truth surface, accepting the move only if every incident
+/// tet stays positively oriented (the residual shift is a fraction of an edge, so
+/// it rarely inverts one). This pulls the realised boundary onto the SOT without
+/// touching connectivity, so watertightness is preserved by construction; a vertex
+/// whose snap would invert a tet is left in place for later local repair. Returns
+/// the number of vertices snapped.
+pub fn snap_boundary_to_surface(mesh: &mut TetMesh) -> usize {
+    // Vertex -> incident tets.
+    let mut inc: Vec<Vec<u32>> = vec![Vec::new(); mesh.points.len()];
+    for (ti, t) in mesh.tets.iter().enumerate() {
+        for &v in t {
+            inc[v].push(ti as u32);
+        }
+    }
+    // Boundary vertex -> the curved analytic surface most of its incident
+    // boundary faces approximate (planar faces are exact, handled elsewhere).
+    let mut vsurf: DMap<usize, DMap<u32, u32>> = DMap::default();
+    for f in &mesh.faces {
+        if matches!(mesh.surfaces[f.surface as usize], SurfaceKind::Plane) {
+            continue;
+        }
+        for &v in &f.tri {
+            *vsurf.entry(v).or_default().entry(f.surface).or_insert(0) += 1;
+        }
+    }
+    let mut snap: Vec<(usize, u32)> = vsurf
+        .iter()
+        .map(|(&v, tags)| (v, *tags.iter().max_by_key(|(_, &c)| c).unwrap().0))
+        .collect();
+    snap.sort_unstable(); // deterministic order (mesh must be reproducible)
+
+    let mut moved = 0usize;
+    for (v, surf) in snap {
+        let kind = &mesh.surfaces[surf as usize];
+        let p = mesh.points[v];
+        let q = project_to_surface(kind, p);
+        let d2: f64 = (0..3).map(|k| (q[k] - p[k]).powi(2)).sum();
+        if d2 <= 1e-20 {
+            continue; // already on the surface (a genuine surface vertex)
+        }
+        // Cap the snap to a boundary-layer leak (< 0.5 of the shortest incident
+        // edge); a larger residual is a mis-tagged deep vertex we must not move.
+        let mut min_edge2 = f64::MAX;
+        for &ti in &inc[v] {
+            for &w in &mesh.tets[ti as usize] {
+                if w != v {
+                    let e2: f64 = (0..3).map(|k| (mesh.points[w][k] - p[k]).powi(2)).sum();
+                    min_edge2 = min_edge2.min(e2);
+                }
+            }
+        }
+        if d2 > 0.25 * min_edge2 {
+            continue;
+        }
+        // Accept only if every incident tet stays positively oriented with v at q.
+        let ok = inc[v].iter().all(|&ti| {
+            let t = mesh.tets[ti as usize];
+            let c: [[f64; 3]; 4] = std::array::from_fn(|j| if t[j] == v { q } else { mesh.points[t[j]] });
+            Sign::of_f64(geometry_predicates::orient3d(c[0], c[1], c[2], c[3])) == Sign::Positive
+        });
+        if ok {
+            mesh.points[v] = q;
+            moved += 1;
+        }
+    }
+    moved
+}
+
 #[allow(clippy::too_many_arguments)]
 fn surface_pass(
     mesh: &mut TetMesh,

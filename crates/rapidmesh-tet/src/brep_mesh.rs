@@ -14,7 +14,7 @@ use crate::surf2d::{cvt_fill, triangulate_constrained};
 use crate::surfchart::{build_chart, PlaneChart, SurfaceChart};
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind, TaggedPlc};
+use rapidmesh_geom::{FaceTag, SurfaceKind, TaggedPlc};
 use std::sync::Arc;
 
 type V3 = [f64; 3];
@@ -855,7 +855,7 @@ pub fn surface_sites(
                             grid.push(row);
                         }
                         let car = Carrier::Surface(kind.clone());
-                        let mut push = |tri: [usize; 3], tris: &mut Vec<SurfaceFace>, tc: &mut Vec<Carrier>| {
+                        let push = |tri: [usize; 3], tris: &mut Vec<SurfaceFace>, tc: &mut Vec<Carrier>| {
                             tris.push(SurfaceFace {
                                 tri,
                                 face_tag: face.face_tag,

@@ -432,6 +432,12 @@ impl SceneBuilder {
             if std::env::var_os("RAPIDMESH_SNAP").is_some() {
                 let n = rapidmesh_tet::snap_boundary_to_surface(&mut mesh);
                 rapidmesh_exact::log::stat("snap.boundary_verts", n as f64);
+                // Snapping a leaked vertex onto the surface squishes the tet
+                // between it and its neighbour into a sliver (a short surface
+                // edge); a second optimize pass collapses those away.
+                if n > 0 && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none() {
+                    optimize(&mut mesh, &opt);
+                }
             }
             // Quality (with the worst element's location/region), logged so a
             // verbose run reports not just timings but where the mesh is worst.

@@ -24,6 +24,7 @@ pub mod domain;
 pub mod facetbvh;
 pub mod optimize;
 pub mod project;
+pub mod recover;
 pub mod seed;
 pub mod sizefield;
 pub mod site;

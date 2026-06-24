@@ -1369,12 +1369,30 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let pts = con.points;
     rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
 
-    // ---- region classification (centroid; exact, no straddlers) -----------
-    let region: Vec<u32> = con
-        .tets
-        .par_iter()
-        .map(|t| domain.region_at(centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]])))
-        .collect();
+    // ---- region classification --------------------------------------------
+    // Default: centroid inside/outside test against the faceted PLC. This keeps
+    // tets whose centroid is inside the faceting but outside the true (finer)
+    // surface, so the kept volume bulges past the bottom-up surface (the n>=2
+    // conformity gap). RAPIDMESH_FLOOD instead floods the region tag blocked by
+    // the frozen surface faces (cdt3::classify_regions): the kept volume then
+    // conforms exactly to that surface -- no bulge -- provided every frozen face
+    // is a tet face (facet recovery seals the remaining leaks).
+    let region: Vec<u32> = if std::env::var_os("RAPIDMESH_FLOOD").is_some() {
+        let mut oracle: DMap<[usize; 3], (u32, u32, V3)> = DMap::default();
+        for f in &surf_faces {
+            let p = [pts[f.tri[0]], pts[f.tri[1]], pts[f.tri[2]]];
+            let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            let mut k = f.tri;
+            k.sort_unstable();
+            oracle.insert(k, (f.regions[0].0, f.regions[1].0, n));
+        }
+        crate::cdt3::classify_regions(&con.tets, &pts, |f| oracle.get(f).copied())
+    } else {
+        con.tets
+            .par_iter()
+            .map(|t| domain.region_at(centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]])))
+            .collect()
+    };
     let mut kept: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     for (t, &r) in con.tets.iter().zip(&region) {
@@ -1456,6 +1474,45 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             surface,
         });
     }
+
+    // The bottom-up surface stage already produced a clean, watertight surface
+    // (surf_faces, 0 straddlers). Taking it directly as the boundary -- instead of
+    // re-extracting it from the volume by region difference, which bridges concave
+    // creases -- gives an exact boundary. The frozen tris index the same points (the
+    // surface vertices lead `pts`), so they need no remapping. (Volume conformity to
+    // these faces is the job of facet recovery; this is the extraction side.)
+    let faces = if std::env::var_os("RAPIDMESH_FROZEN_FACES").is_some() {
+        if std::env::var_os("RAPIDMESH_CONFORM_PROBE").is_some() {
+            // Conformity: how many frozen boundary faces are actually a face of a
+            // KEPT tet. A gap means the volume does not conform there (the facet
+            // recovery's real job, hidden by the clean face-set metrics).
+            let mut kept_faces: DMap<[usize; 3], usize> = DMap::default();
+            for t in &kept {
+                for fv in &TET_FACES {
+                    let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
+                    f.sort_unstable();
+                    *kept_faces.entry(f).or_insert(0) += 1;
+                }
+            }
+            let (mut n1, mut n0, mut n2) = (0usize, 0usize, 0usize);
+            for sf in &surf_faces {
+                let mut k = sf.tri;
+                k.sort_unstable();
+                match kept_faces.get(&k).copied().unwrap_or(0) {
+                    1 => n1 += 1,        // conformal boundary face
+                    0 => n0 += 1,        // not a kept-tet face at all (missing/discarded)
+                    _ => n2 += 1,        // interior to kept volume (volume pokes outside)
+                }
+            }
+            eprintln!(
+                "[conform] frozen_faces={} conformal(n=1)={n1} missing(n=0)={n0} interior(n>=2)={n2}",
+                surf_faces.len(),
+            );
+        }
+        surf_faces.clone()
+    } else {
+        faces
+    };
 
     let point_size: Vec<f64> = pts.iter().map(|&p| domain.h_at(p)).collect();
     let mesh = TetMesh {

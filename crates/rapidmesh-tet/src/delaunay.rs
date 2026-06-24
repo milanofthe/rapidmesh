@@ -927,10 +927,24 @@ impl DelaunayBuilder {
     /// left untouched in that case only up to this validation (no partial
     /// state is written before it passes).
     pub fn replace_cavity(&mut self, removed: &[u32], new_tets: &[[usize; 4]]) {
+        assert!(
+            self.try_replace_cavity(removed, new_tets),
+            "replace_cavity: invalid replacement (orientation or boundary balance)",
+        );
+    }
+
+    /// Like [`DelaunayBuilder::replace_cavity`], but returns `false` (leaving the
+    /// triangulation untouched) instead of panicking when the replacement fails
+    /// validation. Constrained recovery uses this to attempt a forced-facet
+    /// retetrahedralization and cleanly fall back if the gift-wrap produced an
+    /// invalid tiling, without corrupting or aborting the mesh.
+    pub fn try_replace_cavity(&mut self, removed: &[u32], new_tets: &[[usize; 4]]) -> bool {
         let removed_set: rustc_hash::FxHashSet<u32> = removed.iter().copied().collect();
-        assert_eq!(removed_set.len(), removed.len(), "duplicate removed slot");
-        for &s in removed {
-            assert!(self.alive[s as usize], "removed slot {s} is not alive");
+        if removed_set.len() != removed.len() {
+            return false; // duplicate removed slot
+        }
+        if removed.iter().any(|&s| !self.alive[s as usize]) {
+            return false; // a removed slot is not alive
         }
 
         // Oriented boundary of the removed region, keyed by sorted vertex
@@ -948,8 +962,9 @@ impl DelaunayBuilder {
                 let f = face(t, i);
                 let mut key = f;
                 key.sort_unstable();
-                let prev = boundary.insert(key, (f, nb));
-                assert!(prev.is_none(), "removed region has a pinched boundary face");
+                if boundary.insert(key, (f, nb)).is_some() {
+                    return false; // removed region has a pinched boundary face
+                }
             }
         }
 
@@ -959,11 +974,9 @@ impl DelaunayBuilder {
         let mut open: rustc_hash::FxHashMap<[u32; 3], [u32; 3]> = rustc_hash::FxHashMap::default();
         for t in new_tets {
             let ti: [u32; 4] = std::array::from_fn(|k| (t[k] + 4) as u32);
-            assert_eq!(
-                orient(&self.pts, &self.exact, ti[0], ti[1], ti[2], ti[3]),
-                Sign::Positive,
-                "replacement tet {t:?} is not positively oriented",
-            );
+            if orient(&self.pts, &self.exact, ti[0], ti[1], ti[2], ti[3]) != Sign::Positive {
+                return false; // replacement tet is not positively oriented
+            }
             for i in 0..4 {
                 let f = face(ti, i);
                 let mut key = f;
@@ -973,10 +986,9 @@ impl DelaunayBuilder {
                         // Two new tets share this face: orientations must be
                         // opposite (an even permutation of the reversal).
                         let g = *o.get();
-                        assert!(
-                            is_reversed(f, g),
-                            "replacement tets agree on face orientation {f:?}",
-                        );
+                        if !is_reversed(f, g) {
+                            return false; // tets agree on face orientation
+                        }
                         o.remove();
                     }
                     std::collections::hash_map::Entry::Vacant(v) => {
@@ -985,19 +997,14 @@ impl DelaunayBuilder {
                 }
             }
         }
-        assert_eq!(
-            open.len(),
-            boundary.len(),
-            "replacement boundary face count mismatch",
-        );
+        if open.len() != boundary.len() {
+            return false; // boundary face count mismatch
+        }
         for (key, f) in &open {
-            let (bf, _) = boundary
-                .get(key)
-                .unwrap_or_else(|| panic!("replacement face {f:?} not on the cavity boundary"));
-            assert!(
-                is_same_cycle(*f, *bf),
-                "replacement boundary face {f:?} has wrong orientation",
-            );
+            match boundary.get(key) {
+                Some((bf, _)) if is_same_cycle(*f, *bf) => {}
+                _ => return false, // face not on boundary / wrong orientation
+            }
         }
 
         // Apply: retire removed slots, allocate the new tets, wire neighbors.
@@ -1056,6 +1063,7 @@ impl DelaunayBuilder {
             }
         }
         self.last = *slots.first().expect("replacement must not be empty");
+        true
     }
 
     /// Rounds every implicit (CDT Steiner) vertex to plain f64 coordinates,

@@ -128,3 +128,26 @@ Interior-Leaks/Slivers, und umgekehrt. **Das ist die strukturelle Wurzel, warum 
 → Die Recherche-Empfehlung **Path B** (Restricted-Delaunay-Rand direkt aus dem analytischen
 Oracle, Rand aus dem Volumen abgeleitet statt versöhnt) umgeht diese Interconnection an der
 Wurzel und ist nach dieser exhaustiven Validierung die evidenzbasierte Richtung.
+
+## Stufe 5 — Corpus-Validierung & Default-Entscheidung (festgezogen)
+
+Drei Default-Integrationen von Path A wurden gebaut und am vollen Corpus gemessen:
+
+| Default-Variante | watertight | straddler-free | Befund |
+|---|---|---|---|
+| Baseline (Centroid) | **47** | **61** | Referenz |
+| Path A immer-an (conditional) | 32 | 63 | watertight-Kollaps |
+| Best-of-Both (Path A nur wenn conform+watertight+nicht-degeneriert) | 47 | 61 | **netto neutral** + Churn (fused_deep/three verlieren wt) + Recovery-Kosten auf jedem Mesh |
+
+**Kein Integrations-Ansatz verbessert den Corpus netto.** Der Best-of-Both-Guard
+(min_dih > 0.3, watertight) verhindert zwar die schlimmsten Regressionen, aber die
+Interconnection (Recovery ↔ Reconciliation ↔ Skin-Tets ↔ Interior-Leaks) führt zu Churn
+statt Netto-Gewinn, und die Recovery-Kosten fallen auf *jedem* Mesh an.
+
+**Festgezogener Default:** **Centroid bleibt der Default** (das beste validierte Setup:
+watertight 47, straddler-free 61, gute Qualität). **Path A bleibt opt-in** (`RAPIDMESH_PATHA`)
+als manuelles Werkzeug für die Geometrien, die es sauber fixt (fused_unequal, rf_toroid,
+chain → straddler-frei + watertight). Das ist die evidenzbasierte „Defaults festziehen"-
+Entscheidung: Path A wird NICHT zum Default erhoben, weil die exhaustive Corpus-Validierung
+zeigt, dass keine Integration netto verbessert — der saubere Gewinn kommt nur über **Path B**
+(eigenes Architektur-WP).

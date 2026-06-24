@@ -61,3 +61,27 @@ Die Recherche legte für einen Oracle-Mesher **Path B** nahe (Restricted-Delauna
 direkt aus dem Oracle): er umgeht *beide* Wände, weil der Rand aus dem Volumen abgeleitet
 statt mit einer separaten gefrorenen Surface rekonziliert wird. Strategische Entscheidung
 für den Nutzer.
+
+## Nachtrag — Wand 2 gelöst (Wall-Reconciliation gebaut)
+
+Wand 2 ist **behoben**: `reconcile_benign_bands` (cvt.rs) ersetzt eine benigne Frozen-
+Diagonale durch die tatsächliche Volumen-Diagonale (beide Tet-Flächen vorhanden) — gleiche
+Geometrie, gleiche Region, kein Sliver. Damit ist jede benigne Band-Facette eine Tet-Fläche,
+der Flood leckt dort nicht mehr.
+
+**Opt-in Path-A-Modus** (`RAPIDMESH_PATHA`): Recovery + Reconciliation + Flood + Frozen-
+Boundary, aktiv pro Geometrie nur wenn *jede* Frozen-Facette eine Tet-Fläche ist. Validiert
+(compare_base, gegen Baseline watertight 47 / straddler-free 61):
+
+- **Gefixt (watertight + straddler-frei):** fused_unequal (15→0), rf_toroid_core (137→0),
+  chain (10→0). Verbessert: pipe_cross 278→249, rf_dielectric 158→124, bearing 218→192.
+- watertight bleibt 47, straddler-free 61→63.
+- **Default unverändert** (ohne `RAPIDMESH_PATHA` exakt die alte Baseline).
+
+**Verbleibend bis Path-A-Default:**
+1. **Boundary-Slivers** (Stufe 4): einige gekrümmte Körper bekommen unter Path A min_dih→0
+   (randfeste Slivers; cylinder 14.41→0). Klassisches Fixed-Boundary-Sliver-Problem.
+2. **Non-manifold Reconciliation** auf wenigen Kreuzungs-Körpern (cross_cyl, frustum,
+   union_box_cyl, cyl_coarse_interior verlieren watertight) — Reconciliation an Region-
+   Interfaces verfeinern.
+3. **WP #41** (fillcavity) für die unrecoverten Creases (orbs/bearing-Residuen).

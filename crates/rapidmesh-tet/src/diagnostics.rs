@@ -86,7 +86,16 @@ pub(crate) fn tet_min_dihedral(p: [V3; 4]) -> f64 {
     let mut m = f64::MAX;
     for i in 0..4 {
         for j in i + 1..4 {
-            let others: Vec<usize> = (0..4).filter(|&k| k != i && k != j).collect();
+            // the two vertices not on edge (i,j) -- a fixed array, no per-pair Vec
+            // allocation (this runs per tet in the sliver hot loop).
+            let mut others = [0usize; 2];
+            let mut oi = 0;
+            for k in 0..4 {
+                if k != i && k != j {
+                    others[oi] = k;
+                    oi += 1;
+                }
+            }
             let (a, b) = (p[i], p[j]);
             let tlen = dist(a, b);
             if tlen == 0.0 {

@@ -310,6 +310,13 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         )
     };
     let mut total_ops = 0usize;
+    // Convergence watch: the sliver count (tets below SLIVER_DEG) trends down as the
+    // optimizer fixes them; once it stops dropping for a few passes the remaining
+    // ops are churn (fixing one sliver spawns another), so stop instead of running
+    // all `passes`. Hard geometries otherwise burned ~50 passes at a flat count.
+    let mut best_slivers = usize::MAX;
+    let mut stall = 0usize;
+    const STALL_LIMIT: usize = 4;
     // Vertices changed by the previous pass; `None` = everything (pass 0).
     let mut dirty: Option<DSet<usize>> = None;
     // Persistent working state (the refinement queue's medicine applied to
@@ -525,13 +532,22 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             let mut oden = 0.0f64;
             for &ti in &inc {
                 let tet = mesh.tets[ti as usize];
-                let w6 = geometry_predicates::orient3d(
+                // Tet volume*6 as the ODT WEIGHT: a float scalar triple product, not
+                // the exact `orient3d` -- a weight needs no exact sign, and the exact
+                // predicate was ~100x slower in this per-incident-tet hot loop.
+                let (p0, p1, p2, p3) = (
                     mesh.points[tet[0]],
                     mesh.points[tet[1]],
                     mesh.points[tet[2]],
                     mesh.points[tet[3]],
-                )
-                .abs();
+                );
+                let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+                let e3 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
+                let w6 = (e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
+                    - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+                    + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]))
+                    .abs();
                 for &u in &tet {
                     if u != v {
                         for k in 0..3 {
@@ -1524,6 +1540,30 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         total_ops += ops;
         if ops == 0 {
             break;
+        }
+        // Stop once the sliver count stops improving (the rest is churn).
+        let slivers = mesh
+            .tets
+            .iter()
+            .enumerate()
+            .filter(|(ti, _)| alive[*ti])
+            .filter(|(_, t)| {
+                crate::diagnostics::tet_min_dihedral([
+                    mesh.points[t[0]],
+                    mesh.points[t[1]],
+                    mesh.points[t[2]],
+                    mesh.points[t[3]],
+                ]) < crate::constants::SLIVER_DEG
+            })
+            .count();
+        if slivers < best_slivers {
+            best_slivers = slivers;
+            stall = 0;
+        } else {
+            stall += 1;
+            if stall >= STALL_LIMIT {
+                break;
+            }
         }
         dirty = Some(next_dirty);
     }

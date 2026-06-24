@@ -770,85 +770,95 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         edge_entries.sort_unstable();
         let t_entries = t2.elapsed();
 
-        let mut gi = 0;
-        while gi < face_entries.len() {
-            let f = face_entries[gi].0;
-            let gj = gi + face_entries[gi..].iter().take_while(|e| e.0 == f).count();
-            let owners = &face_entries[gi..gj];
-            gi = gj;
-            if owners.len() != 2 || constrained_faces.contains(&f) {
-                continue;
-            }
-            let (t1, t2) = (owners[0].1 as usize, owners[1].1 as usize);
-            if !alive[t1] || !alive[t2] {
-                continue;
-            }
-            if !(complex_changed(&mesh.tets[t1]) || complex_changed(&mesh.tets[t2])) {
-                continue;
-            }
-            // Faces must still match (alive guard covers staleness).
-            if mesh.tet_regions[t1] != mesh.tet_regions[t2] {
-                continue;
-            }
-            let d = *mesh.tets[t1].iter().find(|v| !f.contains(v)).expect("apex");
-            let e = *mesh.tets[t2].iter().find(|v| !f.contains(v)).expect("apex");
-            if d == e {
-                continue;
-            }
-            let old_q = cached_q(&mesh.points, &mesh.tets, &mut tet_q, t1)
-                .min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, t2));
-            if old_q >= TARGET_Q {
-                continue;
-            }
-            // Sizing contract: the new edge stays within the local size
-            // budget (or the local status quo where already coarser).
-            if dist2_pts(mesh.points[d], mesh.points[e])
-                > lmax2_of(&mesh.points, &mesh.tets, &[t1, t2])
-                    .max(edge_budget2(mesh.tet_regions[t1]))
-            {
-                continue;
-            }
-            // Geometric validity: the new edge d-e must cross the interior
-            // of f, otherwise the three new tets do not tile the union of
-            // the two old ones (they overlap, breaking volume and
-            // conformity). Equivalent test: consistent orientation of d-e
-            // against all three face edges.
-            let side = |a: usize, b: usize| {
-                Sign::of_f64(geometry_predicates::orient3d(
-                    mesh.points[a],
-                    mesh.points[b],
-                    mesh.points[d],
-                    mesh.points[e],
-                ))
-            };
-            let (s0, s1, s2) = (side(f[0], f[1]), side(f[1], f[2]), side(f[2], f[0]));
-            if s0 == Sign::Zero || s0 != s1 || s1 != s2 {
-                continue;
-            }
-            // 2-3 flip: three tets around the new edge d-e.
-            let mk = |a: usize, b: usize| -> Option<[usize; 4]> {
-                let cand = [a, b, d, e];
-                if orient_positive(&mesh.points, cand) {
-                    Some(cand)
-                } else {
-                    let swapped = [b, a, d, e];
-                    orient_positive(&mesh.points, swapped).then_some(swapped)
+        // ---- 2-3 flips: PARALLEL evaluate on the fixed pass snapshot, then a
+        // sequential conflict-free apply. `mesh.tets`/`mesh.points` do not change
+        // within a pass (new tets buffer in `added`), so evaluating every candidate
+        // in parallel and applying the survivors in the SAME group order yields the
+        // bit-identical result of the old streaming loop -- the expensive read-only
+        // work (orient3d, quality) just spreads over the cores. The `alive` guard at
+        // apply does the conflict resolution (a tet claimed by an earlier flip is
+        // skipped), exactly as the streaming `!alive` guard did.
+        use rayon::prelude::*;
+        let mut groups23: Vec<([usize; 3], usize, usize)> = Vec::new();
+        {
+            let mut gi = 0;
+            while gi < face_entries.len() {
+                let f = face_entries[gi].0;
+                let gj = gi + face_entries[gi..].iter().take_while(|e| e.0 == f).count();
+                let owners = &face_entries[gi..gj];
+                gi = gj;
+                if owners.len() == 2 {
+                    groups23.push((f, owners[0].1 as usize, owners[1].1 as usize));
                 }
-            };
-            let (Some(n1), Some(n2), Some(n3)) =
-                (mk(f[0], f[1]), mk(f[1], f[2]), mk(f[2], f[0]))
-            else {
-                continue;
-            };
-            let (Some(q1), Some(q2), Some(q3)) = (
-                quality_above(&mesh.points, n1, old_q),
-                quality_above(&mesh.points, n2, old_q),
-                quality_above(&mesh.points, n3, old_q),
-            ) else {
-                continue;
-            };
-            if q1.min(q2).min(q3) <= old_q + QUALITY_EPS {
-                continue;
+            }
+        }
+        // Per candidate: the three new tets + the two apexes, or None.
+        type Plan23 = ([usize; 4], [usize; 4], [usize; 4], usize, usize);
+        let plans23: Vec<Option<Plan23>> = groups23
+            .par_iter()
+            .map(|&(f, t1, t2)| -> Option<Plan23> {
+                if constrained_faces.contains(&f) || !alive[t1] || !alive[t2] {
+                    return None;
+                }
+                if !(complex_changed(&mesh.tets[t1]) || complex_changed(&mesh.tets[t2])) {
+                    return None;
+                }
+                if mesh.tet_regions[t1] != mesh.tet_regions[t2] {
+                    return None;
+                }
+                let d = *mesh.tets[t1].iter().find(|v| !f.contains(v))?;
+                let e = *mesh.tets[t2].iter().find(|v| !f.contains(v))?;
+                if d == e {
+                    return None;
+                }
+                // `quality` is `cached_q` without the memo -- same value, and the
+                // cache cannot be shared across threads.
+                let old_q = quality(&mesh.points, mesh.tets[t1]).min(quality(&mesh.points, mesh.tets[t2]));
+                if old_q >= TARGET_Q {
+                    return None;
+                }
+                if dist2_pts(mesh.points[d], mesh.points[e])
+                    > lmax2_of(&mesh.points, &mesh.tets, &[t1, t2]).max(edge_budget2(mesh.tet_regions[t1]))
+                {
+                    return None;
+                }
+                let side = |a: usize, b: usize| {
+                    Sign::of_f64(geometry_predicates::orient3d(
+                        mesh.points[a],
+                        mesh.points[b],
+                        mesh.points[d],
+                        mesh.points[e],
+                    ))
+                };
+                let (s0, s1, s2) = (side(f[0], f[1]), side(f[1], f[2]), side(f[2], f[0]));
+                if s0 == Sign::Zero || s0 != s1 || s1 != s2 {
+                    return None;
+                }
+                let mk = |a: usize, b: usize| -> Option<[usize; 4]> {
+                    let cand = [a, b, d, e];
+                    if orient_positive(&mesh.points, cand) {
+                        Some(cand)
+                    } else {
+                        let swapped = [b, a, d, e];
+                        orient_positive(&mesh.points, swapped).then_some(swapped)
+                    }
+                };
+                let (n1, n2, n3) = (mk(f[0], f[1])?, mk(f[1], f[2])?, mk(f[2], f[0])?);
+                let (q1, q2, q3) = (
+                    quality_above(&mesh.points, n1, old_q)?,
+                    quality_above(&mesh.points, n2, old_q)?,
+                    quality_above(&mesh.points, n3, old_q)?,
+                );
+                if q1.min(q2).min(q3) <= old_q + QUALITY_EPS {
+                    return None;
+                }
+                Some((n1, n2, n3, d, e))
+            })
+            .collect();
+        for (&(f, t1, t2), plan) in groups23.iter().zip(&plans23) {
+            let Some((n1, n2, n3, d, e)) = *plan else { continue };
+            if !alive[t1] || !alive[t2] {
+                continue; // claimed by an earlier apply in this pass
             }
             alive[t1] = false;
             alive[t2] = false;

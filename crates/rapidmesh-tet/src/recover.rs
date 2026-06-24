@@ -396,19 +396,11 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
                 }
             }
         }
-        if !added {
-            // No stuck face resolved (rejected swap, or the stuck face's outside
-            // tet was already in the cavity): grow by one neighbour ring.
-            for &s in &removed {
-                for i in 0..4 {
-                    if let Some(nb) = db.neighbor_at(s, i) {
-                        if db.tet_at(nb).is_some() && set.insert(nb) {
-                            added = true;
-                        }
-                    }
-                }
-            }
-        }
+        // No targeted growth possible (the stuck face is an internal/created front
+        // face, not an original cavity boundary face, or there is no stuck face):
+        // a blunt full-ring grow here is exponential (it made orbs take >5 min), so
+        // give up on this facet instead. The residual is handed to the Steiner
+        // fallback. This keeps recovery bounded and fast.
         if !added {
             break;
         }

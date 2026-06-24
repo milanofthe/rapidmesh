@@ -336,7 +336,9 @@ fn grid_clear(grid: &HashGrid, p: V3, r: f64, cell: f64) -> bool {
     true
 }
 
-type HashGrid = std::collections::HashMap<(i64, i64, i64), Vec<V3>>;
+// Keyed spatial lookup (neighbor cells queried by explicit key, never iterated),
+// so the faster FxHash is behavior-neutral here.
+type HashGrid = rustc_hash::FxHashMap<(i64, i64, i64), Vec<V3>>;
 
 /// Randomized Poisson-disk fill of a face: dart-throwing on the face's facet
 /// triangles, each dart projected onto the analytic surface and kept if it clears
@@ -383,7 +385,7 @@ fn fill_face_points(
         density += area_i / (tc * tc);
     }
     let cell = 0.65 * tmax;
-    let mut grid: HashGrid = HashGrid::new();
+    let mut grid: HashGrid = HashGrid::default();
     for &b in boundary {
         grid.entry(cell_key(b, cell)).or_default().push(b);
     }

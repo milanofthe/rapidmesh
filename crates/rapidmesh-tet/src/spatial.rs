@@ -190,14 +190,18 @@ fn nearest_in(node: &Node, pts: &[V3], center: V3, half: f64, q: V3, best: &mut 
         }
         Node::Inner(children) => {
             // Visit the octant containing q first, then siblings by box distance,
-            // pruning any whose box is farther than the current best.
-            let mut order: Vec<(f64, usize)> = (0..8)
-                .map(|o| {
-                    let (cc, ch) = child_box(center, half, o);
-                    (box_dist2(cc, ch, q), o)
-                })
-                .collect();
-            order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            // pruning any whose box is farther than the current best. Fixed
+            // 8-element stack array (no per-node heap allocation -- this runs
+            // once per visited inner node, per nearest query, per Lloyd pass).
+            let mut order: [(f64, usize); 8] = [(0.0, 0); 8];
+            for (o, slot) in order.iter_mut().enumerate() {
+                let (cc, ch) = child_box(center, half, o);
+                *slot = (box_dist2(cc, ch, q), o);
+            }
+            // Total order (distance, then octant index) so equal-distance
+            // octants keep ascending-index order -- identical tie-breaking to the
+            // previous stable sort, hence bit-identical nearest results.
+            order.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
             for (bd2, o) in order {
                 if bd2 > best.0 {
                     break;

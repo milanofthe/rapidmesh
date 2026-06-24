@@ -164,6 +164,9 @@ pub struct DelaunayBuilder {
     /// Edge -> (new tet, face slot) for wiring new tets to each other.
     edge_map: rustc_hash::FxHashMap<(u32, u32), (u32, u8)>,
     new_tets: Vec<u32>,
+    /// Swallowed-star guard scratch: the vertices on the cavity boundary faces
+    /// (reused across inserts instead of reallocating a set per cavity).
+    bverts: rustc_hash::FxHashSet<u32>,
     /// Guarded-insert scratch: surviving cavity-boundary edges.
     scratch_edges: rustc_hash::FxHashSet<(u32, u32)>,
     /// Guarded-insert scratch: cavity-boundary faces as (tet, face slot).
@@ -215,6 +218,7 @@ impl DelaunayBuilder {
             boundary: Vec::new(),
             edge_map: rustc_hash::FxHashMap::default(),
             new_tets: Vec::new(),
+            bverts: rustc_hash::FxHashSet::default(),
             scratch_edges: rustc_hash::FxHashSet::default(),
             scratch_bfaces: rustc_hash::FxHashSet::default(),
             clog: vec![0],
@@ -756,15 +760,15 @@ impl DelaunayBuilder {
         // would only surface much later as a stale-hint panic. Reject the
         // insert instead (recording the vertex, so mandatory callers can
         // adopt or dodge it); guarded callers simply skip the point.
-        let mut bverts: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+        self.bverts.clear();
         for &(ti, i) in &self.boundary {
             for &w in &face(self.tets[ti as usize], i as usize) {
-                bverts.insert(w);
+                self.bverts.insert(w);
             }
         }
         for &ti in &self.cavity {
             for &w in &self.tets[ti as usize] {
-                if !bverts.contains(&w) {
+                if !self.bverts.contains(&w) {
                     self.swallowed = Some(w);
                     return false;
                 }

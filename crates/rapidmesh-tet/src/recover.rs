@@ -119,6 +119,16 @@ fn giftwrap(
     for &v in &verts {
         pts.insert(v, db.exact_point(v));
     }
+    // Wall vertices may not all be cavity vertices (a pierced-tet cavity need not
+    // contain the target facet's corners). Add them so the orientation oracle
+    // never misses a key; a wall whose vertices are not cavity vertices simply
+    // cannot appear as a tiling face, so giftwrap fails that wall's final check
+    // gracefully instead of panicking.
+    for w in walls {
+        for &v in w {
+            pts.entry(v).or_insert_with(|| db.exact_point(v));
+        }
+    }
     let o = |a: usize, b: usize, c: usize, d: usize| -> Sign {
         rapidmesh_exact::orient3d(&pts[&a], &pts[&b], &pts[&c], &pts[&d]).expect("valid cavity pts")
     };
@@ -305,8 +315,11 @@ fn cavity_verts(db: &DelaunayBuilder, removed: &[u32]) -> HashSet<usize, BH> {
 /// re-tetrahedralization, enlarging the cavity on failure. `facets` are all the
 /// surface facets to preserve as walls. Returns true if the facet is now a tet face.
 fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &[[usize; 3]]) -> bool {
-    // Seed cavity: the tets the facet actually pierces (the blockers), not a
-    // vertex-star ball -- the targeted cavity TetGen's facet recovery forms.
+    // Seed cavity: the tets the facet actually pierces (the blockers) -- the lean,
+    // targeted cavity. The corner stars are deliberately NOT added: they bloat the
+    // cavity and make gift-wrap fail far more often (measured). If the pierced
+    // cavity does not contain a corner, the facet simply fails recovery gracefully
+    // (giftwrap's final wall-present check), counted, never corrupting the mesh.
     let mut set: HashSet<u32, BH> = pierced_tets(db, a, b, c).into_iter().collect();
     if set.is_empty() {
         return false;

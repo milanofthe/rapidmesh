@@ -168,7 +168,7 @@ pub fn tetrahedralize_constrained(
     // creases) via local cavity re-tetrahedralization. No Steiner points: the
     // surface stays exactly the frozen mesh and the boundary, extracted by region
     // difference, equals it. Planar facets already conform by coplanarity.
-    if std::env::var("RAPIDMESH_RECOVER").is_ok() {
+    if std::env::var_os("RAPIDMESH_PATHA").is_some() {
         let curved: Vec<[usize; 3]> = tris
             .iter()
             .zip(tri_carrier)

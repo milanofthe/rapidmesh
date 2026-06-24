@@ -1024,6 +1024,81 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     mesh
 }
 
+/// Reconcile benign band flips so flood classification is leak-free. A curved
+/// surface quad split by the frozen diagonal d1 but tetrahedralized by the other
+/// diagonal d2 leaves d1's two frozen faces NOT tet faces (forcing them would be a
+/// flat sliver -- recovery correctly leaves them). The flood oracle then has no
+/// wall on that quad and leaks. The fix: replace those frozen faces with the
+/// quad's OTHER-diagonal triangles, which ARE tet faces -- same geometry, same
+/// region, just the volume's chosen diagonal. Returns the number of frozen faces
+/// replaced. After this, the only remaining non-tet frozen faces are genuine
+/// unrecovered defects (creases), so flood-exactness reduces to "no defect left".
+fn reconcile_benign_bands(surf_faces: &mut Vec<SurfaceFace>, pts: &[V3], tets: &[[usize; 4]]) -> usize {
+    use std::collections::HashSet;
+    let mut tetface: DMap<[usize; 3], ()> = DMap::default();
+    for t in tets {
+        for fv in &TET_FACES {
+            let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
+            f.sort_unstable();
+            tetface.insert(f, ());
+        }
+    }
+    let is_tf = |a: usize, b: usize, c: usize| {
+        let mut f = [a, b, c];
+        f.sort_unstable();
+        tetface.contains_key(&f)
+    };
+    // Edge -> incident frozen faces that are NOT tet faces, with the apex vertex.
+    let mut em: DMap<(usize, usize), Vec<(usize, usize)>> = DMap::default();
+    for (fi, sf) in surf_faces.iter().enumerate() {
+        let t = sf.tri;
+        if is_tf(t[0], t[1], t[2]) {
+            continue;
+        }
+        for k in 0..3 {
+            let (u, w) = (t[k], t[(k + 1) % 3]);
+            let apex = t[(k + 2) % 3];
+            em.entry((u.min(w), u.max(w))).or_default().push((fi, apex));
+        }
+    }
+    let mut remove: HashSet<usize> = HashSet::new();
+    let mut add: Vec<SurfaceFace> = Vec::new();
+    for (&(u, w), faces) in &em {
+        if faces.len() != 2 {
+            continue;
+        }
+        let (fi1, p1) = faces[0];
+        let (fi2, p2) = faces[1];
+        if p1 == p2 || remove.contains(&fi1) || remove.contains(&fi2) {
+            continue;
+        }
+        // Quad {u,w,p1,p2}: current diagonal (u,w), alternate (p1,p2). If the
+        // alternate's two triangles are tet faces, flip the surface to them.
+        if is_tf(u, p1, p2) && is_tf(w, p1, p2) {
+            let f1 = surf_faces[fi1].clone();
+            let n1 = cross(sub(pts[f1.tri[1]], pts[f1.tri[0]]), sub(pts[f1.tri[2]], pts[f1.tri[0]]));
+            for tri0 in [[u, p1, p2], [w, p1, p2]] {
+                let mut tri = tri0;
+                let n = cross(sub(pts[tri[1]], pts[tri[0]]), sub(pts[tri[2]], pts[tri[0]]));
+                if dot(n, n1) < 0.0 {
+                    tri.swap(1, 2); // wind outward, matching the replaced face
+                }
+                add.push(SurfaceFace { tri, face_tag: f1.face_tag, regions: f1.regions, patch: f1.patch, surface: f1.surface });
+            }
+            remove.insert(fi1);
+            remove.insert(fi2);
+        }
+    }
+    let n = remove.len();
+    if n > 0 {
+        let mut out: Vec<SurfaceFace> =
+            surf_faces.iter().enumerate().filter(|(i, _)| !remove.contains(i)).map(|(_, f)| f.clone()).collect();
+        out.extend(add);
+        *surf_faces = out;
+    }
+    n
+}
+
 /// Boundary-constrained variant of [`mesh`] (the report's Stage 3): build the
 /// frozen Stage-2 surface ([`frozen_surface`]), fill the interior at the sizing
 /// density, and tetrahedralize with the surface as a HARD constraint
@@ -1108,7 +1183,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let surf_tris: Vec<[usize; 3]> = ss.tris.iter().map(|f| f.tri).collect();
     let surf_sites: Vec<Site> = ss.sites;
     let face_carrier: Vec<Carrier> = ss.tri_carrier;
-    let surf_faces: Vec<SurfaceFace> = ss.tris;
+    let mut surf_faces: Vec<SurfaceFace> = ss.tris;
     rmlog::stat("mesh_cdt.surf_points", surf_points.len() as f64);
     rmlog::stat("mesh_cdt.surf_faces", surf_faces.len() as f64);
     rmlog::stage("mesh_cdt.surface", t_surf.elapsed().as_secs_f64());
@@ -1370,6 +1445,46 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let pts = con.points;
     rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
 
+    // Path A (exact flood + frozen-faces boundary) is leak-free iff EVERY frozen
+    // face is a tet face. Recovery seals the crease bridges; benign band flips are
+    // sealed by reconciling them to the volume's diagonal (no degenerate sliver).
+    // If any frozen face remains non-tet (an unrecovered defect), flood would leak
+    // there, so fall back to centroid classification + region-difference boundary
+    // (the prior default) -- no regression on geometries we cannot fully seal.
+    // Path A (flood + frozen boundary) is an opt-in mode (RAPIDMESH_PATHA). It is
+    // enabled per geometry only when every frozen face is a tet face (so flood
+    // cannot leak): recovery seals crease bridges, reconciliation seals benign band
+    // flips. It fixes the straddler geometries (fused_unequal, rf_toroid, chain ->
+    // watertight + straddler-free) but still introduces boundary slivers on some
+    // curved bodies (a fixed-boundary sliver problem for the sliver stage) and a
+    // non-manifold reconciliation on a few crossing-body geometries -- so it is NOT
+    // the default yet. Outside Path A, surf_faces is untouched (exact prior path).
+    let path_a = if std::env::var_os("RAPIDMESH_PATHA").is_some() {
+        let n_recon = reconcile_benign_bands(&mut surf_faces, &pts, &con.tets);
+        let tetfaces: std::collections::HashSet<[usize; 3]> = con
+            .tets
+            .iter()
+            .flat_map(|t| {
+                TET_FACES.iter().map(move |fv| {
+                    let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
+                    f.sort_unstable();
+                    f
+                })
+            })
+            .collect();
+        let ok = surf_faces.iter().all(|sf| {
+            let mut f = sf.tri;
+            f.sort_unstable();
+            tetfaces.contains(&f)
+        });
+        if std::env::var_os("RAPIDMESH_PATHA_TRACE").is_some() {
+            eprintln!("[path_a] reconciled={n_recon} path_a={ok} surf_faces={}", surf_faces.len());
+        }
+        ok
+    } else {
+        false
+    };
+
     // ---- region classification --------------------------------------------
     // Default: centroid inside/outside test against the faceted PLC. This keeps
     // tets whose centroid is inside the faceting but outside the true (finer)
@@ -1378,7 +1493,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // the frozen surface faces (cdt3::classify_regions): the kept volume then
     // conforms exactly to that surface -- no bulge -- provided every frozen face
     // is a tet face (facet recovery seals the remaining leaks).
-    let region: Vec<u32> = if std::env::var_os("RAPIDMESH_FLOOD").is_some() {
+    let region: Vec<u32> = if path_a {
         let mut oracle: DMap<[usize; 3], (u32, u32, V3)> = DMap::default();
         for f in &surf_faces {
             let p = [pts[f.tri[0]], pts[f.tri[1]], pts[f.tri[2]]];
@@ -1482,7 +1597,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // creases -- gives an exact boundary. The frozen tris index the same points (the
     // surface vertices lead `pts`), so they need no remapping. (Volume conformity to
     // these faces is the job of facet recovery; this is the extraction side.)
-    let faces = if std::env::var_os("RAPIDMESH_FROZEN_FACES").is_some() {
+    let faces = if path_a {
         if std::env::var_os("RAPIDMESH_CONFORM_PROBE").is_some() {
             // Conformity: how many frozen boundary faces are actually a face of a
             // KEPT tet. A gap means the volume does not conform there (the facet

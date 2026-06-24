@@ -243,6 +243,53 @@ fn contained_walls(verts: &HashSet<usize, BH>, facets: &[[usize; 3]]) -> Vec<[us
         .collect()
 }
 
+/// Tets whose interior the missing facet `[a,b,c]` crosses -- the tets that
+/// actually BLOCK the facet (TetGen's "crossing tets" cavity). A bounded BFS
+/// from the facet's corner stars expands through every tet touching a corner or
+/// crossed by the facet, collecting the crossed ones. This is the targeted
+/// cavity to retetrahedralize; a corner vertex-star ball (the old seed) is both
+/// too large and structurally unable to host the facet, which is why band facets
+/// recovered at 0%.
+fn pierced_tets(db: &DelaunayBuilder, a: usize, b: usize, c: usize) -> Vec<u32> {
+    let o = |x: usize, y: usize, z: usize, w: usize| -> Sign {
+        rapidmesh_exact::orient3d(&db.exact_point(x), &db.exact_point(y), &db.exact_point(z), &db.exact_point(w))
+            .expect("valid mesh pts")
+    };
+    let mut seen: HashSet<u32, BH> = HashSet::default();
+    let mut stack: Vec<u32> = Vec::new();
+    for v in [a, b, c] {
+        for s in db.star_slots(v) {
+            if db.tet_at(s).is_some() && seen.insert(s) {
+                stack.push(s);
+            }
+        }
+    }
+    let mut crossing: Vec<u32> = Vec::new();
+    while let Some(s) = stack.pop() {
+        if seen.len() > 4 * MAX_CAVITY {
+            break; // bound the search
+        }
+        let Some(t) = db.tet_at(s) else { continue };
+        let cross = tet_crosses_tri(&o, t, [a, b, c]);
+        if cross {
+            crossing.push(s);
+        }
+        // Expand through tets near the facet (touching a corner) or crossed by
+        // it, so the BFS reaches the crossing tunnel away from the corners.
+        let touches = t.iter().any(|&v| v == a || v == b || v == c);
+        if cross || touches {
+            for i in 0..4 {
+                if let Some(nb) = db.neighbor_at(s, i) {
+                    if db.tet_at(nb).is_some() && seen.insert(nb) {
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    crossing
+}
+
 /// Vertex set of a cavity (real tets only).
 fn cavity_verts(db: &DelaunayBuilder, removed: &[u32]) -> HashSet<usize, BH> {
     let mut verts: HashSet<usize, BH> = HashSet::default();
@@ -258,15 +305,9 @@ fn cavity_verts(db: &DelaunayBuilder, removed: &[u32]) -> HashSet<usize, BH> {
 /// re-tetrahedralization, enlarging the cavity on failure. `facets` are all the
 /// surface facets to preserve as walls. Returns true if the facet is now a tet face.
 fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &[[usize; 3]]) -> bool {
-    // Seed cavity: union of the vertex stars of the three corners (real tets).
-    let mut set: HashSet<u32, BH> = HashSet::default();
-    for v in [a, b, c] {
-        for s in db.star_slots(v) {
-            if db.tet_at(s).is_some() {
-                set.insert(s);
-            }
-        }
-    }
+    // Seed cavity: the tets the facet actually pierces (the blockers), not a
+    // vertex-star ball -- the targeted cavity TetGen's facet recovery forms.
+    let mut set: HashSet<u32, BH> = pierced_tets(db, a, b, c).into_iter().collect();
     if set.is_empty() {
         return false;
     }

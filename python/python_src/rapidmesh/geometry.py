@@ -1061,6 +1061,9 @@ class Geometry:
         maxh_edge: float | None = None,
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
+        method: str = "default",
+        optimize: bool = True,
+        optimize_passes: int | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -1095,6 +1098,17 @@ class Geometry:
             maximum element edge length per dimension (edges / surfaces /
             volume), each combined with ``maxh`` as ``min(maxh, maxh_dim)``.
             Default ``inf`` (only ``maxh`` applies).
+        method : str
+            Stage-3 volume mesher: ``"default"`` (the proven path) or ``"cdt"``
+            (the boundary-constrained pipeline). First-class, thread-safe
+            replacement for the ``RAPIDMESH_CDT`` env var (still honored as a
+            fallback when ``method="default"``).
+        optimize : bool
+            run the quality-optimization pass (default ``True``); ``False``
+            returns the raw mesh (replaces ``RAPIDMESH_SKIP_OPTIMIZE``).
+        optimize_passes : int, optional
+            cap the number of optimization passes (default: the optimizer's own
+            default); lower for fast iteration.
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -1123,6 +1137,9 @@ class Geometry:
             [(int(i), v) for i, v in sorted(self._surf_maxh.items())],
             [(int(i), v) for i, v in sorted(self._surf_tol.items())],
             [(int(t), v) for t, v in sorted(self._region_maxh.items())],
+            method,
+            optimize,
+            optimize_passes,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}
@@ -1135,17 +1152,20 @@ class Geometry:
         *,
         maxh: float | None = None,
         grading: float | None = None,
-        tol_edge: float = 1e-2,
-        tol_surf: float = 1e-2,
-        maxh_edge: float = math.inf,
-        maxh_surf: float = math.inf,
-        maxh_vol: float = math.inf,
+        tol_edge: float | None = None,
+        tol_surf: float | None = None,
+        maxh_edge: float | None = None,
+        maxh_surf: float | None = None,
+        maxh_vol: float | None = None,
     ) -> SurfaceMesh:
         """Surface-only export: assembles the exact arrangement and meshes
         only its boundary surface (region interfaces, outer boundary, embedded
         sheets), skipping the volume mesh and quality optimization. Much faster
         than :meth:`mesh` when only the conforming surface triangulation is
         needed.
+
+        Honors the full per-entity sizing hierarchy (``region``/``surf``/``edge``
+        scopes) exactly like :meth:`mesh`.
 
         Parameters
         ----------
@@ -1154,20 +1174,35 @@ class Geometry:
             unbounded if neither is given)
         grading : float
             size-grading Lipschitz constant (see :meth:`mesh`)
+        tol_edge, tol_surf, maxh_edge, maxh_surf, maxh_vol : float, optional
+            chord tolerances and per-dimension size caps (see :meth:`mesh`);
+            default to the accumulated hierarchical globals when omitted.
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
+        # Call kwargs override the accumulated hierarchical globals (matching
+        # :meth:`mesh`); omitted ones fall back to the scoped defaults.
+        te = tol_edge if tol_edge is not None else self._tol_edge
+        ts = tol_surf if tol_surf is not None else self._tol_surf
+        me = maxh_edge if maxh_edge is not None else self._maxh_edge
+        ms = maxh_surf if maxh_surf is not None else self._maxh_surf
+        mv = maxh_vol if maxh_vol is not None else self._maxh_vol
         native = self._builder.surface_mesh(
             h if h is not None else math.inf,
             g,
             [(t, fh) for t, fh in sorted(self._face_maxh.items())],
             [(list(pt), ph) for pt, ph in self._size_points],
             [(s, sh) for s, sh in sorted(self._surface_maxh.items())],
-            tol_edge,
-            tol_surf,
-            maxh_edge,
-            maxh_surf,
-            maxh_vol,
+            te,
+            ts,
+            me,
+            ms,
+            mv,
+            [(int(i), v) for i, v in sorted(self._edge_maxh.items())],
+            [(int(i), v) for i, v in sorted(self._edge_tol.items())],
+            [(int(i), v) for i, v in sorted(self._surf_maxh.items())],
+            [(int(i), v) for i, v in sorted(self._surf_tol.items())],
+            [(int(t), v) for t, v in sorted(self._region_maxh.items())],
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

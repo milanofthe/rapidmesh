@@ -14,7 +14,8 @@ use rapidmesh_geom::{
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
-    mesh_cdt, mesh_plc_with, optimize, quality_stats, surface_mesh, MeshParams, OptimizeParams,
+    mesh_cdt, mesh_plc_with, optimize as run_optimize, quality_stats, surface_mesh, MeshParams,
+    OptimizeParams,
     QualityStats, SurfaceMesh, TetMesh,
 };
 
@@ -342,7 +343,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![]))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], method="default".to_string(), optimize=true, optimize_passes=None))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -364,6 +365,9 @@ impl SceneBuilder {
         surf_maxh: Vec<(u32, f64)>,
         surf_tol: Vec<(u32, f64)>,
         region_over: Vec<(u32, f64)>,
+        method: String,
+        optimize: bool,
+        optimize_passes: Option<usize>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -405,9 +409,14 @@ impl SceneBuilder {
                 surf_tol,
             };
             let tm = std::time::Instant::now();
-            // Opt-in to the new boundary-constrained Stage-3 pipeline for
-            // side-by-side inspection; the default stays the proven path.
-            let mut mesh: TetMesh = if std::env::var_os("RAPIDMESH_CDT").is_some() {
+            // Stage-3 mesher selection: `method="cdt"` picks the boundary-
+            // constrained pipeline, `"default"` the proven path. The legacy
+            // `RAPIDMESH_CDT` env var stays a fallback so existing workflows keep
+            // working, but the parameter is the first-class, thread-safe control.
+            let use_cdt = method.eq_ignore_ascii_case("cdt")
+                || (method.eq_ignore_ascii_case("default")
+                    && std::env::var_os("RAPIDMESH_CDT").is_some());
+            let mut mesh: TetMesh = if use_cdt {
                 mesh_cdt(&plc, &params)
             } else {
                 mesh_plc_with(&plc, &params)
@@ -419,11 +428,15 @@ impl SceneBuilder {
                 region_maxh: params.region_maxh.clone(),
                 face_maxh: params.face_maxh.clone(),
                 surface_maxh: params.surface_maxh.clone(),
+                passes: optimize_passes.unwrap_or_else(|| OptimizeParams::default().passes),
                 ..OptimizeParams::default()
             };
             let to = std::time::Instant::now();
-            if std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none() {
-                optimize(&mut mesh, &opt);
+            // `optimize=false` (or the legacy RAPIDMESH_SKIP_OPTIMIZE fallback)
+            // returns the raw mesh without the quality pass.
+            let do_optimize = optimize && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none();
+            if do_optimize {
+                run_optimize(&mut mesh, &opt);
             }
             // Quality (with the worst element's location/region), logged so a
             // verbose run reports not just timings but where the mesh is worst.
@@ -482,7 +495,7 @@ impl SceneBuilder {
     /// Returns just the closed boundary surface mesh. Volume-only params
     /// (`radius_edge`, `max_points`) do not apply.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY))]
+    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![]))]
     fn surface_mesh(
         &self,
         py: Python<'_>,
@@ -496,14 +509,30 @@ impl SceneBuilder {
         maxh_edge: f64,
         maxh_surf: f64,
         maxh_vol: f64,
+        edge_maxh: Vec<(u32, f64)>,
+        edge_tol: Vec<(u32, f64)>,
+        surf_maxh: Vec<(u32, f64)>,
+        surf_tol: Vec<(u32, f64)>,
+        region_over: Vec<(u32, f64)>,
     ) -> PySurfaceMesh {
         let t0 = std::time::Instant::now();
         rapidmesh_exact::log::clear();
         let mesh = py.allow_threads(|| {
             let plc = self.scene.assemble();
+            // Same per-region override the volume path applies, so the surface
+            // export honours the full per-entity sizing hierarchy instead of
+            // silently dropping it.
+            let mut region_maxh = self.region_maxh.clone();
+            for (r, h) in &region_over {
+                if let Some(e) = region_maxh.iter_mut().find(|(rr, _)| rr == r) {
+                    e.1 = *h;
+                } else {
+                    region_maxh.push((*r, *h));
+                }
+            }
             let params = MeshParams {
                 maxh,
-                region_maxh: self.region_maxh.clone(),
+                region_maxh,
                 radius_edge_bound: 0.0,
                 max_points: usize::MAX,
                 grading,
@@ -516,10 +545,10 @@ impl SceneBuilder {
                 maxh_edge,
                 maxh_surf,
                 maxh_vol,
-                edge_maxh: vec![],
-                edge_tol: vec![],
-                surf_maxh: vec![],
-                surf_tol: vec![],
+                edge_maxh,
+                edge_tol,
+                surf_maxh,
+                surf_tol,
             };
             surface_mesh(&plc, &params)
         });

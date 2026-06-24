@@ -285,6 +285,10 @@ def bench(meshers=("default", "cdt"), only=None) -> list[dict]:
         if only is not None and name not in only:
             continue
         for mesher in meshers:
+            # The library API is `g.mesh(method="default"|"cdt")`; this bench's
+            # per-geometry closures are arg-less, so the sweep selects the mesher
+            # through the env-var fallback the parameter honors. Safe here because
+            # the bench is strictly sequential (single process, one mesh at a time).
             if mesher == "cdt":
                 os.environ["RAPIDMESH_CDT"] = "1"
             else:

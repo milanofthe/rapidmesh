@@ -1012,6 +1012,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         abandoned_patches: Vec::new(),
         plc_points,
         point_size,
+        n_nonconformal_faces: 0,
     };
 
     let q = quality_stats(&mesh);
@@ -1514,6 +1515,63 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         faces
     };
 
+    // Conformity (the Path-A north-star metric): each FROZEN surf_face must be a
+    // real face of the KEPT volume with the incidence its region pair demands --
+    // an outer-boundary face (one region 0) borders exactly one kept tet, an
+    // interface face (both regions != 0) exactly two, one per side. A shortfall
+    // (n=0) is an un-recovered/missing facet; an excess or wrong-region set is the
+    // volume poking past the surface. Either way the boundary != the frozen
+    // surface there, which is EXACTLY a straddler. Measured against `kept` +
+    // `surf_faces` (the only place both coexist); 0 here <=> straddler-free.
+    let n_nonconformal_faces = {
+        let mut inc: DMap<[usize; 3], Vec<u32>> = DMap::default();
+        for (t, r) in kept.iter().zip(&tet_regions) {
+            for fv in &TET_FACES {
+                let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
+                f.sort_unstable();
+                inc.entry(f).or_default().push(r.0);
+            }
+        }
+        let frozen: std::collections::HashSet<[usize; 3]> = surf_faces
+            .iter()
+            .map(|sf| {
+                let mut k = sf.tri;
+                k.sort_unstable();
+                k
+            })
+            .collect();
+        // MISSING: a frozen face whose kept-tet incidence does not match its region
+        // pair (an outer face wants one kept tet of its nonzero region, an interface
+        // two, one per side). EXTRA: a kept-VOLUME boundary face (one kept tet, or
+        // two of differing region) that is NOT a frozen face -- the volume poking
+        // past the surface (a straddler-bearing face). nc = missing + extra is 0
+        // iff the kept boundary equals the frozen surface exactly, in ANY
+        // classification mode (so it cannot read 0 while a poke straddler exists).
+        let mut missing = 0usize;
+        for sf in &surf_faces {
+            let mut k = sf.tri;
+            k.sort_unstable();
+            let mut want: Vec<u32> = sf.regions.iter().map(|r| r.0).filter(|&r| r != 0).collect();
+            want.sort_unstable();
+            let mut got = inc.get(&k).cloned().unwrap_or_default();
+            got.sort_unstable();
+            if got != want {
+                missing += 1;
+            }
+        }
+        let mut extra = 0usize;
+        for (f, regs) in &inc {
+            let is_boundary = regs.len() == 1 || (regs.len() == 2 && regs[0] != regs[1]);
+            if is_boundary && !frozen.contains(f) {
+                extra += 1;
+            }
+        }
+        missing + extra
+    };
+    if std::env::var_os("RAPIDMESH_CONFORM_TRACE").is_some() {
+        eprintln!("[conform] frozen_faces={} nonconformal={n_nonconformal_faces}", surf_faces.len());
+    }
+
     let point_size: Vec<f64> = pts.iter().map(|&p| domain.h_at(p)).collect();
     let mesh = TetMesh {
         points: pts,
@@ -1525,6 +1583,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         abandoned_patches: Vec::new(),
         plc_points: plc.vertices.len(),
         point_size,
+        n_nonconformal_faces,
     };
     let q = quality_stats(&mesh);
     rmlog::stat("mesh_cdt.tets", mesh.tets.len() as f64);

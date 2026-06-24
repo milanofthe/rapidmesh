@@ -58,6 +58,10 @@ pub struct MeshDiagnostics {
     pub watertight: bool,
     pub n_nonmanifold_edges: usize,
     pub n_straddlers: usize,
+    /// Count of frozen surface faces whose volume incidence does not match their
+    /// region pair (CDT path; the Path-A conformity north star). `0` <=> the
+    /// volume boundary equals the frozen surface <=> straddler-free by construction.
+    pub n_nonconformal_faces: usize,
     /// Largest distance of a curved boundary face's centroid from its analytic
     /// surface (the chord sagitta -- the realised geometric accuracy vs `tol`).
     pub max_surface_deviation: f64,
@@ -286,6 +290,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         watertight: n_nonmanifold == 0,
         n_nonmanifold_edges: n_nonmanifold,
         n_straddlers,
+        n_nonconformal_faces: mesh.n_nonconformal_faces,
         max_surface_deviation: max_dev,
         region_volumes: region_vol.into_iter().collect(),
         defects,

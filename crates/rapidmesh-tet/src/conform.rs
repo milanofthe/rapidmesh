@@ -78,6 +78,12 @@ pub struct TetMesh {
     /// floor, so it does not coarsen away fine, intentional detail. Empty or
     /// `INFINITY` means "no local target" (no size-driven coarsening there).
     pub point_size: Vec<f64>,
+    /// CDT path only: count of frozen surface faces that are NOT a face of the
+    /// kept volume with the incidence their region pair demands (an outer face
+    /// borders one kept tet, an interface face two). A nonzero count means the
+    /// volume boundary differs from the frozen surface there -- the exact, root
+    /// cause of straddlers. `0` for the non-CDT path (no frozen-surface contract).
+    pub n_nonconformal_faces: usize,
 }
 
 impl TetMesh {

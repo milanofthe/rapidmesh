@@ -802,6 +802,7 @@ impl PyMesh {
         d.set_item("watertight", dg.watertight)?;
         d.set_item("n_nonmanifold_edges", dg.n_nonmanifold_edges)?;
         d.set_item("n_straddlers", dg.n_straddlers)?;
+        d.set_item("n_nonconformal_faces", dg.n_nonconformal_faces)?;
         d.set_item("max_surface_deviation", dg.max_surface_deviation)?;
         let rv: Vec<Bound<'py, PyDict>> = dg
             .region_volumes

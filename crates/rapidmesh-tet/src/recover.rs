@@ -96,19 +96,21 @@ fn tet_crosses_tri(
 }
 
 /// Gift-wrap the cavity `removed` (alive tet slots) into a valid tetrahedral-
-/// ization that contains every `walls` triangle as an internal face. Returns the
-/// new tets (public vertex indices) or `None` if the advancing front cannot be
-/// closed without Steiner points. Pure read of `db`.
+/// ization that contains every `walls` triangle as an internal face. `Ok(tets)`
+/// on success; `Err(Some(face))` when an advancing-front face had no valid apex
+/// (the STUCK face -- absorbing the tet across it is the targeted enlargement,
+/// TetGen's `delaunizecavity` step); `Err(None)` for a structural failure (bad
+/// boundary, wall not reproduced) where targeted growth would not help. Pure read.
 fn giftwrap(
     db: &DelaunayBuilder,
     removed: &[u32],
     walls: &[[usize; 3]],
-) -> Option<Vec<[usize; 4]>> {
+) -> Result<Vec<[usize; 4]>, Option<[usize; 3]>> {
     // Cavity vertices and their exact positions.
     let mut verts: Vec<usize> = Vec::new();
     let mut seen: HashSet<usize, BH> = HashSet::default();
     for &s in removed {
-        let t = db.tet_at(s)?;
+        let t = db.tet_at(s).ok_or(None)?;
         for v in t {
             if seen.insert(v) {
                 verts.push(v);
@@ -144,7 +146,7 @@ fn giftwrap(
     let removed_set: HashSet<u32, BH> = removed.iter().copied().collect();
     let mut front: HashMap<[usize; 3], [usize; 3], BH> = HashMap::default();
     for &s in removed {
-        let t = db.tet_at(s)?;
+        let t = db.tet_at(s).ok_or(None)?;
         for i in 0..4 {
             let nb = db.neighbor_at(s, i);
             if nb.is_some_and(|n| removed_set.contains(&n)) {
@@ -152,7 +154,7 @@ fn giftwrap(
             }
             let f = face_pub(t, i);
             if !front_xor(&mut front, f) {
-                return None;
+                return Err(None);
             }
         }
     }
@@ -163,7 +165,7 @@ fn giftwrap(
     while let Some((&_key, &f)) = front.iter().next() {
         iters += 1;
         if iters > max_iters {
-            return None;
+            return Err(None);
         }
         let [p, q, r] = f;
         // Best apex: on the positive (unfilled) side, forming no wall-crossing
@@ -185,7 +187,12 @@ fn giftwrap(
                 some => some,
             };
         }
-        let s = best?; // front face has no valid apex -> needs Steiner -> fail
+        // No valid apex for this front face: report it as the stuck face so the
+        // caller can absorb the tet across it (targeted enlargement).
+        let s = match best {
+            Some(s) => s,
+            None => return Err(Some([p, q, r])),
+        };
         result.push([p, q, r, s]);
         // Consume the base face; XOR the three new side faces, reversed so their
         // unfilled side (away from s) is positive.
@@ -195,7 +202,7 @@ fn giftwrap(
         for nf in [[p, q, s], [p, s, r], [s, q, r]] {
             // nf is face_pub of (p,q,r,s) reversed: unfilled side positive.
             if !front_xor(&mut front, nf) {
-                return None;
+                return Err(None);
             }
         }
     }
@@ -212,10 +219,10 @@ fn giftwrap(
             })
         });
         if !present {
-            return None;
+            return Err(None);
         }
     }
-    Some(result)
+    Ok(result)
 }
 
 /// XOR an oriented face into the front: cancel against its reverse if present,
@@ -238,9 +245,12 @@ fn front_xor(front: &mut HashMap<[usize; 3], [usize; 3], BH>, f: [usize; 3]) -> 
 
 /// Maximum cavity size (tets) before a recovery is abandoned -- a runaway cavity
 /// is a sign the facet needs Steiner points, not more enlargement.
-const MAX_CAVITY: usize = 256;
-/// How many times the cavity is enlarged by one neighbor ring on gift-wrap failure.
-const MAX_GROW: usize = 4;
+const MAX_CAVITY: usize = 1024;
+/// How many TARGETED enlargements (absorb the tet across the stuck front face) a
+/// recovery may try. Enough for crease-bridge cavities; an interior-leak facet
+/// cannot close by growth at all (the leaked point obstructs), so a high cap only
+/// wastes time there -- those are handed to the Steiner fallback instead.
+const MAX_GROW: usize = 32;
 
 /// All target facets fully contained in the cavity vertex set, as walls that
 /// gift-wrapping must preserve (else enlarging the cavity would silently destroy
@@ -311,10 +321,20 @@ fn cavity_verts(db: &DelaunayBuilder, removed: &[u32]) -> HashSet<usize, BH> {
     verts
 }
 
-/// Recover one missing facet `[a,b,c]` (public indices) by constrained cavity
-/// re-tetrahedralization, enlarging the cavity on failure. `facets` are all the
-/// surface facets to preserve as walls. Returns true if the facet is now a tet face.
-fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &[[usize; 3]]) -> bool {
+/// Why a facet recovery attempt ended (for diagnostics + driving the next step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecOutcome {
+    Recovered,
+    /// Gift-wrap could not close the advancing front (needs a Steiner point, or a
+    /// larger cavity) at every cavity size tried.
+    GiftwrapNone,
+    /// Gift-wrap produced tets but the safe swap rejected them (invalid complex).
+    ReplaceRejected,
+    /// The cavity hit the size cap without a valid tiling.
+    CavityMax,
+}
+
+fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &[[usize; 3]]) -> RecOutcome {
     // Seed cavity: the tets the facet actually pierces (the blockers) -- the lean,
     // targeted cavity. The corner stars are deliberately NOT added: they bloat the
     // cavity and make gift-wrap fail far more often (measured). If the pierced
@@ -322,8 +342,9 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
     // (giftwrap's final wall-present check), counted, never corrupting the mesh.
     let mut set: HashSet<u32, BH> = pierced_tets(db, a, b, c).into_iter().collect();
     if set.is_empty() {
-        return false;
+        return RecOutcome::GiftwrapNone;
     }
+    let mut last = RecOutcome::GiftwrapNone;
     for _ in 0..=MAX_GROW {
         let removed: Vec<u32> = set.iter().copied().collect();
         let verts = cavity_verts(db, &removed);
@@ -335,21 +356,55 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
         }) {
             walls.push([a, b, c]); // ensure the target itself is a wall
         }
-        if let Some(new_tets) = giftwrap(db, &removed, &walls) {
-            if db.try_replace_cavity(&removed, &new_tets) {
-                return true;
+        let stuck = match giftwrap(db, &removed, &walls) {
+            Ok(new_tets) => {
+                if db.try_replace_cavity(&removed, &new_tets) {
+                    return RecOutcome::Recovered;
+                }
+                last = RecOutcome::ReplaceRejected;
+                None // a rejected swap is not a stuck face -> blunt-grow fallback
+            }
+            Err(face) => {
+                last = RecOutcome::GiftwrapNone;
+                face // Some(stuck face) -> targeted grow; None -> blunt fallback
+            }
+        };
+        if set.len() >= MAX_CAVITY {
+            return RecOutcome::CavityMax;
+        }
+        // Targeted enlargement: absorb exactly the tet OUTSIDE the cavity across
+        // the stuck front face. This adds the one vertex the front needed, keeping
+        // the cavity minimal (TetGen's delaunizecavity step). Fall back to a single
+        // neighbour ring only when there is no specific stuck face.
+        let mut added = false;
+        if let Some(sf) = stuck {
+            let mut key = sf;
+            key.sort_unstable();
+            'find: for &s in &removed {
+                let Some(t) = db.tet_at(s) else { continue };
+                for i in 0..4 {
+                    let mut f = face_pub(t, i);
+                    f.sort_unstable();
+                    if f == key {
+                        if let Some(nb) = db.neighbor_at(s, i) {
+                            if db.tet_at(nb).is_some() && set.insert(nb) {
+                                added = true;
+                            }
+                        }
+                        break 'find;
+                    }
+                }
             }
         }
-        // Enlarge by one neighbour ring of real tets.
-        if set.len() >= MAX_CAVITY {
-            break;
-        }
-        let mut added = false;
-        for &s in &removed {
-            for i in 0..4 {
-                if let Some(nb) = db.neighbor_at(s, i) {
-                    if db.tet_at(nb).is_some() && set.insert(nb) {
-                        added = true;
+        if !added {
+            // No stuck face resolved (rejected swap, or the stuck face's outside
+            // tet was already in the cavity): grow by one neighbour ring.
+            for &s in &removed {
+                for i in 0..4 {
+                    if let Some(nb) = db.neighbor_at(s, i) {
+                        if db.tet_at(nb).is_some() && set.insert(nb) {
+                            added = true;
+                        }
                     }
                 }
             }
@@ -358,7 +413,7 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
             break;
         }
     }
-    false
+    last
 }
 
 /// Forces every triangle in `facets` (public vertex indices) to be a tet face,
@@ -368,6 +423,7 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
 pub fn recover_facets(db: &mut DelaunayBuilder, facets: &[[usize; 3]]) -> (usize, usize) {
     let (mut recovered, mut failed) = (0usize, 0usize);
     let (mut present, mut benign) = (0usize, 0usize);
+    let (mut n_giftwrap, mut n_replace, mut n_cavmax) = (0usize, 0usize, 0usize);
     let trace = std::env::var("RAPIDMESH_RECOVER_TRACE").is_ok();
     for &[a, b, c] in facets {
         if db.face_exists(a, b, c) {
@@ -383,25 +439,22 @@ pub fn recover_facets(db: &mut DelaunayBuilder, facets: &[[usize; 3]]) -> (usize
             benign += 1;
             continue;
         }
-        if recover_one(db, a, b, c, facets) {
-            recovered += 1;
-        } else {
-            failed += 1;
-            if trace {
-                let ctr = |i: usize| db.approx_point(i);
-                let (pa, pb, pc) = (ctr(a), ctr(b), ctr(c));
-                let m = [
-                    (pa[0] + pb[0] + pc[0]) / 3.0,
-                    (pa[1] + pb[1] + pc[1]) / 3.0,
-                    (pa[2] + pb[2] + pc[2]) / 3.0,
-                ];
-                eprintln!("[recover-fail] {} {} {}", m[0], m[1], m[2]);
+        match recover_one(db, a, b, c, facets) {
+            RecOutcome::Recovered => recovered += 1,
+            reason => {
+                failed += 1;
+                match reason {
+                    RecOutcome::GiftwrapNone => n_giftwrap += 1,
+                    RecOutcome::ReplaceRejected => n_replace += 1,
+                    RecOutcome::CavityMax => n_cavmax += 1,
+                    RecOutcome::Recovered => unreachable!(),
+                }
             }
         }
     }
     if trace {
         eprintln!(
-            "[recover-cat] facets={} present={present} benign={benign} recovered={recovered} failed(real)={failed}",
+            "[recover-cat] facets={} present={present} benign={benign} recovered={recovered} failed(real)={failed} (giftwrap_none={n_giftwrap} replace_rej={n_replace} cavity_max={n_cavmax})",
             facets.len()
         );
     }
@@ -442,7 +495,7 @@ mod tests {
             for j in (i + 1)..pts.len() {
                 for k in (j + 1)..pts.len() {
                     if !db.face_exists(i, j, k) {
-                        if recover_one(&mut db, i, j, k, &[[i, j, k]]) {
+                        if recover_one(&mut db, i, j, k, &[[i, j, k]]) == RecOutcome::Recovered {
                             assert!(db.face_exists(i, j, k), "facet must be present after recovery");
                             forced += 1;
                             break 'outer;

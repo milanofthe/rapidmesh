@@ -122,7 +122,12 @@ impl DomainTree {
                     .triangles
                     .iter()
                     .zip(&plc.region_tags)
-                    .filter(|(_, rt)| rt[0].0 == r || rt[1].0 == r)
+                    // Region `r`'s boundary soup is the facets with `r` on EXACTLY
+                    // one side. A facet with `r` on BOTH sides is an embedded sheet
+                    // INTERNAL to the region (a baffle): it does not bound `r`, and
+                    // counting it in the point-in-region ray-cast would flip the
+                    // parity, dropping everything behind it (half the volume).
+                    .filter(|(_, rt)| (rt[0].0 == r) != (rt[1].0 == r))
                     .map(|(t, _)| {
                         Tri::new(
                             plc.vertices[t[0] as usize],

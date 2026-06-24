@@ -469,8 +469,30 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
         .collect();
     feature.sort_unstable();
 
-    // Edge-curve neighbours of each feature vertex (its polyline link), and the
-    // CURVED analytic surfaces meeting along the curve at each vertex.
+    // Plane geometry recovered from the PLC (the `SurfaceKind::Plane` itself
+    // carries none): origin + unit normal of the first facet on each planar
+    // surface. Needed so POCS can project onto a plane-cut edge, not only the
+    // curved side.
+    let mut plane_geom: FxHashMap<u32, (V3, V3)> = FxHashMap::default();
+    for (fi, t) in plc.triangles.iter().enumerate() {
+        let s = plc.surface_refs[fi].0;
+        if matches!(plc.surfaces[s as usize], SurfaceKind::Plane) {
+            plane_geom.entry(s).or_insert_with(|| {
+                let (v0, v1, v2) =
+                    (plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]);
+                let (e1, e2) = (sub(v1, v0), sub(v2, v0));
+                let n = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                let nl = dot(n, n).sqrt();
+                (v0, if nl > 1e-12 { [n[0] / nl, n[1] / nl, n[2] / nl] } else { [0.0, 0.0, 1.0] })
+            });
+        }
+    }
+    // Edge-curve neighbours of each feature vertex (its polyline link), and ALL
+    // analytic surfaces meeting along the curve at each vertex (both sides).
     let mut nbr: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
     let mut vert_surfs: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
     for &(a, b) in &feature {
@@ -480,24 +502,28 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
             for &v in &[a, b] {
                 let e = vert_surfs.entry(v).or_default();
                 for &s in ss {
-                    if is_curved(s) && !e.contains(&s) {
+                    if !e.contains(&s) {
                         e.push(s);
                     }
                 }
             }
         }
     }
-    // Project a point onto the ANALYTIC curved surface(s) meeting at the edge
-    // (alternating = POCS onto their intersection; planes are skipped, their
-    // `SurfaceKind::Plane` carries no geometry). This pulls the faceted chain onto
-    // the true curve, so the osculating radius below reflects the REAL curvature
-    // of the intersection -- not the spurious tiny radius a faceted polyline shows
-    // at every facet corner (the over-refinement that fanned out the borders).
+    // Project a point onto the intersection of the analytic surfaces meeting at
+    // the edge by alternating projection (POCS) onto BOTH sides -- a plane via its
+    // recovered geometry, a curved surface via its oracle. This pulls the faceted
+    // chain onto the true curve, so the osculating radius below reflects the REAL
+    // curvature of the intersection (INFINITY for a plane-cut generator, the true
+    // radius for a genuine curve) -- not the spurious tiny radius a faceted polyline
+    // zigzag shows (the over-refinement that fanned out the borders).
     let pocs = |p: V3, sids: &[u32]| -> V3 {
         let mut q = p;
         for _ in 0..8 {
             for &s in sids {
-                q = crate::project::closest_on_surface(&plc.surfaces[s as usize], q);
+                q = match plane_geom.get(&s) {
+                    Some(&(o, n)) => crate::project::closest_on_plane(q, o, n),
+                    None => crate::project::closest_on_surface(&plc.surfaces[s as usize], q),
+                };
             }
         }
         q

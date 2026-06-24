@@ -1356,6 +1356,27 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         eprintln!("LLOYD_PASSES {lloyd_passes} surf {} interior {} slivers {} time_ms {:.0}", n_surf, interior.len(), best_slivers, t_lloyd.elapsed().as_secs_f64() * 1000.0);
     }
 
+    // Post-Lloyd surface clearance: the seeding clearance (one local element off
+    // the surface) is re-checked AFTER relaxation, because Lloyd lets interior
+    // seeds drift toward the boundary -- a drifted seed within a local element of
+    // the surface is exactly what the restricted-Delaunay boundary grabs as an
+    // off-surface vertex (a straddler). Dropping it lets the boundary fall back to
+    // the surface vertices. Measured against the surface POINTS (a fast Octree
+    // query); the multiplier trades straddler removal against interior coverage.
+    if let Ok(s) = std::env::var("RAPIDMESH_CLEAR") {
+        let mult: f64 = s.parse().unwrap_or(1.0);
+        let before = interior.len();
+        interior.retain(|&p| {
+            surf_tree
+                .nearest(p)
+                .map(|q| dist(p, surf_points[q as usize]) >= mult * hloc(p))
+                .unwrap_or(true)
+        });
+        if std::env::var_os("RAPIDMESH_CLEAR_TRACE").is_some() {
+            eprintln!("[clear] interior {before} -> {} (dropped {})", interior.len(), before - interior.len());
+        }
+    }
+
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
     let _ = (&inside, &hloc); // (inside oracle / size field; refinement TBD)

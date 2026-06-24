@@ -187,6 +187,77 @@ def _shape_cases():
     return cases
 
 
+def _graded_cases():
+    """Grading woven into the existing geometry families on the SAME primitives the
+    corpus already uses, one knob each: coarse vs fine interior, a single finer
+    face, a single finer edge (also at a CSG feature), point sources on a curved
+    hull, and a multi-region split. Exercises the sizing field per region / per
+    face / per edge, not just globally."""
+    cases = []
+
+    def vol(name, fn):
+        cases.append((name, "Graded", "vol", fn))
+
+    # innen GRÖBER: fine shell, coarse bulk (the classic FEM layout) on a cylinder.
+    def cyl_coarse_interior():
+        g = rm.Geometry()
+        g.cylinder(0.8, 2.0, position=(0.0, 0.0, -1.0), segments=48)
+        return g.mesh(maxh_surf=0.13, maxh_vol=0.55)
+    vol("cyl_coarse_interior", cyl_coarse_interior)
+
+    # innen FEINER: a point source at the centre, the field grows linearly outward.
+    def box_core_fine():
+        g = rm.Geometry()
+        g.box(2.0, 2.0, 2.0, position=(-1.0, -1.0, -1.0))
+        g.refine_near_points([(0.0, 0.0, 0.0)], 0.09)
+        return g.mesh(maxh=0.55, grading=0.3)
+    vol("box_core_fine", box_core_fine)
+
+    # einzelne FLÄCHE: only the +z face of a box is refined, the rest stays coarse.
+    def box_face_fine():
+        g = rm.Geometry(maxh=0.5)
+        g.box(2.0, 2.0, 2.0, position=(-1.0, -1.0, -1.0))
+        g.surf(normal=(0.0, 0.0, 1.0)).maxh = 0.11
+        return g.mesh(maxh=0.5)
+    vol("box_face_fine", box_face_fine)
+
+    # einzelne KANTE: one vertical edge of a box is refined, graded into the bulk.
+    def box_edge_fine():
+        g = rm.Geometry(maxh=0.5)
+        g.box(2.0, 2.0, 2.0, position=(-1.0, -1.0, -1.0))
+        g.edge(near=(1.0, 1.0, 0.0)).maxh = 0.07
+        return g.mesh(maxh=0.5, grading=0.3)
+    vol("box_edge_fine", box_edge_fine)
+
+    # einzelne KANTE at a CSG feature: a corner notch carved from a slab, fine
+    # along the reentrant edge it creates.
+    def notch_edge_fine():
+        g = rm.Geometry(maxh=0.45)
+        g.box(2.0, 2.0, 1.0, position=(-1.0, -1.0, -0.5))
+        g.box(1.0, 1.0, 1.0, position=(0.0, 0.0, 0.0), void=True)
+        g.edge(near=(0.0, 0.0, 0.0)).maxh = 0.07
+        return g.mesh(maxh=0.45, grading=0.3)
+    vol("notch_edge_fine", notch_edge_fine)
+
+    # curved hull, point-refined: one patch of an icosphere is fine, graded out.
+    def sphere_patch_fine():
+        g = rm.Geometry()
+        g.icosphere(1.0, subdivisions=3)
+        g.refine_near_points([(0.0, 0.0, 1.0)], 0.05)
+        return g.mesh(maxh=0.45, grading=0.3)
+    vol("sphere_patch_fine", sphere_patch_fine)
+
+    # MULTI-REGION: two stacked boxes sharing a face, upper region fine, lower coarse.
+    def stacked_two_region():
+        g = rm.Geometry()
+        g.box(2.0, 2.0, 1.0, position=(-1.0, -1.0, 0.0), maxh=0.5)
+        g.box(2.0, 2.0, 1.0, position=(-1.0, -1.0, 1.0), maxh=0.16)
+        return g.mesh()
+    vol("stacked_two_region", stacked_two_region)
+
+    return cases
+
+
 #: The whole corpus: validate cases + showcase models + RF structures + sizing.
 CORPUS = (
     [_from_validate(*c) for c in V.CASES]
@@ -194,6 +265,7 @@ CORPUS = (
     + [_from_rf(n) for n in _RF_FNS]
     + _sizing_cases()
     + _shape_cases()
+    + _graded_cases()
 )
 
 

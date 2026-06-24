@@ -1012,7 +1012,7 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.5, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
 
         assert_eq!(ss.plc_points, 8, "8 box corners pinned");
@@ -1053,7 +1053,7 @@ mod tests {
         let b = from_plc(&plc);
         let tol = 1e-2;
         let params = MeshParams { maxh: 0.5, tol_surf: tol, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
 
         let mut curved_tris = 0usize;
@@ -1093,7 +1093,7 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.5, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
 
         let mut curved = 0usize;
@@ -1134,7 +1134,7 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.22, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
 
         // the apex is created as a single site at the cone tip; find it
@@ -1183,7 +1183,7 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
 
         let curved: Vec<&SurfaceFace> = ss
@@ -1228,7 +1228,7 @@ mod tests {
         let plc = scene.assemble();
         let b = from_plc(&plc);
         let params = MeshParams { maxh: 0.7, ..Default::default() };
-        let domain = crate::domain::DomainTree::build(&plc, &params);
+        let domain = crate::domain::DomainTree::build(&plc, &params, &[]);
         let ss = surface_sites(&b, &plc, &params, &domain);
         assert!(!ss.tris.is_empty(), "planar faces are triangulated");
         let mut area = 0.0;

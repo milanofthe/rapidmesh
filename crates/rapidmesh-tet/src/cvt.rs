@@ -562,7 +562,7 @@ pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // per-leaf site buckets, re-filled each pass), and tet region classification,
     // so the interior coarsens away from the fine, fixed boundary.
     let t_domain = std::time::Instant::now();
-    let mut domain = DomainTree::build(plc, params);
+    let mut domain = DomainTree::build(plc, params, &[]);
     rmlog::stage("mesh.domain", t_domain.elapsed().as_secs_f64());
 
     let patches = build_patches(plc);
@@ -1052,7 +1052,47 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let soup = domain_soup(plc);
     let boxes = TriBoxes::build(&soup, BOX_PAD_FRAC * diag.max(1.0));
     let inside = |p: V3| point_inside_solid(&Point3::Explicit(p), p, &soup, &boxes, (lo, hi));
-    let domain = DomainTree::build(plc, params);
+    // The brep is built up front so its faces' resolved per-face `surf_maxh` can
+    // size the VOLUME field too (a finely sized face must refine the volume behind
+    // it, else optimize collapses the fine surface back to the coarse bulk target).
+    let brep = rapidmesh_brep::build::from_plc(plc);
+    // Per-face `surf_maxh` -> per-facet volume target (see `DomainTree::build`).
+    let mut facet_surf = vec![f64::INFINITY; plc.triangles.len()];
+    for (fid, f) in brep.faces.iter().enumerate() {
+        if let Some(&(_, h)) = params.surf_maxh.iter().find(|&&(i, _)| i as usize == fid) {
+            for &ti in &f.facets {
+                facet_surf[ti as usize] = facet_surf[ti as usize].min(h);
+            }
+        }
+    }
+    // Per-edge `edge_maxh` -> point sources sampled along the brep edge's chain, so
+    // the volume field stays fine along a refined edge (the same growth-from-feature
+    // mechanism as faces; the chain is sampled at ~h so the field holds `h` along
+    // it). Only clones the params when an edge override is actually present.
+    let domain = if params.edge_maxh.is_empty() {
+        DomainTree::build(plc, params, &facet_surf)
+    } else {
+        let mut pa = params.clone();
+        for (eid, e) in brep.edges.iter().enumerate() {
+            let Some(&(_, h)) = params.edge_maxh.iter().find(|&&(i, _)| i as usize == eid) else {
+                continue;
+            };
+            for w in e.chain.windows(2) {
+                let n = ((dist(w[0], w[1]) / h).ceil() as usize).max(1);
+                for k in 0..n {
+                    let t = k as f64 / n as f64;
+                    pa.size_points.push((
+                        std::array::from_fn(|c| w[0][c] + t * (w[1][c] - w[0][c])),
+                        h,
+                    ));
+                }
+            }
+            if let Some(&last) = e.chain.last() {
+                pa.size_points.push((last, h));
+            }
+        }
+        DomainTree::build(plc, &pa, &facet_surf)
+    };
     let patches = build_patches(plc);
 
     // ---- stages 1+2: the UNIFIED surface (B1) -----------------------------
@@ -1062,7 +1102,6 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // the per-entity sizing. mesh_cdt freezes these as hard constraints (watertight by
     // construction) -- no separate `frozen_surface` patch path.
     let t_surf = std::time::Instant::now();
-    let brep = rapidmesh_brep::build::from_plc(plc);
     let ss = crate::brep_mesh::surface_sites(&brep, plc, params, &domain);
     let surf_points: Vec<V3> = ss.sites.iter().map(|s| s.pos()).collect();
     let surf_tris: Vec<[usize; 3]> = ss.tris.iter().map(|f| f.tri).collect();
@@ -1488,7 +1527,7 @@ fn in_loops(uv: [f64; 2], segs: &[([f64; 2], [f64; 2])]) -> bool {
 /// not a bijection (round-trip check fails) falls back to emitting its input
 /// facets unchanged.
 pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
-    let domain = DomainTree::build(plc, params);
+    let domain = DomainTree::build(plc, params, &[]);
     let patches = build_patches(plc);
 
     let mut diag = 0.0_f64;

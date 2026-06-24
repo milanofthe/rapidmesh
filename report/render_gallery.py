@@ -62,8 +62,10 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
     im = Image.open(png).convert("RGBA")
     dr = ImageDraw.Draw(im)
     title_f, body_f = _font(26), _font(19)
-    # Transparent background -> BLACK annotation text (lands on the light report).
-    fg, dim = (0, 0, 0, 255), (40, 40, 40, 255)
+    # Neutral mid-gray for ALL non-semantic text (title, metrics, legend labels) so
+    # it reads on both light AND dark backgrounds; only the colour-coded text
+    # (watertight yes/no) and the defect swatches keep their meaning colours.
+    fg = dim = (128, 128, 128, 255)
 
     def txt(xy, s, font, fill):
         dr.text(xy, s, font=font, fill=fill)

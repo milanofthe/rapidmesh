@@ -84,8 +84,13 @@ fn child_box(center: V3, half: f64, oct: usize) -> (V3, f64) {
 }
 
 impl DomainTree {
-    /// Builds the domain octree from the PLC and mesh parameters.
-    pub fn build(plc: &TaggedPlc, params: &MeshParams) -> DomainTree {
+    /// Builds the domain octree from the PLC and mesh parameters. `facet_surf`
+    /// is an optional per-PLC-facet surface size target (the resolved per-FACE
+    /// `surf_maxh`, mapped through the brep); empty means "no per-face override".
+    /// It feeds the VOLUME sizing field so a finely sized face refines the volume
+    /// behind it -- without it the fine surface is collapsed back by optimize,
+    /// because the volume target never knew the face was meant to be fine.
+    pub fn build(plc: &TaggedPlc, params: &MeshParams, facet_surf: &[f64]) -> DomainTree {
         let mut lo = [f64::MAX; 3];
         let mut hi = [f64::MIN; 3];
         for p in &plc.vertices {
@@ -207,7 +212,9 @@ impl DomainTree {
                     h
                 }
             };
-            base.min(curvature_target(i))
+            // Per-FACE override (resolved `surf_maxh`, finest wins), then curvature.
+            base.min(facet_surf.get(i).copied().unwrap_or(f64::INFINITY))
+                .min(curvature_target(i))
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles
@@ -754,6 +761,7 @@ mod tests {
                 size_points: vec![([2.0, 2.0, 2.0], 0.1)],
                 ..Default::default()
             },
+            &[],
         );
         let h_at_point = t.h_at([2.0, 2.0, 2.0]);
         let h_away = t.h_at([2.0, 2.0, 3.5]);
@@ -764,7 +772,7 @@ mod tests {
     #[test]
     fn region_inside_outside() {
         let plc = cube_plc(4.0);
-        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.8, ..Default::default() });
+        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.8, ..Default::default() }, &[]);
         assert_ne!(t.region_at([2.0, 2.0, 2.0]), 0, "center inside");
         assert_eq!(t.region_at([-1.0, 2.0, 2.0]), 0, "outside");
         assert!(t.inside([2.0, 2.0, 2.0]) && !t.inside([5.0, 2.0, 2.0]));
@@ -776,7 +784,7 @@ mod tests {
         // caller filters to the interior. A uniform box yields the full fine BCC:
         // both sublattices present and many candidates land inside.
         let plc = cube_plc(4.0);
-        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.5, grading: 0.5, ..Default::default() });
+        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.5, grading: 0.5, ..Default::default() }, &[]);
         let seeds = t.seed_points();
         let inside: Vec<_> = seeds.iter().filter(|s| t.inside(**s)).collect();
         assert!(inside.len() > 50, "expected a populated interior lattice, got {}", inside.len());
@@ -797,6 +805,7 @@ mod tests {
         let t = DomainTree::build(
             &plc,
             &MeshParams { maxh: 4.0, region_maxh: vec![(inner.0, 1.0)], grading: 0.5, ..Default::default() },
+            &[],
         );
         // h is finer inside the small cube than out in the bulk.
         assert!(t.h_at([4.0, 4.0, 4.0]) < t.h_at([0.5, 0.5, 0.5]));
@@ -805,7 +814,7 @@ mod tests {
     #[test]
     fn neighbors_finds_nearby_sites() {
         let plc = cube_plc(4.0);
-        let mut t = DomainTree::build(&plc, &MeshParams { maxh: 1.0, ..Default::default() });
+        let mut t = DomainTree::build(&plc, &MeshParams { maxh: 1.0, ..Default::default() }, &[]);
         let pts = vec![[2.0, 2.0, 2.0], [2.3, 2.0, 2.0], [3.9, 3.9, 3.9]];
         t.rebucket(&pts);
         let near = t.neighbors([2.0, 2.0, 2.0], 0.5);

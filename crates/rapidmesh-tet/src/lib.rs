@@ -22,6 +22,7 @@ pub mod delaunay;
 pub mod diagnostics;
 pub mod domain;
 pub mod facetbvh;
+mod geomutil;
 pub mod optimize;
 pub mod project;
 pub mod seed;

@@ -17,6 +17,7 @@
 
 use crate::conform::MeshParams;
 use rapidmesh_geom::vec3::{V3, sub, dot, dist};
+use crate::geomutil::circumradius;
 use crate::facetbvh::FacetBvh;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
@@ -408,28 +409,6 @@ impl DomainTree {
     }
 }
 
-/// Circumradius of the triangle `(a, b, c)` -- the radius of the circle through
-/// the three points, i.e. the osculating-circle radius of the polyline at `b`.
-/// `INFINITY` for collinear points (a straight edge has no curvature).
-fn circumradius(a: V3, b: V3, c: V3) -> f64 {
-    let ab = dist(a, b);
-    let bc = dist(b, c);
-    let ca = dist(c, a);
-    // Twice the triangle area from the cross product of two edges.
-    let u = sub(b, a);
-    let v = sub(c, a);
-    let cr = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let area2 = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
-    if area2 <= 1e-300 {
-        f64::INFINITY
-    } else {
-        ab * bc * ca / (2.0 * area2)
-    }
-}
 
 /// Sagitta-bounded sizing targets along curved feature edges (WP-R3), derived
 /// purely from geometry. A feature edge is a PLC edge whose two adjacent facets

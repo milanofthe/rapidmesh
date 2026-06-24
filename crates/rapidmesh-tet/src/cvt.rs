@@ -21,6 +21,7 @@
 
 use crate::conform::{build_patches, quality_stats, MeshParams, Patch, SurfaceFace, SurfaceMesh, TetMesh};
 use rapidmesh_geom::vec3::{V3, sub, scale, dot, cross, dist};
+use crate::geomutil::in_loops;
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::seed::SizingField;
@@ -1200,22 +1201,6 @@ fn group_boundary_edges(plc: &TaggedPlc, members: &[usize]) -> Vec<(usize, usize
     let mut out: Vec<(usize, usize)> = count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect();
     out.sort_unstable();
     out
-}
-
-/// Even-odd point-in-region test for a chart point against the group's boundary
-/// loops (corner-to-corner segments in chart coordinates). Handles holes (a
-/// sphere with several caps removed) via the parity rule.
-fn in_loops(uv: [f64; 2], segs: &[([f64; 2], [f64; 2])]) -> bool {
-    let mut c = false;
-    for &(a, b) in segs {
-        if (a[1] > uv[1]) != (b[1] > uv[1]) {
-            let xint = a[0] + (uv[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
-            if uv[0] < xint {
-                c = !c;
-            }
-        }
-    }
-    c
 }
 
 /// Surface-only meshing: the early-exit export path. Runs the hierarchy's

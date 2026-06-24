@@ -19,6 +19,7 @@
 //! consume its points.
 
 use rapidmesh_geom::vec3::{V3, dist};
+use crate::geomutil::circumradius;
 /// A general edge curve, parametrized by arc length `s in [0, length()]`.
 pub trait Curve {
     /// Total arc length.
@@ -66,24 +67,6 @@ impl PolylineCurve {
     }
 }
 
-/// Circumradius of three points (osculating-circle radius); `INFINITY` if
-/// collinear.
-fn circumradius(a: V3, b: V3, c: V3) -> f64 {
-    let (ab, bc, ca) = (dist(a, b), dist(b, c), dist(c, a));
-    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let cr = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let area2 = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
-    if area2 <= 1e-300 {
-        f64::INFINITY
-    } else {
-        ab * bc * ca / (2.0 * area2)
-    }
-}
 
 impl Curve for PolylineCurve {
     fn length(&self) -> f64 {

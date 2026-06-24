@@ -9,6 +9,7 @@
 
 use crate::conform::{MeshParams, SurfaceFace};
 use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross};
+use crate::geomutil::in_loops;
 use crate::curve::{distribute, Curve, PolylineCurve};
 use crate::site::{Carrier, Site};
 use crate::surf2d::{cvt_fill, triangulate_constrained};
@@ -83,20 +84,6 @@ fn revolution_grid(surf: &Surface, vmin: f64, vmax: f64, theta_rays: &[f64], tar
         }
     }
     pts
-}
-
-/// Even-odd point-in-region test over a planar face's loop segments (in (u,v)).
-fn in_loops(uv: P2, segs: &[(P2, P2)]) -> bool {
-    let mut c = false;
-    for &(a, b) in segs {
-        if (a[1] > uv[1]) != (b[1] > uv[1]) {
-            let x = a[0] + (uv[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
-            if uv[0] < x {
-                c = !c;
-            }
-        }
-    }
-    c
 }
 
 /// Geodesic (icosphere) vertices + triangles, `subdivisions` Loop steps, every

@@ -354,9 +354,20 @@ fn recover_one(db: &mut DelaunayBuilder, a: usize, b: usize, c: usize, facets: &
 /// not be recovered (left untouched). Already-present facets count as neither.
 pub fn recover_facets(db: &mut DelaunayBuilder, facets: &[[usize; 3]]) -> (usize, usize) {
     let (mut recovered, mut failed) = (0usize, 0usize);
+    let (mut present, mut benign) = (0usize, 0usize);
     let trace = std::env::var("RAPIDMESH_RECOVER_TRACE").is_ok();
     for &[a, b, c] in facets {
         if db.face_exists(a, b, c) {
+            present += 1;
+            continue;
+        }
+        // A facet with NO pierced tet is a benign in-plane diagonal flip (a
+        // co-quad band facet): the volume already fills exactly to it, just with
+        // the other diagonal. Forcing it would build a near-flat sliver. Leave it.
+        // Only facets a tet actually pierces are real blockers (crease bridges,
+        // interior leaks) worth recovering.
+        if pierced_tets(db, a, b, c).is_empty() {
+            benign += 1;
             continue;
         }
         if recover_one(db, a, b, c, facets) {
@@ -374,6 +385,12 @@ pub fn recover_facets(db: &mut DelaunayBuilder, facets: &[[usize; 3]]) -> (usize
                 eprintln!("[recover-fail] {} {} {}", m[0], m[1], m[2]);
             }
         }
+    }
+    if trace {
+        eprintln!(
+            "[recover-cat] facets={} present={present} benign={benign} recovered={recovered} failed(real)={failed}",
+            facets.len()
+        );
     }
     (recovered, failed)
 }

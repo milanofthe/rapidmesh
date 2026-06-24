@@ -425,20 +425,6 @@ impl SceneBuilder {
             if std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none() {
                 optimize(&mut mesh, &opt);
             }
-            // SOT-driven boundary snap: pull leaked-interior boundary vertices
-            // (straddlers) back onto their analytic surface, preserving the
-            // (manifold) volume boundary -- unlike replacing it with the frozen
-            // surface, which breaks open-sheet geometries.
-            if std::env::var_os("RAPIDMESH_SNAP").is_some() {
-                let n = rapidmesh_tet::snap_boundary_to_surface(&mut mesh);
-                rapidmesh_exact::log::stat("snap.boundary_verts", n as f64);
-                // Snapping a leaked vertex onto the surface squishes the tet
-                // between it and its neighbour into a sliver (a short surface
-                // edge); a second optimize pass collapses those away.
-                if n > 0 && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none() {
-                    optimize(&mut mesh, &opt);
-                }
-            }
             // Quality (with the worst element's location/region), logged so a
             // verbose run reports not just timings but where the mesh is worst.
             let q = quality_stats(&mesh);
@@ -802,7 +788,6 @@ impl PyMesh {
         d.set_item("watertight", dg.watertight)?;
         d.set_item("n_nonmanifold_edges", dg.n_nonmanifold_edges)?;
         d.set_item("n_straddlers", dg.n_straddlers)?;
-        d.set_item("n_nonconformal_faces", dg.n_nonconformal_faces)?;
         d.set_item("max_surface_deviation", dg.max_surface_deviation)?;
         let rv: Vec<Bound<'py, PyDict>> = dg
             .region_volumes

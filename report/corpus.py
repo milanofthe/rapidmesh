@@ -308,7 +308,6 @@ def bench(meshers=("default", "cdt"), only=None) -> list[dict]:
                         watertight=bool(d["watertight"]),
                         n_slivers=int(d["n_slivers"]),
                         n_straddlers=int(d["n_straddlers"]),
-                        n_nonconformal=int(d.get("n_nonconformal_faces", 0)),
                         n_nonmanifold=int(d["n_nonmanifold_edges"]),
                         max_surf_dev=round(float(d["max_surface_deviation"]), 6),
                         n_defects=len(d["defects"]),

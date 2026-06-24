@@ -163,34 +163,6 @@ pub fn tetrahedralize_constrained(
     let tris: Vec<[usize; 3]> = tris.to_vec();
     let parent: Vec<usize> = (0..tris.len()).collect();
 
-    // Constrained curved-facet recovery: force each clean frozen curved facet to
-    // be a tet face (deleting the restricted-Delaunay bridge tets at concave
-    // creases) via local cavity re-tetrahedralization. No Steiner points: the
-    // surface stays exactly the frozen mesh and the boundary, extracted by region
-    // difference, equals it. Planar facets already conform by coplanarity.
-    if std::env::var_os("RAPIDMESH_PATHA").is_some() {
-        let curved: Vec<[usize; 3]> = tris
-            .iter()
-            .zip(tri_carrier)
-            .filter(|(_, c)| matches!(c, Carrier::Surface(_)))
-            .map(|(t, _)| [vs[t[0]].bidx, vs[t[1]].bidx, vs[t[2]].bidx])
-            .collect();
-        let trace = std::env::var("RAPIDMESH_RECOVER_TRACE").is_ok();
-        let before: Vec<bool> = if trace {
-            curved.iter().map(|f| db.face_exists(f[0], f[1], f[2])).collect()
-        } else {
-            Vec::new()
-        };
-        let (recovered, failed) = crate::recover::recover_facets(&mut db, &curved);
-        if trace {
-            let after: Vec<bool> = curved.iter().map(|f| db.face_exists(f[0], f[1], f[2])).collect();
-            let destroyed = before.iter().zip(&after).filter(|(b, a)| **b && !**a).count();
-            let now_present = after.iter().filter(|&&x| x).count();
-            let was_present = before.iter().filter(|&&x| x).count();
-            eprintln!("[recover] curved={} recovered={recovered} failed={failed}; present {was_present}->{now_present}, DESTROYED previously-present={destroyed}", curved.len());
-        }
-    }
-
     let b2a = invert(&vs, db.len());
     let tets: Vec<[usize; 4]> = db
         .tets()

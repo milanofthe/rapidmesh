@@ -8,7 +8,7 @@
   "n_elems": 572,
   "n_points": 322,
   "min_dihedral": null,
-  "millis": 2
+  "millis": 7
  },
  {
   "name": "disc",
@@ -19,7 +19,7 @@
   "n_elems": 958,
   "n_points": 512,
   "min_dihedral": null,
-  "millis": 6
+  "millis": 0
  },
  {
   "name": "hexagon",
@@ -30,7 +30,7 @@
   "n_elems": 1008,
   "n_points": 547,
   "min_dihedral": null,
-  "millis": 7
+  "millis": 16
  },
  {
   "name": "l_polygon",
@@ -41,7 +41,7 @@
   "n_elems": 960,
   "n_points": 539,
   "min_dihedral": null,
-  "millis": 5
+  "millis": 2
  },
  {
   "name": "annulus",
@@ -52,7 +52,7 @@
   "n_elems": 1700,
   "n_points": 934,
   "min_dihedral": null,
-  "millis": 17
+  "millis": 16
  },
  {
   "name": "box",
@@ -63,10 +63,11 @@
   "n_elems": 1088,
   "n_points": 335,
   "min_dihedral": 11.78,
-  "millis": 55,
+  "millis": 44,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -80,10 +81,11 @@
   "n_elems": 6260,
   "n_points": 1400,
   "min_dihedral": 20.2,
-  "millis": 211,
+  "millis": 206,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.004528,
   "n_defects": 0
@@ -97,10 +99,11 @@
   "n_elems": 3345,
   "n_points": 895,
   "min_dihedral": 14.41,
-  "millis": 303,
+  "millis": 300,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 1568,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.002592,
   "n_defects": 0
@@ -114,10 +117,11 @@
   "n_elems": 1911,
   "n_points": 552,
   "min_dihedral": 0.65,
-  "millis": 377,
+  "millis": 363,
   "watertight": true,
   "n_slivers": 120,
   "n_straddlers": 0,
+  "n_nonconformal": 674,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.009816,
   "n_defects": 120
@@ -131,10 +135,11 @@
   "n_elems": 2673,
   "n_points": 762,
   "min_dihedral": 16.87,
-  "millis": 339,
+  "millis": 332,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 1004,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.006541,
   "n_defects": 0
@@ -148,10 +153,11 @@
   "n_elems": 7297,
   "n_points": 1831,
   "min_dihedral": 16.14,
-  "millis": 1020,
+  "millis": 982,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 2304,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.007967,
   "n_defects": 0
@@ -165,10 +171,11 @@
   "n_elems": 3585,
   "n_points": 920,
   "min_dihedral": 14.47,
-  "millis": 184,
+  "millis": 190,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -182,10 +189,11 @@
   "n_elems": 6057,
   "n_points": 1468,
   "min_dihedral": 18.87,
-  "millis": 297,
+  "millis": 294,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -199,10 +207,11 @@
   "n_elems": 11231,
   "n_points": 2414,
   "min_dihedral": 19.62,
-  "millis": 644,
+  "millis": 620,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 322,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.010685,
   "n_defects": 0
@@ -216,10 +225,11 @@
   "n_elems": 10966,
   "n_points": 2747,
   "min_dihedral": 0.09,
-  "millis": 2223,
+  "millis": 2169,
   "watertight": false,
   "n_slivers": 1506,
   "n_straddlers": 0,
+  "n_nonconformal": 2414,
   "n_nonmanifold": 280,
   "max_surf_dev": 0.006164,
   "n_defects": 1786
@@ -233,10 +243,11 @@
   "n_elems": 8031,
   "n_points": 1914,
   "min_dihedral": 3.44,
-  "millis": 647,
+  "millis": 617,
   "watertight": true,
   "n_slivers": 2,
   "n_straddlers": 0,
+  "n_nonconformal": 68,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.010631,
   "n_defects": 2
@@ -250,10 +261,11 @@
   "n_elems": 13610,
   "n_points": 2853,
   "min_dihedral": 17.06,
-  "millis": 874,
+  "millis": 824,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 846,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.008325,
   "n_defects": 0
@@ -267,10 +279,11 @@
   "n_elems": 20381,
   "n_points": 4227,
   "min_dihedral": 18.37,
-  "millis": 1290,
+  "millis": 1188,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 1006,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.004935,
   "n_defects": 0
@@ -284,10 +297,11 @@
   "n_elems": 44161,
   "n_points": 8817,
   "min_dihedral": 0.24,
-  "millis": 4736,
+  "millis": 4465,
   "watertight": false,
   "n_slivers": 282,
   "n_straddlers": 0,
+  "n_nonconformal": 6785,
   "n_nonmanifold": 13,
   "max_surf_dev": 0.010423,
   "n_defects": 295
@@ -301,10 +315,11 @@
   "n_elems": 7098,
   "n_points": 1880,
   "min_dihedral": 9.37,
-  "millis": 1216,
+  "millis": 1171,
   "watertight": true,
   "n_slivers": 1,
   "n_straddlers": 0,
+  "n_nonconformal": 1656,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.008227,
   "n_defects": 1
@@ -318,10 +333,11 @@
   "n_elems": 4960,
   "n_points": 1304,
   "min_dihedral": 0.07,
-  "millis": 600,
+  "millis": 602,
   "watertight": false,
   "n_slivers": 290,
   "n_straddlers": 0,
+  "n_nonconformal": 814,
   "n_nonmanifold": 63,
   "max_surf_dev": 0.004235,
   "n_defects": 353
@@ -335,10 +351,11 @@
   "n_elems": 12805,
   "n_points": 3385,
   "min_dihedral": 0.13,
-  "millis": 3866,
+  "millis": 3835,
   "watertight": false,
   "n_slivers": 3245,
   "n_straddlers": 0,
+  "n_nonconformal": 5158,
   "n_nonmanifold": 534,
   "max_surf_dev": 0.006477,
   "n_defects": 3779
@@ -352,7 +369,7 @@
   "n_elems": 703,
   "n_points": 395,
   "min_dihedral": null,
-  "millis": 4
+  "millis": 0
  },
  {
   "name": "pentagon",
@@ -363,7 +380,7 @@
   "n_elems": 1035,
   "n_points": 561,
   "min_dihedral": null,
-  "millis": 3
+  "millis": 8
  },
  {
   "name": "star",
@@ -374,7 +391,7 @@
   "n_elems": 1018,
   "n_points": 580,
   "min_dihedral": null,
-  "millis": 9
+  "millis": 7
  },
  {
   "name": "square_hole",
@@ -385,7 +402,7 @@
   "n_elems": 2288,
   "n_points": 1248,
   "min_dihedral": null,
-  "millis": 13
+  "millis": 15
  },
  {
   "name": "slab",
@@ -396,10 +413,11 @@
   "n_elems": 2550,
   "n_points": 768,
   "min_dihedral": 24.53,
-  "millis": 138,
+  "millis": 142,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -413,10 +431,11 @@
   "n_elems": 8883,
   "n_points": 1914,
   "min_dihedral": 19.94,
-  "millis": 432,
+  "millis": 434,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -430,10 +449,11 @@
   "n_elems": 5188,
   "n_points": 1227,
   "min_dihedral": 18.58,
-  "millis": 268,
+  "millis": 261,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -447,10 +467,11 @@
   "n_elems": 7976,
   "n_points": 1924,
   "min_dihedral": 15.92,
-  "millis": 399,
+  "millis": 412,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 4,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -464,10 +485,11 @@
   "n_elems": 18539,
   "n_points": 3584,
   "min_dihedral": 20.58,
-  "millis": 741,
+  "millis": 744,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 1872,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.00393,
   "n_defects": 0
@@ -481,10 +503,11 @@
   "n_elems": 9891,
   "n_points": 2576,
   "min_dihedral": 0.29,
-  "millis": 2495,
+  "millis": 2455,
   "watertight": false,
   "n_slivers": 2029,
   "n_straddlers": 0,
+  "n_nonconformal": 5090,
   "n_nonmanifold": 285,
   "max_surf_dev": 0.006766,
   "n_defects": 2314
@@ -498,10 +521,11 @@
   "n_elems": 18533,
   "n_points": 3718,
   "min_dihedral": 17.71,
-  "millis": 867,
+  "millis": 829,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 670,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.007344,
   "n_defects": 0
@@ -515,13 +539,14 @@
   "n_elems": 19143,
   "n_points": 3640,
   "min_dihedral": 0.97,
-  "millis": 1105,
+  "millis": 1040,
   "watertight": false,
   "n_slivers": 24,
-  "n_straddlers": 190,
+  "n_straddlers": 15,
+  "n_nonconformal": 1492,
   "n_nonmanifold": 14,
-  "max_surf_dev": 0.184156,
-  "n_defects": 228
+  "max_surf_dev": 0.047317,
+  "n_defects": 53
  },
  {
   "name": "sphere_minus_box",
@@ -532,10 +557,11 @@
   "n_elems": 7632,
   "n_points": 1919,
   "min_dihedral": 14.8,
-  "millis": 683,
+  "millis": 666,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 108,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.005086,
   "n_defects": 0
@@ -549,10 +575,11 @@
   "n_elems": 6465,
   "n_points": 2057,
   "min_dihedral": 3.95,
-  "millis": 1122,
+  "millis": 1093,
   "watertight": true,
   "n_slivers": 14,
   "n_straddlers": 0,
+  "n_nonconformal": 1278,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.014476,
   "n_defects": 14
@@ -566,10 +593,11 @@
   "n_elems": 12773,
   "n_points": 3558,
   "min_dihedral": 0.26,
-  "millis": 6371,
+  "millis": 5709,
   "watertight": true,
   "n_slivers": 537,
   "n_straddlers": 0,
+  "n_nonconformal": 10516,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.009771,
   "n_defects": 537
@@ -583,10 +611,11 @@
   "n_elems": 11635,
   "n_points": 2700,
   "min_dihedral": 9.98,
-  "millis": 1165,
+  "millis": 1156,
   "watertight": true,
   "n_slivers": 1,
   "n_straddlers": 0,
+  "n_nonconformal": 2176,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.003026,
   "n_defects": 1
@@ -600,10 +629,11 @@
   "n_elems": 17152,
   "n_points": 3729,
   "min_dihedral": 13.91,
-  "millis": 1127,
+  "millis": 1107,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.009354,
   "n_defects": 0
@@ -615,7 +645,7 @@
   "mesher": "cdt",
   "status": "FAIL",
   "error": "PanicException: edge (566, 628) caps only slivers; no triangle reproduces its base edges",
-  "millis": 1435
+  "millis": 1415
  },
  {
   "name": "pipe_cross",
@@ -626,13 +656,14 @@
   "n_elems": 29741,
   "n_points": 8116,
   "min_dihedral": 0.16,
-  "millis": 17505,
+  "millis": 16498,
   "watertight": false,
   "n_slivers": 1130,
-  "n_straddlers": 296,
+  "n_straddlers": 278,
+  "n_nonconformal": 23293,
   "n_nonmanifold": 88,
-  "max_surf_dev": 1.162315,
-  "n_defects": 1514
+  "max_surf_dev": 0.027908,
+  "n_defects": 1496
  },
  {
   "name": "gear",
@@ -643,10 +674,11 @@
   "n_elems": 5873,
   "n_points": 1968,
   "min_dihedral": 14.32,
-  "millis": 726,
+  "millis": 762,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 1482,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -660,10 +692,11 @@
   "n_elems": 29673,
   "n_points": 7847,
   "min_dihedral": 11.07,
-  "millis": 8158,
+  "millis": 7668,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 28,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.00615,
   "n_defects": 0
@@ -677,13 +710,14 @@
   "n_elems": 21515,
   "n_points": 6140,
   "min_dihedral": 9.76,
-  "millis": 3958,
+  "millis": 3910,
   "watertight": false,
   "n_slivers": 2,
-  "n_straddlers": 392,
+  "n_straddlers": 218,
+  "n_nonconformal": 6626,
   "n_nonmanifold": 8,
-  "max_surf_dev": 0.25276,
-  "n_defects": 402
+  "max_surf_dev": 0.016279,
+  "n_defects": 228
  },
  {
   "name": "bracket",
@@ -694,10 +728,11 @@
   "n_elems": 23310,
   "n_points": 6527,
   "min_dihedral": 0.45,
-  "millis": 5736,
+  "millis": 5890,
   "watertight": false,
   "n_slivers": 1739,
   "n_straddlers": 0,
+  "n_nonconformal": 5578,
   "n_nonmanifold": 461,
   "max_surf_dev": 0.009763,
   "n_defects": 2200
@@ -711,10 +746,11 @@
   "n_elems": 17551,
   "n_points": 4672,
   "min_dihedral": 6.43,
-  "millis": 3526,
+  "millis": 3862,
   "watertight": true,
   "n_slivers": 33,
   "n_straddlers": 0,
+  "n_nonconformal": 2906,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.013529,
   "n_defects": 33
@@ -728,10 +764,11 @@
   "n_elems": 36114,
   "n_points": 8439,
   "min_dihedral": 0.01,
-  "millis": 14198,
+  "millis": 14416,
   "watertight": false,
   "n_slivers": 6925,
   "n_straddlers": 0,
+  "n_nonconformal": 12696,
   "n_nonmanifold": 865,
   "max_surf_dev": 0.014794,
   "n_defects": 7790
@@ -745,13 +782,14 @@
   "n_elems": 19177,
   "n_points": 4605,
   "min_dihedral": 1.03,
-  "millis": 2025,
+  "millis": 1884,
   "watertight": false,
   "n_slivers": 58,
-  "n_straddlers": 493,
+  "n_straddlers": 164,
+  "n_nonconformal": 4298,
   "n_nonmanifold": 6,
-  "max_surf_dev": 0.161947,
-  "n_defects": 557
+  "max_surf_dev": 0.058758,
+  "n_defects": 228
  },
  {
   "name": "nested_shells",
@@ -762,10 +800,11 @@
   "n_elems": 19817,
   "n_points": 6609,
   "min_dihedral": 15.39,
-  "millis": 1949,
+  "millis": 1821,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.006391,
   "n_defects": 0
@@ -779,10 +818,11 @@
   "n_elems": 16116,
   "n_points": 3724,
   "min_dihedral": 1.19,
-  "millis": 1824,
+  "millis": 1851,
   "watertight": true,
   "n_slivers": 16,
   "n_straddlers": 183,
+  "n_nonconformal": 3749,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.08278,
   "n_defects": 199
@@ -796,10 +836,11 @@
   "n_elems": 13834,
   "n_points": 3904,
   "min_dihedral": 5.39,
-  "millis": 2706,
+  "millis": 2712,
   "watertight": false,
   "n_slivers": 10,
   "n_straddlers": 0,
+  "n_nonconformal": 970,
   "n_nonmanifold": 3,
   "max_surf_dev": 0.005462,
   "n_defects": 13
@@ -813,13 +854,14 @@
   "n_elems": 61987,
   "n_points": 12598,
   "min_dihedral": 6.45,
-  "millis": 6236,
+  "millis": 6060,
   "watertight": false,
   "n_slivers": 3,
-  "n_straddlers": 30,
+  "n_straddlers": 10,
+  "n_nonconformal": 7422,
   "n_nonmanifold": 1,
-  "max_surf_dev": 1.482598,
-  "n_defects": 34
+  "max_surf_dev": 0.01904,
+  "n_defects": 14
  },
  {
   "name": "spring",
@@ -830,10 +872,11 @@
   "n_elems": 27826,
   "n_points": 6577,
   "min_dihedral": 0.12,
-  "millis": 4024,
+  "millis": 3881,
   "watertight": false,
   "n_slivers": 247,
   "n_straddlers": 0,
+  "n_nonconformal": 8064,
   "n_nonmanifold": 103,
   "max_surf_dev": 0.0,
   "n_defects": 350
@@ -847,10 +890,11 @@
   "n_elems": 9273,
   "n_points": 2129,
   "min_dihedral": 0.01,
-  "millis": 1026,
+  "millis": 1062,
   "watertight": false,
   "n_slivers": 1100,
   "n_straddlers": 0,
+  "n_nonconformal": 2350,
   "n_nonmanifold": 25,
   "max_surf_dev": 0.0,
   "n_defects": 1125
@@ -864,10 +908,11 @@
   "n_elems": 6083,
   "n_points": 1664,
   "min_dihedral": 0.01,
-  "millis": 1297,
+  "millis": 1315,
   "watertight": false,
   "n_slivers": 460,
   "n_straddlers": 0,
+  "n_nonconformal": 3140,
   "n_nonmanifold": 101,
   "max_surf_dev": 0.0,
   "n_defects": 561
@@ -881,10 +926,11 @@
   "n_elems": 57103,
   "n_points": 16945,
   "min_dihedral": 0.34,
-  "millis": 35601,
+  "millis": 34811,
   "watertight": false,
   "n_slivers": 6596,
   "n_straddlers": 0,
+  "n_nonconformal": 25132,
   "n_nonmanifold": 2346,
   "max_surf_dev": 0.015438,
   "n_defects": 8942
@@ -898,13 +944,14 @@
   "n_elems": 73168,
   "n_points": 14568,
   "min_dihedral": 0.19,
-  "millis": 9420,
+  "millis": 9454,
   "watertight": false,
   "n_slivers": 91,
-  "n_straddlers": 23,
+  "n_straddlers": 22,
+  "n_nonconformal": 5646,
   "n_nonmanifold": 70,
   "max_surf_dev": 0.018842,
-  "n_defects": 184
+  "n_defects": 183
  },
  {
   "name": "pressure_vessel",
@@ -915,13 +962,14 @@
   "n_elems": 50788,
   "n_points": 14912,
   "min_dihedral": 0.06,
-  "millis": 46255,
+  "millis": 41136,
   "watertight": false,
   "n_slivers": 2308,
-  "n_straddlers": 221,
+  "n_straddlers": 56,
+  "n_nonconformal": 28433,
   "n_nonmanifold": 350,
-  "max_surf_dev": 0.030001,
-  "n_defects": 2879
+  "max_surf_dev": 0.029856,
+  "n_defects": 2714
  },
  {
   "name": "sizing_field",
@@ -932,10 +980,11 @@
   "n_elems": 5170,
   "n_points": 1140,
   "min_dihedral": 20.27,
-  "millis": 2813,
+  "millis": 2903,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 16,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -949,10 +998,11 @@
   "n_elems": 8729,
   "n_points": 2075,
   "min_dihedral": 11.39,
-  "millis": 728,
+  "millis": 810,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 870,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -966,10 +1016,11 @@
   "n_elems": 52389,
   "n_points": 10719,
   "min_dihedral": 15.51,
-  "millis": 5099,
+  "millis": 5068,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 13724,
   "n_nonmanifold": 0,
   "max_surf_dev": 5.2e-05,
   "n_defects": 0
@@ -983,10 +1034,11 @@
   "n_elems": 51365,
   "n_points": 10582,
   "min_dihedral": 12.93,
-  "millis": 8224,
+  "millis": 8145,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 3655,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1000,10 +1052,11 @@
   "n_elems": 36564,
   "n_points": 6934,
   "min_dihedral": 1.81,
-  "millis": 4001,
+  "millis": 3827,
   "watertight": true,
   "n_slivers": 2,
   "n_straddlers": 0,
+  "n_nonconformal": 13288,
   "n_nonmanifold": 0,
   "max_surf_dev": 4.3e-05,
   "n_defects": 2
@@ -1017,10 +1070,11 @@
   "n_elems": 10512,
   "n_points": 2502,
   "min_dihedral": 13.06,
-  "millis": 792,
+  "millis": 745,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 63,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1034,10 +1088,11 @@
   "n_elems": 59587,
   "n_points": 10384,
   "min_dihedral": 9.68,
-  "millis": 3928,
+  "millis": 3727,
   "watertight": false,
   "n_slivers": 2,
   "n_straddlers": 158,
+  "n_nonconformal": 2990,
   "n_nonmanifold": 3,
   "max_surf_dev": 0.000611,
   "n_defects": 163
@@ -1051,10 +1106,11 @@
   "n_elems": 22911,
   "n_points": 4945,
   "min_dihedral": 11.35,
-  "millis": 1849,
+  "millis": 1880,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 78,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1068,10 +1124,11 @@
   "n_elems": 23522,
   "n_points": 5004,
   "min_dihedral": 15.52,
-  "millis": 2199,
+  "millis": 2121,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 60,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1085,10 +1142,11 @@
   "n_elems": 65115,
   "n_points": 11654,
   "min_dihedral": 5.13,
-  "millis": 15332,
+  "millis": 15408,
   "watertight": false,
   "n_slivers": 6,
   "n_straddlers": 0,
+  "n_nonconformal": 9058,
   "n_nonmanifold": 27,
   "max_surf_dev": 0.0,
   "n_defects": 33
@@ -1102,10 +1160,11 @@
   "n_elems": 80723,
   "n_points": 14332,
   "min_dihedral": 8.62,
-  "millis": 19296,
+  "millis": 19986,
   "watertight": false,
   "n_slivers": 7,
   "n_straddlers": 0,
+  "n_nonconformal": 12410,
   "n_nonmanifold": 37,
   "max_surf_dev": 3.7e-05,
   "n_defects": 44
@@ -1119,10 +1178,11 @@
   "n_elems": 92406,
   "n_points": 16633,
   "min_dihedral": 8.05,
-  "millis": 26734,
+  "millis": 27873,
   "watertight": false,
   "n_slivers": 7,
   "n_straddlers": 0,
+  "n_nonconformal": 14922,
   "n_nonmanifold": 58,
   "max_surf_dev": 2.6e-05,
   "n_defects": 65
@@ -1136,10 +1196,11 @@
   "n_elems": 36118,
   "n_points": 6803,
   "min_dihedral": 5.08,
-  "millis": 3767,
+  "millis": 3951,
   "watertight": false,
   "n_slivers": 3,
   "n_straddlers": 137,
+  "n_nonconformal": 2426,
   "n_nonmanifold": 3,
   "max_surf_dev": 0.000171,
   "n_defects": 143
@@ -1153,7 +1214,7 @@
   "n_elems": 762,
   "n_points": 407,
   "min_dihedral": null,
-  "millis": 5
+  "millis": 0
  },
  {
   "name": "plate_coarse_interior",
@@ -1175,7 +1236,7 @@
   "n_elems": 432,
   "n_points": 257,
   "min_dihedral": null,
-  "millis": 10
+  "millis": 0
  },
  {
   "name": "box_linear",
@@ -1186,10 +1247,11 @@
   "n_elems": 545,
   "n_points": 188,
   "min_dihedral": 21.1,
-  "millis": 95,
+  "millis": 94,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 4,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1203,10 +1265,11 @@
   "n_elems": 2033,
   "n_points": 548,
   "min_dihedral": 17.88,
-  "millis": 237,
+  "millis": 181,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1220,10 +1283,11 @@
   "n_elems": 5481,
   "n_points": 1271,
   "min_dihedral": 21.5,
-  "millis": 264,
+  "millis": 248,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.004474,
   "n_defects": 0
@@ -1237,7 +1301,7 @@
   "n_elems": 1924,
   "n_points": 1282,
   "min_dihedral": null,
-  "millis": 116
+  "millis": 95
  },
  {
   "name": "organic_blob",
@@ -1248,7 +1312,7 @@
   "n_elems": 4048,
   "n_points": 2112,
   "min_dihedral": null,
-  "millis": 108
+  "millis": 111
  },
  {
   "name": "gear",
@@ -1259,7 +1323,7 @@
   "n_elems": 4054,
   "n_points": 2168,
   "min_dihedral": null,
-  "millis": 48
+  "millis": 44
  },
  {
   "name": "interdigital_comb",
@@ -1270,7 +1334,7 @@
   "n_elems": 2248,
   "n_points": 1299,
   "min_dihedral": null,
-  "millis": 13
+  "millis": 18
  },
  {
   "name": "blob_graded",
@@ -1281,7 +1345,7 @@
   "n_elems": 2180,
   "n_points": 1180,
   "min_dihedral": null,
-  "millis": 190
+  "millis": 181
  },
  {
   "name": "gear_coarse_interior",
@@ -1292,7 +1356,7 @@
   "n_elems": 324,
   "n_points": 205,
   "min_dihedral": null,
-  "millis": 12
+  "millis": 0
  },
  {
   "name": "cyl_coarse_interior",
@@ -1303,10 +1367,11 @@
   "n_elems": 5353,
   "n_points": 1353,
   "min_dihedral": 16.28,
-  "millis": 530,
+  "millis": 484,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 2640,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.00493,
   "n_defects": 0
@@ -1320,10 +1385,11 @@
   "n_elems": 5377,
   "n_points": 1075,
   "min_dihedral": 19.35,
-  "millis": 580,
+  "millis": 539,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1337,10 +1403,11 @@
   "n_elems": 3779,
   "n_points": 1095,
   "min_dihedral": 17.63,
-  "millis": 373,
+  "millis": 334,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1354,10 +1421,11 @@
   "n_elems": 2772,
   "n_points": 771,
   "min_dihedral": 17.2,
-  "millis": 324,
+  "millis": 318,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 16,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1371,10 +1439,11 @@
   "n_elems": 4020,
   "n_points": 927,
   "min_dihedral": 16.67,
-  "millis": 315,
+  "millis": 301,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 6,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0
@@ -1388,10 +1457,11 @@
   "n_elems": 4635,
   "n_points": 1143,
   "min_dihedral": 15.08,
-  "millis": 1545,
+  "millis": 1477,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.004434,
   "n_defects": 0
@@ -1405,10 +1475,11 @@
   "n_elems": 22992,
   "n_points": 4569,
   "min_dihedral": 11.06,
-  "millis": 1293,
+  "millis": 1253,
   "watertight": true,
   "n_slivers": 0,
   "n_straddlers": 0,
+  "n_nonconformal": 0,
   "n_nonmanifold": 0,
   "max_surf_dev": 0.0,
   "n_defects": 0

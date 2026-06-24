@@ -1206,44 +1206,6 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         let mut all: Vec<V3> = surf_points.clone();
         all.extend_from_slice(&interior);
         let tets = build_full(&all);
-        // ---- SOT straddler prune (in-loop) -------------------------------
-        // The frozen surface mesh is the SOLE source of truth for the domain
-        // boundary: it consists of surf_points only. Any INTERIOR seed that this
-        // pass's (unconstrained) Delaunay places ON the domain boundary is a leak
-        // -- exactly the vertex the downstream restricted-Delaunay grabs as an
-        // off-surface straddler. Flag those seeds here and drop them at the END of
-        // the pass, so the next relaxation heals the void (gradual, no terminal
-        // cut -> no slivers). A boundary face = a triangle with exactly ONE
-        // incident in-domain tet (the other side is exterior or hull). Purely
-        // topological: no distance threshold to mistune (the trap the old
-        // distance-to-surf_points clearance fell into).
-        let prune = std::env::var_os("RAPIDMESH_STRAD_PRUNE").is_some();
-        let mut drop_k: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        if prune {
-            let dom: Vec<bool> =
-                tets.iter().map(|t| inside(centroid4([all[t[0]], all[t[1]], all[t[2]], all[t[3]]]))).collect();
-            let mut finc: DMap<[usize; 3], (u8, u8)> = DMap::default();
-            for (ti, t) in tets.iter().enumerate() {
-                for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
-                    let mut f = f;
-                    f.sort_unstable();
-                    let e = finc.entry(f).or_insert((0u8, 0u8));
-                    e.0 = e.0.saturating_add(1);
-                    if dom[ti] {
-                        e.1 = e.1.saturating_add(1);
-                    }
-                }
-            }
-            for (f, (_tot, ins)) in &finc {
-                if *ins == 1 {
-                    for &v in f {
-                        if v >= n_surf {
-                            drop_k.insert(v - n_surf);
-                        }
-                    }
-                }
-            }
-        }
         let mut num = vec![[0.0f64; 3]; all.len()];
         let mut den = vec![0.0f64; all.len()];
         let mut slivers = 0usize;
@@ -1367,25 +1329,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
             inserted = adds.len();
-            if drop_k.is_empty() {
-                interior.extend(adds);
-            } else {
-                let mut kept: Vec<V3> = Vec::with_capacity(interior.len().saturating_sub(drop_k.len()) + adds.len());
-                for (k, p) in interior.iter().enumerate() {
-                    if !drop_k.contains(&k) {
-                        kept.push(*p);
-                    }
-                }
-                kept.extend(adds);
-                interior = kept;
-            }
-        } else if !drop_k.is_empty() {
-            // max_points reached: still drop the leakers (no inserts to append).
-            let kept: Vec<V3> = interior.iter().enumerate().filter(|(k, _)| !drop_k.contains(k)).map(|(_, p)| *p).collect();
-            interior = kept;
-        }
-        if std::env::var_os("RAPIDMESH_STRAD_TRACE").is_some() && !drop_k.is_empty() {
-            eprintln!("[strad-prune] pass {lloyd_passes}: dropped {} leakers, interior now {}", drop_k.len(), interior.len());
+            interior.extend(adds);
         }
 
         // Adaptive termination. While the field is still being seeded keep

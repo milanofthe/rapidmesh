@@ -3,7 +3,7 @@
 //! The triangle-soup arrangement ([`crate::arrange`]) tessellates every flat
 //! face up front, so a curve piercing a flat face lands on intersection points
 //! that sit a hair off the face's interior tessellation vertices -- the seam
-//! micro-features (see docs/conformal-tessellation-plan.md). This module fixes
+//! micro-features. This module fixes
 //! that at the source: a flat face is carried as a [`PlanarFacet`] (boundary
 //! loops plus a helper triangulation that tiles it), intersections are computed
 //! against the helper triangles, but the resulting sub-segments are MERGED

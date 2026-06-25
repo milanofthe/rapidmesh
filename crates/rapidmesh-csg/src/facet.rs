@@ -5,7 +5,7 @@
 //! This is the unit that makes conformal tessellation possible: a flat face
 //! (a frustum cap, a box side, a sheet) has no interior vertices of its own,
 //! so a curve piercing it lands exactly on the piercing surface's vertices
-//! instead of creating near-twins (see docs/conformal-tessellation-plan.md).
+//! instead of creating near-twins.
 
 use crate::tri::Tri;
 use rapidmesh_exact::{orient2d, Axis, Point3, Sign};

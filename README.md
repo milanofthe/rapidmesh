@@ -7,7 +7,6 @@ quality optimization. STEP import planned.
 
 Replaces the gmsh dependency of [rapidfem](https://github.com/milanofthe/rapidfem).
 
-See [DESIGN.md](DESIGN.md) for architecture, research basis, and roadmap.
 
 ## Workspace
 

@@ -1,6 +1,6 @@
 //! Exact mesh CSG: arrangements and multi-operand boolean expressions.
 //!
-//! Approach (see DESIGN.md): exact arrangement of the input triangle meshes
+//! Approach: exact arrangement of the input triangle meshes
 //! with intersection points represented implicitly (indirect predicates,
 //! interval-arithmetic filtering, expansion-arithmetic fallback), CDT remeshing
 //! of intersected facets with symbolic perturbation, then inside/outside

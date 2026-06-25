@@ -5,7 +5,7 @@
 //! intersection curves a boolean creates), vertices are corner points. The mesher
 //! re-meshes from this geometry -- distribute on each edge curve, mesh each
 //! trimmed face in its (u,v) parameter space, fill the volume -- independent of
-//! any input tessellation. See `DESIGN-brep.md`.
+//! any input tessellation.
 //!
 //! Topology is **non-manifold** (Weiler radial-edge): an edge radially links ALL
 //! faces meeting along it, and a face carries front/back material labels, so

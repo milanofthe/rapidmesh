@@ -9,8 +9,8 @@ use std::sync::Arc;
 /// `Faceted::tris` that tiles it) and as its first-class boundary polygon. The
 /// conformal arrangement intersects the helper triangles but accumulates the
 /// resulting constraints at the polygon level, so a flat face has no interior
-/// vertices of its own and curves piercing it land on their own vertices
-/// (see docs/conformal-tessellation-plan.md). Curved faces (barrels, spheres,
+/// vertices of its own and curves piercing it land on their own vertices.
+/// Curved faces (barrels, spheres,
 /// tori) carry no `FlatFacet`; their triangles stay first-class.
 #[derive(Debug, Clone)]
 pub struct FlatFacet {

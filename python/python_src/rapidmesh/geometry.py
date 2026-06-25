@@ -1064,6 +1064,8 @@ class Geometry:
         optimize: bool = True,
         optimize_passes: int | None = None,
         target_elements: int | None = None,
+        min_h_surf: float = 0.0,
+        min_h_vol: float = 0.0,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -1110,6 +1112,10 @@ class Geometry:
             the RELATIVE refinement (curvature plus ``refine_near_points`` size
             points) keeps its shape -- the budget flows where the error is. This
             is the "optimal mesh for N elements" knob; per-entity caps still apply.
+        min_h_surf, min_h_vol : float
+            hard minimum element size on surfaces and in the volume: the sizing
+            field is never refined below these, so curvature/feature refinement and
+            the element budget are both floored. 0 = off.
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -1141,6 +1147,8 @@ class Geometry:
             optimize,
             optimize_passes,
             target_elements,
+            min_h_surf,
+            min_h_vol,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

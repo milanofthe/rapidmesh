@@ -275,6 +275,12 @@ pub struct MeshParams {
     /// Per-FACE deflection override `(brep face id, tol)`, overriding
     /// [`MeshParams::tol_surf`] on that face.
     pub surf_tol: Vec<(u32, f64)>,
+    /// Minimum element edge length on SURFACES (2-cells) and their edges: a hard
+    /// floor, the field is never refined below it (and the element budget cannot
+    /// go under it). `0` = off.
+    pub min_h_surf: f64,
+    /// Minimum element edge length in the VOLUME (3-cells): a hard floor. `0` = off.
+    pub min_h_vol: f64,
 }
 
 impl Default for MeshParams {
@@ -298,6 +304,8 @@ impl Default for MeshParams {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            min_h_surf: 0.0,
+            min_h_vol: 0.0,
         }
     }
 }
@@ -334,6 +342,10 @@ impl MeshParams {
             edge_tol: sv(&self.edge_tol, s * s),
             surf_maxh: sv(&self.surf_maxh, s),
             surf_tol: sv(&self.surf_tol, s * s),
+            // Absolute floors: NOT scaled by the budget -- they bound the finest
+            // element regardless of the count target.
+            min_h_surf: self.min_h_surf,
+            min_h_vol: self.min_h_vol,
         }
     }
 

@@ -612,7 +612,7 @@ pub fn surface_sites(
                 [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0]
             })
             .collect();
-        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid));
+        let target = |p: V3| (OVERSAMPLE * h_at(p)).max(fine * 0.5).min(params.surf_maxh_for(fid)).max(params.min_h_surf);
 
         // Build the chart + the carrier the lifted points get pinned to. A plane is
         // always chart-able; a full-revolution barrel and an extruded barrel wrap
@@ -699,7 +699,7 @@ pub fn surface_sites(
                     let base = (OVERSAMPLE * h_at(chart.to_xyz(q))).max(fine * 0.5).min(smaxh);
                     let r = chart.curvature_radius(q);
                     let defl = if r.is_finite() { (8.0 * tol * r).sqrt() } else { f64::INFINITY };
-                    base.min(defl).max(1e-9)
+                    base.min(defl).max(params.min_h_surf).max(1e-9)
                 };
                 let inside = |q: P2| in_loops(q, &segs_uv);
                 // Scatter step = the FINEST local target on this face (so a per-entity
@@ -1007,6 +1007,7 @@ pub fn surface_sites(
                 .sqrt()
                 .min(params.surf_maxh_for(fid))
                 .min(OVERSAMPLE * h_at(center))
+                .max(params.min_h_surf)
                 .max(1e-9);
             // icosahedron edge ~= 1.0515 R at level 0, halving per subdivision.
             let level = ((1.0515 * radius / h).log2().ceil() as i64).clamp(0, 6) as usize;

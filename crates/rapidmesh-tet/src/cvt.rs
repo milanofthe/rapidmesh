@@ -71,7 +71,7 @@ fn graded_edge_fracs(va: V3, vb: V3, domain: &DomainTree) -> Vec<f64> {
     for i in 0..samples {
         let s = (i as f64 + 0.5) * dl;
         let p: V3 = std::array::from_fn(|k| va[k] + dir[k] * s);
-        let spacing = (SURFACE_OVERSAMPLE * domain.h_at(p)).max(len * 1e-3);
+        let spacing = (SURFACE_OVERSAMPLE * domain.h_at_surf(p)).max(len * 1e-3);
         cum[i + 1] = cum[i] + dl / spacing;
     }
     let total = cum[samples];
@@ -332,7 +332,9 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .unwrap_or(params.maxh)
             .min(params.maxh)
     };
-    let hloc = |p: V3| domain.h_at(p).min(region_cap(domain.region_at(p))).min(params.vol_cap()).max(1e-9);
+    let hloc = |p: V3| {
+        domain.h_at(p).min(region_cap(domain.region_at(p))).min(params.vol_cap()).max(params.min_h_vol).max(1e-9)
+    };
     let step = (0.7 * spacing).max(1e-9);
     let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     let ncell = (0.6 * spacing).max(1e-9);
@@ -910,7 +912,9 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let inside2 =
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let step = SURFACE_OVERSAMPLE * domain.finest();
-        let target = |uv: [f64; 2]| SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n)).min(params.surf_cap());
+        let target = |uv: [f64; 2]| {
+            SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n)).min(params.surf_cap()).max(params.min_h_surf)
+        };
         for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(lift3(uv, drop, p0, n));
             loc2.push(uv);
@@ -1029,7 +1033,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let target = |uv: [f64; 2]| {
             let xyz = chart.to_xyz(uv);
             let hc = chart.curvature_radius(uv) * chord;
-            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc).min(params.surf_cap())
+            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc).min(params.surf_cap()).max(params.min_h_surf)
         };
         for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
             points.push(chart.to_xyz(uv));

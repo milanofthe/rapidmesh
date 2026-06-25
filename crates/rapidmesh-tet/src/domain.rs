@@ -65,6 +65,10 @@ pub struct DomainTree {
     finest: f64,
     /// Coarsest target (the bulk `maxh`): caps the grading levels.
     maxh: f64,
+    /// Hard minimum SURFACE element-size floor (absolute), applied at query time
+    /// by [`DomainTree::h_at_surf`]. `0` = off. (The volume floor is applied
+    /// inline in `mesh_cdt`, so it is not stored here.)
+    min_h_surf: f64,
 }
 
 fn child_box(center: V3, half: f64, oct: usize) -> (V3, f64) {
@@ -266,7 +270,16 @@ impl DomainTree {
         };
 
         let root = build_node(center, half, 0, &region_of, &dist_to_boundary, &h_of, min_half);
-        DomainTree { lo, hi, root, regions, bbox, finest: spacing, maxh }
+        DomainTree {
+            lo,
+            hi,
+            root,
+            regions,
+            bbox,
+            finest: spacing,
+            maxh,
+            min_h_surf: params.min_h_surf,
+        }
     }
 
     pub fn lo(&self) -> V3 {
@@ -308,6 +321,13 @@ impl DomainTree {
     /// Sizing field at `p`.
     pub fn h_at(&self, p: V3) -> f64 {
         self.leaf_at(p).map(|(l,)| l.h).unwrap_or(f64::INFINITY)
+    }
+
+    /// Sizing field at `p`, floored by the surface minimum element size. (The
+    /// volume floor is applied inline in `mesh_cdt`, after the region/dimension
+    /// caps, so it stays the outermost bound.)
+    pub fn h_at_surf(&self, p: V3) -> f64 {
+        self.h_at(p).max(self.min_h_surf)
     }
 
     /// Material region at `p`: the cached leaf region when the leaf is wholly

@@ -343,7 +343,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], optimize=true, optimize_passes=None, target_elements=None))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], optimize=true, optimize_passes=None, target_elements=None, min_h_surf=0.0, min_h_vol=0.0))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -368,6 +368,8 @@ impl SceneBuilder {
         optimize: bool,
         optimize_passes: Option<usize>,
         target_elements: Option<usize>,
+        min_h_surf: f64,
+        min_h_vol: f64,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -392,6 +394,8 @@ impl SceneBuilder {
                 maxh,
                 region_maxh,
                 radius_edge_bound: radius_edge,
+                min_h_surf,
+                min_h_vol,
                 max_points,
                 grading,
                 face_maxh,
@@ -554,6 +558,8 @@ impl SceneBuilder {
                 maxh,
                 region_maxh,
                 radius_edge_bound: 0.0,
+                min_h_surf: 0.0,
+                min_h_vol: 0.0,
                 max_points: usize::MAX,
                 grading,
                 face_maxh,

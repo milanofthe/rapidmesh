@@ -520,7 +520,7 @@ impl SceneBuilder {
     /// Returns just the closed boundary surface mesh. Volume-only params
     /// (`radius_edge`, `max_points`) do not apply.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![]))]
+    #[pyo3(signature = (maxh, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], target_triangles=None))]
     fn surface_mesh(
         &self,
         py: Python<'_>,
@@ -539,6 +539,7 @@ impl SceneBuilder {
         surf_maxh: Vec<(u32, f64)>,
         surf_tol: Vec<(u32, f64)>,
         region_over: Vec<(u32, f64)>,
+        target_triangles: Option<usize>,
     ) -> PySurfaceMesh {
         let t0 = std::time::Instant::now();
         rapidmesh_exact::log::clear();
@@ -555,7 +556,7 @@ impl SceneBuilder {
                     region_maxh.push((*r, *h));
                 }
             }
-            let params = MeshParams {
+            let params0 = MeshParams {
                 maxh,
                 region_maxh,
                 radius_edge_bound: 0.0,
@@ -578,7 +579,28 @@ impl SceneBuilder {
                 surf_maxh,
                 surf_tol,
             };
-            surface_mesh(&plc, &params)
+            // Triangle budget: retune the global size scale (triangle count ~
+            // scale^-2) over a few remeshes so the count lands near
+            // `target_triangles`, while the sizing field + Ruppert refinement keep
+            // the distribution (grading) and the angle bound (quality).
+            match target_triangles {
+                Some(target) if target > 0 => {
+                    let mut s = 1.0_f64;
+                    let mut out = None;
+                    for _ in 0..6 {
+                        let m = surface_mesh(&plc, &params0.scaled(s));
+                        let n = m.faces.len().max(1);
+                        let rel = (n as f64 - target as f64).abs() / target as f64;
+                        out = Some(m);
+                        if rel < 0.06 {
+                            break;
+                        }
+                        s *= (n as f64 / target as f64).sqrt();
+                    }
+                    out.unwrap()
+                }
+                _ => surface_mesh(&plc, &params0),
+            }
         });
         let (timings, _stats, _events) = rapidmesh_exact::log::take();
         PySurfaceMesh {

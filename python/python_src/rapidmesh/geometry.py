@@ -1166,6 +1166,7 @@ class Geometry:
         maxh_edge: float | None = None,
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
+        target_triangles: int | None = None,
     ) -> SurfaceMesh:
         """Surface-only export: assembles the exact arrangement and meshes
         only its boundary surface (region interfaces, outer boundary, embedded
@@ -1212,6 +1213,7 @@ class Geometry:
             [(int(i), v) for i, v in sorted(self._surf_maxh.items())],
             [(int(i), v) for i, v in sorted(self._surf_tol.items())],
             [(int(t), v) for t, v in sorted(self._region_maxh.items())],
+            target_triangles,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

@@ -1065,25 +1065,111 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
     let _ = (&inside, &hloc); // (inside oracle / size field; refinement TBD)
-    let con = crate::cdt3::tetrahedralize_constrained(
-        &surf_sites, &surf_tris, &face_carrier, &interior, lo, hi,
-    );
-    // Steiner points cdt3 had to insert during facet recovery (beyond surface +
-    // interior): the health signal for curved recovery -- small/bounded = GO.
-    let steiner = con.points.len().saturating_sub(con.n_surf_verts + interior.len());
-    rmlog::stat("mesh_cdt.steiner", steiner as f64);
-    let pts = con.points;
+    // RAPIDMESH_PERREGION: decompose into single-region closed surfaces and mesh
+    // each region's interior SEPARATELY -- NO re-faceting, the frozen surface is
+    // fixed. The surface is the inside/outside CHECKER: a region's Delaunay is the
+    // tets of its own (boundary + interior) point set, and only those whose
+    // centroid is inside the region are kept, so no tet spans two regions.
+    // Interface verts are shared (same frozen index) -> conforming. Default path
+    // (one unconstrained Delaunay + centroid classify) is unchanged.
+    // Per-region attempt (None unless the flag is set AND it stays within the
+    // safety cap). Each region's Delaunay is bounded by surface + interior, so a
+    // sane total tet count guards against a pathological region exploding memory;
+    // on overflow we fall back to the default path for that geometry.
+    const PR_TET_CAP: usize = 40_000_000;
+    let perregion: Option<(Vec<[usize; 4]>, Vec<V3>, Vec<u32>)> =
+        if std::env::var_os("RAPIDMESH_PERREGION").is_some() {
+            let mut reg_set: Vec<u32> = surf_faces
+                .iter()
+                .flat_map(|f| [f.regions[0].0, f.regions[1].0])
+                .filter(|&r| r != 0)
+                .collect();
+            reg_set.sort_unstable();
+            reg_set.dedup();
+            let mut gpts: Vec<V3> = surf_points.clone();
+            let mut gtets: Vec<[usize; 4]> = Vec::new();
+            let mut greg: Vec<u32> = Vec::new();
+            // Per-region decomposition only helps when there is MORE THAN ONE
+            // region to separate (it removes cross-region spanning tets). A
+            // single-region body has nothing to decompose -- its "per-region"
+            // mesh is just the default Delaunay with a perturbed insertion order
+            // that can be WORSE near curved holes. So only multi-region geometries
+            // take this path; single-region falls through to the default.
+            let mut overflow = reg_set.len() < 2;
+            for &r in &reg_set {
+                if overflow {
+                    break;
+                }
+                let mut vids: Vec<usize> = Vec::new();
+                let mut rtris_g: Vec<[usize; 3]> = Vec::new();
+                let mut rcarr: Vec<Carrier> = Vec::new();
+                for (i, f) in surf_faces.iter().enumerate() {
+                    if f.regions[0].0 == r || f.regions[1].0 == r {
+                        rtris_g.push(f.tri);
+                        rcarr.push(face_carrier[i].clone());
+                        vids.extend_from_slice(&f.tri);
+                    }
+                }
+                vids.sort_unstable();
+                vids.dedup();
+                let g2l: DMap<usize, usize> = vids.iter().enumerate().map(|(l, &g)| (g, l)).collect();
+                let rverts: Vec<Site> = vids.iter().map(|&v| surf_sites[v].clone()).collect();
+                let rtris: Vec<[usize; 3]> =
+                    rtris_g.iter().map(|t| [g2l[&t[0]], g2l[&t[1]], g2l[&t[2]]]).collect();
+                let rint: Vec<V3> =
+                    interior.iter().copied().filter(|&p| domain.region_at(p) == r).collect();
+                let con = crate::cdt3::tetrahedralize_constrained(&rverts, &rtris, &rcarr, &rint, lo, hi);
+                let nsv = con.n_surf_verts;
+                let base = gpts.len();
+                gpts.extend_from_slice(&con.points[nsv..]);
+                let map = |li: usize| -> usize { if li < nsv { vids[li] } else { base + (li - nsv) } };
+                for t in &con.tets {
+                    let gt = [map(t[0]), map(t[1]), map(t[2]), map(t[3])];
+                    let c = centroid4([gpts[gt[0]], gpts[gt[1]], gpts[gt[2]], gpts[gt[3]]]);
+                    if domain.region_at(c) == r {
+                        gtets.push(gt);
+                        greg.push(r);
+                    }
+                }
+                if gtets.len() > PR_TET_CAP {
+                    overflow = true;
+                    break;
+                }
+            }
+            if overflow {
+                rmlog::stat("mesh_cdt.perregion_overflow", 1.0);
+                None
+            } else {
+                rmlog::stat("mesh_cdt.perregion_tets", gtets.len() as f64);
+                Some((gtets, gpts, greg))
+            }
+        } else {
+            None
+        };
+    let (con_tets, pts, region_pre): (Vec<[usize; 4]>, Vec<V3>, Option<Vec<u32>>) =
+        if let Some((t, p, r)) = perregion {
+            (t, p, Some(r))
+        } else {
+            let con = crate::cdt3::tetrahedralize_constrained(
+                &surf_sites, &surf_tris, &face_carrier, &interior, lo, hi,
+            );
+            let steiner = con.points.len().saturating_sub(con.n_surf_verts + interior.len());
+            rmlog::stat("mesh_cdt.steiner", steiner as f64);
+            (con.tets, con.points, None)
+        };
     rmlog::stage("mesh_cdt.tetrahedralize", t_build.elapsed().as_secs_f64());
 
-    // ---- region classification (centroid; exact, no straddlers) -----------
-    let region: Vec<u32> = con
-        .tets
-        .par_iter()
-        .map(|t| domain.region_at(centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]])))
-        .collect();
+    // ---- region per tet: per-region assignment (exact) or centroid classify ----
+    let region: Vec<u32> = match region_pre {
+        Some(r) => r,
+        None => con_tets
+            .par_iter()
+            .map(|t| domain.region_at(centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]])))
+            .collect(),
+    };
     let mut kept: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
-    for (t, &r) in con.tets.iter().zip(&region) {
+    for (t, &r) in con_tets.iter().zip(&region) {
         if r != 0 {
             kept.push(*t);
             tet_regions.push(RegionTag(r));
@@ -1127,7 +1213,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         best.map(|(si, _, _)| si)
     };
     let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
-    for (ti, t) in con.tets.iter().enumerate() {
+    for (ti, t) in con_tets.iter().enumerate() {
         for fv in &TET_FACES {
             let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
             f.sort_unstable();

@@ -86,6 +86,47 @@ fn revolution_grid(surf: &Surface, vmin: f64, vmax: f64, theta_rays: &[f64], tar
     pts
 }
 
+/// Triangulate the closed band between two cyclic theta-sorted rings of
+/// `(theta, site)` -- the two rings may have DIFFERENT counts/thetas (the two
+/// rims of a cutout barrel are tessellated independently). `upper` is first
+/// rotated to start near `lower[0]`, then at each step the ring whose next vertex
+/// has the smaller theta advances, emitting one triangle (na+nb total). Robust
+/// where the rigid column grid fails (misaligned rims -> no interior points).
+fn zip_band(lower: &[(f64, usize)], upper: &[(f64, usize)], out: &mut Vec<[usize; 3]>) {
+    use std::f64::consts::TAU;
+    let (na, nb) = (lower.len(), upper.len());
+    if na == 0 || nb == 0 {
+        return;
+    }
+    let cdist = |a: f64, b: f64| {
+        let d = (a - b).abs();
+        d.min(TAU - d)
+    };
+    // Rotate `upper` so it begins at the vertex nearest `lower[0]` in theta.
+    let t0 = lower[0].0;
+    let k0 = (0..nb).min_by(|&x, &y| cdist(upper[x].0, t0).partial_cmp(&cdist(upper[y].0, t0)).unwrap()).unwrap();
+    let up: Vec<(f64, usize)> = upper[k0..].iter().chain(upper[..k0].iter()).copied().collect();
+    let ta = |i: usize| lower[i % na].0 + TAU * (i / na) as f64;
+    let tb = |j: usize| up[j % nb].0 + TAU * (j / nb) as f64;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < na || j < nb {
+        let adv_a = if i >= na {
+            false
+        } else if j >= nb {
+            true
+        } else {
+            ta(i + 1) <= tb(j + 1)
+        };
+        if adv_a {
+            out.push([lower[i % na].1, lower[(i + 1) % na].1, up[j % nb].1]);
+            i += 1;
+        } else {
+            out.push([lower[i % na].1, up[(j + 1) % nb].1, up[j % nb].1]);
+            j += 1;
+        }
+    }
+}
+
 /// Geodesic (icosphere) vertices + triangles, `subdivisions` Loop steps, every
 /// vertex projected onto the sphere. This is the isotropic, pole-free, SEAMLESS
 /// mesh of a CLOSED sphere: a closed surface has no global chart (hairy-ball /
@@ -741,6 +782,9 @@ pub fn surface_sites(
                 }
                 rings.push((vsum / vn.max(1.0), ring));
             }
+            if std::env::var_os("RAPIDMESH_BARREL_TRACE").is_some() {
+                eprintln!("BARREL fid={fid} surf={} rays={n} rings={} ok={ok}", face.plc_surface, rings.len());
+            }
             if ok && rings.len() == 2 {
                 if rings[0].0 > rings[1].0 {
                     rings.swap(0, 1);
@@ -785,6 +829,96 @@ pub fn surface_sites(
                     }
                 }
                 continue;
+            }
+            // Robust band: the rigid column grid above needs both rims on a SHARED
+            // theta set. A cutout/pipe barrel's two rims are tessellated
+            // independently (misaligned thetas) -> that grid produces NO interior
+            // rows (the wall ends up as thin rim-to-rim spanning slivers). Here we
+            // build UNIFORM interior rows and zipper-triangulate consecutive rings,
+            // so the wall always gets interior points and well-shaped triangles.
+            {
+                let tau = std::f64::consts::TAU;
+                let mut raw: Vec<(f64, Vec<(f64, usize)>)> = Vec::new();
+                let mut raw_ok = true;
+                for lp in &face.loops {
+                    let mut pts: Vec<(f64, usize)> = Vec::new();
+                    let (mut vsum, mut vn) = (0.0f64, 0.0f64);
+                    for &cid in &lp.coedges {
+                        let sidx = &edge_sidx[brep.coedge(cid).edge.0 as usize];
+                        if sidx.len() < 2 {
+                            raw_ok = false;
+                            break;
+                        }
+                        for &si in sidx {
+                            let uv = surf.project_uv(sites[si].pos());
+                            pts.push((uv[0].rem_euclid(tau), si));
+                            vsum += uv[1];
+                            vn += 1.0;
+                        }
+                    }
+                    if !raw_ok {
+                        break;
+                    }
+                    pts.sort_by(|a, b| a.1.cmp(&b.1));
+                    pts.dedup_by(|a, b| a.1 == b.1);
+                    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    raw.push((vsum / vn.max(1.0), pts));
+                }
+                if raw_ok && raw.len() == 2 && raw[0].1.len() >= 3 && raw[1].1.len() >= 3 {
+                    raw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    let (v0, v1) = (raw[0].0, raw[1].0);
+                    let lo_ring = raw[0].1.clone();
+                    let mut perim = 0.0f64;
+                    for w in 0..lo_ring.len() {
+                        let a = sites[lo_ring[w].1].pos();
+                        let b = sites[lo_ring[(w + 1) % lo_ring.len()].1].pos();
+                        perim += dist3(a, b);
+                    }
+                    let vmid = 0.5 * (v0 + v1);
+                    let tgt = target(surf.eval_uv([lo_ring[0].0, vmid])).max(1e-9);
+                    // Cap interior resolution to a few times the RIM resolution: a
+                    // locally tiny target (perim/tgt) would otherwise blow up to
+                    // millions of points and OOM. The rims set the real scale.
+                    let rim_n = lo_ring.len().max(raw[1].1.len());
+                    let n_int = ((perim / tgt).round() as usize).clamp(3, (4 * rim_n).max(64));
+                    let eps = (v1 - v0) * 1e-4 + 1e-12;
+                    let dv_arc =
+                        dist3(surf.eval_uv([0.0, vmid + eps]), surf.eval_uv([0.0, vmid - eps])) / (2.0 * eps);
+                    let nv = (((dv_arc * (v1 - v0)) / tgt).round() as usize).clamp(1, 4096);
+                    let car = Carrier::Surface(kind.clone());
+                    let emit = |band: Vec<[usize; 3]>, tris: &mut Vec<SurfaceFace>, tc: &mut Vec<Carrier>| {
+                        for tri in band {
+                            tris.push(SurfaceFace {
+                                tri,
+                                face_tag: face.face_tag,
+                                regions: face.regions,
+                                patch: fid as u32,
+                                surface: face.plc_surface,
+                            });
+                            tc.push(car.clone());
+                        }
+                    };
+                    let mut prev = lo_ring;
+                    for j in 1..nv {
+                        let vj = v0 + (v1 - v0) * j as f64 / nv as f64;
+                        let mut row: Vec<(f64, usize)> = Vec::with_capacity(n_int);
+                        for k in 0..n_int {
+                            let theta = tau * k as f64 / n_int as f64;
+                            sites.push(Site::on_surface(kind.clone(), surf.eval_uv([theta, vj])));
+                            point_tile.push(fid as u32);
+                            point_size.push(params.surf_maxh_for(fid));
+                            row.push((theta, sites.len() - 1));
+                        }
+                        let mut band = Vec::new();
+                        zip_band(&prev, &row, &mut band);
+                        emit(band, &mut tris, &mut tri_carrier);
+                        prev = row;
+                    }
+                    let mut band = Vec::new();
+                    zip_band(&prev, &raw[1].1, &mut band);
+                    emit(band, &mut tris, &mut tri_carrier);
+                    continue;
+                }
             }
             // FULL CONE: one base rim + an apex tip. Build rings from the base
             // toward the apex but STOP a ring before they collapse (where adjacent

@@ -54,6 +54,24 @@ fn add_vertex(pool: &mut Vec<Point3>, p: Point3) -> usize {
     if let Some(i) = pool.iter().position(|q| q.coincides(&p)) {
         return i;
     }
+    // Robustness weld: the SAME geometric point reached two ways -- an explicit
+    // input vertex and an implicit clip/crossing result -- can differ by a few
+    // ulps and so escape the exact `coincides` test. Left distinct, one copy can
+    // land a hair outside the facet and the locate below fails. Weld a point that
+    // sits within a tiny RELATIVE tolerance (far below any real feature, far above
+    // ulp noise) of an existing pool vertex; on clean input no two distinct points
+    // are ever this close, so the exact triangulation is unchanged.
+    if let Some(pa) = p.approx() {
+        for (i, q) in pool.iter().enumerate() {
+            if let Some(qa) = q.approx() {
+                let d2: f64 = (0..3).map(|k| (pa[k] - qa[k]).powi(2)).sum();
+                let scale = (0..3).fold(1.0_f64, |m, k| m.max(pa[k].abs()).max(qa[k].abs()));
+                if d2 <= (1e-11 * scale).powi(2) {
+                    return i;
+                }
+            }
+        }
+    }
     pool.push(p);
     pool.len() - 1
 }

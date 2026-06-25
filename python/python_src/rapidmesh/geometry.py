@@ -1063,6 +1063,7 @@ class Geometry:
         maxh_vol: float | None = None,
         optimize: bool = True,
         optimize_passes: int | None = None,
+        target_elements: int | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it, and runs quality optimization.
@@ -1103,6 +1104,12 @@ class Geometry:
         optimize_passes : int, optional
             cap the number of optimization passes (default: the optimizer's own
             default); lower for fast iteration.
+        target_elements : int, optional
+            element (tet) budget. When set, the global size scale is retuned over
+            a few remeshes so the tet count lands within ~6% of this target, while
+            the RELATIVE refinement (curvature plus ``refine_near_points`` size
+            points) keeps its shape -- the budget flows where the error is. This
+            is the "optimal mesh for N elements" knob; per-entity caps still apply.
         """
         h = maxh if maxh is not None else self._maxh
         g = grading if grading is not None else self._grading
@@ -1133,6 +1140,7 @@ class Geometry:
             [(int(t), v) for t, v in sorted(self._region_maxh.items())],
             optimize,
             optimize_passes,
+            target_elements,
         )
         solids = [
             {"region": r, "label": self._solid_labels.get(i)}

@@ -343,7 +343,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], optimize=true, optimize_passes=None))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], optimize=true, optimize_passes=None, target_elements=None))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -367,6 +367,7 @@ impl SceneBuilder {
         region_over: Vec<(u32, f64)>,
         optimize: bool,
         optimize_passes: Option<usize>,
+        target_elements: Option<usize>,
     ) -> PyMesh {
         let t0 = std::time::Instant::now();
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
@@ -387,7 +388,7 @@ impl SceneBuilder {
                     region_maxh.push((*r, *h));
                 }
             }
-            let params = MeshParams {
+            let params0 = MeshParams {
                 maxh,
                 region_maxh,
                 radius_edge_bound: radius_edge,
@@ -407,26 +408,57 @@ impl SceneBuilder {
                 surf_maxh,
                 surf_tol,
             };
-            let tm = std::time::Instant::now();
-            // Single mesher: the boundary-constrained per-region pipeline.
-            let mut mesh: TetMesh = mesh_cdt(&plc, &params);
-            let t_mesh = tm.elapsed();
-            rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
-            let opt = OptimizeParams {
-                maxh: params.maxh,
-                region_maxh: params.region_maxh.clone(),
-                face_maxh: params.face_maxh.clone(),
-                surface_maxh: params.surface_maxh.clone(),
-                passes: optimize_passes.unwrap_or_else(|| OptimizeParams::default().passes),
-                ..OptimizeParams::default()
-            };
-            let to = std::time::Instant::now();
             // `optimize=false` (or the legacy RAPIDMESH_SKIP_OPTIMIZE fallback)
             // returns the raw mesh without the quality pass.
             let do_optimize = optimize && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none();
-            if do_optimize {
-                run_optimize(&mut mesh, &opt);
-            }
+            let opt_passes = optimize_passes.unwrap_or_else(|| OptimizeParams::default().passes);
+            // One full mesh: the constrained per-region tetrahedralization plus the
+            // quality pass. The element budget calibrates on this FINAL count
+            // (optimize can shrink it ~25%), so the loop must include optimize.
+            let mesh_once = |p: &MeshParams| -> TetMesh {
+                let mut m = mesh_cdt(&plc, p);
+                if do_optimize {
+                    let opt = OptimizeParams {
+                        maxh: p.maxh,
+                        region_maxh: p.region_maxh.clone(),
+                        face_maxh: p.face_maxh.clone(),
+                        surface_maxh: p.surface_maxh.clone(),
+                        passes: opt_passes,
+                        ..OptimizeParams::default()
+                    };
+                    run_optimize(&mut m, &opt);
+                }
+                m
+            };
+            let tm = std::time::Instant::now();
+            // With an element budget, retune the global size scale (tet count ~
+            // scale^-3) over a few remeshes so the final count lands near
+            // `target_elements`, while the relative refinement (curvature + size
+            // points) keeps its shape.
+            let (mesh, params): (TetMesh, MeshParams) = match target_elements {
+                Some(target) if target > 0 => {
+                    let mut s = 1.0_f64;
+                    let mut out: Option<(TetMesh, MeshParams)> = None;
+                    for _ in 0..6 {
+                        let p = params0.scaled(s);
+                        let m = mesh_once(&p);
+                        let n = m.tets.len().max(1);
+                        let rel = (n as f64 - target as f64).abs() / target as f64;
+                        out = Some((m, p));
+                        if rel < 0.06 {
+                            break;
+                        }
+                        s *= (n as f64 / target as f64).powf(1.0 / 3.0);
+                    }
+                    out.unwrap()
+                }
+                _ => {
+                    let m = mesh_once(&params0);
+                    (m, params0)
+                }
+            };
+            let t_mesh = tm.elapsed();
+            rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             // Quality (with the worst element's location/region), logged so a
             // verbose run reports not just timings but where the mesh is worst.
             let q = quality_stats(&mesh);
@@ -452,11 +484,10 @@ impl SceneBuilder {
             );
             if timing {
                 eprintln!(
-                    "stages: assemble {:?} ({} plc facets), mesh {:?}, optimize {:?}",
+                    "stages: assemble {:?} ({} plc facets), mesh+optimize {:?}",
                     t_assemble,
                     plc.triangles.len(),
                     t_mesh,
-                    to.elapsed(),
                 );
             }
             (mesh, params, q)

@@ -307,6 +307,36 @@ fn lookup(table: &[(u32, f64)], id: usize) -> Option<f64> {
 }
 
 impl MeshParams {
+    /// A copy with every size target scaled by `s`: lengths by `s`, chord
+    /// tolerances by `s^2` (size is proportional to sqrt(tol)). The element-budget
+    /// loop retunes the global scale with this while preserving the relative
+    /// refinement; the cap methods read the scaled fields, so they scale too.
+    pub fn scaled(&self, s: f64) -> MeshParams {
+        let sv = |v: &[(u32, f64)], e: f64| -> Vec<(u32, f64)> {
+            v.iter().map(|&(t, h)| (t, h * e)).collect()
+        };
+        MeshParams {
+            maxh: self.maxh * s,
+            region_maxh: sv(&self.region_maxh, s),
+            radius_edge_bound: self.radius_edge_bound,
+            max_points: self.max_points,
+            grading: self.grading,
+            face_maxh: sv(&self.face_maxh, s),
+            surface_maxh: sv(&self.surface_maxh, s),
+            size_points: self.size_points.iter().map(|&(p, h)| (p, h * s)).collect(),
+            density_weighted: self.density_weighted,
+            tol_edge: self.tol_edge * s * s,
+            tol_surf: self.tol_surf * s * s,
+            maxh_edge: self.maxh_edge * s,
+            maxh_surf: self.maxh_surf * s,
+            maxh_vol: self.maxh_vol * s,
+            edge_maxh: sv(&self.edge_maxh, s),
+            edge_tol: sv(&self.edge_tol, s * s),
+            surf_maxh: sv(&self.surf_maxh, s),
+            surf_tol: sv(&self.surf_tol, s * s),
+        }
+    }
+
     /// Effective edge-length cap on 1-cells: the global cap tightened by the
     /// per-dimension edge cap.
     pub fn edge_cap(&self) -> f64 {

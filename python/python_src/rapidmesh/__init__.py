@@ -11,6 +11,8 @@
 """
 
 from .geometry import Geometry, Mesh, SurfaceMesh, Solid
+from . import adapt
+from .adapt import dorfler_mark, refine_dorfler
 
 __version__ = "0.1.0"
-__all__ = ["Geometry", "Mesh", "SurfaceMesh", "Solid"]
+__all__ = ["Geometry", "Mesh", "SurfaceMesh", "Solid", "adapt", "dorfler_mark", "refine_dorfler"]

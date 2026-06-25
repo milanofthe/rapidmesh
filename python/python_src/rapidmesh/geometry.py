@@ -1037,14 +1037,22 @@ class Geometry:
     def refine_near_points(
         self,
         points: list[tuple[float, float, float]],
-        h: float,
+        h: float | list[float],
     ) -> None:
         """Registers point size sources: the edge-length target shrinks to
         ``h`` at each point and recovers along the grading away from it
         (rapidfem's ``refine_near_points``; the hook for error-driven
-        adaptive refinement)."""
-        for pt in points:
-            self._size_points.append((tuple(float(c) for c in pt), float(h)))
+        adaptive refinement). ``h`` may be a scalar (same target at every
+        point) or a per-point sequence, e.g. element-wise sizes from a Doerfler
+        marking pass."""
+        try:
+            hs = list(h)  # per-point targets
+            if len(hs) != len(points):
+                raise ValueError("per-point h must match number of points")
+        except TypeError:
+            hs = [float(h)] * len(points)
+        for pt, hp in zip(points, hs):
+            self._size_points.append((tuple(float(c) for c in pt), float(hp)))
 
     # ------------------------------------------------------------- mesh
 

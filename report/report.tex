@@ -18,6 +18,7 @@
 \usepackage{enumitem}
 \usepackage{booktabs}
 \usepackage{tabularx}
+\usepackage{longtable}   % page-spanning per-corpus metric tables
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
 \newcolumntype{C}{>{\centering\arraybackslash}X}
 \newcolumntype{R}{>{\raggedleft\arraybackslash}X}
@@ -1045,35 +1046,41 @@ protrusions into a void and no gaps.
 \end{proposition}
 
 \noindent
-Boundary recovery is by \emph{bistellar flips} \cite{ShewchukCDT2002,Si2015}: a
-constraint edge or facet absent from the Delaunay is pierced by a tetrahedron
-edge, and a local $2$-$3$ or $3$-$2$ flip removes that edge so the constraint
-appears as a union of faces (the $3$D analogue of the $2$D constrained-edge flip
-of \cref{sec:faces}). \emph{Planar facets need no recovery}: their vertices are
-coplanar, so the Delaunay restricted to the plane already tiles them with a
-tetrahedron on each side; recovery is confined to curved and feature regions, and
-the flip count is therefore small. The rare configuration that no flip resolves
-(a Schönhardt-type lock) is split by a Steiner point lying \emph{on}
-$\mathcal{S}$, constructed on its carrier (a point on a line, $\vv{x}=\vv a+t(\vv
-b-\vv a)$, or on a plane, $\vv{x}=\vv a+u(\vv b-\vv a)+v(\vv c-\vv a)$, so it
-stays exactly on the carrier under repeated splitting); the boundary geometry, and
-a planar region's bit-exact volume, are thereby preserved and
-\cref{prop:watertight} still holds.
+The constraint is honoured \emph{without} a separate facet-recovery search. A
+surface vertex is inserted exactly on its carrier (a point on a line, $\vv x=\vv
+a+t(\vv b-\vv a)$, or on a plane, $\vv x=\vv a+u(\vv b-\vv a)+v(\vv c-\vv a)$, so
+it stays exactly on the carrier under any later split). \emph{Planar facets then
+need no recovery}: their vertices are coplanar, so the Delaunay restricted to the
+plane already tiles them with a tetrahedron on each side, leaving a planar
+region's volume bit-exact. Curved facets are \emph{not} force-recovered---a chosen
+curved triangulation is in general far from Delaunay, so forcing it would need
+unbounded Steiner insertion, and the chord is a tolerance approximation anyway
+(\cref{sec:errctl}). Instead a multi-material scene is decomposed \emph{per
+region} (\cref{alg:region}): each region is tetrahedralized independently against
+its own subset of the frozen surface, and every tetrahedron whose centroid does
+not classify into that region by the exact inside predicate is discarded, so no
+tetrahedron straddles a region interface; the shared interface vertices (one
+global index per vertex) keep adjacent regions conforming. A single-region body
+is the constrained Delaunay of its frozen surface directly. The curved boundary
+of a region is thus the restricted Delaunay of its frozen-surface points,
+watertight by \cref{prop:watertight} and free of straddlers by construction.
 
 \begin{algorithm}[H]
-\caption{\textsc{RecoverFacets}$(\mathcal{T},\mathcal{S})$: flip-based boundary
-recovery}
-\label{alg:recover}
-\KwIn{Delaunay $\mathcal{T}$ of (interior $\cup$ surface vertices); constraint
-      surface $\mathcal{S}$ (planar facets exempt, \cref{prop:watertight})}
-\KwOut{CDT containing every non-planar $\triangle\in\mathcal{S}$ as a union of faces}
-\ForEach{constraint edge $e\in\mathcal{S}$ not yet a union of mesh edges}{
-  \lWhile{a tet edge crosses $e$}{$2$-$3$/$3$-$2$ flip it away}
-  \lIf{still missing}{split $e$ at a Steiner point on its carrier}}
-\ForEach{constraint facet $\triangle\in\mathcal{S}$ not yet a union of faces}{
-  flip the tet edge piercing $\triangle$ so $\triangle$ becomes a union of faces;
-  \hfill\tcp*[h]{Steiner on $\mathcal{S}$ only if no flip applies}}
-\Return $\mathcal{T}$\;
+\caption{\textsc{MeshRegion}$(\mathcal{S},r,\text{interior})$: per-region
+constrained fill (straddler-free by construction)}
+\label{alg:region}
+\KwIn{frozen surface $\mathcal{S}$ (region-tagged); region $r$; interior sites}
+\KwOut{tetrahedra of region $r$, conforming on shared interfaces}
+$F_r\gets\{\triangle\in\mathcal{S}: r\in\operatorname{regions}(\triangle)\}$
+   \hfill\tcp*[h]{outer walls $+$ interfaces bounding $r$}\;
+$V_r\gets$ vertices of $F_r$ (exact on carriers) $\cup\;
+   \{\,p\in\text{interior}:\operatorname{region}(p)=r\,\}$\;
+$\mathcal{T}_r\gets$ constrained Delaunay of $V_r$ with $F_r$ as planar
+   constraints\;
+\lForEach{$t\in\mathcal{T}_r$}{%
+   \lIf{$\operatorname{region}(\operatorname{centroid}t)\ne r$}{discard $t$}}
+\Return the kept tetrahedra, tagged $r$
+   \hfill\tcp*[h]{interface verts shared by global index $\Rightarrow$ conforming}\;
 \end{algorithm}
 
 \paragraph{Quality measures and the cleanup pass.}
@@ -1181,9 +1188,9 @@ gradation field \eqref{eq:gradenvelope} by heap fast-marching (\cref{alg:grad}),
 the surface/volume triangulations by Bowyer--Watson with octree-accelerated point
 location. The CVT relaxation is a fixed number of passes, each a (rebuilt or
 locally updated) Delaunay plus a linear centroid sweep \eqref{eq:disc_centroid};
-because the sites are already near-uniform, boundary recovery (\cref{alg:recover})
-performs only a bounded, in practice tiny, number of flips (a Steiner split is
-rarer still), and slivers left for the cleanup pass are rare
+because the sites are already near-uniform and the per-region constrained fill
+(\cref{alg:region}) carries no facet-recovery search, the dominant cost is the
+constrained Delaunay itself, and slivers left for the cleanup pass are rare
 \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
 
 The structure is what makes it scale. Within a level the entities are independent
@@ -1218,60 +1225,50 @@ that keeps recovery cheap and slivers rare
 \section{Validation}
 \label{sec:validation}
 % ============================================================================
-The algorithm is validated on a from-scratch corpus generated directly through
-the geometry API (no pre-baked tessellations): \emph{2D plates} (the planar
-surface stage in isolation), \emph{3D primitives}, and \emph{booleans} (unions
-and void cuts) in many combinations, each meshed at three densities (coarse /
-medium / fine). For every case we record the element quality (the minimum
-planar angle for the 2D plates, the minimum dihedral angle for the volumes)
-and the element count (\cref{tab:validation}); the
-medium-density mesh of each case is rendered headlessly through the
-\emph{unchanged} showcase viewer, on a transparent background, by the Python
-wrapper of \cref{sec:notation} (\cref{fig:gallery}). The 3D cases are
-\emph{clipped at 70\% in $y$} so the interior tetrahedra are visible.
+The algorithm is validated on a from-scratch corpus of roughly ninety geometries
+generated directly through the geometry API (no pre-baked tessellations), spanning
+eight families: \emph{2D plates} (the planar surface stage in isolation),
+\emph{analytic primitives}, \emph{CSG booleans} and multi-region assemblies,
+hierarchical \emph{sizing} and \emph{gradation} cases, parametric \emph{shape}
+sweeps, \emph{showcase} models, and \emph{RF/EM} structures. Each geometry is
+meshed at its default density and rendered headlessly by the project's WebGPU
+rasterizer --- which runs the \emph{same} scene pipeline as the live viewer, with
+no browser --- into a \textsc{normal} view (region-coloured, volumes clipped to
+expose the interior) and a \textsc{debug} view that overlays the located defect
+markers and the per-stage meshing time. The full per-geometry metric set (point
+and element counts, minimum dihedral angle, watertightness, sliver / straddler /
+non-manifold-edge counts, maximum surface deviation) is tabulated per family in
+the longtables below, and every mesh is shown in the gallery at the end of this
+section.
 
-\begin{figure}[p]\centering
-  \newcommand{\valfig}[2]{%
-    \begin{subfigure}[t]{0.315\textwidth}\centering
-      \includegraphics[width=\linewidth]{val/#1.png}\\[-3pt]
-      {\footnotesize #2}\end{subfigure}}
-  \valfig{disc}{disc (2D)}\hfill\valfig{hexagon}{hexagon (2D)}\hfill
-  \valfig{pentagon}{pentagon (2D)}\\[6pt]
-  \valfig{sphere}{sphere}\hfill\valfig{cylinder}{cylinder}\hfill
-  \valfig{cone}{cone}\\[6pt]
-  \valfig{torus}{torus}\hfill\valfig{hex_prism}{hexagonal prism}\hfill
-  \valfig{wedge}{wedge}\\[6pt]
-  \valfig{fused_two}{2 fused spheres}\hfill\valfig{capsule}{capsule}\hfill
-  \valfig{tube}{hollow tube}\\[6pt]
-  \valfig{via}{via (2 regions)}\hfill\valfig{drilled_block}{drilled block}\hfill
-  \valfig{cross_cyl}{crossed cylinders}
-  \caption{Validation gallery (medium density), rendered headlessly through the
-  \emph{unchanged} viewer on a transparent background. 2D plates (row 1); 3D
-  primitives (rows 2--3) and booleans (rows 4--5) are clipped at 70\% in $y$ to
-  expose the interior tetrahedra. The full quality matrix is in
-  \cref{tab:validation}.}
-  \label{fig:gallery}
-\end{figure}
+\medskip\noindent
+\textbf{Summary.} 89 of 90 geometries mesh (one RF assembly is a degenerate
+input). All 23 analytic-primitive and box-derived (sizing, gradation) volume
+meshes are watertight and free of slivers and straddlers, at the expected
+isotropic quality (minimum dihedral typically $12$--$20^\circ$). On the harder
+curved-boolean, showcase and RF families watertightness is \emph{partial}: the
+residual failures concentrate on \emph{curved material interfaces} --- where a
+chosen curved-facet triangulation is not force-recovered (\cref{sec:volume}) ---
+and on dense multi-region assemblies, with a few revolution apices and thin tubes
+retaining slivers the cleanup pass does not fully clear. These are the standing
+open items the corpus exists to track. Conformity on planar and single-curved
+geometry is exact by \cref{prop:watertight} and independent of density: the
+boundary-constrained, per-region tetrahedralization (\cref{alg:region}) makes the
+frozen surface a hard constraint and discards every straddling tetrahedron, so a
+region's boundary is exactly the prescribed subset of $\mathcal{S}$. The
+validation harness (\code{report/corpus.py}, \code{report/render\_gallery.py})
+re-runs the whole matrix and regenerates these tables and figures on demand, so
+the corpus is a standing regression gate.
 
-\input{validation/quality_table.tex}
+\input{generated/metrics.tex}
 
-\noindent
-\textbf{Quality.} The flat plates and the smooth primitives reach the expected
-isotropic quality (min dihedral $\approx 15$--$22^\circ$; min planar angle
-$\approx 30$--$34^\circ$), independent of density, and unions of primitives stay
-in the same band: the centroidal relaxation supplies the well-shaped point set
-and the sliver-removal pass (\cref{sec:volume}) clears the residual bad elements.
-Conformity does not depend on density at all: the boundary-constrained
-tetrahedralization (\cref{prop:watertight}) makes the surface a hard constraint,
-so each region's boundary is exactly the prescribed subset of $\mathcal{S}$ with
-no straddling tetrahedra. Two ingredients carry this through the harder cases the
-corpus exercises: the \emph{local-thickness} sizing (\cref{eq:thickness})
-refines thin features (the cone apex, the torus tube, slender void walls) so the
-interior is resolved before they can pinch; and enforcing the boundary loops as
-constraints (the 2D analogue of \cref{prop:watertight} at the face stage)
-recovers non-convex and holed plates (an \emph{unconstrained} triangulation would
-fill their convex hull). The validation harness (\code{report/validate.py})
-re-runs the whole matrix on demand, so the corpus is a standing regression gate.
+\subsection{Gallery}
+\label{sec:gallery}
+For each geometry the \textsc{normal} view (left: region-coloured solid, volumes
+clipped in $y$ to expose the interior tetrahedra) sits beside the \textsc{debug}
+view (right: surface wireframe, located defect markers, and a metrics +
+meshing-time overlay).
+\input{generated/gallery.tex}
 
 \printbibliography[title={References}, heading=bibintoc]
 

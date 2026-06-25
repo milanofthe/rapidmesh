@@ -1,19 +1,19 @@
 """Render a PNG for every test geometry and every sizing permutation, so the
-results can be eyeballed. Reuses the validation corpus (``validate.CASES``) and
-the unchanged viewer (``report/viewer.py``).
+results can be eyeballed. Reuses the validation corpus (``validate.CASES``).
 
-For each corpus geometry it renders BOTH meshers side by side:
-  * ``default`` -- the current ``cvt::mesh`` (oversampling + restricted boundary),
-  * ``cdt``     -- the constrained ``mesh_cdt`` (RAPIDMESH_CDT), the spec path,
-so the two can be compared directly. It then renders the hierarchical
-per-entity sizing permutations on a box.
+Each corpus geometry is meshed once (the constrained per-region ``mesh_cdt``)
+and rendered headlessly by the WebGPU rasterizer (``report/render-node``) into a
+NORMAL view (``corpus/``) and a DEBUG view with metrics + meshing-time overlay
+(``corpus_debug/``). It then renders the hierarchical per-entity sizing
+permutations on a box.
 
 Run:  python report/render_gallery.py            # everything
       python report/render_gallery.py --corpus   # only the corpus
       python report/render_gallery.py --sizing   # only the permutations
 
 Outputs (transparent PNGs):
-  report/figures/gallery/corpus/<name>__<mesher>.png
+  report/figures/gallery/corpus/<name>.png
+  report/figures/gallery/corpus_debug/<name>.png
   report/figures/gallery/sizing/<label>.png
 """
 from __future__ import annotations
@@ -132,13 +132,6 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None,
     im.save(png)
 
 
-def _set_cdt(on: bool) -> None:
-    if on:
-        os.environ["RAPIDMESH_CDT"] = "1"
-    else:
-        os.environ.pop("RAPIDMESH_CDT", None)
-
-
 def _build_bundle() -> None:
     """Bundle the shared browser render pipeline (mesh_adapter + scene_build +
     canvas3d_webgpu) into render-node/bundle.mjs so the Node rasterizer runs the
@@ -223,8 +216,6 @@ def render_corpus() -> None:
                 old.unlink()
         d.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
-    _set_cdt(True)                              # constrained mesher
-    os.environ["RAPIDMESH_PERREGION"] = "1"     # per-region decomposition (straddler-free)
     ras = _Rasterizer()
     try:
         for name, _cat, kind, make in C.CORPUS:
@@ -249,8 +240,6 @@ def render_corpus() -> None:
                 print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
     finally:
         ras.close()
-        os.environ.pop("RAPIDMESH_PERREGION", None)
-        _set_cdt(False)
 
 
 # --- hierarchical per-entity sizing permutations (on a 4x4x4 box) -----------
@@ -283,7 +272,6 @@ def render_sizing() -> None:
         for old in out.glob("*.png"):
             old.unlink()
     out.mkdir(parents=True, exist_ok=True)
-    _set_cdt(True)  # new constrained mesher
     _build_bundle()
     jobs = []
     for label, h, setup in SIZING_PERMS:
@@ -303,7 +291,6 @@ def render_sizing() -> None:
         except BaseException as e:
             print(f"  {label}: FAILED ({type(e).__name__}: {e})")
     _rasterize(jobs)
-    _set_cdt(False)
 
 
 if __name__ == "__main__":

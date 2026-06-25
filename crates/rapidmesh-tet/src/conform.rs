@@ -385,9 +385,9 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
 
 /// Meshes a tagged PLC into a conforming, region-tagged tet mesh, refined to
 /// the given sizing and quality targets (best effort under
-/// `params.max_points`). Delegates to the CVT mesher.
+/// `params.max_points`). Delegates to the constrained per-region mesher.
 pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
-    crate::cvt::mesh(plc, params)
+    crate::cvt::mesh_cdt(plc, params)
 }
 
 /// Quality summary of a tet mesh, with WHERE the worst element is and a

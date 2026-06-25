@@ -14,7 +14,7 @@ use rapidmesh_geom::{
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
-    mesh_cdt, mesh_plc_with, optimize as run_optimize, quality_stats, surface_mesh, MeshParams,
+    mesh_cdt, optimize as run_optimize, quality_stats, surface_mesh, MeshParams,
     OptimizeParams,
     QualityStats, SurfaceMesh, TetMesh,
 };
@@ -343,7 +343,7 @@ impl SceneBuilder {
 
     /// Runs assembly, meshing, and optimization; returns the mesh.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], method="default".to_string(), optimize=true, optimize_passes=None))]
+    #[pyo3(signature = (maxh, radius_edge, max_points, grading, face_maxh=vec![], size_points=vec![], surface_maxh=vec![], density_weighted=false, tol_edge=1e-2, tol_surf=1e-2, maxh_edge=f64::INFINITY, maxh_surf=f64::INFINITY, maxh_vol=f64::INFINITY, edge_maxh=vec![], edge_tol=vec![], surf_maxh=vec![], surf_tol=vec![], region_over=vec![], optimize=true, optimize_passes=None))]
     fn mesh(
         &self,
         py: Python<'_>,
@@ -365,7 +365,6 @@ impl SceneBuilder {
         surf_maxh: Vec<(u32, f64)>,
         surf_tol: Vec<(u32, f64)>,
         region_over: Vec<(u32, f64)>,
-        method: String,
         optimize: bool,
         optimize_passes: Option<usize>,
     ) -> PyMesh {
@@ -409,18 +408,8 @@ impl SceneBuilder {
                 surf_tol,
             };
             let tm = std::time::Instant::now();
-            // Stage-3 mesher selection: `method="cdt"` picks the boundary-
-            // constrained pipeline, `"default"` the proven path. The legacy
-            // `RAPIDMESH_CDT` env var stays a fallback so existing workflows keep
-            // working, but the parameter is the first-class, thread-safe control.
-            let use_cdt = method.eq_ignore_ascii_case("cdt")
-                || (method.eq_ignore_ascii_case("default")
-                    && std::env::var_os("RAPIDMESH_CDT").is_some());
-            let mut mesh: TetMesh = if use_cdt {
-                mesh_cdt(&plc, &params)
-            } else {
-                mesh_plc_with(&plc, &params)
-            };
+            // Single mesher: the boundary-constrained per-region pipeline.
+            let mut mesh: TetMesh = mesh_cdt(&plc, &params);
             let t_mesh = tm.elapsed();
             rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             let opt = OptimizeParams {

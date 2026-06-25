@@ -1061,7 +1061,6 @@ class Geometry:
         maxh_edge: float | None = None,
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
-        method: str = "default",
         optimize: bool = True,
         optimize_passes: int | None = None,
     ) -> Mesh:
@@ -1098,11 +1097,6 @@ class Geometry:
             maximum element edge length per dimension (edges / surfaces /
             volume), each combined with ``maxh`` as ``min(maxh, maxh_dim)``.
             Default ``inf`` (only ``maxh`` applies).
-        method : str
-            Stage-3 volume mesher: ``"default"`` (the proven path) or ``"cdt"``
-            (the boundary-constrained pipeline). First-class, thread-safe
-            replacement for the ``RAPIDMESH_CDT`` env var (still honored as a
-            fallback when ``method="default"``).
         optimize : bool
             run the quality-optimization pass (default ``True``); ``False``
             returns the raw mesh (replaces ``RAPIDMESH_SKIP_OPTIMIZE``).
@@ -1137,7 +1131,6 @@ class Geometry:
             [(int(i), v) for i, v in sorted(self._surf_maxh.items())],
             [(int(i), v) for i, v in sorted(self._surf_tol.items())],
             [(int(t), v) for t, v in sorted(self._region_maxh.items())],
-            method,
             optimize,
             optimize_passes,
         )

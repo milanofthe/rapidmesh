@@ -8,8 +8,8 @@ Sources aggregated:
   * ``python/examples/rapidfem_geometries.py`` -- RF/EM structures.
 
 Each entry is ``(name, category, kind, make)`` where ``make()`` returns a meshed
-``Mesh`` (kind ``"vol"``) or ``SurfaceMesh`` (kind ``"surf"``). ``make`` meshes at
-call time, so setting ``RAPIDMESH_CDT`` before it selects the constrained path.
+``Mesh`` (kind ``"vol"``) or ``SurfaceMesh`` (kind ``"surf"``), meshed at call
+time by the constrained per-region mesher.
 """
 from __future__ import annotations
 
@@ -273,53 +273,41 @@ def names() -> list[str]:
     return [e[0] for e in CORPUS]
 
 
-def bench(meshers=("default", "cdt"), only=None) -> list[dict]:
-    """Runs every geometry through every mesher, recording quality + timing.
+def bench(only=None) -> list[dict]:
+    """Runs every geometry through the mesher, recording quality + timing.
     A geometry that panics (e.g. an assembly degeneracy) is recorded, not fatal,
-    so the benchmark always completes. Returns one record per (geometry, mesher).
+    so the benchmark always completes. Returns one record per geometry.
     """
-    import os
-
     rows: list[dict] = []
     for name, cat, kind, make in CORPUS:
         if only is not None and name not in only:
             continue
-        for mesher in meshers:
-            # The library API is `g.mesh(method="default"|"cdt")`; this bench's
-            # per-geometry closures are arg-less, so the sweep selects the mesher
-            # through the env-var fallback the parameter honors. Safe here because
-            # the bench is strictly sequential (single process, one mesh at a time).
-            if mesher == "cdt":
-                os.environ["RAPIDMESH_CDT"] = "1"
-            else:
-                os.environ.pop("RAPIDMESH_CDT", None)
-            rec = {"name": name, "category": cat, "kind": kind, "mesher": mesher}
-            t0 = time.time()
-            try:
-                m = make()
-                s = m.stats
+        rec = {"name": name, "category": cat, "kind": kind}
+        t0 = time.time()
+        try:
+            m = make()
+            s = m.stats
+            rec.update(
+                status="ok",
+                n_elems=int(s["n_faces"]) if kind == "surf" else int(s["n_tets"]),
+                n_points=int(s["n_points"]),
+                min_dihedral=None if kind == "surf" else round(float(s["min_dihedral_deg"]), 2),
+                millis=int((time.time() - t0) * 1000),
+            )
+            # Located diagnostics (volume meshes): the conformity/quality map.
+            if kind == "vol":
+                d = m.diagnostics
                 rec.update(
-                    status="ok",
-                    n_elems=int(s["n_faces"]) if kind == "surf" else int(s["n_tets"]),
-                    n_points=int(s["n_points"]),
-                    min_dihedral=None if kind == "surf" else round(float(s["min_dihedral_deg"]), 2),
-                    millis=int((time.time() - t0) * 1000),
+                    watertight=bool(d["watertight"]),
+                    n_slivers=int(d["n_slivers"]),
+                    n_straddlers=int(d["n_straddlers"]),
+                    n_nonmanifold=int(d["n_nonmanifold_edges"]),
+                    max_surf_dev=round(float(d["max_surface_deviation"]), 6),
+                    n_defects=len(d["defects"]),
                 )
-                # Located diagnostics (volume meshes): the conformity/quality map.
-                if kind == "vol":
-                    d = m.diagnostics
-                    rec.update(
-                        watertight=bool(d["watertight"]),
-                        n_slivers=int(d["n_slivers"]),
-                        n_straddlers=int(d["n_straddlers"]),
-                        n_nonmanifold=int(d["n_nonmanifold_edges"]),
-                        max_surf_dev=round(float(d["max_surface_deviation"]), 6),
-                        n_defects=len(d["defects"]),
-                    )
-            except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
-                rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
-            rows.append(rec)
-            os.environ.pop("RAPIDMESH_CDT", None)
+        except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
+            rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
+        rows.append(rec)
     return rows
 
 
@@ -328,13 +316,12 @@ if __name__ == "__main__":
     import json
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mesher", default="cdt", choices=["default", "cdt"], help="which mesher to map")
     ap.add_argument("--no-render", action="store_true", help="skip the gallery render (metrics only)")
     args = ap.parse_args()
 
-    print(f"corpus: {len(CORPUS)} geometries, mesher={args.mesher}")
-    rows = bench(meshers=(args.mesher,))
-    out = REPO / "report" / "validation" / f"benchmark_{args.mesher}.json"
+    print(f"corpus: {len(CORPUS)} geometries")
+    rows = bench()
+    out = REPO / "report" / "validation" / "benchmark.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1))
 

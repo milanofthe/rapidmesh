@@ -230,512 +230,12 @@ fn patch_of_face(plc: &TaggedPlc, patches: &[Patch], pts: &[V3], f: [usize; 3], 
     None
 }
 
-fn positions(sites: &[Site]) -> Vec<V3> {
-    sites.iter().map(|s| s.pos()).collect()
-}
-
-/// Meshes a tagged PLC into a region-tagged tet mesh by the bottom-up sizing
-/// hierarchy: feature edges (`curve.rs`) seed the surface size field, the surface
-/// points seed the volume size field, each driving a weighted Lloyd. The size
-/// field is gradient-limited (`sizefield.rs`) -- smooth and narrow, no heuristic
-/// grading. Region classification and the restricted-Delaunay boundary are kept.
-pub fn mesh(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
-    use rapidmesh_exact::log as rmlog;
-    use rayon::prelude::*;
-    let t_start = std::time::Instant::now();
-
-    let mut lo = [f64::MAX; 3];
-    let mut hi = [f64::MIN; 3];
-    for p in &plc.vertices {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max);
-
-    let regions = regions_of(plc);
-    let field = SizingField::new(params);
-    let cap = field.finest_cap(&regions);
-    let spacing = if cap.is_finite() && cap > 0.0 { cap } else { diag / DEFAULT_SUBDIV };
-
-    let soup = domain_soup(plc);
-    let boxes = TriBoxes::build(&soup, BOX_PAD_FRAC * diag.max(1.0));
-    let inside = |p: V3| point_inside_solid(&Point3::Explicit(p), p, &soup, &boxes, (lo, hi));
-
-    // The central domain octree: refined to the local sizing field h(x). It
-    // drives graded volume seeding, the Lloyd crowding neighbor search (its
-    // per-leaf site buckets, re-filled each pass), and tet region classification,
-    // so the interior coarsens away from the fine, fixed boundary.
-    let t_domain = std::time::Instant::now();
-    let mut domain = DomainTree::build(plc, params, &[]);
-    rmlog::stage("mesh.domain", t_domain.elapsed().as_secs_f64());
-
-    let patches = build_patches(plc);
-    let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
-
-    // ---- stages 1+2: surface points from the B-rep -----------------------
-    // Build the boundary representation and let it drive the surface: distribute
-    // on every analytic edge curve (shared across faces), then a randomized
-    // Poisson-disk fill of each face on its analytic surface (planar faces keep an
-    // exact on-plane carrier). One mechanism for planar, curved and closed faces;
-    // the volume stages below are unchanged.
-    let t_surf = std::time::Instant::now();
-    let brep = rapidmesh_brep::build::from_plc(plc);
-    let ss = crate::brep_mesh::surface_sites(&brep, plc, params, &domain);
-    let mut sites = ss.sites;
-    let point_tile = ss.point_tile;
-    let surf_point_size = ss.point_size; // per-surface-point generation size
-    let tiles = ss.tiles;
-    let plc_points = ss.plc_points;
-
-    let n_surf = sites.len();
-    rmlog::stat("mesh.brep_faces", brep.faces.len() as f64);
-    rmlog::stat("mesh.brep_edges", brep.edges.len() as f64);
-    rmlog::stage("mesh.surface", t_surf.elapsed().as_secs_f64());
-
-
-
-    // ---- stage 3 input: the VOLUME size field = the SIZE FIELD `H` --------
-    // The volume is meshed at the geometry's size field `H` (`domain.h_at`: caps +
-    // curvature, graded), DECOUPLED from the surface. The surface was meshed FINER
-    // (at `OVERSAMPLE * H`), so the surface is finer than the volume -- the
-    // restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
-    // the exact PLC boundary (conformity). Sampling `H` at the surface points and
-    // gradient-limiting reproduces the field for the volume stages.
-    let surf_pos: Vec<V3> = sites[..n_surf].iter().map(|s| s.pos()).collect();
-    // Each surface point seeds the volume field at the size it was GENERATED at
-    // (its per-entity edge/face target, finite even where `domain.h_at` is the
-    // coarse bulk): a refined edge keeps a fine field around it, so the quality
-    // post-pass does not coarsen it back.
-    let vol_sources: Vec<(V3, f64)> = (0..n_surf)
-        .map(|i| (surf_pos[i], surf_point_size[i].min(domain.h_at(surf_pos[i])).max(1e-9)))
-        .collect();
-    let vol_field = crate::sizefield::SizeField::new(vol_sources, grad, params.vol_cap());
-    // A per-region size cap: `region_maxh` is a region-WIDE size that the surface
-    // field (which grows coarse from the boundary inward) does not enforce in the
-    // interior, so cap the volume size by the region of the query point.
-    let region_cap = |r: u32| -> f64 {
-        params
-            .region_maxh
-            .iter()
-            .find(|(rr, _)| *rr == r)
-            .map(|&(_, h)| h)
-            .unwrap_or(params.maxh)
-            .min(params.maxh)
-    };
-    // ---- stage 3: interior volume points, graded by the domain octree -----
-    // One seed per interior leaf center: dense near the fine boundary, coarse in
-    // the bulk (the octree is refined to h(x)). Keep each seed clear of the
-    // fixed surface by the LOCAL spacing, and respect `max_points`.
-    let t_seed = std::time::Instant::now();
-    {
-        let pos = positions(&sites);
-        let surf_tree = Octree::build(&pos);
-        let budget_pts = params.max_points.saturating_sub(sites.len());
-        // Local size at a point: the volume field (grown from the surface points),
-        // capped by the region size.
-        let hloc = |p: V3| vol_field.at(p).min(region_cap(domain.region_at(p))).max(1e-9);
-        // Dart budget = the density integral integral(1/h^3) dV over a coarse
-        // sample of the inside, so the count matches the graded target (a sharp
-        // feature does not inflate it). Randomized darts then pack uniformly at
-        // that density -- the size-field BCC alone is ~1.5x coarser than the
-        // (oversampled) surface, leaving the interior visibly under-seeded.
-        let span: V3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-        let ns = 24usize;
-        let cellvol = (span[0] * span[1] * span[2]).max(0.0) / (ns * ns * ns) as f64;
-        let mut density = 0.0f64;
-        for i in 0..ns {
-            for j in 0..ns {
-                for k in 0..ns {
-                    let p: V3 = [
-                        lo[0] + (i as f64 + 0.5) / ns as f64 * span[0],
-                        lo[1] + (j as f64 + 0.5) / ns as f64 * span[1],
-                        lo[2] + (k as f64 + 0.5) / ns as f64 * span[2],
-                    ];
-                    if inside(p) {
-                        let h = hloc(p);
-                        density += cellvol / (h * h * h);
-                    }
-                }
-            }
-        }
-        let budget = ((density * 6.0) as usize).min(budget_pts);
-        // Spatial hash for interior separation; cell >= the largest separation
-        // radius (0.65*maxh) so a +-1 cell query is exact.
-        let cell = (0.65 * params.maxh).max(1e-9);
-        let ckey = |p: V3| {
-            ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64, (p[2] / cell).floor() as i64)
-        };
-        let mut igrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
-        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
-        let mut next = || {
-            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^= z >> 31;
-            ((z >> 11) as f64) / ((1u64 << 53) as f64)
-        };
-        let mut added = 0usize;
-        let attempts = (budget * 6).max(64);
-        for _ in 0..attempts {
-            if added >= budget_pts {
-                break;
-            }
-            let p: V3 = [lo[0] + next() * span[0], lo[1] + next() * span[1], lo[2] + next() * span[2]];
-            if !inside(p) {
-                continue;
-            }
-            let h = hloc(p);
-            // Surface clearance = the FULL local size: a volume seed within one
-            // element of the surface makes a boundary tet with a volume vertex,
-            // which the restricted-Delaunay boundary cannot emit -> a hole (breaks
-            // watertightness / exact volumes). Non-negotiable.
-            if surf_tree.nearest(p).map(|j| dist(p, pos[j as usize]) < h).unwrap_or(false) {
-                continue;
-            }
-            // Interior separation.
-            let r = 0.65 * h;
-            let (kx, ky, kz) = ckey(p);
-            let r2 = r * r;
-            let mut clear = true;
-            'scan: for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        if let Some(v) = igrid.get(&(kx + dx, ky + dy, kz + dz)) {
-                            for &q in v {
-                                if dot(sub(p, q), sub(p, q)) < r2 {
-                                    clear = false;
-                                    break 'scan;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if clear {
-                igrid.entry((kx, ky, kz)).or_default().push(p);
-                sites.push(Site::free(p));
-                added += 1;
-            }
-        }
-        rmlog::stat("mesh.vol_seeds", added as f64);
-    }
-    rmlog::stage("mesh.seed", t_seed.elapsed().as_secs_f64());
-
-    // ---- volume (3D) CVT Lloyd: relax INTERIOR sites only -----------------
-    // Bottom-up: the surface points were already relaxed in their own dimension
-    // (1D edges, 2D per-face Lloyd in `surface_sites`), so here they are FIXED --
-    // they ARE the boundary the volume conforms to. The volume sites move to their
-    // density-weighted tet centroid; the full Delaunay is rebuilt each pass. The
-    // octree of surface points is the mirror-in fallback for an out-of-domain
-    // volume centroid.
-    let surf_tree = Octree::build(&sites[..n_surf].iter().map(|s| s.pos()).collect::<Vec<_>>());
-    let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
-        let order = crate::spatial::morton_order(all_pos);
-        let mut db = DelaunayBuilder::enclosing(lo, hi);
-        // `orig[k]` = original index of the k-th SUCCESSFULLY inserted point;
-        // near-duplicates are skipped (robust to near-tangent intersections).
-        let mut orig: Vec<usize> = Vec::with_capacity(order.len());
-        for &i in &order {
-            if db.try_insert(all_pos[i]).is_some() {
-                orig.push(i);
-            }
-        }
-        db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
-    };
-
-    let t_lloyd = std::time::Instant::now();
-    let mut lloyd_passes = 0usize;
-    for _ in 0..LLOYD_ITERS {
-        lloyd_passes += 1;
-        let pos = positions(&sites);
-        let tets = build_full(&pos);
-        let mut num = vec![[0.0f64; 3]; sites.len()];
-        let mut den = vec![0.0f64; sites.len()];
-        for t in &tets {
-            let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
-            let c = centroid4(p);
-            let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
-            // DENSITY-WEIGHTED ODT (adaptive): weight by volume * rho (rho = 1/h^3,
-            // pulling sites toward finer regions). The ODT vertex update is
-            // x* = (Σ_T w · sum of T's OTHER three vertices) / (3 Σ_T w) -- the
-            // optimal-Delaunay relocation (sympy-derived), far more sliver-resistant
-            // than the CVT centroid it replaces.
-            let w = if params.density_weighted {
-                let h = vol_field.at(c).min(region_cap(domain.region_at(c))).max(1e-9);
-                tet_det(p).abs() / (h * h * h)
-            } else {
-                tet_det(p).abs()
-            };
-            for &i in t {
-                for k in 0..3 {
-                    num[i][k] += w * (sum4[k] - pos[i][k]);
-                }
-                den[i] += w;
-            }
-        }
-        domain.rebucket(&pos);
-        let mut max_move = 0.0f64;
-        for i in 0..sites.len() {
-            // ONLY interior (volume) sites relax; surface sites (corners, edges,
-            // faces) are fixed -- they were meshed bottom-up in their own dimension.
-            if !sites[i].is_volume() || den[i] == 0.0 {
-                continue;
-            }
-            let mut tgt: V3 = std::array::from_fn(|k| num[i][k] / (3.0 * den[i]));
-            // A volume centroid outside the domain: mirror it back in across the
-            // nearest carrier plane.
-            if !inside(tgt) {
-                let mirrored = surf_tree.nearest(tgt).and_then(|j| {
-                    if let Carrier::Plane { p0, n } = sites[j as usize].carrier {
-                        let r = reflect(tgt, p0, n);
-                        inside(r).then_some(r)
-                    } else {
-                        None
-                    }
-                });
-                match mirrored {
-                    Some(r) => tgt = r,
-                    None => continue,
-                }
-            }
-            let h = vol_field.at(tgt).min(region_cap(domain.region_at(tgt)));
-            let sep = SEPARATION_FRAC * h;
-            let crowded = domain.neighbors(tgt, sep).into_iter().any(|j| j as usize != i);
-            if !crowded {
-                sites[i].move_to(tgt);
-                max_move = max_move.max(dist(pos[i], sites[i].pos()));
-            }
-        }
-
-        // ---- adaptive insertion: fill the COARSE spots -------------------
-        // Where a tet edge is longer than the LOCAL target `h`, the interior is
-        // under-seeded (a per-region/per-face refinement the initial grid was too
-        // coarse to honour). Drop a free site at that edge's midpoint; the next
-        // pass relaxes the new density into place (the report's relax-insert
-        // loop). Insert in the bulk only (one local element clear of the fixed
-        // surface), separation-guarded against existing and newly added sites.
-        let mut inserted = 0usize;
-        if sites.len() < params.max_points {
-            domain.rebucket(&positions(&sites));
-            let cell = (SEPARATION_FRAC * spacing).max(1e-9);
-            let nkey = |p: V3| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64, (p[2] / cell).floor() as i64);
-            let mut newgrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
-            for t in &tets {
-                if sites.len() + inserted >= params.max_points {
-                    break;
-                }
-                let p = [pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]];
-                // The longest edge of this tet.
-                let mut best = (0.0f64, [0.0; 3]);
-                for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                    let len = dist(p[a], p[b]);
-                    if len > best.0 {
-                        best = (len, [(p[a][0] + p[b][0]) * 0.5, (p[a][1] + p[b][1]) * 0.5, (p[a][2] + p[b][2]) * 0.5]);
-                    }
-                }
-                let (len, mid) = best;
-                if !inside(mid) {
-                    continue;
-                }
-                let h = vol_field.at(mid).min(region_cap(domain.region_at(mid))).max(1e-9);
-                if len <= h {
-                    continue; // already fine enough here
-                }
-                // Clear of the fixed surface by one local element (a seed nearer
-                // than that makes a boundary tet the restricted boundary cannot emit).
-                if surf_tree.nearest(mid).map(|j| dist(mid, sites[j as usize].pos()) < h).unwrap_or(false) {
-                    continue;
-                }
-                let r = SEPARATION_FRAC * h;
-                if domain.neighbors(mid, r).into_iter().next().is_some() {
-                    continue; // too close to an existing site
-                }
-                // Separation from sites added THIS pass (query enough rings for r).
-                let (kx, ky, kz) = nkey(mid);
-                let reach = (r / cell).ceil() as i64 + 1;
-                let r2 = r * r;
-                let mut clear = true;
-                'ins: for dx in -reach..=reach {
-                    for dy in -reach..=reach {
-                        for dz in -reach..=reach {
-                            if let Some(v) = newgrid.get(&(kx + dx, ky + dy, kz + dz)) {
-                                if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
-                                    clear = false;
-                                    break 'ins;
-                                }
-                            }
-                        }
-                    }
-                }
-                if clear {
-                    newgrid.entry((kx, ky, kz)).or_default().push(mid);
-                    sites.push(Site::free(mid));
-                    inserted += 1;
-                }
-            }
-        }
-        rmlog::stat("mesh.lloyd_inserts", inserted as f64);
-
-        if inserted == 0 && max_move < LLOYD_CONVERGE_FRAC * spacing {
-            break;
-        }
-    }
-    rmlog::stage("mesh.lloyd", t_lloyd.elapsed().as_secs_f64());
-    rmlog::stat("mesh.lloyd_passes", lloyd_passes as f64);
-
-    // ---- final triangulation, tilings, region classification --------------
-    let t_build = std::time::Instant::now();
-    let all_tets = build_full(&positions(&sites));
-    rmlog::stage("mesh.build_final", t_build.elapsed().as_secs_f64());
-    let t_classify = std::time::Instant::now();
-    let pts = positions(&sites);
-    let mut face_owners: DMap<[usize; 3], Vec<u32>> = DMap::default();
-    for (ti, t) in all_tets.iter().enumerate() {
-        for fv in &TET_FACES {
-            let mut f = [t[fv[0]], t[fv[1]], t[fv[2]]];
-            f.sort_unstable();
-            face_owners.entry(f).or_default().push(ti as u32);
-        }
-    }
-    let t_region = std::time::Instant::now();
-    // Classify each tet by its centroid's region in the domain octree: a cached
-    // lookup deep inside a region, an exact per-region ray-cast on the boundary
-    // leaves. This is robust where the surface tilings are incomplete (a tet
-    // face spanning two facets of a curved or concave boundary is untagged), so
-    // it does not leak across the gap the way a face-crossing flood-fill does,
-    // and it resolves the right region directly for nested/multi-material
-    // domains without walking the dual graph.
-    let region: Vec<u32> = all_tets
-        .par_iter()
-        .map(|t| {
-            let c = centroid4([pts[t[0]], pts[t[1]], pts[t[2]], pts[t[3]]]);
-            domain.region_at(c)
-        })
-        .collect();
-    let mut kept: Vec<[usize; 4]> = Vec::new();
-    let mut tet_regions: Vec<RegionTag> = Vec::new();
-    for (t, &r) in all_tets.iter().zip(&region) {
-        if r != 0 {
-            kept.push(*t);
-            tet_regions.push(RegionTag(r));
-        }
-    }
-    rmlog::stage("mesh.region", t_region.elapsed().as_secs_f64());
-    rmlog::stage("mesh.classify", t_classify.elapsed().as_secs_f64());
-
-    // ---- boundary surface = the RESTRICTED DELAUNAY (region interface) ------
-    // A tet face is a boundary/interface face IFF its two incident tets lie in
-    // different regions (outside = region 0). This is principled (no coplanar
-    // epsilon, no proximity tolerance) and manifold BY CONSTRUCTION: every tet
-    // face appears once, shared by its two tets, so an edge carries exactly two
-    // faces per region -- no double-tagging at multi-surface junctions. The
-    // region pair comes from the two tets (exact); the surface/tag is the tile
-    // of an interior surface vertex (`point_tile`), the principled carrier-based
-    // label (shared corner/edge vertices defer to the interior one).
-    let t_faces = std::time::Instant::now();
-    let eps = 1e-9 * diag.max(1.0);
-    let mut faces: Vec<SurfaceFace> = Vec::new();
-    for (key, owners) in &face_owners {
-        if key.iter().any(|&v| v >= n_surf) {
-            continue; // a boundary face lives on the seeded surface
-        }
-        let (ra, rb) = match owners.as_slice() {
-            [a, b] => (region[*a as usize], region[*b as usize]),
-            [a] => (region[*a as usize], 0),
-            _ => continue,
-        };
-        // Output tag of the face: from an interior surface vertex's B-rep face
-        // (`point_tile` -> `tiles`), else the geometric planar patch's OWN
-        // surface/tag (coarse all-corner faces). These are different id spaces,
-        // so resolve to `(surface, face_tag)` here rather than indexing `tiles`
-        // with a patch id (which would be out of range).
-        let from_vertex = key.iter().map(|&v| point_tile[v]).find(|&t| t != u32::MAX);
-
-        if ra != rb {
-            // Region interface (boundary or material interface): manifold by
-            // construction. Region pair from the tets (exact); label from the tile.
-            let (surface, face_tag, patch) = if let Some(t) = from_vertex {
-                let (s, ft) = tiles[t as usize];
-                (s, ft, t)
-            } else if let Some(pi) = patch_of_face(plc, &patches, &pts, *key, eps) {
-                (patches[pi].surface, patches[pi].face_tag, u32::MAX)
-            } else {
-                (0, FaceTag(0), u32::MAX)
-            };
-            faces.push(SurfaceFace {
-                tri: *key,
-                face_tag,
-                regions: [RegionTag(ra.min(rb)), RegionTag(ra.max(rb))],
-                patch,
-                surface,
-            });
-        } else if ra != 0 {
-            // Embedded sheet: a tagged internal surface with the SAME region on
-            // both sides (not a region interface) -- recover it where the face
-            // sits on a planar sheet patch (equal regions, tagged).
-            if let Some(pi) = patch_of_face(plc, &patches, &pts, *key, eps) {
-                let p = &patches[pi];
-                if p.regions[0] == p.regions[1] && p.face_tag.0 != 0 {
-                    faces.push(SurfaceFace {
-                        tri: *key,
-                        face_tag: p.face_tag,
-                        regions: p.regions,
-                        patch: pi as u32,
-                        surface: p.surface,
-                    });
-                }
-            }
-        }
-    }
-    rmlog::stage("mesh.faces", t_faces.elapsed().as_secs_f64());
-
-    // Per-point local target size (the graded sizing field), so the optimizer
-    // coarsens to the LOCAL size, not one region-uniform floor that would erase
-    // curvature-fine detail. A surface point keeps its per-entity generation size
-    // (so an intentionally refined edge/face is not coarsened back).
-    let point_size: Vec<f64> = pts
-        .iter()
-        .enumerate()
-        .map(|(i, &p)| {
-            let field = vol_field.at(p).min(region_cap(domain.region_at(p)));
-            if i < n_surf {
-                field.min(surf_point_size[i])
-            } else {
-                field
-            }
-        })
-        .collect();
-    let mesh = TetMesh {
-        points: pts,
-        tets: kept,
-        tet_regions,
-        faces,
-        surfaces: plc.surfaces.clone(),
-        surface_owners: plc.surface_owners.clone(),
-        abandoned_patches: Vec::new(),
-        plc_points,
-        point_size,
-    };
-
-    let q = quality_stats(&mesh);
-    rmlog::stat("mesh.points", mesh.points.len() as f64);
-    rmlog::stat("mesh.tets", mesh.tets.len() as f64);
-    rmlog::stat("mesh.surface_points", n_surf as f64);
-    rmlog::stat("mesh.min_dihedral_deg", q.min_dihedral_deg);
-    rmlog::stage("mesh.total", t_start.elapsed().as_secs_f64());
-    mesh
-}
-
-/// Boundary-constrained variant of [`mesh`] (the report's Stage 3): build the
-/// frozen Stage-2 surface ([`frozen_surface`]), fill the interior at the sizing
-/// density, and tetrahedralize with the surface as a HARD constraint
-/// ([`crate::cdt3`]) so the boundary is watertight by construction (no straddling
-/// tetrahedra). Region tags are by centroid, which is exact now that no tet
-/// straddles; boundary faces are the ones between differing regions. Built
-/// alongside [`mesh`] and validated incrementally before it becomes the default.
+/// The volume mesher (the report's Stage 3): build the frozen Stage-2 surface
+/// ([`frozen_surface`]), fill the interior at the sizing density, and
+/// tetrahedralize with the surface as a HARD constraint ([`crate::cdt3`]) so the
+/// boundary is watertight by construction (no straddling tetrahedra). Each region
+/// is decomposed and tetrahedralized separately against its own frozen surface,
+/// so region tags are exact (by centroid) and boundary faces are between regions.
 pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
     use rayon::prelude::*;
@@ -1065,87 +565,81 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
     let _ = (&inside, &hloc); // (inside oracle / size field; refinement TBD)
-    // RAPIDMESH_PERREGION: decompose into single-region closed surfaces and mesh
-    // each region's interior SEPARATELY -- NO re-faceting, the frozen surface is
-    // fixed. The surface is the inside/outside CHECKER: a region's Delaunay is the
-    // tets of its own (boundary + interior) point set, and only those whose
-    // centroid is inside the region are kept, so no tet spans two regions.
-    // Interface verts are shared (same frozen index) -> conforming. Default path
-    // (one unconstrained Delaunay + centroid classify) is unchanged.
-    // Per-region attempt (None unless the flag is set AND it stays within the
-    // safety cap). Each region's Delaunay is bounded by surface + interior, so a
-    // sane total tet count guards against a pathological region exploding memory;
-    // on overflow we fall back to the default path for that geometry.
+    // Per-region decomposition: mesh each region's interior SEPARATELY against the
+    // FIXED frozen surface (no re-faceting). The surface is the inside/outside
+    // CHECKER -- a region's Delaunay is the tets of its own (boundary + interior)
+    // point set, keeping only those whose centroid is inside the region, so no tet
+    // spans two regions; interface verts are shared (same frozen index) ->
+    // conforming. A single-region body has nothing to decompose and a pathological
+    // region is bounded by a safety cap; both set `overflow` and fall back to the
+    // whole-domain Delaunay below.
     const PR_TET_CAP: usize = 40_000_000;
-    let perregion: Option<(Vec<[usize; 4]>, Vec<V3>, Vec<u32>)> =
-        if std::env::var_os("RAPIDMESH_PERREGION").is_some() {
-            let mut reg_set: Vec<u32> = surf_faces
-                .iter()
-                .flat_map(|f| [f.regions[0].0, f.regions[1].0])
-                .filter(|&r| r != 0)
-                .collect();
-            reg_set.sort_unstable();
-            reg_set.dedup();
-            let mut gpts: Vec<V3> = surf_points.clone();
-            let mut gtets: Vec<[usize; 4]> = Vec::new();
-            let mut greg: Vec<u32> = Vec::new();
-            // Per-region decomposition only helps when there is MORE THAN ONE
-            // region to separate (it removes cross-region spanning tets). A
-            // single-region body has nothing to decompose -- its "per-region"
-            // mesh is just the default Delaunay with a perturbed insertion order
-            // that can be WORSE near curved holes. So only multi-region geometries
-            // take this path; single-region falls through to the default.
-            let mut overflow = reg_set.len() < 2;
-            for &r in &reg_set {
-                if overflow {
-                    break;
-                }
-                let mut vids: Vec<usize> = Vec::new();
-                let mut rtris_g: Vec<[usize; 3]> = Vec::new();
-                let mut rcarr: Vec<Carrier> = Vec::new();
-                for (i, f) in surf_faces.iter().enumerate() {
-                    if f.regions[0].0 == r || f.regions[1].0 == r {
-                        rtris_g.push(f.tri);
-                        rcarr.push(face_carrier[i].clone());
-                        vids.extend_from_slice(&f.tri);
-                    }
-                }
-                vids.sort_unstable();
-                vids.dedup();
-                let g2l: DMap<usize, usize> = vids.iter().enumerate().map(|(l, &g)| (g, l)).collect();
-                let rverts: Vec<Site> = vids.iter().map(|&v| surf_sites[v].clone()).collect();
-                let rtris: Vec<[usize; 3]> =
-                    rtris_g.iter().map(|t| [g2l[&t[0]], g2l[&t[1]], g2l[&t[2]]]).collect();
-                let rint: Vec<V3> =
-                    interior.iter().copied().filter(|&p| domain.region_at(p) == r).collect();
-                let con = crate::cdt3::tetrahedralize_constrained(&rverts, &rtris, &rcarr, &rint, lo, hi);
-                let nsv = con.n_surf_verts;
-                let base = gpts.len();
-                gpts.extend_from_slice(&con.points[nsv..]);
-                let map = |li: usize| -> usize { if li < nsv { vids[li] } else { base + (li - nsv) } };
-                for t in &con.tets {
-                    let gt = [map(t[0]), map(t[1]), map(t[2]), map(t[3])];
-                    let c = centroid4([gpts[gt[0]], gpts[gt[1]], gpts[gt[2]], gpts[gt[3]]]);
-                    if domain.region_at(c) == r {
-                        gtets.push(gt);
-                        greg.push(r);
-                    }
-                }
-                if gtets.len() > PR_TET_CAP {
-                    overflow = true;
-                    break;
-                }
-            }
+    let perregion: Option<(Vec<[usize; 4]>, Vec<V3>, Vec<u32>)> = {
+        let mut reg_set: Vec<u32> = surf_faces
+            .iter()
+            .flat_map(|f| [f.regions[0].0, f.regions[1].0])
+            .filter(|&r| r != 0)
+            .collect();
+        reg_set.sort_unstable();
+        reg_set.dedup();
+        let mut gpts: Vec<V3> = surf_points.clone();
+        let mut gtets: Vec<[usize; 4]> = Vec::new();
+        let mut greg: Vec<u32> = Vec::new();
+        // Per-region decomposition only helps when there is MORE THAN ONE
+        // region to separate (it removes cross-region spanning tets). A
+        // single-region body has nothing to decompose -- its "per-region"
+        // mesh is just the default Delaunay with a perturbed insertion order
+        // that can be WORSE near curved holes. So only multi-region geometries
+        // take this path; single-region falls through to the default.
+        let mut overflow = reg_set.len() < 2;
+        for &r in &reg_set {
             if overflow {
-                rmlog::stat("mesh_cdt.perregion_overflow", 1.0);
-                None
-            } else {
-                rmlog::stat("mesh_cdt.perregion_tets", gtets.len() as f64);
-                Some((gtets, gpts, greg))
+                break;
             }
-        } else {
+            let mut vids: Vec<usize> = Vec::new();
+            let mut rtris_g: Vec<[usize; 3]> = Vec::new();
+            let mut rcarr: Vec<Carrier> = Vec::new();
+            for (i, f) in surf_faces.iter().enumerate() {
+                if f.regions[0].0 == r || f.regions[1].0 == r {
+                    rtris_g.push(f.tri);
+                    rcarr.push(face_carrier[i].clone());
+                    vids.extend_from_slice(&f.tri);
+                }
+            }
+            vids.sort_unstable();
+            vids.dedup();
+            let g2l: DMap<usize, usize> = vids.iter().enumerate().map(|(l, &g)| (g, l)).collect();
+            let rverts: Vec<Site> = vids.iter().map(|&v| surf_sites[v].clone()).collect();
+            let rtris: Vec<[usize; 3]> =
+                rtris_g.iter().map(|t| [g2l[&t[0]], g2l[&t[1]], g2l[&t[2]]]).collect();
+            let rint: Vec<V3> =
+                interior.iter().copied().filter(|&p| domain.region_at(p) == r).collect();
+            let con = crate::cdt3::tetrahedralize_constrained(&rverts, &rtris, &rcarr, &rint, lo, hi);
+            let nsv = con.n_surf_verts;
+            let base = gpts.len();
+            gpts.extend_from_slice(&con.points[nsv..]);
+            let map = |li: usize| -> usize { if li < nsv { vids[li] } else { base + (li - nsv) } };
+            for t in &con.tets {
+                let gt = [map(t[0]), map(t[1]), map(t[2]), map(t[3])];
+                let c = centroid4([gpts[gt[0]], gpts[gt[1]], gpts[gt[2]], gpts[gt[3]]]);
+                if domain.region_at(c) == r {
+                    gtets.push(gt);
+                    greg.push(r);
+                }
+            }
+            if gtets.len() > PR_TET_CAP {
+                overflow = true;
+                break;
+            }
+        }
+        if overflow {
+            rmlog::stat("mesh_cdt.perregion_overflow", 1.0);
             None
-        };
+        } else {
+            rmlog::stat("mesh_cdt.perregion_tets", gtets.len() as f64);
+            Some((gtets, gpts, greg))
+        }
+    };
     let (con_tets, pts, region_pre): (Vec<[usize; 4]>, Vec<V3>, Option<Vec<u32>>) =
         if let Some((t, p, r)) = perregion {
             (t, p, Some(r))
@@ -1266,11 +760,6 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stat("mesh_cdt.min_dihedral_deg", q.min_dihedral_deg);
     rmlog::stage("mesh_cdt.total", t_start.elapsed().as_secs_f64());
     mesh
-}
-
-/// Reflection of `p` across the plane (`p0`, unit `n`).
-fn reflect(p: V3, p0: V3, n: V3) -> V3 {
-    sub(p, scale(n, 2.0 * dot(sub(p, p0), n)))
 }
 
 /// Boundary edges of a curved smooth group: corner pairs appearing once across
@@ -1960,7 +1449,7 @@ mod tests {
         let mut scene = Scene::new();
         let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
         let plc = scene.assemble();
-        let mesh = mesh(&plc, &MeshParams { maxh: 0.8, ..Default::default() });
+        let mesh = mesh_cdt(&plc, &MeshParams { maxh: 0.8, ..Default::default() });
         assert_eq!(region_volume6(&mesh, r.0), rat(144.0), "exact box volume");
         assert!(watertight(&mesh), "watertight boundary");
     }
@@ -1970,7 +1459,7 @@ mod tests {
         let mut scene = Scene::new();
         let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]));
         let plc = scene.assemble();
-        let mesh = mesh(&plc, &MeshParams::default());
+        let mesh = mesh_cdt(&plc, &MeshParams::default());
         assert_eq!(region_volume6(&mesh, r.0), rat(6.0), "exact unit cube");
         assert!(watertight(&mesh));
     }
@@ -2142,7 +1631,7 @@ mod tests {
         let reg = scene.add_solid(solid);
         let plc = scene.assemble();
         let n_plc = plc.vertices.len();
-        let mesh = mesh(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
+        let mesh = mesh_cdt(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
 
         let mut curved = 0usize;
         let mut exact_on = 0usize;
@@ -2187,7 +1676,7 @@ mod tests {
         let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
         let diel = scene.add_solid(solid_box([1.0, 1.0, 1.0], [3.0, 3.0, 2.0]));
         let plc = scene.assemble();
-        let mesh = mesh(&plc, &MeshParams { maxh: 1.0, ..Default::default() });
+        let mesh = mesh_cdt(&plc, &MeshParams { maxh: 1.0, ..Default::default() });
         assert_eq!(region_volume6(&mesh, diel.0), rat(24.0), "diel volume");
         assert_eq!(region_volume6(&mesh, air.0), rat(360.0), "air volume");
         assert!(watertight(&mesh));

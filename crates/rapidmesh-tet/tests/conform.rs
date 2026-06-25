@@ -130,6 +130,30 @@ fn air_dielectric_pec_scene_meshes_exactly() {
     assert!(pec >= 4, "expected PEC faces in the mesh, got {pec}");
 }
 
+/// A tagged sheet at the interface of TWO stacked slabs (the practical FEM
+/// construction: a PEC/material sheet BETWEEN two regions, not embedded inside
+/// one). The interface is each region's boundary, so per-region meshing conforms
+/// to it for free; this gates that the face tag survives onto the interface and
+/// the mesh stays watertight. (An internal sheet embedded in a SINGLE region --
+/// `regions == (r, r)` -- is a separate, deferred case; see task #50.)
+#[test]
+fn tagged_interface_between_slabs_carries_tag() {
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0])); // region 1
+    scene.add_solid(solid_box([0.0, 0.0, 2.0], [4.0, 4.0, 4.0])); // region 2
+    scene.add_sheet(sheet_rect([0.0, 0.0, 2.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]), FaceTag(7));
+    let plc = scene.assemble();
+    let mesh = mesh_plc_with(&plc, &MeshParams { maxh: 1.0, ..MeshParams::default() });
+    check_structure(&mesh); // conformity + interface regions + manifold
+    let tagged: Vec<_> = mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).collect();
+    assert!(!tagged.is_empty(), "tagged interface faces must carry the face tag");
+    for f in &tagged {
+        let mut rs = [f.regions[0].0, f.regions[1].0];
+        rs.sort_unstable();
+        assert_eq!(rs, [1, 2], "a tag-7 face must separate region 1 and 2");
+    }
+}
+
 #[test]
 #[ignore = "mesh_cdt does not preserve exact per-region polyhedral volume across a \
             shared CURVED material interface (the via wall): the bare-PLC coarse split \

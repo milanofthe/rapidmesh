@@ -12,7 +12,7 @@ use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross};
 use crate::geomutil::in_loops;
 use crate::curve::{distribute, Curve, PolylineCurve};
 use crate::site::{Carrier, Site};
-use crate::surf2d::{cvt_fill, triangulate_constrained};
+use crate::surf2d::{cvt_fill, refine_quality, triangulate_constrained};
 use crate::surfchart::{build_chart, PlaneChart, SurfaceChart};
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
@@ -707,7 +707,30 @@ pub fn surface_sites(
                 // the separation radius). Defaults to `fine` when no surface cap/curve
                 // applies, so the exact-volume planar balance is unchanged.
                 let step = loc_uv[..nb].iter().map(|&q| target2d(q)).fold(fine, f64::min).max(1e-9);
-                let interior = cvt_fill(&loc_uv[..nb], lo, hi, step, target2d, SURF_LLOYD_ITERS, inside, true);
+                let mut interior = cvt_fill(&loc_uv[..nb], lo, hi, step, target2d, SURF_LLOYD_ITERS, inside, true);
+                // Sizing-field-driven Ruppert/Chew refinement (no slivers + grading),
+                // on for the standalone surface mesher. The boundary loops here are
+                // free sheet outlines, so encroached segments may be split; the new
+                // boundary midpoints are appended after the original `nb` points.
+                let mut seg = segs.clone();
+                if params.surf_min_angle > 0.0 {
+                    let mut bnd: Vec<P2> = loc_uv[..nb].to_vec();
+                    let mut refin = vec![true; seg.len()];
+                    refine_quality(&mut bnd, &mut seg, &mut refin, &mut interior,
+                        target2d, inside, params.surf_min_angle);
+                    for &q in &bnd[nb..] {
+                        let p = chart.to_xyz(q);
+                        let site = match &carrier {
+                            Carrier::Plane { p0, n } => Site::on_plane(*p0, *n, p),
+                            _ => Site::on_surface(kind.clone(), p),
+                        };
+                        sites.push(site);
+                        point_tile.push(fid as u32);
+                        point_size.push(smaxh);
+                        loc_uv.push(q);
+                        loc_sidx.push(sites.len() - 1);
+                    }
+                }
                 for q in interior {
                     let p = chart.to_xyz(q);
                     let site = match &carrier {
@@ -720,7 +743,7 @@ pub fn surface_sites(
                     loc_uv.push(q);
                     loc_sidx.push(sites.len() - 1);
                 }
-                for t in triangulate_constrained(&loc_uv, &segs, inside) {
+                for t in triangulate_constrained(&loc_uv, &seg, inside) {
                     tris.push(SurfaceFace {
                         tri: [loc_sidx[t[0]], loc_sidx[t[1]], loc_sidx[t[2]]],
                         face_tag: face.face_tag,

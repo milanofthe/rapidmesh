@@ -135,6 +135,7 @@ mod tests {
             surf_tol: Vec::new(),
             min_h_surf: 0.0,
             min_h_vol: 0.0,
+            surf_min_angle: 0.0,
         }
     }
 

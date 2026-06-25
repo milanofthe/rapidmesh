@@ -915,7 +915,25 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let target = |uv: [f64; 2]| {
             SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n)).min(params.surf_cap()).max(params.min_h_surf)
         };
-        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
+        // Pure Ruppert from the boundary when refining (it grades to the field
+        // itself); otherwise the Lloyd scatter. Mixing Lloyd points with refinement
+        // seeds slivers, so refine starts from an empty interior.
+        let mut interior2 = if params.surf_min_angle > 0.0 {
+            Vec::new()
+        } else {
+            cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted)
+        };
+        if params.surf_min_angle > 0.0 {
+            let mut bnd: Vec<[f64; 2]> = loc2[..nb].to_vec();
+            let mut refin = vec![true; bsegs.len()];
+            crate::surf2d::refine_quality(&mut bnd, &mut bsegs, &mut refin, &mut interior2, target, inside2, params.surf_min_angle);
+            for &uv in &bnd[nb..] {
+                points.push(lift3(uv, drop, p0, n));
+                loc2.push(uv);
+                gidx.push(points.len() - 1);
+            }
+        }
+        for uv in interior2 {
             points.push(lift3(uv, drop, p0, n));
             loc2.push(uv);
             gidx.push(points.len() - 1);

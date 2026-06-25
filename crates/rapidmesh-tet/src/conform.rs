@@ -281,6 +281,11 @@ pub struct MeshParams {
     pub min_h_surf: f64,
     /// Minimum element edge length in the VOLUME (3-cells): a hard floor. `0` = off.
     pub min_h_vol: f64,
+    /// Surface (2D) quality target: minimum triangle angle in DEGREES for the
+    /// sizing-field-driven Ruppert/Chew refinement of free sheet faces. `0` = off
+    /// (the volume path leaves this 0 to keep its frozen surface unchanged; the
+    /// standalone surface mesher turns it on).
+    pub surf_min_angle: f64,
 }
 
 impl Default for MeshParams {
@@ -306,6 +311,7 @@ impl Default for MeshParams {
             surf_tol: Vec::new(),
             min_h_surf: 0.0,
             min_h_vol: 0.0,
+            surf_min_angle: 0.0,
         }
     }
 }
@@ -346,6 +352,7 @@ impl MeshParams {
             // element regardless of the count target.
             min_h_surf: self.min_h_surf,
             min_h_vol: self.min_h_vol,
+            surf_min_angle: self.surf_min_angle,
         }
     }
 

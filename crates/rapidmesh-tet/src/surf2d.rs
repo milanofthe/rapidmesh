@@ -544,6 +544,130 @@ pub fn triangulate_constrained(
         .collect()
 }
 
+/// Interior angles (degrees) at each vertex of triangle (a, b, c).
+fn tri_angles(a: P2, b: P2, c: P2) -> [f64; 3] {
+    let ang = |u: P2, v: P2, w: P2| {
+        let (e1, e2) = ([v[0] - u[0], v[1] - u[1]], [w[0] - u[0], w[1] - u[1]]);
+        let n = (e1[0] * e1[0] + e1[1] * e1[1]).sqrt() * (e2[0] * e2[0] + e2[1] * e2[1]).sqrt();
+        ((e1[0] * e2[0] + e1[1] * e2[1]) / (n + 1e-30)).clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    [ang(a, b, c), ang(b, c, a), ang(c, a, b)]
+}
+
+/// Circumcenter of (a, b, c); `None` if (near-)degenerate.
+fn circumcenter(a: P2, b: P2, c: P2) -> Option<P2> {
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() < 1e-30 {
+        return None;
+    }
+    let (a2, b2, c2) = (a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1], c[0] * c[0] + c[1] * c[1]);
+    Some([
+        (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+        (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
+    ])
+}
+
+/// Sizing-field-driven Delaunay (Ruppert/Chew) refinement of a constrained
+/// triangulation: repeatedly insert the circumcentre of any triangle whose
+/// minimum angle is below `min_angle_deg` OR whose circumradius exceeds the local
+/// `target` size (so the result is graded to the field). A circumcentre that
+/// encroaches a REFINABLE boundary segment splits that segment at its midpoint
+/// instead (Ruppert's segment protection), so free sheet boundaries stay
+/// conforming while the interior gains a guaranteed angle bound -- no slivers.
+/// Boundary midpoints are appended to `boundary`/`segments`/`refinable`; interior
+/// points to `interior`. Terminates for input angles >= ~60 deg.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_quality(
+    boundary: &mut Vec<P2>,
+    segments: &mut Vec<(usize, usize)>,
+    refinable: &mut Vec<bool>,
+    interior: &mut Vec<P2>,
+    target: impl Fn(P2) -> f64,
+    inside: impl Fn(P2) -> bool,
+    min_angle_deg: f64,
+) {
+    let diam2 = |b: &[P2], u: usize, v: usize| 0.25 * dist2(b[u], b[v]);
+    let mid = |b: &[P2], u: usize, v: usize| [0.5 * (b[u][0] + b[v][0]), 0.5 * (b[u][1] + b[v][1])];
+    for _ in 0..60 {
+        let nb = boundary.len();
+        let mut all = boundary.clone();
+        all.extend_from_slice(interior);
+        let tris = triangulate_constrained(&all, segments, &inside);
+        let mut split: Vec<usize> = Vec::new();
+        let mut inserts: Vec<P2> = Vec::new();
+
+        // (1) protect segments: split any refinable segment encroached by a vertex
+        // not on it. Doing this BEFORE inserting circumcentres keeps termination.
+        for (si, &(u, v)) in segments.iter().enumerate() {
+            if !refinable[si] {
+                continue;
+            }
+            let (m, h2) = (mid(boundary, u, v), diam2(boundary, u, v));
+            if all.iter().enumerate().any(|(k, &q)| k != u && k != v && dist2(q, m) < h2 - 1e-12) {
+                split.push(si);
+            }
+        }
+
+        // (2) otherwise, drive on bad/oversized triangles.
+        if split.is_empty() {
+            for t in &tris {
+                let p = [all[t[0]], all[t[1]], all[t[2]]];
+                let a = tri_angles(p[0], p[1], p[2]);
+                let cc = match circumcenter(p[0], p[1], p[2]) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let bad = a[0].min(a[1]).min(a[2]) < min_angle_deg
+                    || dist2(p[0], cc) > (0.6 * target(cc)).powi(2);
+                if !bad {
+                    continue;
+                }
+                let enc = segments.iter().enumerate().find(|&(si, &(u, v))| {
+                    refinable[si] && dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v)
+                });
+                match enc {
+                    Some((si, _)) => split.push(si),
+                    None if inside(cc) => inserts.push(cc),
+                    None => {}
+                }
+            }
+        }
+
+        split.sort_unstable();
+        split.dedup();
+        if split.is_empty() && inserts.is_empty() {
+            break;
+        }
+        if !split.is_empty() {
+            let mut ns = Vec::with_capacity(segments.len() + split.len());
+            let mut nr = Vec::with_capacity(refinable.len() + split.len());
+            for (i, &(u, v)) in segments.iter().enumerate() {
+                if split.binary_search(&i).is_ok() {
+                    let m = mid(boundary, u, v);
+                    let mi = boundary.len();
+                    boundary.push(m);
+                    ns.push((u, mi));
+                    nr.push(true);
+                    ns.push((mi, v));
+                    nr.push(true);
+                } else {
+                    ns.push((u, v));
+                    nr.push(refinable[i]);
+                }
+            }
+            *segments = ns;
+            *refinable = nr;
+        }
+        for c in inserts {
+            let r2 = (0.5 * target(c)).powi(2);
+            if boundary.iter().chain(interior.iter()).all(|&q| dist2(c, q) >= r2) {
+                interior.push(c);
+            }
+        }
+        let _ = nb;
+    }
+}
+
 /// Fills a planar region with Lloyd-relaxed interior points at a GRADED local
 /// `target` spacing (`target(q)` is the desired edge length at `q`). `step` is
 /// the finest target on the patch, the grid step of the initial scatter; the

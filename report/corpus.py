@@ -258,6 +258,54 @@ def _graded_cases():
     return cases
 
 
+def _passives_cases():
+    """rapidpassives coils/transformers (sky130 stack), built DIRECTLY from their
+    layout polygons (``report/passives_fixtures.json``, exported once so the corpus
+    needs no rapidpassives import). MoM = metal layers as flat conductor sheets
+    (``polygon_plate``); FEM = metal/via polygons extruded (``prism``) in a
+    dielectric box. The flat thin-layer stackup is the mesher's hardest 3D case."""
+    import json
+
+    fx = Path(__file__).parent / "passives_fixtures.json"
+    if not fx.exists():
+        return []
+    data = json.loads(fx.read_text())
+
+    def _mom(layers, h):
+        g = rm.Geometry(maxh=h)
+        tag = 1
+        for L in layers:
+            if L["type"] != "metal":
+                continue
+            z = L["z"] + L["thickness"] / 2.0
+            for pc in L["pieces"]:
+                g.polygon_plate(pc["ext"], position=(0, 0, z), holes=pc["holes"] or None, tag=tag)
+                tag += 1
+        return g.surface_mesh(maxh=h)
+
+    def _fem(layers, h):
+        xs = [x for L in layers for pc in L["pieces"] for x, _ in pc["ext"]]
+        ys = [y for L in layers for pc in L["pieces"] for _, y in pc["ext"]]
+        zhi = max(L["z"] + L["thickness"] for L in layers)
+        mx = 0.15 * (max(xs) - min(xs))
+        g = rm.Geometry(maxh=h)
+        g.box(max(xs) - min(xs) + 2 * mx, max(ys) - min(ys) + 2 * mx, zhi + mx,
+              position=(min(xs) - mx, min(ys) - mx, 0.0))
+        for L in layers:
+            for pc in L["pieces"]:
+                g.prism(pc["ext"], L["thickness"], position=(0, 0, L["z"]), holes=pc["holes"] or None)
+        return g.mesh(maxh=h)
+
+    fem_ok = {"rp_spiral", "rp_sym_inductor"}  # transformer FEM hits a degenerate via
+    cases = []
+    for name, d in sorted(data.items()):
+        L = d["layers"]
+        cases.append((name + "_mom", "Passives", "surf", lambda _L=L: _mom(_L, 5.0)))
+        if name in fem_ok:
+            cases.append((name + "_fem", "Passives", "vol", lambda _L=L: _fem(_L, 8.0)))
+    return cases
+
+
 #: The whole corpus: validate cases + showcase models + RF structures + sizing.
 CORPUS = (
     [_from_validate(*c) for c in V.CASES]
@@ -266,6 +314,7 @@ CORPUS = (
     + _sizing_cases()
     + _shape_cases()
     + _graded_cases()
+    + _passives_cases()
 )
 
 

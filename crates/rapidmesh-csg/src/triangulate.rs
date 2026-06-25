@@ -54,24 +54,6 @@ fn add_vertex(pool: &mut Vec<Point3>, p: Point3) -> usize {
     if let Some(i) = pool.iter().position(|q| q.coincides(&p)) {
         return i;
     }
-    // Robustness weld: the SAME geometric point reached two ways -- an explicit
-    // input vertex and an implicit clip/crossing result -- can differ by a few
-    // ulps and so escape the exact `coincides` test. Left distinct, one copy can
-    // land a hair outside the facet and the locate below fails. Weld a point that
-    // sits within a tiny RELATIVE tolerance (far below any real feature, far above
-    // ulp noise) of an existing pool vertex; on clean input no two distinct points
-    // are ever this close, so the exact triangulation is unchanged.
-    if let Some(pa) = p.approx() {
-        for (i, q) in pool.iter().enumerate() {
-            if let Some(qa) = q.approx() {
-                let d2: f64 = (0..3).map(|k| (pa[k] - qa[k]).powi(2)).sum();
-                let scale = (0..3).fold(1.0_f64, |m, k| m.max(pa[k].abs()).max(qa[k].abs()));
-                if d2 <= (1e-9 * scale).powi(2) {
-                    return i;
-                }
-            }
-        }
-    }
     pool.push(p);
     pool.len() - 1
 }
@@ -320,18 +302,7 @@ fn insert_vertex(
             _ => unreachable!("vertex {k} coincides with a corner; dedup failed"),
         }
     }
-    let nearest = p.approx().and_then(|pa| {
-        pool.iter()
-            .enumerate()
-            .filter(|&(m, _)| m != k)
-            .filter_map(|(m, q)| {
-                q.approx().map(|qa| {
-                    (m, (0..3).map(|d| (pa[d] - qa[d]).powi(2)).sum::<f64>().sqrt())
-                })
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-    });
-    panic!("vertex {k} lies outside the facet (nearest pool vertex: {nearest:?})");
+    panic!("vertex {k} lies outside the facet");
 }
 
 /// Splits the directed edge x→y of triangle `ti` (and of its neighbor, if

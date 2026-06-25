@@ -271,15 +271,47 @@ def _passives_cases():
         return []
     data = json.loads(fx.read_text())
 
+    def _clean_ring(ring, tol=1e-6):
+        """Drop consecutive-duplicate and collinear vertices (shapely closes rings
+        and leaves collinear points on merged edges) so the mesher sees a clean
+        simple polygon."""
+        pts = [tuple(p) for p in ring]
+        out = []
+        for p in pts:
+            if not out or abs(p[0] - out[-1][0]) + abs(p[1] - out[-1][1]) > tol:
+                out.append(p)
+        if len(out) > 1 and abs(out[0][0] - out[-1][0]) + abs(out[0][1] - out[-1][1]) <= tol:
+            out.pop()
+        n = len(out)
+        if n < 4:
+            return out
+        keep = []
+        for i in range(n):
+            a, b, c = out[(i - 1) % n], out[i], out[(i + 1) % n]
+            if abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) > tol:
+                keep.append(b)
+        return keep if len(keep) >= 3 else out
+
     def _mom(layers, h):
+        """One CLEAN polygon per connected conductor net (shapely union), fed as a
+        single sheet -- no overlapping coplanar pieces, so no near-duplicate panic
+        and no exact-arrangement weld needed. Disconnected nets stay separate."""
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
         g = rm.Geometry(maxh=h)
         tag = 1
         for L in layers:
             if L["type"] != "metal":
                 continue
             z = L["z"] + L["thickness"] / 2.0
-            for pc in L["pieces"]:
-                g.polygon_plate(pc["ext"], position=(0, 0, z), holes=pc["holes"] or None, tag=tag)
+            merged = unary_union([Polygon(pc["ext"]).buffer(0) for pc in L["pieces"]])
+            geoms = merged.geoms if merged.geom_type == "MultiPolygon" else [merged]
+            for geom in geoms:
+                ext = _clean_ring(list(geom.exterior.coords))
+                if len(ext) < 3:
+                    continue
+                holes = [r for r in (_clean_ring(list(h.coords)) for h in geom.interiors) if len(r) >= 3]
+                g.polygon_plate(ext, position=(0, 0, z), holes=holes or None, tag=tag)
                 tag += 1
         return g.surface_mesh(maxh=h)
 

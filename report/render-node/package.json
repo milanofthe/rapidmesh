@@ -1,0 +1,1 @@
+{"name":"rapidmesh-rasterizer","version":"0.1.0","private":true,"type":"module","description":"Headless WebGPU rasterizer for mesh viewer JSON (replaces the per-image playwright/chromium screenshotter).","dependencies":{"@kmamal/gpu":"0.2.0","esbuild":"^0.28.1","pngjs":"^7.0.0"}}

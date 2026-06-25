@@ -28,8 +28,10 @@ from __future__ import annotations
 import contextlib
 import functools
 import http.server
+import json
 import os
 import socket
+import subprocess
 import threading
 import urllib.parse
 from pathlib import Path
@@ -38,6 +40,17 @@ from pathlib import Path
 _THIS = Path(__file__).resolve()
 _REPO = _THIS.parent.parent                      # rapidmesh/
 BUILD_DIR = _REPO / "site" / "build"             # vite build output
+_RENDER_NODE = _REPO / "report" / "render-node"  # headless WebGPU rasterizer
+
+
+def _ensure_bundle() -> None:
+    """Build render-node/bundle.mjs (the shared browser render pipeline) if it is
+    missing, so a standalone render() works without a separate build step."""
+    if (_RENDER_NODE / "bundle.mjs").exists():
+        return
+    r = subprocess.run(["node", "build-bundle.mjs"], cwd=str(_RENDER_NODE), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"rasterizer bundle build failed: {r.stderr[:400]}")
 COMPARE_DIR = BUILD_DIR / "meshes" / "compare"   # bundled sample meshes
 # SvelteKit's client router matches on location.pathname, so the page must be
 # served at "/embed" (not "/embed.html"); the handler maps it to the
@@ -183,66 +196,36 @@ def render(
     so it drops onto any report background cleanly. Deterministic: a fixed
     camera produces an identical PNG.
 
-    Note: `opacity` and `region_colors` are accepted for API completeness but
-    are NOT honoured — region colouring and surface opacity are owned by the
-    unchanged MeshViewer (the 1:1-reuse hard requirement forbids editing them).
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:  # pragma: no cover
-        raise RuntimeError(
-            "Playwright is required for render(). Install with:\n"
-            "    pip install playwright\n"
-            "    playwright install chromium"
-        ) from e
+    Renders via the headless WebGPU rasterizer (report/render-node) -- the SAME
+    pipeline as the live viewer (mesh_adapter + scene_build + canvas3d_webgpu),
+    so there is no browser, no per-image Chromium launch, and no process leak.
 
+    Note: `opacity`, `region_colors`, `controls`, `dist`, `engine` and
+    `timeout_ms` are accepted for API compatibility; colouring/camera are owned
+    by the shared scene pipeline. `transparent` is always honoured (alpha PNG).
+    """
     mesh_file = _resolve_mesh(mesh_json, engine)
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_bundle()
 
-    with _serve(mesh_file) as base:
-        url = _embed_url(
-            base,
-            transparent=transparent,
-            controls=controls,
-            azim=azim,
-            elev=elev,
-            dist=dist,
-            wireframe=wireframe,
-            tets=tets,
-            edges=edges,
-            defects=defects,
-            clip=clip,
-            clip_axis=clip_axis,
-            width=width,
-            height=height,
-        )
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page(
-                viewport={"width": int(width), "height": int(height)},
-                # 2x pixel density: the canvas is devicePixelRatio-aware, so this
-                # renders at double resolution (crisp PNGs) for the same framing.
-                device_scale_factor=2,
-            )
-            page.goto(url, wait_until="load")
-            page.wait_for_function(
-                "() => document.body && document.body.hasAttribute('data-viewer-ready')",
-                timeout=timeout_ms,
-            )
-            state = page.get_attribute("body", "data-viewer-ready")
-            if state == "error":
-                err = page.get_attribute("body", "data-viewer-error")
-                browser.close()
-                raise RuntimeError(f"Viewer failed to load mesh: {err}")
-            # Let the final framed camera settle before snapping.
-            page.wait_for_timeout(400)
-            page.screenshot(
-                path=str(out_png),
-                omit_background=bool(transparent),
-                clip={"x": 0, "y": 0, "width": int(width), "height": int(height)},
-            )
-            browser.close()
+    job = {
+        "mesh": str(mesh_file), "out": str(out_png),
+        "clip": clip, "clipAxis": int(clip_axis),
+        "fills": bool(tets), "surfWire": bool(wireframe), "intWire": bool(edges),
+        "featEdges": False, "defects": bool(defects),
+        "lineHalfPx": 0.6 if tets else 1.2,        # thicker wire when there is no fill
+        "azim": float(azim), "elev": float(elev),
+        "width": int(width), "height": int(height),
+    }
+    jp = _RENDER_NODE / "_render_job.json"
+    jp.write_text(json.dumps([job]))
+    r = subprocess.run(
+        ["node", str(_RENDER_NODE / "rasterize.mjs"), str(jp)],
+        capture_output=True, text=True, timeout=timeout_ms / 1000 + 120,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"rasterizer failed: {r.stderr[:400]}")
     return out_png
 
 

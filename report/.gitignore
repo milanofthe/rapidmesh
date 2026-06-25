@@ -19,3 +19,12 @@ validation/meshes/
 # regenerable gallery renders (report/render_gallery.py)
 figures/gallery/
 validation/benchmark.json
+
+# scratch WebGPU rasterizer test renders
+figures/webgpu/
+# headless rasterizer: installed deps + generated bundle / job files
+render-node/node_modules/
+render-node/bundle.mjs
+render-node/jobs.json
+render-node/_render_job.json
+render-node/clipfix.json

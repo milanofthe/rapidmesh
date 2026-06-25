@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -31,10 +32,13 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from report import corpus as C  # noqa: E402
 from report import validate as V  # noqa: E402
-from report.viewer import render  # noqa: E402
 
 GAL = REPO / "report" / "figures" / "gallery"
 MESHES = REPO / "report" / "validation" / "meshes"
+# Headless WebGPU rasterizer (replaces the playwright/chromium screenshotter).
+RENDER_NODE = REPO / "report" / "render-node"
+RASTERIZE = RENDER_NODE / "rasterize.mjs"
+RENDER_W, RENDER_H = 1500, 1230
 
 # Defect-marker colours (match the viewer's DEFECT_COLORS), for the legend.
 DEFECT_LEGEND = [
@@ -54,7 +58,30 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> None:
+def _timing_lines(wall: float | None, timings: dict | None) -> list[str]:
+    """Meshing wall-clock + per-phase breakdown for the debug overlay."""
+    if wall is None:
+        return []
+    out = [f"mesh {wall:.2f}s"]
+    t = timings or {}
+
+    def g(*keys):
+        return next((t[k] for k in keys if k in t), 0.0)
+
+    surf = g("mesh_cdt.surface", "mesh.surface")
+    seed = g("mesh_cdt.seed", "mesh.seed")
+    lloyd = g("mesh_cdt.lloyd", "mesh.lloyd")
+    tet = g("mesh_cdt.tetrahedralize", "mesh.build_final")
+    opt = g("optimize.total")
+    parts = [(lbl, v) for lbl, v in
+             (("surf", surf), ("seed", seed), ("lloyd", lloyd), ("tet", tet), ("opt", opt)) if v > 0]
+    if parts:
+        out.append("  " + "  ".join(f"{lbl} {v * 1e3:.0f}" for lbl, v in parts) + " ms")
+    return out
+
+
+def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None,
+              wall: float | None = None, timings: dict | None = None) -> None:
     """Overlays the metrics text (top-left) and the defect-colour legend
     (bottom-left) onto a rendered diagnostic PNG."""
     from PIL import Image, ImageDraw
@@ -83,6 +110,8 @@ def _annotate(png: Path, name: str, kind: str, n: int, diag: dict | None) -> Non
         ]
     else:
         lines.append((f"{n} surface faces", dim))
+    for s in _timing_lines(wall, timings):
+        lines.append((s, dim))
     x, y = 16, 14
     txt((x, y), lines[0][0], title_f, lines[0][1])
     y += 34
@@ -110,67 +139,82 @@ def _set_cdt(on: bool) -> None:
         os.environ.pop("RAPIDMESH_CDT", None)
 
 
-def _render_mesh(name: str, kind: str, make, out_normal: Path, out_debug: Path) -> str:
-    """Meshes one corpus geometry ONCE and renders TWO views from it:
-      * NORMAL (`out_normal`): the clean figure -- region-coloured solid (clipped
-        so the interior is visible) for volumes, or the surface wireframe for
-        surface meshes, on a transparent background, no overlays.
-      * DEBUG (`out_debug`): the DIAGNOSTIC view -- surface triangulation with the
-        located defect markers (slivers, straddlers, non-manifold edges) and a
-        metrics text overlay, on a dark background.
-    Meshing is the expensive step (heavy CSG geometries), so it runs once and both
-    PNGs come from the same viewer JSON."""
-    t0 = time.time()
-    m = make()
-    if kind == "surf":
-        vd = V._surface_viewer_dict(m, name)
-        n = len(m.faces)
-        diag = None
-    else:
-        vd = m.to_viewer_dict(name)
-        n = int(m.stats["n_tets"])
-        diag = m.diagnostics
-    dt = time.time() - t0
-    mp = MESHES / f"gal_{name}.json"
-    mp.write_text(json.dumps(vd))
-    # ---- normal view: clean, region-coloured SURFACE MESH (fill + triangulation),
-    # clipped for volumes so the interior shows. The surface mesh (fill + wire) is
-    # ALWAYS on, including for surface-only (2D) geometries. ----
-    render(
-        str(mp), str(out_normal),
-        azim=32, elev=20,
-        transparent=True,
-        clip=0.55 if kind == "vol" else None,   # cutaway so interior tets show
-        clip_axis=1,
-        tets=True,                # surface fill (region-coloured) -- always
-        edges=(kind == "vol"),    # interior tet edges on the cutaway (volumes)
-        wireframe=True,           # surface triangulation -- always (fixes 2D tris)
-        defects=False,
-        width=1100, height=900,
-    )
-    # ---- debug view: the surface triangulation (WIREFRAME only, no fill) + located
-    # defect markers + metrics overlay, on a TRANSPARENT background (annotation text
-    # gets a dark stroke for legibility on any surface). ----
-    render(
-        str(mp), str(out_debug),
-        azim=32, elev=20,
-        transparent=True,
-        clip=None,
-        tets=False,           # NO solid fill -- just the mesh
-        edges=False,
-        wireframe=True,       # surface triangulation
-        defects=True,         # located defect markers
-        width=1100, height=900,
-    )
-    _annotate(out_debug, name, kind, n, diag)
-    return f"{name}: {n} elems, {dt:.1f}s"
+def _build_bundle() -> None:
+    """Bundle the shared browser render pipeline (mesh_adapter + scene_build +
+    canvas3d_webgpu) into render-node/bundle.mjs so the Node rasterizer runs the
+    exact same code as the live viewer."""
+    r = subprocess.run(["node", "build-bundle.mjs"], cwd=str(RENDER_NODE), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"bundle build failed: {r.stderr[:400]}")
+
+
+def _rasterize(jobs: list[dict]) -> None:
+    """Render every queued job in ONE headless Node process (batch; used for the
+    quick sizing permutations)."""
+    if not jobs:
+        return
+    jp = RENDER_NODE / "jobs.json"
+    jp.write_text(json.dumps(jobs))
+    r = subprocess.run(["node", str(RASTERIZE), str(jp)], capture_output=True, text=True)
+    if r.stdout.strip():
+        print(r.stdout.strip())
+    if r.returncode != 0:
+        print(f"  RASTERIZER ERR: {r.stderr[:600]}")
+
+
+class _Rasterizer:
+    """A persistent headless Node rasterizer: ONE GPU device for the whole run,
+    fed jobs over stdin so each image appears the moment its mesh is ready (no
+    batch wait, no per-image process)."""
+
+    def __init__(self):
+        _build_bundle()
+        self.proc = subprocess.Popen(
+            ["node", str(RASTERIZE), "--stream"], cwd=str(RENDER_NODE),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+
+    def render(self, job: dict) -> bool:
+        """Render one job, blocking until its PNG is written. Returns success."""
+        self.proc.stdin.write(json.dumps(job) + "\n")
+        self.proc.stdin.flush()
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("rasterizer process died")
+            line = line.strip()
+            if line.startswith("DONE "):
+                return True
+            if line.startswith("FAIL "):
+                print(f"    raster {line}")
+                return False
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+        except Exception:
+            self.proc.kill()
+
+
+def _jobs_for(name: str, kind: str, mp: Path, out_normal: Path, out_debug: Path):
+    base = {"mesh": str(mp), "width": RENDER_W, "height": RENDER_H, "featEdges": False}
+    # NORMAL: region-coloured fill (+ interior tet edges on the cutaway for volumes)
+    # + surface triangulation. Volumes are clipped so the interior shows.
+    normal = {**base, "out": str(out_normal), "clip": 0.55 if kind == "vol" else None,
+              "fills": True, "surfWire": True, "intWire": kind == "vol", "defects": False, "lineHalfPx": 0.6}
+    # DEBUG: wireframe only (thicker, so it reads on transparent) + defect markers.
+    debug = {**base, "out": str(out_debug), "clip": None,
+             "fills": False, "surfWire": True, "intWire": False, "defects": True, "lineHalfPx": 1.2}
+    return normal, debug
 
 
 def render_corpus() -> None:
     """Renders every geometry in the unified corpus with the NEW constrained
-    mesher (`mesh_cdt`) into TWO directories: `corpus/` (normal view) and
-    `corpus_debug/` (diagnostic view). Both are cleared first so no stale image
-    from the retired oversampling path survives."""
+    per-region mesher into TWO directories: `corpus/` (normal view) and
+    `corpus_debug/` (diagnostic view), via a PERSISTENT headless WebGPU
+    rasterizer (the exact viewer pipeline, no browser). Each geometry's two PNGs
+    are produced -- and the debug view annotated with metrics + meshing-time
+    breakdown -- the moment its mesh is ready. Both dirs are cleared first."""
     out = GAL / "corpus"
     dbg = GAL / "corpus_debug"
     for d in (out, dbg):
@@ -179,14 +223,34 @@ def render_corpus() -> None:
                 old.unlink()
         d.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
-    _set_cdt(True)  # the new constrained path is the gallery's mesher
-    for name, _cat, kind, make in C.CORPUS:
-        try:
-            status = _render_mesh(name, kind, make, out / f"{name}.png", dbg / f"{name}.png")
-            print(f"  {status}")
-        except BaseException as e:  # a mesher gap / panic must not stop the gallery
-            print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
-    _set_cdt(False)
+    _set_cdt(True)                              # constrained mesher
+    os.environ["RAPIDMESH_PERREGION"] = "1"     # per-region decomposition (straddler-free)
+    ras = _Rasterizer()
+    try:
+        for name, _cat, kind, make in C.CORPUS:
+            try:
+                t0 = time.time()
+                m = make()
+                wall = time.time() - t0
+                if kind == "surf":
+                    vd, n, diag = V._surface_viewer_dict(m, name), len(m.faces), None
+                else:
+                    vd, n, diag = m.to_viewer_dict(name), int(m.stats["n_tets"]), m.diagnostics
+                timings = getattr(m, "timings", None)
+                mp = MESHES / f"gal_{name}.json"
+                mp.write_text(json.dumps(vd))
+                del m
+                normal, debug = _jobs_for(name, kind, mp, out / f"{name}.png", dbg / f"{name}.png")
+                ras.render(normal)
+                if ras.render(debug) and (dbg / f"{name}.png").exists():
+                    _annotate(dbg / f"{name}.png", name, kind, n, diag, wall, timings)
+                print(f"  {name}: {n} elems, {wall:.1f}s")
+            except BaseException as e:  # a mesher gap / panic must not stop the gallery
+                print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
+    finally:
+        ras.close()
+        os.environ.pop("RAPIDMESH_PERREGION", None)
+        _set_cdt(False)
 
 
 # --- hierarchical per-entity sizing permutations (on a 4x4x4 box) -----------
@@ -220,6 +284,8 @@ def render_sizing() -> None:
             old.unlink()
     out.mkdir(parents=True, exist_ok=True)
     _set_cdt(True)  # new constrained mesher
+    _build_bundle()
+    jobs = []
     for label, h, setup in SIZING_PERMS:
         png = out / f"{label}.png"
         try:
@@ -230,10 +296,13 @@ def render_sizing() -> None:
             vd = m.to_viewer_dict(label)
             mp = MESHES / f"gal_{label}.json"
             mp.write_text(json.dumps(vd))
-            render(str(mp), str(png), azim=32, elev=20, clip=0.7, clip_axis=1, edges=True, width=1100, height=900)
+            jobs.append({"mesh": str(mp), "out": str(png), "clip": 0.7, "fills": True,
+                         "surfWire": True, "intWire": True, "featEdges": False, "defects": False,
+                         "lineHalfPx": 0.6, "width": RENDER_W, "height": RENDER_H})
             print(f"  {png.name}: {int(m.stats['n_tets'])} tets")
         except BaseException as e:
             print(f"  {label}: FAILED ({type(e).__name__}: {e})")
+    _rasterize(jobs)
     _set_cdt(False)
 
 

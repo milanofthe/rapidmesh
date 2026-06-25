@@ -719,6 +719,10 @@ impl PyMesh {
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new_bound(py);
         d.set_item("n_points", self.mesh.points.len())?;
+        // points[..plc_points] are the geometry's own vertices; the rest are
+        // mesher-inserted Steiner/interior points. Lets callers split FEM DOFs
+        // into boundary-geometry vs interior.
+        d.set_item("plc_points", self.mesh.plc_points)?;
         d.set_item("n_tets", self.mesh.tets.len())?;
         d.set_item("n_faces", self.mesh.faces.len())?;
         d.set_item("min_dihedral_deg", self.min_dihedral_deg)?;

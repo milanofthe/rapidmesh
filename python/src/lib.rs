@@ -580,24 +580,30 @@ impl SceneBuilder {
                 surf_tol,
             };
             // Triangle budget: retune the global size scale (triangle count ~
-            // scale^-2) over a few remeshes so the count lands near
-            // `target_triangles`, while the sizing field + Ruppert refinement keep
-            // the distribution (grading) and the angle bound (quality).
+            // scale^-2) and KEEP THE CLOSEST mesh over a few remeshes, so the count
+            // lands tightly on `target_triangles` while the sizing field and the
+            // Ruppert refinement keep the distribution (grading) and the angle bound
+            // (quality). The scale is global, so a multi-surface model shares one
+            // size field -> the budget spreads across its surfaces by area (one
+            // uniform element size everywhere), not an arbitrary per-surface share.
             match target_triangles {
                 Some(target) if target > 0 => {
                     let mut s = 1.0_f64;
-                    let mut out = None;
-                    for _ in 0..6 {
+                    let (mut best, mut best_rel) = (None, f64::INFINITY);
+                    for _ in 0..9 {
                         let m = surface_mesh(&plc, &params0.scaled(s));
                         let n = m.faces.len().max(1);
                         let rel = (n as f64 - target as f64).abs() / target as f64;
-                        out = Some(m);
-                        if rel < 0.06 {
+                        if rel < best_rel {
+                            best_rel = rel;
+                            best = Some(m);
+                        }
+                        if best_rel < 0.01 {
                             break;
                         }
                         s *= (n as f64 / target as f64).sqrt();
                     }
-                    out.unwrap()
+                    best.unwrap()
                 }
                 _ => surface_mesh(&plc, &params0),
             }

@@ -133,6 +133,8 @@ mod tests {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            min_h_surf: 0.0,
+            min_h_vol: 0.0,
         }
     }
 

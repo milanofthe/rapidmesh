@@ -104,7 +104,7 @@
 
 % --- links (last) -----------------------------------------------------
 \usepackage[
-  pdftitle={rapidmesh: Hierarchical Bottom-Up CVT Meshing},
+  pdftitle={rapidmesh: Hierarchical Bottom-Up Variational Meshing},
   pdfauthor={rapidmesh},
   colorlinks=true, linkcolor=black, citecolor=black, urlcolor=rmblue
 ]{hyperref}
@@ -115,7 +115,7 @@
 \Crefname{algocf}{Algorithm}{Algorithms}
 
 \title{\textbf{rapidmesh}\\[2pt]
-\large A Hierarchical Bottom-Up Centroidal-Voronoi Meshing Algorithm\\
+\large A Hierarchical Bottom-Up Variational Meshing Algorithm\\
 \large for B-Rep Solids with Analytic and NURBS Geometry}
 \author{Specification and mathematical derivation}
 \date{\today}
@@ -131,8 +131,10 @@ conforming, isotropic, high-quality tetrahedral mesh. The algorithm is
 (edges), then $2$-cells (faces), then the $3$-cell (volume), and \emph{freezes}
 each level before the next consumes it. Within every dimension it combines
 \emph{error-driven adaptive sampling} (insert where a geometric tolerance is
-violated) with \emph{sizing-weighted Centroidal Voronoi Tessellation} (Lloyd
-relaxation) for point quality. The frozen surface triangulation is a
+violated) with \emph{variational point relaxation} for quality---a sizing-weighted
+centroidal-Voronoi (Lloyd) relaxation on edges and faces, and an
+\emph{optimal-Delaunay} (ODT) relaxation in the volume. The frozen surface
+triangulation is a
 \emph{hard constraint} on the volume Delaunay, which is what makes the boundary
 watertight by construction. We derive, with a computer-algebra system, the
 arc-length, curvature, deflection-sizing, first/second fundamental form and
@@ -165,10 +167,10 @@ inherited, not reconstructed).
 \begin{principle}[Two orthogonal mechanisms per level]
 Each dimension uses (i) \emph{error-driven adaptivity} to decide \emph{how many}
 points and \emph{where} (insert at the worst geometric-error location, then
-re-relax, until a tolerance is met), and (ii) \emph{CVT/Lloyd relaxation} to
-decide \emph{point quality} (move each free site to the density-weighted
-centroid of its (restricted) Voronoi cell). Adaptivity controls density;
-CVT controls regularity.
+re-relax, until a tolerance is met), and (ii) \emph{variational relaxation} to
+decide \emph{point quality} --- a density-weighted centroidal-Voronoi (Lloyd) move
+on edges and faces, and the optimal-Delaunay (ODT) move \eqref{eq:odt} in the
+volume. Adaptivity controls density; the relaxation controls regularity.
 \end{principle}
 
 \begin{principle}[Constrained volume, not recovered boundary]
@@ -226,7 +228,7 @@ any input tessellation. \Cref{fig:pipeline} shows the whole pipeline.
     {\footnotesize chart CVT $+$ error/$h_{\max}$ adaptivity}};
  \node[stg, below=7mm of s2] (s3)
    {\textbf{Stage 3} — all \emph{regions} in parallel\\[1pt]
-    {\footnotesize constrained Delaunay $+$ 3D CVT}};
+    {\footnotesize constrained Delaunay $+$ 3D ODT}};
  \node[rm out, below=of s3, text width=58mm, align=center] (mesh)
    {conforming tetrahedral mesh};
  \begin{scope}[on background layer]
@@ -267,7 +269,7 @@ pin every corner vertex\hfill\tcp*[h]{Stage 0}\;
    $T_f \gets$ \textsc{MeshFace}$(f,h_f,\varepsilon)$ \hfill\tcp*[h]{Stage 2}}
 \textbf{barrier}\;
 $\mathcal{S}\gets\bigcup_f T_f$ \hfill\tcp*[h]{watertight surface mesh}\;
-$h_{\text{vol}}\gets$ \textsc{BuildSizingField}$(\mathcal{S},\,$thickness$,h_{\max})$\;
+$h_{\text{vol}}\gets$ \textsc{BuildSizingField}$(\mathcal{S},\,$surface size$,h_{\max})$\;
 \ForEach{region $R$ \normalfont(\emph{in parallel})}{
    $M_R \gets$ \textsc{MeshVolume}$(\mathcal{S}|_R,\,h_{\text{vol}})$
    \hfill\tcp*[h]{Stage 3}}
@@ -372,7 +374,7 @@ edges, then faces, then the volume.
 \begin{algorithm}[H]
 \caption{\textsc{BuildSizingField}: gradation limiting (\cref{eq:gradenvelope})}
 \label{alg:grad}
-\KwIn{raw requests $h_0$ at sources (edge spacing, curvature, thickness);
+\KwIn{raw requests $h_0$ at sources (edge spacing, curvature, surface element size);
       grading $\alpha$; cap $h_{\max}$}
 \KwOut{Lipschitz field $h$ on the background octree}
 $h(\vv x)\gets\min(h_0(\vv x),h_{\max})$ at sources, $+\infty$ elsewhere;
@@ -449,6 +451,28 @@ diagram (Voronoi cells clipped to the surface) and its dual \emph{restricted
 Delaunay} triangulation \cite{EdelsbrunnerShah1997,BoissonnatOudot2005}; in
 practice we relax in a 2D chart (\cref{sec:faces}) so \eqref{eq:disc_centroid}
 applies in the chart and the move is lifted back onto the surface.
+
+\subsection{Optimal-Delaunay relaxation for the volume}
+\label{sec:odt}
+In the volume we relax by the \emph{optimal Delaunay triangulation} (ODT) update
+rather than the CVT centroid: it minimises the piecewise-linear interpolation
+error of $\norm{\vv x}^2$ over the triangulation \cite{AlliezCohenSteiner2005},
+which penalises slivers far more directly than the Voronoi quantisation energy
+\eqref{eq:cvtenergy} and is what the implementation uses. Holding the
+connectivity fixed the energy is quadratic in one interior site $\vv z_i$, and
+its minimiser over the incident tetrahedra $T\ni\vv z_i$ (measure $\abs T$, the
+three \emph{other} vertices $\vv v^{T}_{1},\vv v^{T}_{2},\vv v^{T}_{3}$) is
+\begin{equation}
+\label{eq:odt}
+\vv z_i^{\star} \;=\;
+\frac{\displaystyle\sum_{T\ni\vv z_i}\abs{T}\,(\vv v^{T}_{1}+\vv v^{T}_{2}+\vv v^{T}_{3})}
+     {\displaystyle 3\sum_{T\ni\vv z_i}\abs{T}} .
+\end{equation}
+Sizing enters through the measure weight, exactly as for the surface CVT; the
+frozen surface vertices never move. The relaxation runs on an \emph{unconstrained}
+Delaunay rebuilt each pass (approximate cells suffice for the move), and the
+boundary-constrained build (\cref{sec:volume}) is performed \emph{once}, after the
+interior has settled.
 
 \subsection{Robustness, exactness, and determinism}
 \label{sec:determinism}
@@ -966,48 +990,34 @@ surface mesh $\mathcal{S}$.
 % ============================================================================
 
 \subsection{Sizing field from the surface}
-The volume sizing field is grown from the completed surface: at each surface
-vertex the local feature size and the surface element size seed
-$h_{\text{vol}}$, which is then propagated through the interior and
-gradation-limited by \eqref{eq:lipschitz}. Crucially this is computed
-\emph{after} the surface is final, so it already reflects curvature- and
-feature-driven refinement, including \emph{local thickness}: where two boundary
-sheets are closer than $h_{\max}$ (a thin web, a blunt trailing edge, a slender
-bore wall) the field shrinks so the interior is resolved.
-
-\paragraph{Local feature size and thickness.}
-The local feature size $\operatorname{lfs}(\vv{x})$ is the distance from
-$\vv{x}\in\mathcal{S}$ to the medial axis; sampling at spacing
-$\le\operatorname{lfs}$ guarantees a topologically faithful, well-shaped mesh
-\cite{BoissonnatOudot2005}. We use the cheaper one-sided estimate
-\begin{equation}
-\label{eq:thickness}
-\operatorname{thk}(\vv{x}) \;=\; \tfrac12\,\dist\!\bigl(\vv{x},\ \mathcal{S}\!
-   \setminus\!\mathcal{S}_{\text{local}}(\vv{x})\bigr),
-\end{equation}
-the half-distance along the inward normal ray from $\vv{x}$ to the first
-\emph{opposite} surface sheet (excluding the patch $\mathcal{S}_{\text{local}}$
-that $\vv{x}$ belongs to), and set the volume field to
-$h_{\text{vol}}=\min\!\bigl(h_{\text{face}},\,\operatorname{thk}/n_{\min}\bigr)$
-so at least $n_{\min}$ elements span the thinnest gap. This is exactly what
-removes the straddling-tetrahedron failure mode at thin features before the CDT
-is built.
+The volume field is the same gradient-limited sizing field (\eqref{eq:lipschitz})
+carried into the interior, with the \emph{final} surface vertices as its sources
+--- each contributing its local surface element size --- so it already reflects
+the curvature- and feature-driven refinement of the completed surface. It is
+capped per region by the region's own \code{maxh} and by the global
+\code{maxh\_vol}, and is queried from an octree of the surface points so distant
+sources cost nothing. A region whose walls come close (a thin web, a slender bore
+wall) is therefore resolved wherever the surface there was already refined.
 
 \subsection{Interior seeding}
-Interior sites are thrown at the field density: a randomised, separation-guarded
-dart pattern (or a body-centred-cubic lattice graded by $h$
-\cite{LabelleShewchuk2007}) with a per-point clearance from $\mathcal{S}$ of one
-local element, and a global budget $\int_\Omega h^{-3}\dd V$ so a sharp feature
-does not inflate the count. Surface vertices are \emph{not} re-seeded; they are
-the boundary of the volume point set.
+Interior sites are placed on a graded lattice at the local field density: a
+regular grid at step $\approx h$ is walked, and a candidate is kept only if it
+lies inside the region, is at least one local element clear of the surface (a
+closer seed would force a tetrahedron the constrained build cannot emit), and is
+not within $0.6\,h$ of an already-accepted site (a spatial-hash separation
+guard). Surface vertices are \emph{not} re-seeded; they are the fixed boundary of
+the volume point set.
 
-\subsection{3D CVT and quality-driven adaptivity}
-Interior sites relax by the 3D centroid rule \eqref{eq:disc_centroid} with
-$\rho=h^{-3}$; surface vertices stay fixed. A site whose centroid leaves the
-domain is mirrored back across the nearest boundary plane. After relaxation,
-sites are inserted where the local edge length exceeds $h_{\max}$ or where
-element quality (minimum dihedral angle, radius--edge ratio) is poor, and the
-relaxation is repeated.
+\subsection{ODT relaxation and quality-driven adaptivity}
+Interior sites relax by the optimal-Delaunay update \eqref{eq:odt} on an
+\emph{unconstrained} Delaunay rebuilt each pass; the surface vertices stay fixed,
+and a relocation that would leave the domain or come within a local element of the
+surface is rejected (the site keeps its position). After a pass, sites are
+inserted at the longest edge of any tetrahedron coarser than the field, and the
+relaxation continues. The loop terminates adaptively --- once the layout has
+settled (maximum move below a fraction of the spacing) \emph{and} seeding has
+stopped, or once the in-domain sliver count has plateaued --- under a hard pass
+cap; the boundary-constrained build below then runs once.
 
 \subsection{Boundary-constrained tetrahedralization}
 The volume is the \emph{constrained
@@ -1088,34 +1098,38 @@ Element quality is reported as the minimum dihedral angle and the
 \emph{radius--edge ratio} $\rho=R_{\text{circ}}/\ell_{\min}$; Delaunay refinement
 bounds $\rho$, but \emph{slivers} (near-zero volume, dihedral $\to0$, yet
 acceptable $\rho$) can survive and are the residual enemy. They are removed by a
-conformity-preserving post-pass: \emph{(i)} smoothing each free vertex toward its
-quality-weighted optimum, with boundary vertices smoothed only \emph{within their
-surface/edge carrier} (a tangential move; to first order it leaves each region's
-enclosed volume unchanged and keeps interface vertices exactly on their analytic
-carrier); \emph{(ii)} topological flips and weighted-Delaunay \emph{exudation}
-\cite{ChengDeyEdelsbrunner2000,TournoisAlliez2009}, which assign vertex weights
-that ``exude'' slivers without moving any point. Both leave $\mathcal{S}$ and the
-region partition intact.
+conformity-preserving post-pass that leaves $\mathcal{S}$ and the region partition
+intact: \emph{(i)} smoothing each free vertex toward its quality-weighted optimum,
+boundary vertices only \emph{within their surface/edge carrier} (a tangential move
+that, to first order, leaves each region's enclosed volume unchanged and keeps
+interface vertices exactly on their analytic carrier); \emph{(ii)} topological
+operations --- $2$--$3$ face flips and an edge removal that re-triangulates the
+$k$-tetrahedron ring around an interior edge by the dynamic program maximising its
+worst dihedral; and \emph{(iii)} a dedicated sliver stage that, for an interior
+sliver, inserts a vertex whose position a pattern search drives to maximise the
+worst cone dihedral (a local perturbation), and, for a boundary sliver whose
+vertices are all pinned, splits the offending surface face $1$--$3$ at a Steiner
+point \emph{on} the analytic carrier (so \cref{prop:watertight} is preserved).
+Each accepted operation strictly improves the local worst dihedral
+\cite{TournoisAlliez2009,AlliezCohenSteiner2005}.
 
 \begin{algorithm}[H]
 \caption{\textsc{MeshVolume}$(\mathcal{S},h)$}
 \label{alg:vol}
 \KwIn{watertight surface mesh $\mathcal{S}$ (with region tags); field $h$}
 \KwOut{tetrahedra, per-tet region, boundary faces ($=\mathcal{S}$)}
-build $h_{\text{vol}}$ from $\mathcal{S}$ (feature size, thickness),
-   gradation-limit by \eqref{eq:lipschitz}\;
-seed interior sites at density $h_{\text{vol}}^{-3}$, clearance $\ge h$ from
-   $\mathcal{S}$\;
-\Repeat{size and quality targets met \textbf{and} max move $<\tau_{\mathrm{move}}$}{
-  CDT of $(\text{interior}\cup V(\mathcal{S}))$ with $\mathcal{S}$ as constraints\;
-  \For{a few iterations}{relax interior sites by \eqref{eq:disc_centroid},
-     $\rho=h^{-3}$\;}
-  insert sites where edge length $>h_{\max}$ (\emph{$h_{\max}$-driven}) or
-     element quality is poor (\emph{quality-driven})\;
+build $h_{\text{vol}}$ from $\mathcal{S}$ (surface sources, gradation-limit
+   \eqref{eq:lipschitz}, per-region cap)\;
+seed interior sites on a graded lattice, clearance $\ge h$ from $\mathcal{S}$\;
+\Repeat{layout settled \textbf{and} no insertion, \textbf{or} slivers plateaued}{
+  \emph{unconstrained} Delaunay of $(\text{interior}\cup V(\mathcal{S}))$\;
+  relax interior sites by the ODT update \eqref{eq:odt} (surface vertices fixed)\;
+  insert a site at the longest edge of any tetrahedron coarser than the field\;
 }
-flood-fill region labels across non-constraint faces from surface tags\;
-quality post-pass (carrier-constrained smoothing, flips); drop slivers\;
-\Return tetrahedra, per-tet region, boundary faces\;
+\lForEach{region $r$}{\textsc{MeshRegion}$(\mathcal{S},r,\text{interior})$
+   \tcp*[h]{\cref{alg:region}: constrained, straddler-free}}
+assign per-tet region tags; quality $+$ sliver post-pass (carrier-constrained)\;
+\Return tetrahedra, per-tet region, boundary faces ($=\mathcal{S}$)\;
 \end{algorithm}
 
 % ============================================================================
@@ -1128,9 +1142,9 @@ downward in size:
 $h_{\max}$ / per-region overrides.
 \item \textbf{Faces} take the min of the edge field and the surface deflection
 bound \eqref{eq:surf_defl}; the smoothed result drives the surface CVT.
-\item \textbf{Volume} takes the min of the face field and the local-thickness /
-feature-size estimate, then gradation-limits \eqref{eq:lipschitz} through the
-interior.
+\item \textbf{Volume} carries the face field into the interior from the surface
+vertices as sources, capped per region, then gradation-limits
+\eqref{eq:lipschitz} through the interior.
 \end{enumerate}
 Because each stage only ever lowers $h$ and then re-smooths, the field is
 monotone and Lipschitz, and the element-size contract (a documented
@@ -1186,8 +1200,9 @@ Let $N$ be the output vertex count. Every stage is dominated by an incremental
 Delaunay or a fast-marching sweep, each $O(N\log N)$ with exact predicates: the
 gradation field \eqref{eq:gradenvelope} by heap fast-marching (\cref{alg:grad}),
 the surface/volume triangulations by Bowyer--Watson with octree-accelerated point
-location. The CVT relaxation is a fixed number of passes, each a (rebuilt or
-locally updated) Delaunay plus a linear centroid sweep \eqref{eq:disc_centroid};
+location. The variational relaxation is a fixed number of passes, each a rebuilt Delaunay
+plus a linear sweep (the centroid move \eqref{eq:disc_centroid} on edges and
+faces, the ODT move \eqref{eq:odt} in the volume);
 because the sites are already near-uniform and the per-region constrained fill
 (\cref{alg:region}) carries no facet-recovery search, the dominant cost is the
 constrained Delaunay itself, and slivers left for the cleanup pass are rare

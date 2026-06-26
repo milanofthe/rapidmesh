@@ -67,6 +67,49 @@ pub struct Topology {
     pub edges: Vec<EdgeTopo>,
 }
 
+/// Face-selection criteria (`g.surf(id=, tag=, normal=, near=)`). A `None`
+/// field is unconstrained; all present fields must hold (AND).
+#[derive(Debug, Clone, Default)]
+pub struct FaceFilter {
+    pub id: Option<u32>,
+    pub tag: Option<u32>,
+    /// Keep faces whose unit normal has cosine >= `normal_tol` with this vector.
+    pub normal: Option<V3>,
+    pub normal_tol: f64,
+    /// If set, keep only the single face whose centroid is closest to this point.
+    pub near: Option<V3>,
+}
+
+/// Edge-selection criteria (`g.edge(id=, kind=, between=, near=)`).
+#[derive(Debug, Clone, Default)]
+pub struct EdgeFilter {
+    pub id: Option<u32>,
+    /// Match [`EdgeKind`] by its small code.
+    pub kind: Option<u8>,
+    /// Keep edges whose incident faces span BOTH of these region tags.
+    pub between: Option<(u32, u32)>,
+    /// If set, keep only the single edge whose midpoint is closest to this point.
+    pub near: Option<V3>,
+}
+
+fn d2(a: V3, b: V3) -> f64 {
+    let d = sub(a, b);
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+/// Reduce `ids` to the single entry whose `pos` is nearest `p` (the first on a
+/// tie); a no-op if `p` is `None` or `ids` is empty.
+fn keep_nearest(ids: &mut Vec<u32>, p: Option<V3>, pos: impl Fn(u32) -> V3) {
+    if let Some(p) = p {
+        if let Some(&best) = ids
+            .iter()
+            .min_by(|&&a, &&b| d2(pos(a), p).partial_cmp(&d2(pos(b), p)).unwrap())
+        {
+            *ids = vec![best];
+        }
+    }
+}
+
 impl Topology {
     /// Face ids bounding region `tag` (the region on either side of the face).
     pub fn region_faces(&self, tag: u32) -> Vec<u32> {
@@ -76,6 +119,105 @@ impl Topology {
             .filter(|(_, f)| f.regions[0] == tag || f.regions[1] == tag)
             .map(|(i, _)| i as u32)
             .collect()
+    }
+
+    fn region_ok(f: &FaceTopo, region: Option<u32>) -> bool {
+        match region {
+            None => true,
+            Some(r) => f.regions[0] == r || f.regions[1] == r,
+        }
+    }
+
+    fn face_ok(id: u32, f: &FaceTopo, ff: &FaceFilter) -> bool {
+        if matches!(ff.id, Some(i) if i != id) {
+            return false;
+        }
+        if matches!(ff.tag, Some(t) if t != f.face_tag) {
+            return false;
+        }
+        if let Some(n) = ff.normal {
+            let nl = norm(n).max(1e-30);
+            let d = (f.normal[0] * n[0] + f.normal[1] * n[1] + f.normal[2] * n[2]) / nl;
+            if d < ff.normal_tol {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn edge_ok(&self, id: u32, e: &EdgeTopo, ef: &EdgeFilter) -> bool {
+        if matches!(ef.id, Some(i) if i != id) {
+            return false;
+        }
+        if matches!(ef.kind, Some(k) if k != e.kind as u8) {
+            return false;
+        }
+        if let Some((a, b)) = ef.between {
+            let mut has_a = false;
+            let mut has_b = false;
+            for &fid in &e.faces {
+                let r = self.faces[fid as usize].regions;
+                has_a |= r[0] == a || r[1] == a;
+                has_b |= r[0] == b || r[1] == b;
+            }
+            if !(has_a && has_b) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Resolve a region-level scope: the region tags matching `want` (all if
+    /// `None`). `want` is the region id/tag.
+    pub fn resolve_regions(&self, want: Option<u32>) -> Vec<u32> {
+        self.regions
+            .iter()
+            .copied()
+            .filter(|&t| want.map_or(true, |w| t == w))
+            .collect()
+    }
+
+    /// Resolve a surf-level scope to face ids: faces on `region` (if set) that
+    /// pass `ff`, then the `near` reduction.
+    pub fn resolve_faces(&self, region: Option<u32>, ff: &FaceFilter) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .faces
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| Self::region_ok(f, region) && Self::face_ok(*i as u32, f, ff))
+            .map(|(i, _)| i as u32)
+            .collect();
+        keep_nearest(&mut ids, ff.near, |id| self.faces[id as usize].centroid);
+        ids
+    }
+
+    /// Resolve an edge-level scope to edge ids: edges with at least one incident
+    /// face on `region` (if set) and, when `face` is given, passing `face`; the
+    /// edge itself must pass `ef`; then the `near` reduction.
+    pub fn resolve_edges(
+        &self,
+        region: Option<u32>,
+        face: Option<&FaceFilter>,
+        ef: &EdgeFilter,
+    ) -> Vec<u32> {
+        let mut ids: Vec<u32> = (0..self.edges.len() as u32)
+            .filter(|&eid| {
+                let e = &self.edges[eid as usize];
+                if region.is_some()
+                    && !e.faces.iter().any(|&fid| Self::region_ok(&self.faces[fid as usize], region))
+                {
+                    return false;
+                }
+                if let Some(ff) = face {
+                    if !e.faces.iter().any(|&fid| Self::face_ok(fid, &self.faces[fid as usize], ff)) {
+                        return false;
+                    }
+                }
+                self.edge_ok(eid, e, ef)
+            })
+            .collect();
+        keep_nearest(&mut ids, ef.near, |id| self.edges[id as usize].midpoint);
+        ids
     }
 }
 

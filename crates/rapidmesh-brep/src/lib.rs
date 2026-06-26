@@ -28,7 +28,9 @@ pub mod surface;
 pub mod topology;
 
 pub use surface::Surface;
-pub use topology::{extract_topology, EdgeKind, EdgeTopo, FaceTopo, Topology};
+pub use topology::{
+    extract_topology, EdgeFilter, EdgeKind, EdgeTopo, FaceFilter, FaceTopo, Topology,
+};
 
 type P2 = [f64; 2];
 

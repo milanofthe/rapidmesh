@@ -346,41 +346,6 @@ def _filt(sel, kw):
     return f
 
 
-def _d2(a, b):
-    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
-
-
-@dataclass
-class _Face:
-    id: int
-    centroid: tuple
-    normal: tuple
-    area: float
-    regions: tuple
-    tag: int
-    surface: int
-    owner: int
-    edges: list
-
-
-@dataclass
-class _Edge:
-    id: int
-    p0: tuple
-    p1: tuple
-    midpoint: tuple
-    length: float
-    kind: int
-    faces: list
-
-
-@dataclass
-class _Topology:
-    regions: list
-    faces: list  # list[_Face]
-    edges: list  # list[_Edge]
-
-
 class _Scope:
     """A hierarchical sizing scope built by ``g.region(..).surf(..).edge(..)``.
 
@@ -460,7 +425,7 @@ class Geometry:
         self._surf_maxh: dict[int, float] = {}
         self._surf_tol: dict[int, float] = {}
         self._region_maxh: dict[int, float] = {}
-        self._topo_cache: _Topology | None = None
+        self._topo_cache = None  # native B-rep topology, lazily built
 
     def _solid(self, region: int) -> Solid:
         idx = self._n_solids
@@ -504,90 +469,43 @@ class Geometry:
         """Scope on edges by ``id=``/``near=``/``between=``/``kind=``, or all."""
         return _Scope(self, "edge", None, None, _filt(sel, kw))
 
-    def _topology(self) -> _Topology:
+    def _topology(self):
+        """The native B-rep topology (cached; invalidated when geometry changes
+        via the ``_topo_cache = None`` in :meth:`_solid`)."""
         if self._topo_cache is None:
-            t = self._builder.topology()
-            faces = [
-                _Face(i, tuple(c), tuple(n), a, (rf, rb), tag, surf, owner, list(edges))
-                for i, (c, n, a, rf, rb, tag, surf, owner, edges) in enumerate(t.faces())
-            ]
-            edges = [
-                _Edge(i, tuple(p0), tuple(p1), tuple(mid), ln, kind, list(fs))
-                for i, (p0, p1, mid, ln, kind, fs) in enumerate(t.edges())
-            ]
-            self._topo_cache = _Topology(list(t.regions), faces, edges)
+            self._topo_cache = self._builder.topology()
         return self._topo_cache
 
-    @staticmethod
-    def _region_ok(face: _Face, rf) -> bool:
-        if rf is None:
-            return True
-        want = rf.get("id", rf.get("tag"))
-        return want is None or want in face.regions
-
-    @staticmethod
-    def _face_ok(face: _Face, ff) -> bool:
-        if ff is None:
-            return True
-        if "id" in ff and face.id != ff["id"]:
-            return False
-        if "tag" in ff and face.tag != ff["tag"]:
-            return False
-        if "normal" in ff:
-            n = ff["normal"]
-            nl = (n[0] ** 2 + n[1] ** 2 + n[2] ** 2) ** 0.5 or 1.0
-            d = (face.normal[0] * n[0] + face.normal[1] * n[1] + face.normal[2] * n[2]) / nl
-            if d < ff.get("normal_tol", 0.9):
-                return False
-        return True
-
-    @staticmethod
-    def _edge_ok(edge: _Edge, ef, topo: _Topology) -> bool:
-        if ef is None:
-            return True
-        if "id" in ef and edge.id != ef["id"]:
-            return False
-        if "kind" in ef and edge.kind != ef["kind"]:
-            return False
-        if "between" in ef:
-            a, b = ef["between"]
-            regs = set()
-            for fid in edge.faces:
-                regs.update(topo.faces[fid].regions)
-            if not ({a, b} <= regs):
-                return False
-        return True
-
-    @staticmethod
-    def _apply_near(items, filt, pos):
-        """If `filt` carries ``near=point``, keep only the single closest item."""
-        if filt is None or "near" not in filt:
-            return items
-        p = filt["near"]
-        return [min(items, key=lambda it: _d2(pos(it), p))] if items else []
-
     def _resolve(self, scope: _Scope) -> list:
+        """Resolve a scope to entity ids. The filter predicates + topology walk
+        run natively (``rapidmesh_brep::Topology::resolve_*``); this just unpacks
+        the filter dicts."""
         topo = self._topology()
         rf, ff, ef = scope._rf, scope._ff, scope._ef
+        region = rf.get("id", rf.get("tag")) if rf else None
         if scope._level == "region":
-            want = rf.get("id", rf.get("tag")) if rf else None
-            return [t for t in topo.regions if want is None or t == want]
+            return list(topo.resolve_regions(region))
         if scope._level == "surf":
-            faces = [f for f in topo.faces if self._region_ok(f, rf) and self._face_ok(f, ff)]
-            faces = self._apply_near(faces, ff, lambda f: f.centroid)
-            return [f.id for f in faces]
-        edges = []
-        for e in topo.edges:
-            incident = [topo.faces[fid] for fid in e.faces]
-            if rf is not None and not any(self._region_ok(f, rf) for f in incident):
-                continue
-            if ff is not None and not any(self._face_ok(f, ff) for f in incident):
-                continue
-            if not self._edge_ok(e, ef, topo):
-                continue
-            edges.append(e)
-        edges = self._apply_near(edges, ef, lambda e: e.midpoint)
-        return [e.id for e in edges]
+            return list(topo.resolve_faces(
+                region=region,
+                id=ff.get("id") if ff else None,
+                tag=ff.get("tag") if ff else None,
+                normal=ff.get("normal") if ff else None,
+                normal_tol=ff.get("normal_tol", 0.9) if ff else 0.9,
+                near=ff.get("near") if ff else None,
+            ))
+        return list(topo.resolve_edges(
+            region=region,
+            has_face=ff is not None,
+            f_id=ff.get("id") if ff else None,
+            f_tag=ff.get("tag") if ff else None,
+            f_normal=ff.get("normal") if ff else None,
+            f_normal_tol=ff.get("normal_tol", 0.9) if ff else 0.9,
+            e_id=ef.get("id") if ef else None,
+            e_kind=ef.get("kind") if ef else None,
+            e_between=tuple(ef["between"]) if (ef and "between" in ef) else None,
+            e_near=ef.get("near") if ef else None,
+        ))
 
     def _apply_scope(self, scope: _Scope, what: str, value: float) -> None:
         unfiltered = scope._rf is None and scope._ff is None and scope._ef is None

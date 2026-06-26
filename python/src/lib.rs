@@ -596,6 +596,63 @@ impl PyTopology {
             .map(|e| (e.p0, e.p1, e.midpoint, e.length, e.kind as u8, e.faces.clone()))
             .collect()
     }
+
+    // ---- Scope resolution (the g.region(..).surf(..).edge(..) selectors) ----
+
+    /// Region ids matching `want` (all regions if `None`).
+    #[pyo3(signature = (want=None))]
+    fn resolve_regions(&self, want: Option<u32>) -> Vec<u32> {
+        self.topo.resolve_regions(want)
+    }
+
+    /// Face ids on `region` (if set) passing the face filter, then `near`.
+    #[pyo3(signature = (region=None, id=None, tag=None, normal=None, normal_tol=0.9, near=None))]
+    fn resolve_faces(
+        &self,
+        region: Option<u32>,
+        id: Option<u32>,
+        tag: Option<u32>,
+        normal: Option<[f64; 3]>,
+        normal_tol: f64,
+        near: Option<[f64; 3]>,
+    ) -> Vec<u32> {
+        let ff = rapidmesh_brep::FaceFilter { id, tag, normal, normal_tol, near };
+        self.topo.resolve_faces(region, &ff)
+    }
+
+    /// Edge ids: `has_face` toggles whether the face filter constrains the
+    /// incident faces (it is set only when the scope passed through `.surf(..)`).
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (region=None, has_face=false, f_id=None, f_tag=None, f_normal=None, f_normal_tol=0.9, e_id=None, e_kind=None, e_between=None, e_near=None))]
+    fn resolve_edges(
+        &self,
+        region: Option<u32>,
+        has_face: bool,
+        f_id: Option<u32>,
+        f_tag: Option<u32>,
+        f_normal: Option<[f64; 3]>,
+        f_normal_tol: f64,
+        e_id: Option<u32>,
+        e_kind: Option<u8>,
+        e_between: Option<(u32, u32)>,
+        e_near: Option<[f64; 3]>,
+    ) -> Vec<u32> {
+        let ff = rapidmesh_brep::FaceFilter {
+            id: f_id,
+            tag: f_tag,
+            normal: f_normal,
+            normal_tol: f_normal_tol,
+            near: None,
+        };
+        let ef = rapidmesh_brep::EdgeFilter {
+            id: e_id,
+            kind: e_kind,
+            between: e_between,
+            near: e_near,
+        };
+        self.topo
+            .resolve_edges(region, if has_face { Some(&ff) } else { None }, &ef)
+    }
 }
 
 /// A finished tetrahedral mesh. Array properties copy into numpy on access;

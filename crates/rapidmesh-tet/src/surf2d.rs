@@ -596,15 +596,38 @@ pub fn refine_quality(
         let mut split: Vec<usize> = Vec::new();
         let mut inserts: Vec<P2> = Vec::new();
 
-        // (1) protect segments: split any refinable segment encroached by a vertex
-        // not on it. Doing this BEFORE inserting circumcentres keeps termination.
+        // Edge -> the opposite apex of each incident triangle. A constrained
+        // segment can only be encroached by a vertex VISIBLE to it, i.e. an apex
+        // of one of its two triangles -- so we test those O(1) vertices instead of
+        // every mesh vertex. (The all-vertices scan was O(segments * points) per
+        // round, the refinement's quadratic cost.)
+        let mut apex: rustc_hash::FxHashMap<(usize, usize), [usize; 2]> =
+            rustc_hash::FxHashMap::default();
+        for t in &tris {
+            for e in 0..3 {
+                let (a, b, c) = (t[e], t[(e + 1) % 3], t[(e + 2) % 3]);
+                let slot = apex.entry((a.min(b), a.max(b))).or_insert([usize::MAX; 2]);
+                if slot[0] == usize::MAX {
+                    slot[0] = c;
+                } else {
+                    slot[1] = c;
+                }
+            }
+        }
+
+        // (1) protect segments: split any refinable segment whose diametral circle
+        // contains a visible vertex. Done BEFORE circumcentres to keep termination.
         for (si, &(u, v)) in segments.iter().enumerate() {
             if !refinable[si] {
                 continue;
             }
             let (m, h2) = (mid(boundary, u, v), diam2(boundary, u, v));
-            if all.iter().enumerate().any(|(k, &q)| k != u && k != v && dist2(q, m) < h2 - 1e-12) {
-                split.push(si);
+            if let Some(aps) = apex.get(&(u.min(v), u.max(v))) {
+                if aps.iter().any(|&k| {
+                    k != usize::MAX && k != u && k != v && dist2(all[k], m) < h2 - 1e-12
+                }) {
+                    split.push(si);
+                }
             }
         }
 
@@ -658,10 +681,43 @@ pub fn refine_quality(
             *segments = ns;
             *refinable = nr;
         }
-        for c in inserts {
-            let r2 = (0.5 * target(c)).powi(2);
-            if boundary.iter().chain(interior.iter()).all(|&q| dist2(c, q) >= r2) {
-                interior.push(c);
+        // Spacing guard via a uniform hash grid: reject an insert within
+        // 0.5*target of an existing vertex. O(1) per insert instead of
+        // O(points) (the loop's main quadratic cost besides the rebuild). It is
+        // approximate at strong gradients -- a missed neighbour only yields a
+        // slightly denser spot, never a quality violation.
+        if !inserts.is_empty() {
+            let gc = inserts
+                .iter()
+                .map(|&c| 0.5 * target(c))
+                .fold(f64::INFINITY, f64::min)
+                .max(1e-9);
+            let key = |p: P2| ((p[0] / gc).floor() as i64, (p[1] / gc).floor() as i64);
+            let mut grid: rustc_hash::FxHashMap<(i64, i64), Vec<P2>> =
+                rustc_hash::FxHashMap::default();
+            for &q in boundary.iter().chain(interior.iter()) {
+                grid.entry(key(q)).or_default().push(q);
+            }
+            for c in inserts {
+                let r = 0.5 * target(c);
+                let r2 = r * r;
+                let (cx, cy) = key(c);
+                let rc = ((r / gc).ceil() as i64).min(6);
+                let mut ok = true;
+                'scan: for dx in -rc..=rc {
+                    for dy in -rc..=rc {
+                        if let Some(v) = grid.get(&(cx + dx, cy + dy)) {
+                            if v.iter().any(|&q| dist2(c, q) < r2) {
+                                ok = false;
+                                break 'scan;
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    grid.entry(key(c)).or_default().push(c);
+                    interior.push(c);
+                }
             }
         }
         let _ = nb;

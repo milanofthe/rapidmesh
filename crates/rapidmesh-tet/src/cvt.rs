@@ -414,22 +414,25 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         let mut all: Vec<V3> = surf_points.clone();
         all.extend_from_slice(&interior);
         let tets = build_full(&all);
-        let mut num = vec![[0.0f64; 3]; all.len()];
-        let mut den = vec![0.0f64; all.len()];
-        let mut slivers = 0usize;
+        // Per-tet accumulation in PARALLEL (rayon fold-reduce): the per-tet work --
+        // the sliver dihedral check + in-domain test + the ODT weight scatter -- is
+        // the bulk of a Lloyd pass (build_full is only ~5-9%), and each tet is
+        // independent, so we fold per-thread (num, den, slivers) and reduce.
+        // ODT relocation: x* = (Σ_T |T| · sum of T's OTHER three verts) /
+        // (3 Σ_T |T|) -- the optimal-Delaunay update, sliver-resistant. The sliver
+        // count is the IN-DOMAIN quality monitor driving adaptive termination.
+        let n_all = all.len();
+        // ODT weight scatter SERIAL (a deterministic float reduction -- a parallel
+        // reduce would reorder the sums and make the mesh non-reproducible); the
+        // IN-DOMAIN sliver count -- the expensive per-tet dihedral quality monitor
+        // driving adaptive termination -- in PARALLEL (an integer count, so
+        // order-independent and still deterministic).
+        let mut num = vec![[0.0f64; 3]; n_all];
+        let mut den = vec![0.0f64; n_all];
         for t in &tets {
             let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
             let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
             let w = tet_det(p).abs();
-            // Quality monitor: count IN-DOMAIN slivers of this pass's layout to
-            // drive adaptive termination (exterior hull tets are excluded so the
-            // count tracks the mesh we actually keep).
-            if crate::diagnostics::tet_min_dihedral(p) < SLIVER_DEG && inside(centroid4(p)) {
-                slivers += 1;
-            }
-            // ODT relocation: x* = (Σ_T |T| · sum of T's OTHER three verts) /
-            // (3 Σ_T |T|) -- the optimal-Delaunay update (sympy-derived), far more
-            // sliver-resistant than the CVT/Voronoi centroid it replaces.
             for &i in t {
                 for k in 0..3 {
                     num[i][k] += w * (sum4[k] - all[i][k]);
@@ -437,6 +440,18 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 den[i] += w;
             }
         }
+        let slivers = tets
+            .par_iter()
+            .filter(|t| {
+                let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
+                crate::diagnostics::tet_min_dihedral(p) < SLIVER_DEG && inside(centroid4(p))
+            })
+            .count();
+        // Per-point local target size, evaluated ONCE per point (in parallel)
+        // instead of once per tet/candidate. `hloc` is a sizing-field + region
+        // containment query (~15us each); the relocation and the per-tet insertion
+        // below previously called it ~6x per point, dominating the Lloyd pass.
+        let hpt: Vec<f64> = all.par_iter().map(|&p| hloc(p)).collect();
         // Rebuild the crowding hash from the surface + interior each pass.
         let mut grid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
         for &p in surf_points.iter().chain(interior.iter()) {
@@ -453,7 +468,8 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if !inside(tgt) {
                 continue;
             }
-            let h = hloc(tgt);
+            // The point moved little, so its pre-pass size is a fine local target.
+            let h = hpt[i];
             if surf_tree.nearest(tgt).map(|q| dist(tgt, surf_points[q as usize]) < h).unwrap_or(false) {
                 continue;
             }
@@ -489,43 +505,65 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // robust coarse-to-fine refinement (the report's relax-insert loop).
         let mut inserted = 0usize;
         if n_surf + interior.len() < params.max_points {
+            // Filter refinement candidates in PARALLEL: per tet take the longest
+            // edge; if it exceeds the local target (from the pre-computed per-point
+            // sizes) AND the midpoint is in-domain, clear of the fixed surface, and
+            // clear of every EXISTING point, it's a candidate. These read-only tests
+            // dominated the pass on surface-heavy meshes. `collect` keeps tet order,
+            // so the sequential cross-candidate dedup below is deterministic.
+            let cands: Vec<([f64; 3], f64)> = tets
+                .par_iter()
+                .filter_map(|t| {
+                    let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
+                    let mut best = (0.0f64, [0.0; 3], 0.0f64);
+                    for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                        let len = dist(p[a], p[b]);
+                        if len > best.0 {
+                            let mid = [(p[a][0] + p[b][0]) * 0.5, (p[a][1] + p[b][1]) * 0.5, (p[a][2] + p[b][2]) * 0.5];
+                            best = (len, mid, 0.5 * (hpt[t[a]] + hpt[t[b]]));
+                        }
+                    }
+                    let (len, mid, h) = best;
+                    if len <= h || !inside(mid) {
+                        return None;
+                    }
+                    if surf_tree.nearest(mid).map(|q| dist(mid, surf_points[q as usize]) < h).unwrap_or(false) {
+                        return None;
+                    }
+                    let r2 = (SEPARATION_FRAC * h).powi(2);
+                    let (kx, ky, kz) = ckey(mid);
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                if let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
+                                    if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
+                                        return None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some((mid, h))
+                })
+                .collect();
+            // Sequential: accept candidates that also stay clear of the points
+            // already accepted THIS pass, up to the point budget.
             let mut newgrid: DMap<(i64, i64, i64), Vec<V3>> = DMap::default();
             let mut adds: Vec<V3> = Vec::new();
-            for t in &tets {
+            for (mid, h) in cands {
                 if n_surf + interior.len() + adds.len() >= params.max_points {
                     break;
-                }
-                let p = [all[t[0]], all[t[1]], all[t[2]], all[t[3]]];
-                let mut best = (0.0f64, [0.0; 3]);
-                for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                    let len = dist(p[a], p[b]);
-                    if len > best.0 {
-                        best = (len, [(p[a][0] + p[b][0]) * 0.5, (p[a][1] + p[b][1]) * 0.5, (p[a][2] + p[b][2]) * 0.5]);
-                    }
-                }
-                let (len, mid) = best;
-                if !inside(mid) {
-                    continue;
-                }
-                let h = hloc(mid);
-                if len <= h {
-                    continue; // already fine enough here
-                }
-                if surf_tree.nearest(mid).map(|q| dist(mid, surf_points[q as usize]) < h).unwrap_or(false) {
-                    continue; // one local element clear of the fixed surface
                 }
                 let r2 = (SEPARATION_FRAC * h).powi(2);
                 let (kx, ky, kz) = ckey(mid);
                 let mut clear = true;
-                'ins: for dx in -1..=1 {
+                'd: for dx in -1..=1 {
                     for dy in -1..=1 {
                         for dz in -1..=1 {
-                            for g in [&grid, &newgrid] {
-                                if let Some(v) = g.get(&(kx + dx, ky + dy, kz + dz)) {
-                                    if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
-                                        clear = false;
-                                        break 'ins;
-                                    }
+                            if let Some(v) = newgrid.get(&(kx + dx, ky + dy, kz + dz)) {
+                                if v.iter().any(|&q| dot(sub(mid, q), sub(mid, q)) < r2) {
+                                    clear = false;
+                                    break 'd;
                                 }
                             }
                         }

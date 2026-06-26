@@ -14,9 +14,8 @@ use rapidmesh_geom::{
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
-    mesh_cdt, optimize as run_optimize, quality_stats, surface_mesh, MeshParams,
-    OptimizeParams,
-    QualityStats, SurfaceMesh, TetMesh,
+    mesh_cdt_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams, QualityStats,
+    SurfaceMesh, TetMesh,
 };
 
 /// Incremental scene builder (one solid/sheet per call); the Python layer
@@ -413,54 +412,17 @@ impl SceneBuilder {
                 surf_tol,
             };
             // `optimize=false` (or the legacy RAPIDMESH_SKIP_OPTIMIZE fallback)
-            // returns the raw mesh without the quality pass.
+            // skips the quality pass. The element budget and the optimize-aware
+            // remesh loop live in Rust (`mesh_cdt_budgeted`); this binding only
+            // decides whether to optimize and how many passes.
             let do_optimize = optimize && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none();
-            let opt_passes = optimize_passes.unwrap_or_else(|| OptimizeParams::default().passes);
-            // One full mesh: the constrained per-region tetrahedralization plus the
-            // quality pass. The element budget calibrates on this FINAL count
-            // (optimize can shrink it ~25%), so the loop must include optimize.
-            let mesh_once = |p: &MeshParams| -> TetMesh {
-                let mut m = mesh_cdt(&plc, p);
-                if do_optimize {
-                    let opt = OptimizeParams {
-                        maxh: p.maxh,
-                        region_maxh: p.region_maxh.clone(),
-                        face_maxh: p.face_maxh.clone(),
-                        surface_maxh: p.surface_maxh.clone(),
-                        passes: opt_passes,
-                        ..OptimizeParams::default()
-                    };
-                    run_optimize(&mut m, &opt);
-                }
-                m
+            let opt_passes = if do_optimize {
+                Some(optimize_passes.unwrap_or_else(|| OptimizeParams::default().passes))
+            } else {
+                None
             };
             let tm = std::time::Instant::now();
-            // With an element budget, retune the global size scale (tet count ~
-            // scale^-3) over a few remeshes so the final count lands near
-            // `target_elements`, while the relative refinement (curvature + size
-            // points) keeps its shape.
-            let (mesh, params): (TetMesh, MeshParams) = match target_elements {
-                Some(target) if target > 0 => {
-                    let mut s = 1.0_f64;
-                    let mut out: Option<(TetMesh, MeshParams)> = None;
-                    for _ in 0..6 {
-                        let p = params0.scaled(s);
-                        let m = mesh_once(&p);
-                        let n = m.tets.len().max(1);
-                        let rel = (n as f64 - target as f64).abs() / target as f64;
-                        out = Some((m, p));
-                        if rel < 0.06 {
-                            break;
-                        }
-                        s *= (n as f64 / target as f64).powf(1.0 / 3.0);
-                    }
-                    out.unwrap()
-                }
-                _ => {
-                    let m = mesh_once(&params0);
-                    (m, params0)
-                }
-            };
+            let (mesh, _params) = mesh_cdt_budgeted(&plc, &params0, target_elements, opt_passes);
             let t_mesh = tm.elapsed();
             rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             // Quality (with the worst element's location/region), logged so a

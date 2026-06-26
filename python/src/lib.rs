@@ -1015,6 +1015,43 @@ impl PySurfaceMesh {
     fn face_min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.mesh.face_min_angles().into_pyarray_bound(py)
     }
+
+    /// Dörfler-mark by per-triangle `eta` and return `(marked, centroids, hs)`:
+    /// the marked indices (`k,`), their centroids (`k, 3`), and point sizes
+    /// `local_h / factor` (clamped to `h_min` if > 0). See `rapidmesh_tet::adapt`.
+    #[pyo3(signature = (eta, theta=0.5, factor=2.0, h_min=0.0))]
+    fn dorfler_size_points<'py>(
+        &self,
+        py: Python<'py>,
+        eta: Vec<f64>,
+        theta: f64,
+        factor: f64,
+        h_min: f64,
+    ) -> (
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray2<f64>>,
+        Bound<'py, PyArray1<f64>>,
+    ) {
+        let (marked, cents, hs) = self.mesh.dorfler_size_points(&eta, theta, factor, h_min);
+        let m: Vec<i64> = marked.iter().map(|&i| i as i64).collect();
+        let cflat: Vec<f64> = cents.iter().flatten().copied().collect();
+        let carr = numpy::ndarray::Array2::from_shape_vec((cents.len(), 3), cflat)
+            .expect("shape")
+            .into_pyarray_bound(py);
+        (m.into_pyarray_bound(py), carr, hs.into_pyarray_bound(py))
+    }
+}
+
+/// Dörfler bulk marking on raw per-element indicators; returns the marked
+/// indices (ascending). See `rapidmesh_tet::adapt::dorfler_mark`.
+#[pyfunction]
+#[pyo3(signature = (eta, theta=0.5))]
+fn dorfler_mark<'py>(py: Python<'py>, eta: Vec<f64>, theta: f64) -> Bound<'py, PyArray1<i64>> {
+    let m: Vec<i64> = rapidmesh_tet::dorfler_mark(&eta, theta)
+        .iter()
+        .map(|&i| i as i64)
+        .collect();
+    m.into_pyarray_bound(py)
 }
 
 #[pymodule]
@@ -1023,5 +1060,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMesh>()?;
     m.add_class::<PySurfaceMesh>()?;
     m.add_class::<PyTopology>()?;
+    m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
     Ok(())
 }

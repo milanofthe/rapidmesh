@@ -6,6 +6,9 @@ turn the marked elements into a background size field -- gmsh-style -- which the
 mesher's grading gradient-limits and the Ruppert refinement re-triangulates, so
 every adapted mesh stays sliver-free with a guaranteed minimum angle.
 
+The marking and size-field construction run in Rust (``rapidmesh_tet::adapt``);
+these are thin wrappers so a Rust solver (rapidmom) drives the same loop natively.
+
 Typical loop::
 
     mesh = geom.surface_mesh(maxh=h)
@@ -15,33 +18,15 @@ Typical loop::
 """
 import numpy as np
 
+from . import _native
+
 
 def dorfler_mark(eta, theta=0.5):
     """Doerfler (bulk) marking. Returns the indices of the smallest element set
     whose summed SQUARED indicator reaches ``theta`` of the total
     (``theta`` in (0, 1]; 0.5 is the common choice). The squared convention
     treats ``eta`` as an energy-norm error contribution per element."""
-    eta = np.abs(np.asarray(eta, dtype=float))
-    e2 = eta * eta
-    total = float(e2.sum())
-    if total <= 0.0 or eta.size == 0:
-        return np.empty(0, dtype=int)
-    order = np.argsort(e2)[::-1]
-    cum = np.cumsum(e2[order])
-    k = int(np.searchsorted(cum, theta * total)) + 1
-    return np.sort(order[:k])
-
-
-def _tri_local_h(points, faces):
-    """Mean edge length per triangle -- the local element size."""
-    p = np.asarray(points, float)
-    f = np.asarray(faces)
-    e = np.stack([
-        np.linalg.norm(p[f[:, 1]] - p[f[:, 0]], axis=1),
-        np.linalg.norm(p[f[:, 2]] - p[f[:, 1]], axis=1),
-        np.linalg.norm(p[f[:, 0]] - p[f[:, 2]], axis=1),
-    ], axis=1)
-    return e.mean(axis=1)
+    return _native.dorfler_mark(np.asarray(eta, dtype=float).ravel().tolist(), theta)
 
 
 def mark_size_field(geom, mesh, eta, *, theta=0.5, factor=2.0, h_min=0.0):
@@ -49,16 +34,11 @@ def mark_size_field(geom, mesh, eta, *, theta=0.5, factor=2.0, h_min=0.0):
     sources at ``local_h / factor`` (clamped to ``h_min`` if > 0). Mutates the
     geometry's size field and returns the marked element indices; re-mesh
     afterwards (e.g. ``geom.surface_mesh(...)``) to realise the refinement."""
-    p = np.asarray(mesh.points, float)
-    f = np.asarray(mesh.faces)
-    marked = dorfler_mark(eta, theta)
-    if marked.size == 0:
-        return marked
-    hloc = _tri_local_h(p, f)[marked] / float(factor)
-    if h_min > 0.0:
-        hloc = np.maximum(hloc, h_min)
-    centroids = p[f[marked]].mean(axis=1)
-    geom.refine_near_points([tuple(c) for c in centroids], hloc.tolist())
+    marked, centroids, hs = mesh._native.dorfler_size_points(
+        np.asarray(eta, dtype=float).ravel().tolist(), theta, factor, h_min
+    )
+    if marked.size:
+        geom.refine_near_points([tuple(c) for c in centroids], hs.tolist())
     return marked
 
 

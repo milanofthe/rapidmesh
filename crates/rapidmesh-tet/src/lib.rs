@@ -12,6 +12,7 @@
 //! 4. Optional order-2 midside snapping onto the analytic surface via the
 //!    PLC surface back-references (`project`), for curved boundaries.
 
+pub mod adapt;
 pub mod brep_mesh;
 pub mod cdt3;
 pub mod conform;
@@ -35,6 +36,7 @@ pub mod surfchart;
 
 pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, SurfaceMesh, TetMesh};
 pub use cvt::{frozen_surface, mesh_cdt, mesh_cdt_budgeted, surface_mesh, FrozenSurface};
+pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use mom::EdgeAdjacency;
 pub use optimize::{optimize, OptimizeParams};

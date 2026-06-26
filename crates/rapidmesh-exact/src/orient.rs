@@ -38,7 +38,6 @@ fn affine_interval(p: &Point3) -> Option<[Interval; 3]> {
 }
 
 pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> {
-    crate::stats::bump(&crate::stats::ORIENT3D_CALLS);
     // Fast adaptive path: all points explicit.
     if let (Some(pa), Some(pb), Some(pc), Some(pd)) = (
         a.as_explicit(),
@@ -48,7 +47,6 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
     ) {
         return Some(Sign::of_f64(geometry_predicates::orient3d(pa, pb, pc, pd)));
     }
-    crate::stats::bump(&crate::stats::ORIENT3D_IMPLICIT);
 
     let pts = [a, b, c, d];
 
@@ -151,7 +149,6 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
     }
 
     // Exact stage.
-    crate::stats::bump(&crate::stats::ORIENT3D_EXACT);
     let homs: [[Expansion; 4]; 4] = std::array::from_fn(|i| pts[i].hom::<Expansion>());
     let mut sign = det4(&homs).sign();
     for h in &homs {
@@ -250,7 +247,6 @@ pub fn insphere3d(
     d: &Point3,
     e: &Point3,
 ) -> Option<Sign> {
-    crate::stats::bump(&crate::stats::INSPHERE_CALLS);
     // Fast adaptive path: all points explicit.
     if let (Some(pa), Some(pb), Some(pc), Some(pd), Some(pe)) = (
         a.as_explicit(),
@@ -263,7 +259,6 @@ pub fn insphere3d(
             pa, pb, pc, pd, pe,
         )));
     }
-    crate::stats::bump(&crate::stats::INSPHERE_IMPLICIT);
 
     fn lifted_row<T: crate::ring::Ring>(h: &[T; 4]) -> [T; 5] {
         let (x, y, z, w) = (&h[0], &h[1], &h[2], &h[3]);
@@ -314,7 +309,6 @@ pub fn insphere3d(
     }
 
     // Exact stage.
-    crate::stats::bump(&crate::stats::INSPHERE_EXACT);
     let homs: [[Expansion; 4]; 5] = std::array::from_fn(|i| pts[i].hom::<Expansion>());
     for h in &homs {
         if h[3].sign() == Sign::Zero {

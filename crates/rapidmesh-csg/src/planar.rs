@@ -135,21 +135,35 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
     // interior) against the other facet's helper triangles, merging the clipped
     // sub-segments along each edge. This is the polygon analog of the
     // triangle-soup coplanar clip and keeps the constraint set boundary-only.
+    // Coplanar boundary-edge clipping in PARALLEL: each (target, source) direction
+    // clips one facet's boundary against the other's helpers and is independent, so
+    // run them across cores and scatter the results serially. A sorted pair order
+    // makes the scatter deterministic (the HashSet iteration the old serial loop
+    // used was not). This was the dominant remaining cost on coplanar-heavy scenes
+    // (perforated plates, plate stacks).
     let mut cop: Vec<Vec<Constraint>> = vec![Vec::new(); n];
-    for &(fi, fj) in &coplanar {
-        for (target, source) in [(fi, fj), (fj, fi)] {
-            for (u, v) in boundary_edges(&input[source].boundary) {
-                let (segs, pts) = clip_edge_to_facet(&input[target].helpers, u, v);
-                for (a, b) in segs {
-                    cop[target].push(Constraint {
-                        a,
-                        b,
-                        line: ConstraintLine::Edge(u, v),
-                    });
+    let mut cop_pairs: Vec<(usize, usize)> = coplanar.iter().copied().collect();
+    cop_pairs.sort_unstable();
+    let contribs: Vec<(usize, Vec<Constraint>, Vec<Point3>)> = cop_pairs
+        .par_iter()
+        .flat_map_iter(|&(fi, fj)| {
+            [(fi, fj), (fj, fi)].into_iter().map(move |(target, source)| {
+                let mut cs = Vec::new();
+                let mut ps = Vec::new();
+                for (u, v) in boundary_edges(&input[source].boundary) {
+                    let (segs, pts) = clip_edge_to_facet(&input[target].helpers, u, v);
+                    for (a, b) in segs {
+                        cs.push(Constraint { a, b, line: ConstraintLine::Edge(u, v) });
+                    }
+                    ps.extend(pts);
                 }
-                points[target].extend(pts);
-            }
-        }
+                (target, cs, ps)
+            })
+        })
+        .collect();
+    for (target, cs, ps) in contribs {
+        cop[target].extend(cs);
+        points[target].extend(ps);
     }
 
     // Per facet: merge cut sub-segments into constraints, then triangulate the

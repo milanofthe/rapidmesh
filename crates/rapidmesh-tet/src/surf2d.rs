@@ -596,7 +596,6 @@ pub fn refine_quality(
     let diam2 = |b: &[P2], u: usize, v: usize| 0.25 * dist2(b[u], b[v]);
     let mid = |b: &[P2], u: usize, v: usize| [0.5 * (b[u][0] + b[v][0]), 0.5 * (b[u][1] + b[v][1])];
     for _ in 0..60 {
-        let nb = boundary.len();
         let mut all = boundary.clone();
         all.extend_from_slice(interior);
         let tris = triangulate_constrained(&all, segments, &inside);
@@ -750,7 +749,6 @@ pub fn refine_quality(
                 }
             }
         }
-        let _ = nb;
     }
     // The Ruppert refinement met the angle bound but left the interior (the rows
     // just inside the fixed boundary especially) uneven; relax it for shape.

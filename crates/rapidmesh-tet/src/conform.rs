@@ -67,8 +67,6 @@ pub struct TetMesh {
     /// Per-surface owner solid index (scene insertion order, voids included);
     /// `u32::MAX` for sheet surfaces. Parallel to `surfaces`.
     pub surface_owners: Vec<u32>,
-    /// Patches the mesher gave up on. Kept for API stability (always empty).
-    pub abandoned_patches: Vec<u32>,
     /// `points[..plc_points]` are the PLC's own vertices (the geometry);
     /// everything after is an interior point the mesher added.
     pub plc_points: usize,

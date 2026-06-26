@@ -21,15 +21,15 @@ def main() -> None:
     # Two partially overlapping spheres: three regions (A\B, B, outside) meet on
     # the intersection circle; each curved group is relaxed on its sphere.
     g = rm.Geometry(maxh=0.4)
-    g.sphere(1.0, (0, 0, 0), segments=24, rings=16)
-    g.sphere(1.0, (1.2, 0, 0), segments=24, rings=16)
+    g.sphere(1.0, (0, 0, 0), segments=24)
+    g.sphere(1.0, (1.2, 0, 0), segments=24)
     write_obj(g.surface_mesh(), out / "overlapping_spheres.obj")
 
     # A hemisphere (sphere minus a half-space box void): a BOUNDED curved group,
     # so the chart engages. Meshed coarse (maxh >> radius), the curvature/
     # volume-error bias still keeps the dome round and even.
     g = rm.Geometry(maxh=5.0)
-    g.sphere(1.0, (0, 0, 0), segments=24, rings=16)
+    g.sphere(1.0, (0, 0, 0), segments=24)
     g.box(4, 4, 2, position=(-2, -2, -2), void=True)  # carves z < 0
     write_obj(g.surface_mesh(), out / "hemisphere_curvature_bias.obj")
 

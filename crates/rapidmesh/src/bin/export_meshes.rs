@@ -36,6 +36,7 @@ fn main() {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            ..Default::default()
         };
         let mut mesh: TetMesh = mesh_plc_with(&plc, &params);
         let opt = OptimizeParams {

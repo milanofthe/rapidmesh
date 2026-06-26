@@ -311,9 +311,8 @@ impl DelaunayBuilder {
                     fallback = Some(nb);
                 }
             }
-            if let Some(nb) = fallback {
+            if fallback.is_some() {
                 // Only the way we came is negative: degenerate ping-pong.
-                let _ = nb;
                 return self.locate_scan(p);
             }
             return cur;

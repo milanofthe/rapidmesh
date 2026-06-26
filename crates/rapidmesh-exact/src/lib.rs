@@ -46,7 +46,6 @@ pub mod order;
 pub mod orient;
 pub mod point;
 pub mod ring;
-pub mod stats;
 
 pub use expansion::Expansion;
 pub use interval::Interval;

@@ -99,21 +99,19 @@ impl SceneBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (center, radius, segments, rings, maxh=None, void=false))]
+    #[pyo3(signature = (center, radius, segments, maxh=None, void=false))]
     fn add_sphere(
         &mut self,
         center: [f64; 3],
         radius: f64,
         segments: usize,
-        rings: usize,
         maxh: Option<f64>,
         void: bool,
     ) -> u32 {
         // A sphere is faceted GEODESICALLY (icosphere) -- isotropic and pole-free,
         // unlike a UV sphere whose latitude rings cluster at the poles and seed
-        // slivers there. Density follows the maxh-driven facet count (`segments`/
-        // `rings` only set a floor), so the facets track the requested mesh.
-        let _ = rings;
+        // slivers there. Density follows the maxh-driven facet count (`segments`
+        // only sets a floor), so the facets track the requested mesh.
         let n = self.segs(radius, maxh, segments) as f64;
         let level = ((1.0515 * n / std::f64::consts::TAU).log2().ceil() as i64).clamp(1, 6) as usize;
         self.put(icosphere(center, radius, level), maxh, void)
@@ -375,7 +373,7 @@ impl SceneBuilder {
         let timing = std::env::var_os("RAPIDMESH_TIMING").is_some();
         rapidmesh_exact::log::clear();
         // The heavy pipeline runs without the GIL.
-        let (mesh, params, q) = py.allow_threads(|| {
+        let (mesh, q) = py.allow_threads(|| {
             let ta = std::time::Instant::now();
             let plc = self.scene.assemble();
             let t_assemble = ta.elapsed();
@@ -496,9 +494,8 @@ impl SceneBuilder {
                     t_mesh,
                 );
             }
-            (mesh, params, q)
+            (mesh, q)
         });
-        let _ = params;
         let (timings, stats, events) = rapidmesh_exact::log::take();
         PyMesh {
             mesh,
@@ -764,7 +761,6 @@ impl PyMesh {
         d.set_item("min_dihedral_deg", self.min_dihedral_deg)?;
         d.set_item("max_radius_edge", self.max_radius_edge)?;
         d.set_item("max_edge", self.max_edge)?;
-        d.set_item("abandoned_patches", self.mesh.abandoned_patches.len())?;
         d.set_item("millis", self.millis)?;
         Ok(d)
     }

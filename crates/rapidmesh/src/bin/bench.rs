@@ -125,6 +125,7 @@ fn main() {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            ..Default::default()
         };
         records.push(run_one(
             bs.name,
@@ -208,6 +209,7 @@ fn main() {
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
             surf_tol: Vec::new(),
+            ..Default::default()
         };
         records.push(run_one(
             &name,

@@ -754,13 +754,6 @@ fn horn_loft_flat_tet_tiling() {
         worst <= 2,
         "non-manifold patch tiling: an edge carries {worst} faces of one patch (double-counted flat sliver)"
     );
-    // The double-count once drove the stagnation guard into abandoning the
-    // two flank patches; a conforming run abandons nothing.
-    assert!(
-        mesh.abandoned_patches.is_empty(),
-        "abandoned patches: {:?}",
-        mesh.abandoned_patches
-    );
     check_structure(&mesh);
 }
 
@@ -873,11 +866,6 @@ fn trace_face_maxh_does_not_starve_interface_tiling() {
         ..MeshParams::default()
     };
     let mesh = mesh_plc_with(&plc, &params);
-    assert!(
-        mesh.abandoned_patches.is_empty(),
-        "abandoned patches: {:?}",
-        mesh.abandoned_patches
-    );
     check_structure(&mesh);
 }
 

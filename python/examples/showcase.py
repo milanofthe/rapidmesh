@@ -102,7 +102,7 @@ def dice() -> rm.Geometry:
             else:
                 p = (u, v, sign * c)
             g.label(
-                g.sphere(r, position=p, segments=14, rings=7, maxh=0.09,
+                g.sphere(r, position=p, segments=14, maxh=0.09,
                          void=True),
                 "pips",
             )
@@ -179,13 +179,13 @@ def orbs() -> rm.Geometry:
     """Molecule: a core sphere with four tetrahedrally arranged atoms fused
     on by overlap-union (sphere-sphere intersection curves)."""
     g = rm.Geometry(maxh=0.14)
-    g.label(g.sphere(0.62, segments=24, rings=12), "core")
+    g.label(g.sphere(0.62, segments=24), "core")
     d = 0.82
     dirs = [(1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)]
     for v in dirs:
         n = math.sqrt(3.0)
         p = tuple(d * c / n for c in v)
-        g.label(g.sphere(0.4, position=p, segments=18, rings=9), "atoms")
+        g.label(g.sphere(0.4, position=p, segments=18), "atoms")
     return g
 
 
@@ -213,11 +213,11 @@ def nested_shells() -> rm.Geometry:
     nothing touching (disjoint regions; the cut boolean hollows each
     shell)."""
     g = rm.Geometry(maxh=0.16)
-    g.label(g.sphere(1.2, segments=28, rings=14), "outer shell")
-    g.label(g.sphere(1.02, segments=28, rings=14, void=True), "gaps")
-    g.label(g.sphere(0.78, segments=24, rings=12), "mid shell")
-    g.label(g.sphere(0.6, segments=24, rings=12, void=True), "gaps")
-    g.label(g.sphere(0.36, segments=18, rings=9), "core")
+    g.label(g.sphere(1.2, segments=28), "outer shell")
+    g.label(g.sphere(1.02, segments=28, void=True), "gaps")
+    g.label(g.sphere(0.78, segments=24), "mid shell")
+    g.label(g.sphere(0.6, segments=24, void=True), "gaps")
+    g.label(g.sphere(0.36, segments=18), "core")
     return g
 
 
@@ -257,7 +257,7 @@ def bearing() -> rm.Geometry:
     g.label(g.cylinder(0.52, h, segments=32, void=True), "shaft bore")
     for i in range(8):
         a = 2 * math.pi * i / 8
-        ball = g.sphere(0.09, segments=12, rings=6, maxh=0.05,
+        ball = g.sphere(0.09, segments=12, maxh=0.05,
                         position=(0.95 * math.cos(a), 0.95 * math.sin(a), h / 2))
         g.label(ball, "balls")
     return g
@@ -408,7 +408,7 @@ def mold_block() -> rm.Geometry:
     cone), one of each cut type."""
     g = rm.Geometry(maxh=0.17)
     g.label(g.box(4.2, 2.6, 1.2, position=(-2.1, -1.3, 0)), "block")
-    g.label(g.sphere(0.55, position=(-1.35, 0, 1.2), segments=18, rings=9,
+    g.label(g.sphere(0.55, position=(-1.35, 0, 1.2), segments=18,
                      void=True), "sphere cut")
     g.label(g.cylinder(0.28, 1.8, position=(-0.35, -0.95, 0.35),
                        axis=(1, 0.45, 1), segments=18, void=True),
@@ -432,10 +432,10 @@ def pressure_vessel() -> rm.Geometry:
     # barrel transversally; an exact-radius hemisphere would touch the
     # barrel tangentially (degenerate CSG contact, refinement blow-up)
     g.label(g.cylinder(1.0, H, segments=28), "shell")
-    g.label(g.sphere(1.081, position=(0, 0, 0.531), segments=28, rings=14),
+    g.label(g.sphere(1.081, position=(0, 0, 0.531), segments=28),
             "heads")
-    g.label(g.sphere(1.081, position=(0, 0, H - 0.531), segments=28,
-                     rings=14), "heads")
+    g.label(g.sphere(1.081, position=(0, 0, H - 0.531), segments=28),
+            "heads")
     g.label(g.cylinder(0.28, 0.7, position=(0, 0, H + 0.45), segments=20),
             "nozzle")
     g.label(g.cylinder(0.46, 0.14, position=(0, 0, H + 1.01), segments=20),
@@ -443,9 +443,9 @@ def pressure_vessel() -> rm.Geometry:
     # connected interior: inner cylinder + inner dished heads + nozzle bore
     for void in (
         g.cylinder(0.82, H, segments=28, void=True),
-        g.sphere(0.837, position=(0, 0, 0.467), segments=28, rings=14,
+        g.sphere(0.837, position=(0, 0, 0.467), segments=28,
                  void=True),
-        g.sphere(0.837, position=(0, 0, H - 0.467), segments=28, rings=14,
+        g.sphere(0.837, position=(0, 0, H - 0.467), segments=28,
                  void=True),
         g.cylinder(0.16, 0.9, position=(0, 0, H + 0.3), segments=16,
                    void=True),

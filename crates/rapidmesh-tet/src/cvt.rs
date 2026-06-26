@@ -616,7 +616,6 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     // ---- constrained tetrahedralization -----------------------------------
     let t_build = std::time::Instant::now();
-    let _ = (&inside, &hloc); // (inside oracle / size field; refinement TBD)
     // Per-region decomposition: mesh each region's interior SEPARATELY against the
     // FIXED frozen surface (no re-faceting). The surface is the inside/outside
     // CHECKER -- a region's Delaunay is the tets of its own (boundary + interior)
@@ -803,7 +802,6 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         faces,
         surfaces: plc.surfaces.clone(),
         surface_owners: plc.surface_owners.clone(),
-        abandoned_patches: Vec::new(),
         plc_points: plc.vertices.len(),
         point_size,
     };

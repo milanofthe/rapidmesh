@@ -747,14 +747,13 @@ class Geometry:
         position: tuple[float, float, float] = (0, 0, 0),
         *,
         segments: int = 24,
-        rings: int = 12,
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Sphere centred at ``position`` (analytic surface, like
         :meth:`cylinder`)."""
         region = self._builder.add_sphere(
-            list(position), radius, segments, rings, maxh, void
+            list(position), radius, segments, maxh, void
         )
         return self._solid(region)
 

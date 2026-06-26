@@ -752,6 +752,91 @@ pub fn refine_quality(
         }
         let _ = nb;
     }
+    // The Ruppert refinement met the angle bound but left the interior (the rows
+    // just inside the fixed boundary especially) uneven; relax it for shape.
+    smooth_interior(boundary, segments, interior, &inside, min_angle_deg, 4);
+}
+
+/// Boundary-preserving ODT smoothing: after the Ruppert refinement has met the
+/// angle bound, relax each INTERIOR vertex toward the area-weighted optimal-
+/// Delaunay target of its incident triangles (the boundary edge points stay
+/// FIXED), re-triangulating each pass. A move is taken only if it keeps every
+/// incident triangle in-domain, un-flipped, and still at or above the angle bound
+/// -- so the no-sliver guarantee and the triangle count are preserved while the
+/// interior evens out. Jacobi updates (all moves from the pass-start layout); any
+/// transient roughening is re-Delaunay'd and re-checked next pass.
+fn smooth_interior(
+    boundary: &[P2],
+    segments: &[(usize, usize)],
+    interior: &mut Vec<P2>,
+    inside: impl Fn(P2) -> bool,
+    min_angle_deg: f64,
+    iters: usize,
+) {
+    let nb = boundary.len();
+    let sarea2 = |p: [P2; 3]| {
+        (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0])
+    };
+    let mesh_min_angle = |tris: &[[usize; 3]], all: &[P2]| {
+        tris.iter().fold(f64::INFINITY, |m, t| {
+            let a = tri_angles(all[t[0]], all[t[1]], all[t[2]]);
+            m.min(a[0].min(a[1]).min(a[2]))
+        })
+    };
+    for _ in 0..iters {
+        let mut all = boundary.to_vec();
+        all.extend_from_slice(interior);
+        let tris = triangulate_constrained(&all, segments, &inside);
+        let mut num = vec![[0.0f64; 2]; all.len()];
+        let mut den = vec![0.0f64; all.len()];
+        let mut incident: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
+        for (ti, t) in tris.iter().enumerate() {
+            let p = [all[t[0]], all[t[1]], all[t[2]]];
+            let w = 0.5 * sarea2(p).abs();
+            let s3 = [p[0][0] + p[1][0] + p[2][0], p[0][1] + p[1][1] + p[2][1]];
+            for &i in t {
+                num[i][0] += w * (s3[0] - all[i][0]);
+                num[i][1] += w * (s3[1] - all[i][1]);
+                den[i] += w;
+                incident[i].push(ti);
+            }
+        }
+        let saved: Vec<P2> = interior.clone();
+        for k in 0..interior.len() {
+            let i = nb + k;
+            if den[i] == 0.0 {
+                continue;
+            }
+            // 2D optimal-Delaunay target, UNDER-RELAXED (0.6) so simultaneous
+            // (Jacobi) moves stay gentle. x* = (Σ|T|·(other two verts))/(2 Σ|T|).
+            let tgt = [num[i][0] / (2.0 * den[i]), num[i][1] / (2.0 * den[i])];
+            let mv = [all[i][0] + 0.6 * (tgt[0] - all[i][0]), all[i][1] + 0.6 * (tgt[1] - all[i][1])];
+            if !inside(mv) {
+                continue;
+            }
+            let ok = incident[i].iter().all(|&ti| {
+                let t = tris[ti];
+                let q: [P2; 3] = std::array::from_fn(|j| if t[j] == i { mv } else { all[t[j]] });
+                let a = tri_angles(q[0], q[1], q[2]);
+                sarea2(q).signum() == sarea2([all[t[0]], all[t[1]], all[t[2]]]).signum()
+                    && a[0].min(a[1]).min(a[2]) >= min_angle_deg
+            });
+            if ok {
+                interior[k] = mv;
+            }
+        }
+        // Pass-level guarantee: the per-move guard sees only the pass-start mesh, so
+        // re-triangulate and, if the simultaneous moves dropped the global min angle
+        // below the bound, revert this whole pass and stop -- the smoothing is then
+        // monotone and never introduces a sliver.
+        let mut all2 = boundary.to_vec();
+        all2.extend_from_slice(interior);
+        let tris2 = triangulate_constrained(&all2, segments, &inside);
+        if mesh_min_angle(&tris2, &all2) < min_angle_deg {
+            *interior = saved;
+            break;
+        }
+    }
 }
 
 /// Fills a planar region with Lloyd-relaxed interior points at a GRADED local

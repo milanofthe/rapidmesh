@@ -30,6 +30,11 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+# Optional window backend for Mesh.show(): a native window via pywebview (the
+# bundled viewer itself ships with the wheel). `pip install rapidmesh[viewer]`.
+[project.optional-dependencies]
+viewer = ["pywebview>=4.0"]
+
 [project.urls]
 Homepage = "https://mesh.rapidpassives.org"
 Repository = "https://github.com/milanofthe/rapidmesh"
@@ -38,3 +43,5 @@ Repository = "https://github.com/milanofthe/rapidmesh"
 features = ["pyo3/extension-module"]
 module-name = "rapidmesh._native"
 python-source = "python_src"
+# Ship the bundled interactive viewer (Mesh.show()) as package data.
+include = ["python_src/rapidmesh/_viewer_dist/**/*"]

@@ -219,6 +219,32 @@ class Mesh:
         _refresh_manifest(directory)
         return path
 
+    def show(self, name: str = "mesh", *, clip: float | None = 0.6,
+             clip_axis: int = 1, **kw) -> None:
+        """Open this mesh in the interactive viewer and block until the window is
+        closed: orbit / zoom / pan, the region legend, the crinkle clip (``clip``
+        is the fraction along ``clip_axis``; ``None`` disables it), the
+        located-defect overlay, and figure export. Uses a native window
+        (``pywebview``) if installed, else a Chromium window -- no browser tab to
+        manage, no Tauri. The viewer ships in the wheel; a window backend does
+        not -- ``pip install pywebview`` (or ``playwright``)."""
+        import json
+        import os
+        import tempfile
+        from contextlib import suppress
+
+        from . import _viewer
+
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="rapidmesh_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.to_viewer_dict(name), f)
+            _viewer.inspect(path, clip=clip, clip_axis=clip_axis,
+                            title=f"rapidmesh — {name}", **kw)
+        finally:
+            with suppress(OSError):
+                os.unlink(path)
+
 
 class SurfaceMesh:
     """A boundary surface mesh (surface-only export): the conforming surface
@@ -307,6 +333,69 @@ class SurfaceMesh:
         """Per-triangle minimum interior angle in degrees, shape ``(n_faces,)`` --
         the element-quality field (all >= the Ruppert bound)."""
         return self._native.face_min_angles()
+
+    # ---- interactive viewer -----------------------------------------------
+
+    def to_viewer_dict(self, name: str) -> dict:
+        """The surface mesh in the viewer JSON schema (no tets -- a flat 2D /
+        boundary triangulation)."""
+        return {
+            "name": name,
+            "mesher": "rapidmesh",
+            "points": self.points.tolist(),
+            "tets": [],
+            "tet_regions": [],
+            "faces": [
+                {
+                    "tri": [int(a), int(b), int(c)],
+                    "tag": int(t),
+                    "regions": [int(r0), int(r1)],
+                    "surface": int(s),
+                }
+                for (a, b, c), t, (r0, r1), s in zip(
+                    self.faces, self.face_tags, self.face_regions,
+                    self.face_surfaces,
+                )
+            ],
+            "surface_owners": [
+                -1 if int(o) == 0xFFFFFFFF else int(o)
+                for o in self.surface_owners
+            ],
+            "solids": self.solids,
+            "tag_labels": {str(t): n for t, n in self.tag_labels.items()},
+            "edges": [],
+            "stats": {
+                "n_points": int(self.stats["n_points"]),
+                "n_tets": 0,
+                "min_dihedral_deg": 0.0,
+                "max_radius_edge": 0.0,
+                "max_edge": 0.0,
+                "millis": int(self.stats["millis"]),
+            },
+        }
+
+    def show(self, name: str = "surface", *, clip: float | None = None, **kw) -> None:
+        """Open this surface mesh in the interactive viewer and block until the
+        window is closed: orbit / zoom / pan, the region legend, figure export. A
+        flat triangulation needs no clip by default (``clip=None``); pass a
+        fraction to slice it. The viewer ships in the wheel; a window backend does
+        not -- ``pip install pywebview`` (or ``playwright``)."""
+        import json
+        import os
+        import tempfile
+        from contextlib import suppress
+
+        from . import _viewer
+
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="rapidmesh_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.to_viewer_dict(name), f)
+            _viewer.inspect(path, clip=clip, tets=False,
+                            title=f"rapidmesh — {name}", **kw)
+        finally:
+            with suppress(OSError):
+                os.unlink(path)
 
 
 def _refresh_manifest(directory: Path) -> None:

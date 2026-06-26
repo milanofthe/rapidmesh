@@ -169,22 +169,8 @@ def _min_triangle_angle(points: np.ndarray, faces: np.ndarray) -> float:
 
 
 def _surface_viewer_dict(sm, name: str) -> dict:
-    """Viewer JSON for a surface-only mesh (no tets) -- a flat 2D triangulation."""
-    return {
-        "name": name, "mesher": "rapidmesh",
-        "points": sm.points.tolist(),
-        "tets": [], "tet_regions": [],
-        "faces": [{"tri": [int(a), int(b), int(c)], "tag": int(t),
-                   "regions": [int(r0), int(r1)], "surface": int(s)}
-                  for (a, b, c), t, (r0, r1), s in
-                  zip(sm.faces, sm.face_tags, sm.face_regions, sm.face_surfaces)],
-        "surface_owners": [-1 if int(o) == 0xFFFFFFFF else int(o) for o in sm.surface_owners],
-        "solids": sm.solids, "tag_labels": {str(t): n for t, n in sm.tag_labels.items()},
-        "edges": [],
-        "stats": {"n_points": int(sm.stats["n_points"]), "n_tets": 0,
-                  "min_dihedral_deg": 0.0, "max_radius_edge": 0.0,
-                  "max_edge": 0.0, "millis": int(sm.stats["millis"])},
-    }
+    """Viewer JSON for a surface-only mesh (no tets); now a method on SurfaceMesh."""
+    return sm.to_viewer_dict(name)
 
 
 def run(quick: bool = False) -> list[dict]:

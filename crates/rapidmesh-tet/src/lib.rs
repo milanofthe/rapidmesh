@@ -34,7 +34,10 @@ pub mod spatial;
 pub mod surf2d;
 pub mod surfchart;
 
-pub use conform::{mesh_plc, mesh_plc_with, quality_stats, MeshParams, QualityStats, SurfaceFace, SurfaceMesh, TetMesh};
+pub use conform::{
+    log_metrics, log_surface_metrics, mesh_plc, mesh_plc_with, quality_stats, MeshParams,
+    QualityStats, SurfaceFace, SurfaceMesh, TetMesh,
+};
 pub use cvt::{frozen_surface, mesh_cdt, mesh_cdt_budgeted, surface_mesh, FrozenSurface};
 pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};

@@ -425,29 +425,10 @@ impl SceneBuilder {
             let (mesh, _params) = mesh_cdt_budgeted(&plc, &params0, target_elements, opt_passes);
             let t_mesh = tm.elapsed();
             rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
-            // Quality (with the worst element's location/region), logged so a
+            // Headline metrics (counts, quality, slivers, per-region), logged so a
             // verbose run reports not just timings but where the mesh is worst.
             let q = quality_stats(&mesh);
-            rapidmesh_exact::log::stat("quality.min_dihedral_deg", q.min_dihedral_deg);
-            rapidmesh_exact::log::stat("quality.max_radius_edge", q.max_radius_edge);
-            let lvl = if q.min_dihedral_deg < 5.0 {
-                rapidmesh_exact::log::Level::Warn
-            } else {
-                rapidmesh_exact::log::Level::Info
-            };
-            rapidmesh_exact::log::event(
-                lvl,
-                "quality",
-                format!(
-                    "min dihedral {:.2} deg in region {} near ({:.4}, {:.4}, {:.4}); {} tets",
-                    q.min_dihedral_deg,
-                    q.worst_region,
-                    q.worst_location[0],
-                    q.worst_location[1],
-                    q.worst_location[2],
-                    q.n_tets,
-                ),
-            );
+            rapidmesh_tet::log_metrics(&q, mesh.points.len());
             if timing {
                 eprintln!(
                     "stages: assemble {:?} ({} plc facets), mesh+optimize {:?}",
@@ -469,7 +450,7 @@ impl SceneBuilder {
             stats,
             events: events
                 .into_iter()
-                .map(|e| (e.level.tag().to_string(), e.stage, e.message, e.at))
+                .map(|e| (e.level.lower().to_string(), e.stage, e.message, e.at))
                 .collect(),
             quality: q,
         }
@@ -545,7 +526,9 @@ impl SceneBuilder {
             // refinement. The mesh resolves the sizing field down to its h_min as
             // usual but stops early if the budget is reached -- so one mesh yields
             // min(field-resolved, budget), graded and sliver-free.
-            surface_mesh(&plc, &params0)
+            let mesh = surface_mesh(&plc, &params0);
+            rapidmesh_tet::log_surface_metrics(&mesh);
+            mesh
         });
         let (timings, _stats, _events) = rapidmesh_exact::log::take();
         PySurfaceMesh {
@@ -778,6 +761,7 @@ impl PyMesh {
         d.set_item("n_tets", self.mesh.tets.len())?;
         d.set_item("n_faces", self.mesh.faces.len())?;
         d.set_item("min_dihedral_deg", self.min_dihedral_deg)?;
+        d.set_item("n_slivers", self.quality.n_slivers)?;
         d.set_item("max_radius_edge", self.max_radius_edge)?;
         d.set_item("max_edge", self.max_edge)?;
         d.set_item("millis", self.millis)?;
@@ -833,6 +817,7 @@ impl PyMesh {
         let d = PyDict::new_bound(py);
         d.set_item("n_tets", q.n_tets)?;
         d.set_item("min_dihedral_deg", q.min_dihedral_deg)?;
+        d.set_item("n_slivers", q.n_slivers)?;
         d.set_item("max_radius_edge", q.max_radius_edge)?;
         d.set_item("max_edge", q.max_edge)?;
         d.set_item("worst_tet", q.worst_tet)?;
@@ -1111,6 +1096,15 @@ fn dorfler_mark<'py>(py: Python<'py>, eta: Vec<f64>, theta: f64) -> Bound<'py, P
     m.into_pyarray_bound(py)
 }
 
+/// Set the live meshing-log threshold: `"debug"`/`"info"`/`"warn"`/`"error"` to
+/// print at or above that level, anything else (`"off"`, `None`) to silence.
+/// Equivalent to the `RAPIDMESH_LOG` env var; takes effect on the next mesh.
+#[pyfunction]
+#[pyo3(signature = (level=None))]
+fn set_log_level(level: Option<&str>) {
+    rapidmesh_exact::log::set_level(level.and_then(rapidmesh_exact::log::Level::parse));
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SceneBuilder>()?;
@@ -1118,5 +1112,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySurfaceMesh>()?;
     m.add_class::<PyTopology>()?;
     m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
+    m.add_function(wrap_pyfunction!(set_log_level, m)?)?;
     Ok(())
 }

@@ -452,6 +452,9 @@ pub struct QualityStats {
     /// Smallest dihedral angle in degrees (sliver indicator; the load-bearing
     /// metric for Nedelec conditioning).
     pub min_dihedral_deg: f64,
+    /// Number of slivers: tets with a min dihedral below
+    /// [`crate::diagnostics::SLIVER_DEG`].
+    pub n_slivers: usize,
     /// Largest circumradius / shortest-edge ratio.
     pub max_radius_edge: f64,
     /// Longest edge in the mesh.
@@ -501,6 +504,7 @@ fn tet_min_dihedral(p: [[f64; 3]; 4]) -> f64 {
 /// location/region and a per-region min-dihedral breakdown.
 pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
     let mut min_dihedral = f64::MAX;
+    let mut n_slivers = 0usize;
     let mut worst_tet = usize::MAX;
     let mut max_re = 0.0_f64;
     let mut max_edge2 = 0.0_f64;
@@ -520,6 +524,9 @@ pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
             max_re = max_re.max(r / lmin2.sqrt());
         }
         let md = tet_min_dihedral(p);
+        if md < crate::diagnostics::SLIVER_DEG {
+            n_slivers += 1;
+        }
         if md < min_dihedral {
             min_dihedral = md;
             worst_tet = ti;
@@ -543,6 +550,7 @@ pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
     QualityStats {
         n_tets: mesh.tets.len(),
         min_dihedral_deg: min_dihedral,
+        n_slivers,
         max_radius_edge: max_re,
         max_edge: max_edge2.sqrt(),
         worst_tet,
@@ -550,4 +558,97 @@ pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
         worst_region,
         per_region: per_region.into_iter().map(|(r, (m, n))| (r, m, n)).collect(),
     }
+}
+
+/// Emits the headline VOLUME-mesh metrics through [`rapidmesh_exact::log`]: the
+/// element + vertex counts, the quality summary, the sliver count (a `warn` when
+/// any sliver survives), and -- for multi-region meshes -- a per-region quality
+/// breakdown. Recorded both live (when the log level allows) and into
+/// `mesh.stats`, so the important numbers are visible without re-deriving them.
+pub fn log_metrics(q: &QualityStats, n_points: usize) {
+    use rapidmesh_exact::log;
+    log::stat("mesh.tets", q.n_tets as f64);
+    log::stat("mesh.points", n_points as f64);
+    log::stat("mesh.min_dihedral_deg", q.min_dihedral_deg);
+    log::stat("mesh.max_radius_edge", q.max_radius_edge);
+    log::stat("mesh.longest_edge", q.max_edge);
+    log::stat("mesh.slivers", q.n_slivers as f64);
+    log::info("metrics", format!("tets {}  points {}", q.n_tets, n_points));
+    log::info(
+        "metrics",
+        format!(
+            "min-dihedral {:.1} deg   max-radius-edge {:.2}   longest-edge {:.4}",
+            q.min_dihedral_deg, q.max_radius_edge, q.max_edge
+        ),
+    );
+    let pct = if q.n_tets > 0 {
+        100.0 * q.n_slivers as f64 / q.n_tets as f64
+    } else {
+        0.0
+    };
+    let lvl = if q.n_slivers > 0 {
+        log::Level::Warn
+    } else {
+        log::Level::Info
+    };
+    log::event(
+        lvl,
+        "metrics",
+        format!(
+            "slivers {} / {} ({pct:.2}%, below {:.0} deg)",
+            q.n_slivers,
+            q.n_tets,
+            crate::diagnostics::SLIVER_DEG
+        ),
+    );
+    if q.n_slivers > 0 {
+        log::warn(
+            "metrics",
+            format!(
+                "worst {:.1} deg in region {} near ({:.4}, {:.4}, {:.4})",
+                q.min_dihedral_deg,
+                q.worst_region,
+                q.worst_location[0],
+                q.worst_location[1],
+                q.worst_location[2]
+            ),
+        );
+    }
+    if q.per_region.len() > 1 {
+        let parts: Vec<String> = q
+            .per_region
+            .iter()
+            .map(|(r, m, n)| format!("r{r}:{m:.1}deg/{n}"))
+            .collect();
+        log::info("metrics", format!("regions  {}", parts.join("  ")));
+    }
+}
+
+/// Emits the headline SURFACE-mesh metrics through [`rapidmesh_exact::log`]:
+/// triangle + vertex counts and the minimum interior angle, with a count of thin
+/// (`< 15 deg`) triangles (a `warn` when any survive).
+pub fn log_surface_metrics(mesh: &SurfaceMesh) {
+    use rapidmesh_exact::log;
+    let angles = mesh.face_min_angles();
+    let min_ang = angles.iter().copied().fold(f64::MAX, f64::min);
+    let min_ang = if min_ang.is_finite() { min_ang } else { 0.0 };
+    let n_bad = angles.iter().filter(|&&a| a < 15.0).count();
+    log::stat("surface.faces", mesh.faces.len() as f64);
+    log::stat("surface.points", mesh.points.len() as f64);
+    log::stat("surface.min_angle_deg", min_ang);
+    log::stat("surface.thin", n_bad as f64);
+    log::info(
+        "metrics",
+        format!("faces {}  points {}", mesh.faces.len(), mesh.points.len()),
+    );
+    let lvl = if n_bad > 0 {
+        log::Level::Warn
+    } else {
+        log::Level::Info
+    };
+    log::event(
+        lvl,
+        "metrics",
+        format!("min-angle {min_ang:.1} deg   {n_bad} below 15 deg"),
+    );
 }

@@ -98,8 +98,6 @@ fn check_structure(m: &TetMesh) {
 }
 
 #[test]
-#[ignore = "embedded sheets (zero-thickness tagged surfaces): pending the B-rep \
-            face handling; air+dielectric multi-region without sheets is exact"]
 fn air_dielectric_pec_scene_meshes_exactly() {
     let mut scene = Scene::new();
     let air = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -606,7 +604,8 @@ fn plc_of(scene: &Scene) -> TaggedPlc {
 /// A CURVED void (cylindrical bore as a void, not a region) stays exact
 /// through meshing and within fidelity tolerance through optimization.
 #[test]
-#[ignore = "passes, but slow in debug (curved + optimize); run with --release --ignored"]
+#[ignore = "fails: exact per-region volume (1e-9) is not preserved when optimize \
+            moves boundary vertices on a curved surface (pre-existing; task #51)"]
 fn cylinder_void_volume_through_optimize() {
     let close = |have: BigRational, want: BigRational, tol_rel: f64, what: &str| {
         let tol = want.clone() * rat(tol_rel);
@@ -689,7 +688,8 @@ fn torus_meshes_exactly() {
 /// projected quad), the stagnation guard abandoned the patch and region
 /// classification leaked. Region volumes must match the PLC exactly.
 #[test]
-#[ignore = "passes, but slow in debug (large multi-region loft); run with --release --ignored"]
+#[ignore = "fails: a region volume is off (a patch is abandoned on the large \
+            multi-region loft); pre-existing"]
 fn horn_loft_flat_tet_tiling() {
     let mm = 1e-3;
     let c0 = 299_792_458.0_f64;
@@ -941,8 +941,6 @@ fn cylinder_feature_edges_are_the_rims() {
 /// its owner solid (insertion order, voids included). The walls of a void
 /// bore are owned by the void, not by the solid it cuts.
 #[test]
-#[ignore = "surface-owner tracking through the bottom-up surface stage: pending \
-            the B-rep face handling"]
 fn surface_owners_track_solids_and_voids() {
     let mut scene = Scene::new();
     let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));

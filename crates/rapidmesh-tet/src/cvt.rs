@@ -1342,7 +1342,8 @@ mod tests {
     /// PROBE (Q1 investigation): does `optimize` clean mesh_cdt's slivers, and are
     /// the residual slivers on the BOUNDARY (constrained, untouchable) or interior?
     #[test]
-    #[ignore]
+    #[ignore = "manual diagnostic probe (where the residual slivers sit), not an \
+                assertion; run with --ignored to inspect"]
     fn probe_optimize_on_slivers() {
         use crate::diagnostics::{diagnose, SLIVER_DEG};
         let mut scene = Scene::new();

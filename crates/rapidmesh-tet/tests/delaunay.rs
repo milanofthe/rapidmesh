@@ -186,7 +186,7 @@ fn replace_cavity_flips_three_tets_to_two() {
 }
 
 #[test]
-#[should_panic(expected = "not positively oriented")]
+#[should_panic(expected = "invalid replacement")]
 fn replace_cavity_rejects_misoriented_tets() {
     let mut b = three_tet_fixture();
     let slots: Vec<u32> = b.tets_with_slots().iter().map(|&(s, _)| s).collect();
@@ -194,7 +194,7 @@ fn replace_cavity_rejects_misoriented_tets() {
 }
 
 #[test]
-#[should_panic(expected = "boundary face")]
+#[should_panic(expected = "invalid replacement")]
 fn replace_cavity_rejects_nontiling_complex() {
     let mut b = three_tet_fixture();
     let slots: Vec<u32> = b.tets_with_slots().iter().map(|&(s, _)| s).collect();

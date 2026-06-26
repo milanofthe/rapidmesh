@@ -397,6 +397,7 @@ impl SceneBuilder {
                 min_h_surf,
                 min_h_vol,
                 surf_min_angle: 0.0,
+                surf_target_count: 0,
                 max_points,
                 grading,
                 face_maxh,
@@ -563,6 +564,7 @@ impl SceneBuilder {
                 min_h_surf: 0.0,
                 min_h_vol: 0.0,
                 surf_min_angle: 20.0,
+                surf_target_count: target_triangles.unwrap_or(0),
                 max_points: usize::MAX,
                 grading,
                 face_maxh,
@@ -579,34 +581,12 @@ impl SceneBuilder {
                 surf_maxh,
                 surf_tol,
             };
-            // Triangle budget: retune the global size scale (triangle count ~
-            // scale^-2) and KEEP THE CLOSEST mesh over a few remeshes, so the count
-            // lands tightly on `target_triangles` while the sizing field and the
-            // Ruppert refinement keep the distribution (grading) and the angle bound
-            // (quality). The scale is global, so a multi-surface model shares one
-            // size field -> the budget spreads across its surfaces by area (one
-            // uniform element size everywhere), not an arbitrary per-surface share.
-            match target_triangles {
-                Some(target) if target > 0 => {
-                    let mut s = 1.0_f64;
-                    let (mut best, mut best_rel) = (None, f64::INFINITY);
-                    for _ in 0..9 {
-                        let m = surface_mesh(&plc, &params0.scaled(s));
-                        let n = m.faces.len().max(1);
-                        let rel = (n as f64 - target as f64).abs() / target as f64;
-                        if rel < best_rel {
-                            best_rel = rel;
-                            best = Some(m);
-                        }
-                        if best_rel < 0.01 {
-                            break;
-                        }
-                        s *= (n as f64 / target as f64).sqrt();
-                    }
-                    best.unwrap()
-                }
-                _ => surface_mesh(&plc, &params0),
-            }
+            // Triangle BUDGET: `surf_target_count` (carried by `params0`, split
+            // across the model's planar patches by area) caps the count-driven
+            // refinement. The mesh resolves the sizing field down to its h_min as
+            // usual but stops early if the budget is reached -- so one mesh yields
+            // min(field-resolved, budget), graded and sliver-free.
+            surface_mesh(&plc, &params0)
         });
         let (timings, _stats, _events) = rapidmesh_exact::log::take();
         PySurfaceMesh {

@@ -136,6 +136,7 @@ mod tests {
             min_h_surf: 0.0,
             min_h_vol: 0.0,
             surf_min_angle: 0.0,
+            surf_target_count: 0,
         }
     }
 

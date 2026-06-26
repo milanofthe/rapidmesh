@@ -717,7 +717,7 @@ pub fn surface_sites(
                     let mut bnd: Vec<P2> = loc_uv[..nb].to_vec();
                     let mut refin = vec![true; seg.len()];
                     refine_quality(&mut bnd, &mut seg, &mut refin, &mut interior,
-                        target2d, inside, params.surf_min_angle);
+                        target2d, inside, params.surf_min_angle, params.surf_target_count);
                     for &q in &bnd[nb..] {
                         let p = chart.to_xyz(q);
                         let site = match &carrier {

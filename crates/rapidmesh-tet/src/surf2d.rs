@@ -576,6 +576,12 @@ fn circumcenter(a: P2, b: P2, c: P2) -> Option<P2> {
 /// conforming while the interior gains a guaranteed angle bound -- no slivers.
 /// Boundary midpoints are appended to `boundary`/`segments`/`refinable`; interior
 /// points to `interior`. Terminates for input angles >= ~60 deg.
+/// `target_count > 0` is a triangle BUDGET (a cap, not a target): the angle bound
+/// is always met (no slivers) and the field is resolved down to its `min_h_surf`
+/// floor as usual, but once the triangle count reaches `target_count` no further
+/// size-driven splits are made -- the budget caps the refinement at
+/// `min(field-resolved, target_count)`, spending its last splits on the most
+/// oversized triangles first.
 #[allow(clippy::too_many_arguments)]
 pub fn refine_quality(
     boundary: &mut Vec<P2>,
@@ -585,6 +591,7 @@ pub fn refine_quality(
     target: impl Fn(P2) -> f64,
     inside: impl Fn(P2) -> bool,
     min_angle_deg: f64,
+    target_count: usize,
 ) {
     let diam2 = |b: &[P2], u: usize, v: usize| 0.25 * dist2(b[u], b[v]);
     let mid = |b: &[P2], u: usize, v: usize| [0.5 * (b[u][0] + b[v][0]), 0.5 * (b[u][1] + b[v][1])];
@@ -631,8 +638,14 @@ pub fn refine_quality(
             }
         }
 
-        // (2) otherwise, drive on bad/oversized triangles.
+        // (2) otherwise, drive on bad/oversized triangles. Angle-violating
+        // triangles are always refined (mandatory, priority +inf); field-oversized
+        // ones carry their relative oversize as priority. In budget mode only the
+        // angle fixes plus enough of the WORST oversized to approach `target_count`
+        // are taken -- so the refinement stops at min(field-resolved, budget).
         if split.is_empty() {
+            let cur = tris.len();
+            let mut cand: Vec<(f64, P2)> = Vec::new();
             for t in &tris {
                 let p = [all[t[0]], all[t[1]], all[t[2]]];
                 let a = tri_angles(p[0], p[1], p[2]);
@@ -640,18 +653,35 @@ pub fn refine_quality(
                     Some(c) => c,
                     None => continue,
                 };
-                let bad = a[0].min(a[1]).min(a[2]) < min_angle_deg
-                    || dist2(p[0], cc) > (0.6 * target(cc)).powi(2);
-                if !bad {
+                let amin = a[0].min(a[1]).min(a[2]);
+                let tg = target(cc).max(1e-12);
+                let ratio = dist2(p[0], cc) / (tg * tg);
+                let angle_bad = amin < min_angle_deg;
+                let size_bad = ratio > 0.36 && (target_count == 0 || cur < target_count);
+                if !(angle_bad || size_bad) {
                     continue;
                 }
-                let enc = segments.iter().enumerate().find(|&(si, &(u, v))| {
+                if let Some((si, _)) = segments.iter().enumerate().find(|&(si, &(u, v))| {
                     refinable[si] && dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v)
-                });
-                match enc {
-                    Some((si, _)) => split.push(si),
-                    None if inside(cc) => inserts.push(cc),
-                    None => {}
+                }) {
+                    split.push(si);
+                    continue;
+                }
+                if inside(cc) {
+                    cand.push((if angle_bad { f64::INFINITY } else { ratio }, cc));
+                }
+            }
+            if split.is_empty() {
+                if target_count > 0 {
+                    cand.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+                    let n_angle = cand.iter().take_while(|c| c.0.is_infinite()).count();
+                    let deficit = target_count.saturating_sub(cur);
+                    // each accepted insert adds ~2 triangles; take the angle fixes
+                    // plus enough of the worst oversized to reach the budget.
+                    let want = n_angle.max(deficit.div_ceil(2)).min(cand.len());
+                    inserts.extend(cand[..want].iter().map(|c| c.1));
+                } else {
+                    inserts.extend(cand.iter().map(|c| c.1));
                 }
             }
         }

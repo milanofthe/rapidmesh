@@ -286,6 +286,10 @@ pub struct MeshParams {
     /// (the volume path leaves this 0 to keep its frozen surface unchanged; the
     /// standalone surface mesher turns it on).
     pub surf_min_angle: f64,
+    /// Surface triangle BUDGET (a cap, not a target): the count-driven Ruppert
+    /// refines size-field-driven until h_min is reached, but stops early once the
+    /// triangle count hits this budget (split across patches by area). `0` = off.
+    pub surf_target_count: usize,
 }
 
 impl Default for MeshParams {
@@ -312,6 +316,7 @@ impl Default for MeshParams {
             min_h_surf: 0.0,
             min_h_vol: 0.0,
             surf_min_angle: 0.0,
+            surf_target_count: 0,
         }
     }
 }
@@ -353,6 +358,7 @@ impl MeshParams {
             min_h_surf: self.min_h_surf,
             min_h_vol: self.min_h_vol,
             surf_min_angle: self.surf_min_angle,
+            surf_target_count: self.surf_target_count,
         }
     }
 

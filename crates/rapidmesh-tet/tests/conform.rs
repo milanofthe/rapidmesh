@@ -215,6 +215,7 @@ fn sized_box_respects_maxh_and_quality() {
         min_h_surf: 0.0,
         min_h_vol: 0.0,
         surf_min_angle: 0.0,
+        surf_target_count: 0,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -282,6 +283,7 @@ fn sized_em_scene_stays_exact_and_conforming() {
         min_h_surf: 0.0,
         min_h_vol: 0.0,
         surf_min_angle: 0.0,
+        surf_target_count: 0,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     let before = quality_stats(&mesh);
@@ -340,6 +342,7 @@ fn per_region_sizing_creates_density_transition() {
         min_h_surf: 0.0,
         min_h_vol: 0.0,
         surf_min_angle: 0.0,
+        surf_target_count: 0,
     };
     let mut mesh = mesh_plc_with(&plc, &params);
     optimize(

@@ -858,6 +858,47 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
 
     let mut faces: Vec<SurfaceFace> = Vec::new();
 
+    // Triangle BUDGET (a cap): split the global budget across the planar patches by
+    // area (one uniform element size), the LAST patch absorbing the rounding
+    // remainder. Each patch refines to min(its field, its share). 0 => uncapped.
+    let patch_budget: Vec<usize> = if params.surf_target_count > 0 {
+        let areas: Vec<f64> = planar
+            .iter()
+            .enumerate()
+            .map(|(li, &pi)| {
+                let (_, n) = patch_plane(plc, &patches[pi]);
+                let drop = drop_axis(n);
+                let mut s = 0.0;
+                for &(a, b) in &pbe[li] {
+                    let mut chain = vec![a];
+                    chain.extend(edge_pts[&sorted2(a, b)].iter().copied());
+                    chain.push(b);
+                    for w in chain.windows(2) {
+                        let p = project2(points[w[0]], drop);
+                        let q = project2(points[w[1]], drop);
+                        s += p[0] * q[1] - q[0] * p[1];
+                    }
+                }
+                0.5 * s.abs()
+            })
+            .collect();
+        let total: f64 = areas.iter().sum::<f64>().max(1e-30);
+        let mut t = vec![0usize; planar.len()];
+        let mut assigned = 0usize;
+        for li in 0..planar.len() {
+            t[li] = if li + 1 == planar.len() {
+                params.surf_target_count.saturating_sub(assigned)
+            } else {
+                let n = ((params.surf_target_count as f64) * areas[li] / total).round() as usize;
+                assigned += n;
+                n
+            };
+        }
+        t
+    } else {
+        vec![0; planar.len()]
+    };
+
     // ---- planar patches: relax + triangulate in the patch plane -------------
     for (li, &pi) in planar.iter().enumerate() {
         let patch = &patches[pi];
@@ -926,7 +967,7 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         if params.surf_min_angle > 0.0 {
             let mut bnd: Vec<[f64; 2]> = loc2[..nb].to_vec();
             let mut refin = vec![true; bsegs.len()];
-            crate::surf2d::refine_quality(&mut bnd, &mut bsegs, &mut refin, &mut interior2, target, inside2, params.surf_min_angle);
+            crate::surf2d::refine_quality(&mut bnd, &mut bsegs, &mut refin, &mut interior2, target, inside2, params.surf_min_angle, patch_budget[li]);
             for &uv in &bnd[nb..] {
                 points.push(lift3(uv, drop, p0, n));
                 loc2.push(uv);

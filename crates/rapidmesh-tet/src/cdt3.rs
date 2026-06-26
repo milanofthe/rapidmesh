@@ -134,15 +134,25 @@ pub fn tetrahedralize_constrained(
     let mut db = DelaunayBuilder::enclosing(lo, hi);
 
     // All mesh vertices; surface vertices first (exact, on their carriers).
+    // Insert in OCTREE order: the verts arrive in patch order, not spatially, so
+    // an unsorted insert makes the Delaunay point-location walks long. The octree
+    // order is density-adaptive with CUBIC cells, so unlike the per-axis-normalised
+    // Morton order it does NOT stretch a flat/anisotropic layout (where Morton made
+    // it slower). `vs` is still filled in the ORIGINAL order so the constraint
+    // triangles' indices are unchanged.
     let mut vs: Vec<Vert> = Vec::with_capacity(verts.len() + interior.len());
-    for s in verts {
-        let bidx = db.insert_exact(s.exact());
-        vs.push(Vert { pos: s.pos(), bidx });
+    let vpos: Vec<V3> = verts.iter().map(|s| s.pos()).collect();
+    let mut surf_bidx = vec![0usize; verts.len()];
+    for &oi in &crate::spatial::octree_order(&vpos) {
+        surf_bidx[oi] = db.insert_exact(verts[oi].exact());
+    }
+    for (oi, s) in verts.iter().enumerate() {
+        vs.push(Vert { pos: s.pos(), bidx: surf_bidx[oi] });
     }
     let n_surf_verts = vs.len();
-    for &p in interior {
-        if let Some(bidx) = db.try_insert(p) {
-            vs.push(Vert { pos: p, bidx });
+    for &oi in &crate::spatial::octree_order(interior) {
+        if let Some(bidx) = db.try_insert(interior[oi]) {
+            vs.push(Vert { pos: interior[oi], bidx });
         }
     }
 

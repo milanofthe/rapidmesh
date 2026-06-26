@@ -400,7 +400,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // `all[0..n_surf]`, the interior `all[n_surf..]`.
     let mut surf_base = DelaunayBuilder::enclosing(lo, hi);
     let mut surf_orig: Vec<usize> = Vec::with_capacity(n_surf);
-    for &i in &crate::spatial::morton_order(&surf_points) {
+    for &i in &crate::spatial::octree_order(&surf_points) {
         if surf_base.try_insert(surf_points[i]).is_some() {
             surf_orig.push(i);
         }
@@ -408,7 +408,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let build_full = |interior: &[V3]| -> Vec<[usize; 4]> {
         let mut db = surf_base.clone();
         let mut orig = surf_orig.clone();
-        for &i in &crate::spatial::morton_order(interior) {
+        for &i in &crate::spatial::octree_order(interior) {
             if db.try_insert(interior[i]).is_some() {
                 orig.push(n_surf + i);
             }

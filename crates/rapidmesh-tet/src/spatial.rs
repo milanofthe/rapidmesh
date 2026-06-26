@@ -55,6 +55,33 @@ pub fn morton_order(points: &[V3]) -> Vec<usize> {
     idx
 }
 
+/// A density-adaptive, aspect-RATIO-preserving spatial insertion order: the
+/// points in octree depth-first order. The octree subdivides into CUBIC octants,
+/// so a flat or anisotropic point set is not stretched the way `morton_order`'s
+/// per-axis normalisation stretches it (there the thin axis gets the full bit
+/// range, so the Z-curve jumps across it). Visiting octants `0..8` is a Morton
+/// order of the octants, but adaptive to the actual density -- inserting in this
+/// order keeps an incremental Delaunay's point-location walks short on the
+/// non-uniform inputs where the plain Morton order is poor.
+pub fn octree_order(points: &[V3]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(points.len());
+    if !points.is_empty() {
+        octree_visit(&Octree::build(points).root, &mut out);
+    }
+    out
+}
+
+fn octree_visit(node: &Node, out: &mut Vec<usize>) {
+    match node {
+        Node::Leaf(idx) => out.extend(idx.iter().map(|&i| i as usize)),
+        Node::Inner(children) => {
+            for c in children.iter() {
+                octree_visit(c, out);
+            }
+        }
+    }
+}
+
 enum Node {
     Leaf(Vec<u32>),
     Inner(Box<[Node; 8]>),

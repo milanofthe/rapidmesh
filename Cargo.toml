@@ -8,6 +8,7 @@ members = [
     "crates/rapidmesh-tet",
     "crates/rapidmesh",
     "crates/rapidmesh-testutil",
+    "crates/rapidmesh-wasm",
 ]
 
 [workspace.package]

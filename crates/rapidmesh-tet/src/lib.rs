@@ -28,6 +28,7 @@ pub mod mom;
 pub mod optimize;
 pub mod project;
 pub mod seed;
+pub mod quadfield;
 pub mod sizefield;
 pub mod site;
 pub mod spatial;

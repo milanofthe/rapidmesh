@@ -583,7 +583,7 @@ fn circumcenter(a: P2, b: P2, c: P2) -> Option<P2> {
 /// `min(field-resolved, target_count)`, spending its last splits on the most
 /// oversized triangles first.
 #[allow(clippy::too_many_arguments)]
-pub fn refine_quality(
+pub fn refine_quality_with(
     boundary: &mut Vec<P2>,
     segments: &mut Vec<(usize, usize)>,
     refinable: &mut Vec<bool>,
@@ -592,13 +592,24 @@ pub fn refine_quality(
     inside: impl Fn(P2) -> bool,
     min_angle_deg: f64,
     target_count: usize,
+    // Hard cap on refinement passes. Each pass re-triangulates the whole patch,
+    // so this bounds the cost: the surface stage runs the full set, a display
+    // mesh only a few (the boundary conformity + angle bound are met early; the
+    // rest is marginal interior density).
+    max_passes: usize,
+    // Called once per refinement pass with the current `(points, triangles)`
+    // BEFORE that pass's inserts -- the coarse-to-fine intermediate states. A
+    // no-op in the default `refine_quality`; the landing page collects them to
+    // animate the mesher live.
+    mut on_pass: impl FnMut(&[P2], &[[usize; 3]]),
 ) {
     let diam2 = |b: &[P2], u: usize, v: usize| 0.25 * dist2(b[u], b[v]);
     let mid = |b: &[P2], u: usize, v: usize| [0.5 * (b[u][0] + b[v][0]), 0.5 * (b[u][1] + b[v][1])];
-    for _ in 0..60 {
+    for _ in 0..max_passes {
         let mut all = boundary.clone();
         all.extend_from_slice(interior);
         let tris = triangulate_constrained(&all, segments, &inside);
+        on_pass(&all, &tris);
         let mut split: Vec<usize> = Vec::new();
         let mut inserts: Vec<P2> = Vec::new();
 
@@ -755,6 +766,25 @@ pub fn refine_quality(
     smooth_interior(boundary, segments, interior, &inside, min_angle_deg, 4);
 }
 
+/// Sizing-field-driven Ruppert/Chew refinement (see [`refine_quality_with`])
+/// without per-pass snapshots -- the default path.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_quality(
+    boundary: &mut Vec<P2>,
+    segments: &mut Vec<(usize, usize)>,
+    refinable: &mut Vec<bool>,
+    interior: &mut Vec<P2>,
+    target: impl Fn(P2) -> f64,
+    inside: impl Fn(P2) -> bool,
+    min_angle_deg: f64,
+    target_count: usize,
+) {
+    refine_quality_with(
+        boundary, segments, refinable, interior, target, inside, min_angle_deg,
+        target_count, 60, |_, _| {},
+    );
+}
+
 /// Boundary-preserving ODT smoothing: after the Ruppert refinement has met the
 /// angle bound, relax each INTERIOR vertex toward the area-weighted optimal-
 /// Delaunay target of its incident triangles (the boundary edge points stay
@@ -866,8 +896,17 @@ pub fn cvt_fill(
     let nx = (((hi[0] - lo[0]) / step).ceil() as usize).max(1);
     let ny = (((hi[1] - lo[1]) / step).ceil() as usize).max(1);
     // Greedy graded scatter: keep a grid node only if it clears the boundary and
-    // every already-kept interior point by its OWN local radius.
+    // every already-kept interior point by its OWN local radius. A spatial hash
+    // (cell ~ the finest radius) makes each clearance test O(1) instead of O(n) --
+    // the scatter and the relaxation below were the fill's O(n^2) bottleneck.
+    let gc = (0.5 * step).max(1e-9);
+    let key = |p: P2| ((p[0] / gc).floor() as i64, (p[1] / gc).floor() as i64);
+    let mut bgrid: rustc_hash::FxHashMap<(i64, i64), Vec<P2>> = rustc_hash::FxHashMap::default();
+    for &b in boundary {
+        bgrid.entry(key(b)).or_default().push(b);
+    }
     let mut interior: Vec<P2> = Vec::new();
+    let mut igrid: rustc_hash::FxHashMap<(i64, i64), Vec<P2>> = rustc_hash::FxHashMap::default();
     for i in 1..nx {
         for j in 1..ny {
             let q = [lo[0] + i as f64 * step, lo[1] + j as f64 * step];
@@ -875,9 +914,8 @@ pub fn cvt_fill(
                 continue;
             }
             let r2 = sep2(q);
-            if boundary.iter().all(|&b| dist2(q, b) >= r2)
-                && interior.iter().all(|&p| dist2(q, p) >= r2)
-            {
+            if grid_clear(&bgrid, q, r2, gc, None) && grid_clear(&igrid, q, r2, gc, None) {
+                igrid.entry(key(q)).or_default().push(q);
                 interior.push(q);
             }
         }
@@ -919,6 +957,12 @@ pub fn cvt_fill(
                 den[v] += w;
             }
         }
+        // Rebuild the interior hash for this pass, then keep it live as points
+        // move (so later moves see earlier ones, as the O(n) scan did).
+        igrid.clear();
+        for &p in &interior {
+            igrid.entry(key(p)).or_default().push(p);
+        }
         for k in 0..interior.len() {
             let v = nb + k;
             if den[v] == 0.0 {
@@ -929,14 +973,146 @@ pub fn cvt_fill(
                 continue;
             }
             let r2 = sep2(tgt);
-            let clear = boundary.iter().all(|&b| dist2(tgt, b) >= r2)
-                && interior.iter().enumerate().all(|(m, &q)| m == k || dist2(tgt, q) >= r2);
-            if clear {
+            let old = interior[k];
+            if grid_clear(&bgrid, tgt, r2, gc, None) && grid_clear(&igrid, tgt, r2, gc, Some(old)) {
+                if let Some(cell) = igrid.get_mut(&key(old)) {
+                    if let Some(pos) = cell.iter().position(|&p| p == old) {
+                        cell.swap_remove(pos);
+                    }
+                }
+                igrid.entry(key(tgt)).or_default().push(tgt);
                 interior[k] = tgt;
             }
         }
     }
     interior
+}
+
+/// True if `q` is at least its own radius (`sqrt(r2)`) from every point in the
+/// spatial hash `grid` (cell size `gc`), optionally skipping one point `skip`
+/// (the query's own current position during relaxation). The cell window is
+/// sized to the radius, so it is exact -- no neighbour within range is missed.
+fn grid_clear(
+    grid: &rustc_hash::FxHashMap<(i64, i64), Vec<P2>>,
+    q: P2,
+    r2: f64,
+    gc: f64,
+    skip: Option<P2>,
+) -> bool {
+    let rc = (r2.sqrt() / gc).ceil() as i64 + 1;
+    let cx = (q[0] / gc).floor() as i64;
+    let cy = (q[1] / gc).floor() as i64;
+    for dx in -rc..=rc {
+        for dy in -rc..=rc {
+            if let Some(v) = grid.get(&(cx + dx, cy + dy)) {
+                for &p in v {
+                    if Some(p) == skip {
+                        continue;
+                    }
+                    if dist2(q, p) < r2 {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Even-odd point-in-contours test: inside the outer loop, outside the holes.
+fn pip_loops(p: P2, loops: &[Vec<P2>]) -> bool {
+    let mut inside = false;
+    for lp in loops {
+        let n = lp.len();
+        if n < 3 {
+            continue;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let (a, b) = (lp[i], lp[j]);
+            if ((a[1] > p[1]) != (b[1] > p[1]))
+                && (p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0])
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+    }
+    inside
+}
+
+/// Mesh a polygon-with-holes in ONE call -- the 2D entry point: contour loops
+/// and a sizing field in, a sliver-free graded triangle mesh out. This is the
+/// same path the surface stage runs per planar patch: a graded CVT seed
+/// ([`cvt_fill`]) fills the interior at the field density, Ruppert
+/// ([`refine_quality`]) enforces the angle bound, then the constrained
+/// triangulation is read back.
+///
+/// `loops` are the boundary contours -- the outer boundary followed by the holes
+/// (orientation irrelevant; membership is even-odd). `target` is the desired edge
+/// length at any point (uniform or graded). `step` seeds the CVT grid and should
+/// be about the finest target edge length. `min_angle_deg` is the Ruppert quality
+/// bound (e.g. 20). Returns `(points, triangles)`.
+pub fn mesh_polygon(
+    loops: &[Vec<P2>],
+    target: impl Fn(P2) -> f64,
+    step: f64,
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+) -> (Vec<P2>, Vec<[usize; 3]>) {
+    mesh_polygon_with(loops, target, step, min_angle_deg, cvt_iters, max_passes, |_, _| {})
+}
+
+/// [`mesh_polygon`] with a per-pass callback: `on_pass(points, triangles)` fires
+/// once per Ruppert pass with the current intermediate mesh -- for animating the
+/// refinement.
+#[allow(clippy::too_many_arguments)]
+pub fn mesh_polygon_with(
+    loops: &[Vec<P2>],
+    target: impl Fn(P2) -> f64,
+    step: f64,
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+    on_pass: impl FnMut(&[P2], &[[usize; 3]]),
+) -> (Vec<P2>, Vec<[usize; 3]>) {
+    let mut boundary: Vec<P2> = Vec::new();
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    for lp in loops {
+        let n = lp.len();
+        if n < 3 {
+            continue;
+        }
+        let base = boundary.len();
+        boundary.extend_from_slice(lp);
+        for i in 0..n {
+            segments.push((base + i, base + (i + 1) % n));
+        }
+    }
+    if boundary.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let (mut lo, mut hi) = (boundary[0], boundary[0]);
+    for &p in &boundary {
+        lo[0] = lo[0].min(p[0]);
+        lo[1] = lo[1].min(p[1]);
+        hi[0] = hi[0].max(p[0]);
+        hi[1] = hi[1].max(p[1]);
+    }
+
+    let inside = |p: P2| pip_loops(p, loops);
+    let mut interior = cvt_fill(&boundary, lo, hi, step, &target, cvt_iters, &inside, true);
+    let mut refin = vec![true; segments.len()];
+    refine_quality_with(
+        &mut boundary, &mut segments, &mut refin, &mut interior,
+        &target, &inside, min_angle_deg, 0, max_passes, on_pass,
+    );
+    let mut all = boundary.clone();
+    all.extend(interior);
+    let tris = triangulate_constrained(&all, &segments, &inside);
+    (all, tris)
 }
 
 #[cfg(test)]

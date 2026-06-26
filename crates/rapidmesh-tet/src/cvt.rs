@@ -1486,7 +1486,7 @@ mod tests {
         assert!(edge.values().all(|&c| c == 2), "cylinder boundary is a closed manifold");
     }
 
-    /// B2 GATE: surface sizing flows through `mesh_cdt` -- a finer `maxh_surf` makes a
+    /// B2 GATE: surface sizing flows through `mesh_cdt` -- a finer `cap_surf` makes a
     /// denser boundary triangulation (the per-entity sizing that previously did NOT
     /// reach mesh_cdt because it used `frozen_surface`).
     #[test]
@@ -1497,13 +1497,13 @@ mod tests {
             let plc = scene.assemble();
             let m = mesh_cdt(
                 &plc,
-                &MeshParams { maxh: 4.0, maxh_surf: hs, ..Default::default() },
+                &MeshParams { maxh: 4.0, cap_surf: hs, ..Default::default() },
             );
             m.faces.len()
         };
         let coarse = build(4.0);
         let fine = build(1.0);
-        assert!(fine > 2 * coarse, "finer maxh_surf must densify the boundary ({coarse} -> {fine})");
+        assert!(fine > 2 * coarse, "finer cap_surf must densify the boundary ({coarse} -> {fine})");
     }
 
     #[test]

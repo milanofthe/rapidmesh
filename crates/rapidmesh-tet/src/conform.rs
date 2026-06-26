@@ -253,22 +253,22 @@ pub struct MeshParams {
     /// tolerance: the volume size follows from the surface.)
     pub tol_surf: f64,
     /// Maximum element edge length on EDGES (1-cells), combined with the global
-    /// [`MeshParams::maxh`] as `min(maxh, maxh_edge)`. `INFINITY` = no extra cap.
-    pub maxh_edge: f64,
-    /// Maximum element edge length on SURFACES (2-cells); `min(maxh, maxh_surf)`.
-    pub maxh_surf: f64,
-    /// Maximum element edge length in the VOLUME (3-cells); `min(maxh, maxh_vol)`.
+    /// [`MeshParams::maxh`] as `min(maxh, cap_edge)`. `INFINITY` = no extra cap.
+    pub cap_edge: f64,
+    /// Maximum element edge length on SURFACES (2-cells); `min(maxh, cap_surf)`.
+    pub cap_surf: f64,
+    /// Maximum element edge length in the VOLUME (3-cells); `min(maxh, cap_vol)`.
     /// Per-region overrides come from [`MeshParams::region_maxh`].
-    pub maxh_vol: f64,
+    pub cap_vol: f64,
     /// Per-EDGE size override `(brep edge id, maxh)`: the hierarchical
     /// `g.region(..).surf(..).edge(..).maxh` resolves to entries here, overriding
-    /// the global [`MeshParams::maxh_edge`] on that specific edge.
+    /// the global [`MeshParams::cap_edge`] on that specific edge.
     pub edge_maxh: Vec<(u32, f64)>,
     /// Per-EDGE deflection override `(brep edge id, tol)`, overriding
     /// [`MeshParams::tol_edge`] on that edge.
     pub edge_tol: Vec<(u32, f64)>,
     /// Per-FACE size override `(brep face id, maxh)`, overriding
-    /// [`MeshParams::maxh_surf`] on that face.
+    /// [`MeshParams::cap_surf`] on that face.
     pub surf_maxh: Vec<(u32, f64)>,
     /// Per-FACE deflection override `(brep face id, tol)`, overriding
     /// [`MeshParams::tol_surf`] on that face.
@@ -304,9 +304,9 @@ impl Default for MeshParams {
             density_weighted: false,
             tol_edge: 1e-2,
             tol_surf: 1e-2,
-            maxh_edge: f64::INFINITY,
-            maxh_surf: f64::INFINITY,
-            maxh_vol: f64::INFINITY,
+            cap_edge: f64::INFINITY,
+            cap_surf: f64::INFINITY,
+            cap_vol: f64::INFINITY,
             edge_maxh: Vec::new(),
             edge_tol: Vec::new(),
             surf_maxh: Vec::new(),
@@ -344,9 +344,9 @@ impl MeshParams {
             density_weighted: self.density_weighted,
             tol_edge: self.tol_edge * s * s,
             tol_surf: self.tol_surf * s * s,
-            maxh_edge: self.maxh_edge * s,
-            maxh_surf: self.maxh_surf * s,
-            maxh_vol: self.maxh_vol * s,
+            cap_edge: self.cap_edge * s,
+            cap_surf: self.cap_surf * s,
+            cap_vol: self.cap_vol * s,
             edge_maxh: sv(&self.edge_maxh, s),
             edge_tol: sv(&self.edge_tol, s * s),
             surf_maxh: sv(&self.surf_maxh, s),
@@ -363,15 +363,15 @@ impl MeshParams {
     /// Effective edge-length cap on 1-cells: the global cap tightened by the
     /// per-dimension edge cap.
     pub fn edge_cap(&self) -> f64 {
-        self.maxh.min(self.maxh_edge)
+        self.maxh.min(self.cap_edge)
     }
     /// Effective edge-length cap on 2-cells (surfaces).
     pub fn surf_cap(&self) -> f64 {
-        self.maxh.min(self.maxh_surf)
+        self.maxh.min(self.cap_surf)
     }
     /// Effective edge-length cap in the 3-cell (volume).
     pub fn vol_cap(&self) -> f64 {
-        self.maxh.min(self.maxh_vol)
+        self.maxh.min(self.cap_vol)
     }
     /// Size cap for brep edge `id`: its per-edge override, else the edge cap.
     pub fn edge_maxh_for(&self, id: usize) -> f64 {

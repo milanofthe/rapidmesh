@@ -89,35 +89,43 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
     let mut points: Vec<Vec<Point3>> = vec![Vec::new(); n];
     let mut coplanar: HashSet<(usize, usize)> = HashSet::default();
 
-    for (mi, mj) in pairs {
-        let (fi, fj) = (member_facet[mi], member_facet[mj]);
-        if fi == fj {
-            // Two helper triangles of the SAME facet: coplanar, interior edges
-            // are not features.
-            continue;
-        }
-        if adjacency_skip(&members[mi], &members[mj]) {
-            continue;
-        }
-        match tri_tri_intersection(&members[mi], &members[mj]) {
-            TriTriIsect::Disjoint => {}
-            TriTriIsect::Touching(p) => {
-                points[fi].push(p.clone());
-                points[fj].push(p);
+    // The narrow phase -- the exact triangle/triangle test per candidate pair --
+    // is the other dominant cost on boolean-heavy scenes and each pair is
+    // independent, so run it in PARALLEL and scatter the (cheap) results serially.
+    enum PR {
+        Touch(usize, usize, Point3),       // mi, mj, point
+        Seg(usize, usize, Point3, Point3), // mi, mj, a, b
+        Cop(usize, usize),                 // mi, mj
+    }
+    use rayon::prelude::*;
+    let results: Vec<PR> = pairs
+        .par_iter()
+        .filter_map(|&(mi, mj)| {
+            // helper triangles of the SAME facet are coplanar interior, not features
+            if member_facet[mi] == member_facet[mj] || adjacency_skip(&members[mi], &members[mj]) {
+                return None;
             }
-            TriTriIsect::Segment(a, b) => {
-                cut[fi].entry(fj).or_default().push(CutSeg {
-                    a: a.clone(),
-                    b: b.clone(),
-                    plane: members[mj].v,
-                });
-                cut[fj].entry(fi).or_default().push(CutSeg {
-                    a,
-                    b,
-                    plane: members[mi].v,
-                });
+            match tri_tri_intersection(&members[mi], &members[mj]) {
+                TriTriIsect::Disjoint => None,
+                TriTriIsect::Touching(p) => Some(PR::Touch(mi, mj, p)),
+                TriTriIsect::Segment(a, b) => Some(PR::Seg(mi, mj, a, b)),
+                TriTriIsect::Coplanar => Some(PR::Cop(mi, mj)),
             }
-            TriTriIsect::Coplanar => {
+        })
+        .collect();
+    for r in results {
+        match r {
+            PR::Touch(mi, mj, p) => {
+                points[member_facet[mi]].push(p.clone());
+                points[member_facet[mj]].push(p);
+            }
+            PR::Seg(mi, mj, a, b) => {
+                let (fi, fj) = (member_facet[mi], member_facet[mj]);
+                cut[fi].entry(fj).or_default().push(CutSeg { a: a.clone(), b: b.clone(), plane: members[mj].v });
+                cut[fj].entry(fi).or_default().push(CutSeg { a, b, plane: members[mi].v });
+            }
+            PR::Cop(mi, mj) => {
+                let (fi, fj) = (member_facet[mi], member_facet[mj]);
                 coplanar.insert((fi.min(fj), fi.max(fj)));
             }
         }
@@ -145,42 +153,44 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
     }
 
     // Per facet: merge cut sub-segments into constraints, then triangulate the
-    // facet once from its boundary plus all constraints.
-    let mut out_facets = Vec::with_capacity(n);
-    let mut out_constraints = Vec::with_capacity(n);
-    for f in 0..n {
-        let mut constraints: Vec<Constraint> = std::mem::take(&mut cop[f]);
-        for segs in cut[f].values() {
-            for group in collinear_groups(segs) {
-                let raw: Vec<(Point3, Point3)> =
-                    group.iter().map(|s| (s.a.clone(), s.b.clone())).collect();
-                let merged = merge_on_line(&group[0].a, &group[0].b, &raw);
-                for (a, b) in merged {
-                    constraints.push(Constraint {
-                        a,
-                        b,
-                        line: ConstraintLine::PlaneCut(group[0].plane),
-                    });
+    // facet once from its boundary plus all constraints. Each facet is independent
+    // (it reads only its own cut/coplanar/point sets), so this -- the dominant cost
+    // on boolean-heavy scenes -- runs in PARALLEL; `unzip` keeps the result order
+    // identical to the serial loop.
+    let (out_facets, out_constraints): (Vec<_>, Vec<_>) = cop
+        .into_par_iter()
+        .enumerate()
+        .map(|(f, mut constraints)| {
+            for segs in cut[f].values() {
+                for group in collinear_groups(segs) {
+                    let raw: Vec<(Point3, Point3)> =
+                        group.iter().map(|s| (s.a.clone(), s.b.clone())).collect();
+                    let merged = merge_on_line(&group[0].a, &group[0].b, &raw);
+                    for (a, b) in merged {
+                        constraints.push(Constraint {
+                            a,
+                            b,
+                            line: ConstraintLine::PlaneCut(group[0].plane),
+                        });
+                    }
                 }
             }
-        }
-
-        let facet = &input[f].boundary;
-        let (axis, orientation) = facet.projection_axis();
-        let plane3 = noncollinear_triple(&facet.outer);
-        let (seed_pool, seed_tris) = build_seed(facet, &input[f].helpers);
-        let ft = triangulate_seeded(
-            axis,
-            orientation,
-            plane3,
-            seed_pool,
-            seed_tris,
-            &points[f],
-            &constraints,
-        );
-        out_facets.push(ft);
-        out_constraints.push(constraints);
-    }
+            let facet = &input[f].boundary;
+            let (axis, orientation) = facet.projection_axis();
+            let plane3 = noncollinear_triple(&facet.outer);
+            let (seed_pool, seed_tris) = build_seed(facet, &input[f].helpers);
+            let ft = triangulate_seeded(
+                axis,
+                orientation,
+                plane3,
+                seed_pool,
+                seed_tris,
+                &points[f],
+                &constraints,
+            );
+            (ft, constraints)
+        })
+        .unzip();
 
     Arrangement {
         facets: out_facets,

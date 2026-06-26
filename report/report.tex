@@ -63,6 +63,8 @@
 \definecolor{rmolive}{HTML}{C4C46B}    % olive
 \pgfplotscreateplotcyclelist{rm}{%
   {rmaccent},{rmamber},{rmgreen},{rmpurple},{rmblue},{rmolive}}
+% rapidmom report style: accent the caption labels (Figure/Table N).
+\captionsetup{labelfont={bf,color=rmaccent}}
 % Plain black-and-white diagram styles (white fill, black stroke, black text).
 \tikzset{
   >={Stealth[length=4.5pt]},
@@ -106,7 +108,7 @@
 \usepackage[
   pdftitle={rapidmesh: Hierarchical Bottom-Up Variational Meshing},
   pdfauthor={rapidmesh},
-  colorlinks=true, linkcolor=black, citecolor=black, urlcolor=rmblue
+  colorlinks=true, linkcolor=rmaccent, citecolor=rmaccent, urlcolor=rmblue
 ]{hyperref}
 \usepackage[noabbrev]{cleveref}
 \crefname{principle}{Principle}{Principles}
@@ -114,10 +116,10 @@
 \crefname{algocf}{Algorithm}{Algorithms}
 \Crefname{algocf}{Algorithm}{Algorithms}
 
-\title{\textbf{rapidmesh}\\[2pt]
-\large A Hierarchical Bottom-Up Variational Meshing Algorithm\\
-\large for B-Rep Solids with Analytic and NURBS Geometry}
-\author{Specification and mathematical derivation}
+\title{\textbf{\textcolor{rmaccent}{rapidmesh}}\\[2pt]
+\large A Pure-Rust Hierarchical Mesher for B-Rep Solids:\\
+\large Conforming Tetrahedra, Sliver-Free Surfaces, FEM/MoM Export}
+\author{Milan Rother}
 \date{\today}
 
 \begin{document}
@@ -1237,15 +1239,122 @@ that keeps recovery cheap and slivers rare
 \cite{AlliezCohenSteiner2005,TournoisAlliez2009}.
 
 % ============================================================================
+\section{Surface meshing and adaptivity}
+\label{sec:surface}
+% ============================================================================
+The same machinery also runs as a \emph{standalone surface mesher}: the planar
+surface stage (\cref{sec:faces}) exported on its own, with no volume, as the 2D
+product an electromagnetic surface solver (method-of-moments, 2D FEM) consumes.
+Here quality is the deliverable rather than a by-product of the volume constraint,
+so the planar patches are triangulated by a guaranteed-quality Delaunay refinement
+in place of the fixed-pass CVT.
+
+\subsection{Sliver-free Ruppert/Chew refinement}
+Each planar patch is refined by a sizing-field-driven Ruppert/Chew loop
+\cite{Ruppert1995,Chew1993}: a triangle whose circumradius-to-shortest-edge ratio
+exceeds the bound (equivalently, whose smallest angle is below the target) has its
+circumcenter inserted; a boundary segment encroached by such an insertion is split
+at its midpoint instead. The loop terminates with a guaranteed \emph{minimum
+angle} --- the implementation targets $20^\circ$ --- so the output is
+\emph{sliver-free at any density}, and no triangle exceeds the local sizing target
+$h(\vv{x})$, so the mesh grades smoothly. An apex-indexed encroachment test and a
+hash-grid spacing guard keep the refinement near-linear (the two quadratic costs of
+a naive Ruppert removed).
+
+A \emph{boundary-preserving} optimal-Delaunay (ODT) smoothing then equalises the
+interior: each free vertex moves toward the area-weighted ODT target
+\eqref{eq:odt}, under-relaxed, with the boundary frozen and a per-pass guard that
+reverts any pass which would drop the global minimum angle below the bound. This
+keeps the Ruppert guarantee while removing the density jump a bare refinement
+leaves just inside the boundary.
+
+\subsection{Element and triangle budgets}
+\label{sec:budget}
+Both meshers take an optional \emph{budget}. \code{mesh(target\_elements=$N$)}
+retunes the single global size scale over a few remeshes: because the element
+count scales as $\mathrm{scale}^{-3}$, each step multiplies the scale by
+$(n/N)^{1/3}$, so the final count lands within a few percent of $N$ while the
+\emph{relative} refinement (curvature, size points) keeps its shape.
+\code{surface\_mesh(target\_triangles=$N$)} is instead a \emph{cap}: the
+count-driven Ruppert resolves the field down to its floor $h_{\min}$ but stops once
+the triangle count reaches $N$ (the budget split across patches by area), spending
+its last splits on the worst-quality triangles. One mesh therefore yields
+$\min(\text{field-resolved},\,\text{budget})$, still graded and sliver-free.
+
+\subsection{Adaptive refinement (D\"orfler marking)}
+\label{sec:amr}
+The surface mesher closes the \textsc{mark}\,$\to$\,\textsc{refine} half of an
+adaptive loop; \textsc{solve} and \textsc{estimate} belong to the solver. Given a
+per-triangle error indicator $\eta_t$ (an a-posteriori estimator, e.g.\
+$\mathrm{area}\cdot\lvert\nabla u\rvert$), \emph{D\"orfler bulk marking}
+\cite{Doerfler1996} selects the smallest element set $\mathcal{M}$ whose summed
+\emph{squared} indicator reaches a fraction $\theta$ of the total,
+\begin{equation}
+  \sum_{t\in\mathcal{M}} \eta_t^2 \;\ge\; \theta \sum_t \eta_t^2,
+  \qquad \theta\in(0,1]\ (\text{default }0.5),
+  \label{eq:dorfler}
+\end{equation}
+the energy-norm convention. Each marked element becomes a \emph{point size source}
+at $h_{\text{local}}/\text{factor}$ (clamped to $h_{\min}$): the mesher's
+gradient-limited grading spreads it into a smooth background field and the Ruppert
+refinement re-triangulates, so \emph{every adapted mesh stays sliver-free} with the
+same guaranteed minimum angle. One \textsc{estimate}\,$\to$\,\textsc{mark}\,$\to$%
+\,\textsc{refine} step is \code{refine\_dorfler}; iterated, it concentrates
+resolution where the error lives.
+
+The indicator must be a \emph{proper} a-posteriori estimator --- the per-element
+error, which \emph{shrinks} as an element refines ($\eta\sim h^k$). Then
+$\mathcal{M}$ stays small and the loop converges. A pointwise field that does
+\emph{not} shrink on refinement (a bare $e^{-r^2}$, say) makes D\"orfler re-mark the
+same region every pass, so the refinement never localises --- it ``refines
+everywhere'', the failure the squared-indicator marking exists to avoid.
+
+% ============================================================================
+\section{FEM and MoM export}
+\label{sec:export}
+% ============================================================================
+Because the mesher is a pure-Rust library, its meshes are consumed in-process by
+sibling Rust solvers (the method-of-moments code \textsf{rapidmom} bundles
+\code{rapidmesh-tet} as a crate). Beyond the raw points and triangles, the surface
+mesh exposes the derived connectivity a surface solver would otherwise rebuild
+(\code{rapidmesh\_tet::mom}):
+\begin{itemize}[nosep,leftmargin=1.4em]
+  \item \emph{edge adjacency} --- each undirected edge mapped to its up-to-two
+        incident triangles and their conductor tags;
+  \item \emph{RWG basis edges} --- the surface degrees of freedom: interior edges
+        shared by two triangles of the \emph{same} conductor, returned as
+        $[v_0,v_1,t_+,t_-]$ with the current orientation $+\!\to\!-$;
+  \item the \emph{conductor outline} (boundary edges --- a free side or a tag
+        change) and \emph{port edges} (boundary edges on a query line), the
+        excitation the solver feeds;
+  \item per-triangle \emph{area} and \emph{minimum angle}, the element-quality
+        field (all $\ge$ the Ruppert bound).
+\end{itemize}
+These are computed natively and validated bit-identical to a reference NumPy
+implementation, so a Rust solver drives the whole mesh\,$\to$\,assemble pipeline
+with no Python in the loop.
+
+\paragraph{Hierarchical per-entity sizing.}
+The geometry API exposes a fluent selector,
+\code{g.region($s$).surf($s$).edge($s$).maxh}\,/\,\code{.tol}, that resolves a
+scope to B-rep entity ids natively (\code{rapidmesh\_brep::Topology}): a region by
+tag, a face by tag/normal/proximity, an edge by its bounding regions, kind, or
+proximity. A bare dimension scope (\code{g.surf().maxh}) sets the global
+per-dimension target; a filtered scope sets the per-entity overrides the sizing
+field then honours, so a single curved face or one conductor edge is refined
+without touching the rest.
+
+% ============================================================================
 \section{Validation}
 \label{sec:validation}
 % ============================================================================
-The algorithm is validated on a from-scratch corpus of roughly ninety geometries
+The algorithm is validated on a from-scratch corpus of ninety-five geometries
 generated directly through the geometry API (no pre-baked tessellations), spanning
-eight families: \emph{2D plates} (the planar surface stage in isolation),
+nine families: \emph{2D plates} (the planar surface stage in isolation),
 \emph{analytic primitives}, \emph{CSG booleans} and multi-region assemblies,
 hierarchical \emph{sizing} and \emph{gradation} cases, parametric \emph{shape}
-sweeps, \emph{showcase} models, and \emph{RF/EM} structures. Each geometry is
+sweeps, \emph{showcase} models, \emph{RF/EM} structures, and \emph{passives}
+(method-of-moments spiral inductors and transformers, meshed as surfaces). Each geometry is
 meshed at its default density and rendered headlessly by the project's WebGPU
 rasterizer --- which runs the \emph{same} scene pipeline as the live viewer, with
 no browser --- into a \textsc{normal} view (region-coloured, volumes clipped to
@@ -1257,10 +1366,11 @@ the longtables below, and every mesh is shown in the gallery at the end of this
 section.
 
 \medskip\noindent
-\textbf{Summary.} 89 of 90 geometries mesh (one RF assembly is a degenerate
-input). All 23 analytic-primitive and box-derived (sizing, gradation) volume
-meshes are watertight and free of slivers and straddlers, at the expected
-isotropic quality (minimum dihedral typically $12$--$20^\circ$). On the harder
+\textbf{Summary.} 93 of 95 geometries mesh (two RF/passives assemblies are
+degenerate inputs). Of the 72 volume meshes, 48 are watertight and 40 are free of
+slivers and straddlers; the analytic-primitive and box-derived (sizing, gradation)
+families are watertight and sliver-free at the expected isotropic quality (minimum
+dihedral typically $12$--$20^\circ$). On the harder
 curved-boolean, showcase and RF families watertightness is \emph{partial}: the
 residual failures concentrate on \emph{curved material interfaces} --- where a
 chosen curved-facet triangulation is not force-recovered (\cref{sec:volume}) ---

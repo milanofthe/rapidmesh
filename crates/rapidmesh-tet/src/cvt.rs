@@ -392,13 +392,25 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // domain or too-close-to-surface targets are rejected.
     let t_lloyd = std::time::Instant::now();
     let n_surf = surf_points.len();
-    let build_full = |all_pos: &[V3]| -> Vec<[usize; 4]> {
-        let order = crate::spatial::morton_order(all_pos);
-        let mut db = DelaunayBuilder::enclosing(lo, hi);
-        let mut orig: Vec<usize> = Vec::with_capacity(order.len());
-        for &i in &order {
-            if db.try_insert(all_pos[i]).is_some() {
-                orig.push(i);
+    // Surface base Delaunay, built ONCE: the surface points are frozen, so each
+    // Lloyd pass CLONES this and inserts only the (moving + growing) interior --
+    // instead of re-inserting the whole surface every pass, which was the bulk of
+    // build_full on surface-heavy meshes. `surf_orig` maps a builder vertex (by
+    // successful-insertion rank) back to its `all` index; the surface occupies
+    // `all[0..n_surf]`, the interior `all[n_surf..]`.
+    let mut surf_base = DelaunayBuilder::enclosing(lo, hi);
+    let mut surf_orig: Vec<usize> = Vec::with_capacity(n_surf);
+    for &i in &crate::spatial::morton_order(&surf_points) {
+        if surf_base.try_insert(surf_points[i]).is_some() {
+            surf_orig.push(i);
+        }
+    }
+    let build_full = |interior: &[V3]| -> Vec<[usize; 4]> {
+        let mut db = surf_base.clone();
+        let mut orig = surf_orig.clone();
+        for &i in &crate::spatial::morton_order(interior) {
+            if db.try_insert(interior[i]).is_some() {
+                orig.push(n_surf + i);
             }
         }
         db.tets().into_iter().map(|t| std::array::from_fn(|j| orig[t[j]])).collect()
@@ -413,7 +425,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         lloyd_passes += 1;
         let mut all: Vec<V3> = surf_points.clone();
         all.extend_from_slice(&interior);
-        let tets = build_full(&all);
+        let tets = build_full(&interior);
         // Per-tet accumulation in PARALLEL (rayon fold-reduce): the per-tet work --
         // the sliver dihedral check + in-domain test + the ODT weight scatter -- is
         // the bulk of a Lloyd pass (build_full is only ~5-9%), and each tet is

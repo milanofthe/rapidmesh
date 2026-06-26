@@ -671,10 +671,27 @@ pub fn refine_quality_with(
                 if !(angle_bad || size_bad) {
                     continue;
                 }
-                if let Some((si, _)) = segments.iter().enumerate().find(|&(si, &(u, v))| {
-                    refinable[si] && dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v)
-                }) {
+                // Encroachment: a circumcentre inside a boundary segment's
+                // diametral circle. A refinable segment is split; a PROTECTED one
+                // makes us drop the insert -- jamming a point against a fixed edge
+                // is exactly what seeds the boundary slivers, so we leave the
+                // (mildly bad) triangle rather than make it worse.
+                let mut split_seg = None;
+                let mut hits_protected = false;
+                for (si, &(u, v)) in segments.iter().enumerate() {
+                    if dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v) {
+                        if refinable[si] {
+                            split_seg = Some(si);
+                            break;
+                        }
+                        hits_protected = true;
+                    }
+                }
+                if let Some(si) = split_seg {
                     split.push(si);
+                    continue;
+                }
+                if hits_protected {
                     continue;
                 }
                 if inside(cc) {
@@ -1041,6 +1058,22 @@ fn pip_loops(p: P2, loops: &[Vec<P2>]) -> bool {
     inside
 }
 
+/// Squared distance from point `p` to segment `a`-`b`.
+fn pt_seg_dist2(p: P2, a: P2, b: P2) -> f64 {
+    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+    let (wx, wy) = (p[0] - a[0], p[1] - a[1]);
+    let c1 = vx * wx + vy * wy;
+    if c1 <= 0.0 {
+        return wx * wx + wy * wy;
+    }
+    let c2 = vx * vx + vy * vy;
+    if c2 <= c1 {
+        return (p[0] - b[0]).powi(2) + (p[1] - b[1]).powi(2);
+    }
+    let t = c1 / c2;
+    (p[0] - (a[0] + t * vx)).powi(2) + (p[1] - (a[1] + t * vy)).powi(2)
+}
+
 /// Mesh a polygon-with-holes in ONE call -- the 2D entry point: contour loops
 /// and a sizing field in, a sliver-free graded triangle mesh out. This is the
 /// same path the surface stage runs per planar patch: a graded CVT seed
@@ -1104,7 +1137,20 @@ pub fn mesh_polygon_with(
 
     let inside = |p: P2| pip_loops(p, loops);
     let mut interior = cvt_fill(&boundary, lo, hi, step, &target, cvt_iters, &inside, true);
-    let mut refin = vec![true; segments.len()];
+    // cvt_fill clears boundary POINTS but not boundary EDGES, so a seed can land
+    // just under a contour segment and form a flat boundary triangle. Drop seeds
+    // closer than ~half the local size to any segment; the boundary is fixed, so
+    // this is the cleanest place to enforce edge clearance.
+    interior.retain(|&p| {
+        let r2 = (0.5 * target(p)).powi(2);
+        !segments.iter().any(|&(u, v)| pt_seg_dist2(p, boundary[u], boundary[v]) < r2)
+    });
+    // The caller pre-samples the contours at the field, so the boundary is
+    // PROTECTED: Ruppert refines the interior but never re-splits a contour edge.
+    // (Encroachment splitting would chase the CVT seed points sitting ~0.5*h off
+    // the boundary, cascading into ever-finer boundary points and the thin
+    // boundary spikes that result.)
+    let mut refin = vec![false; segments.len()];
     refine_quality_with(
         &mut boundary, &mut segments, &mut refin, &mut interior,
         &target, &inside, min_angle_deg, 0, max_passes, on_pass,

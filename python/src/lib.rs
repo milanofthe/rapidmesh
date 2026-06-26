@@ -943,6 +943,78 @@ impl PySurfaceMesh {
         }
         Ok(d)
     }
+
+    // ---- MoM/FEM mesh info (computed in Rust; see rapidmesh_tet::mom) -------
+
+    /// `(edges, faces, tags)` each shape `(E, 2)` int64; see
+    /// [`rapidmesh_tet::SurfaceMesh::edge_adjacency`].
+    fn edge_adjacency<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (
+        Bound<'py, PyArray2<i64>>,
+        Bound<'py, PyArray2<i64>>,
+        Bound<'py, PyArray2<i64>>,
+    ) {
+        let adj = self.mesh.edge_adjacency();
+        let n = adj.edges.len();
+        let edges: Vec<i64> = adj.edges.iter().flat_map(|e| [e[0] as i64, e[1] as i64]).collect();
+        let tris: Vec<i64> = adj.tris.iter().flatten().copied().collect();
+        let tags: Vec<i64> = adj.tags.iter().flatten().copied().collect();
+        let mk = |v: Vec<i64>| {
+            numpy::ndarray::Array2::from_shape_vec((n, 2), v)
+                .expect("shape")
+                .into_pyarray_bound(py)
+        };
+        (mk(edges), mk(tris), mk(tags))
+    }
+
+    /// RWG basis edges `[v0, v1, tri_plus, tri_minus]`, shape `(D, 4)` int64.
+    fn rwg_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
+        let r = self.mesh.rwg_edges();
+        let flat: Vec<i64> = r.iter().flatten().copied().collect();
+        numpy::ndarray::Array2::from_shape_vec((r.len(), 4), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Conductor-outline edges `[v0, v1, tri]`, shape `(B, 3)` int64.
+    fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
+        let b = self.mesh.boundary_edges();
+        let flat: Vec<i64> = b.iter().flatten().copied().collect();
+        numpy::ndarray::Array2::from_shape_vec((b.len(), 3), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Boundary edges on the line `{axis = value}` within `[lo, hi]` on the first
+    /// other axis, shape `(k, 2)` int64.
+    #[pyo3(signature = (axis, value, lo, hi, tol=1e-7))]
+    fn edges_on_line<'py>(
+        &self,
+        py: Python<'py>,
+        axis: usize,
+        value: f64,
+        lo: f64,
+        hi: f64,
+        tol: f64,
+    ) -> Bound<'py, PyArray2<i64>> {
+        let e = self.mesh.edges_on_line(axis, value, lo, hi, tol);
+        let flat: Vec<i64> = e.iter().flat_map(|p| [p[0] as i64, p[1] as i64]).collect();
+        numpy::ndarray::Array2::from_shape_vec((e.len(), 2), flat)
+            .expect("shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// Per-triangle area, shape `(n_faces,)`.
+    fn face_areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.mesh.face_areas().into_pyarray_bound(py)
+    }
+
+    /// Per-triangle minimum interior angle in degrees, shape `(n_faces,)`.
+    fn face_min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.mesh.face_min_angles().into_pyarray_bound(py)
+    }
 }
 
 #[pymodule]

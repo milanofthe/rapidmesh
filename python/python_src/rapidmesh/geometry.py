@@ -269,86 +269,44 @@ class SurfaceMesh:
         )
 
     # ---- MoM/FEM mesh info -------------------------------------------------
-    # Derived structure a surface solver needs but would otherwise rebuild from
-    # scratch: edge adjacency, RWG degrees of freedom, the conductor outline,
-    # port edges, and per-triangle quality. All vectorised, computed once.
+    # Thin wrappers over the Rust implementation (rapidmesh_tet::mom): edge
+    # adjacency, RWG degrees of freedom, the conductor outline, port edges, and
+    # per-triangle quality. Computed natively so a Rust solver (rapidmom) gets the
+    # same data without Python.
 
     def edge_adjacency(self):
-        """Undirected edge -> incident triangles. Returns ``(edges, faces, tags)``:
-
-        - ``edges`` (E, 2) int64: edge endpoints, ``v0 < v1``
-        - ``faces`` (E, 2) int64: the up-to-two incident triangle indices
-          (``-1`` for a free side)
-        - ``tags``  (E, 2) int64: ``face_tags`` of those triangles (``-1`` if none)
-
-        Manifold per conductor; a non-manifold edge keeps two of its triangles.
-        Cached on first use."""
-        cache = getattr(self, "_edge_cache", None)
-        if cache is not None:
-            return cache
-        f = np.asarray(self.faces, dtype=np.int64)
-        ft = np.asarray(self.face_tags, dtype=np.int64)
-        ev = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0)
-        ev.sort(axis=1)
-        tri = np.tile(np.arange(len(f), dtype=np.int64), 3)
-        uniq, inv = np.unique(ev, axis=0, return_inverse=True)
-        inv = inv.ravel()
-        faces = np.full((len(uniq), 2), -1, dtype=np.int64)
-        order = np.argsort(inv, kind="stable")
-        eo, to = inv[order], tri[order]
-        second = np.zeros(len(eo), dtype=bool)
-        second[1:] = eo[1:] == eo[:-1]
-        faces[eo[~second], 0] = to[~second]
-        faces[eo[second], 1] = to[second]
-        tags = np.where(faces >= 0, ft[faces.clip(min=0)], -1)
-        cache = (uniq, faces, tags)
-        self._edge_cache = cache
-        return cache
+        """Undirected edge -> incident triangles. Returns ``(edges, faces, tags)``,
+        each ``(E, 2)`` int64: edge endpoints (``v0 < v1``); the up-to-two incident
+        triangle indices (``-1`` for a free side); their ``face_tags`` (``-1`` if
+        none). Manifold per conductor."""
+        return self._native.edge_adjacency()
 
     def rwg_edges(self):
         """MoM RWG basis edges = the surface degrees of freedom: interior edges
         shared by two triangles of the SAME conductor tag. Returns ``(D, 4)``
         int64 ``[v0, v1, tri_plus, tri_minus]`` (current flows + -> -)."""
-        edges, faces, tags = self.edge_adjacency()
-        interior = (faces[:, 1] >= 0) & (tags[:, 0] == tags[:, 1])
-        return np.column_stack([edges[interior], faces[interior]]).astype(np.int64)
+        return self._native.rwg_edges()
 
     def boundary_edges(self):
         """Conductor outline = edges with only one same-tag triangle (a free side
         or a tag change). Returns ``(B, 3)`` int64 ``[v0, v1, tri]``."""
-        edges, faces, tags = self.edge_adjacency()
-        bnd = (faces[:, 1] < 0) | (tags[:, 0] != tags[:, 1])
-        return np.column_stack([edges[bnd], faces[bnd, 0]]).astype(np.int64)
+        return self._native.boundary_edges()
 
     def edges_on_line(self, axis, value, lo, hi, tol=1e-7):
         """Port helper: boundary edges whose BOTH endpoints lie on the line
         ``{axis = value}`` within ``[lo, hi]`` (``axis`` is ``'x'``/``'y'``/``'z'``
         or 0/1/2). Returns ``(k, 2)`` int64 vertex pairs."""
         a = {"x": 0, "y": 1, "z": 2}.get(axis, axis)
-        b = [c for c in range(3) if c != a]
-        p = np.asarray(self.points, float)
-        be = self.boundary_edges()[:, :2]
-        v = p[be]                                    # (B, 2, 3)
-        on = (np.abs(v[:, :, a] - value) <= tol) & \
-             (v[:, :, b[0]] >= lo - tol) & (v[:, :, b[0]] <= hi + tol)
-        keep = on.all(axis=1)
-        return be[keep]
+        return self._native.edges_on_line(a, value, lo, hi, tol)
 
     def face_areas(self):
         """Per-triangle area (input units), shape ``(n_faces,)``."""
-        p = np.asarray(self.points, float)[np.asarray(self.faces)]
-        return 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+        return self._native.face_areas()
 
     def face_min_angles(self):
         """Per-triangle minimum interior angle in degrees, shape ``(n_faces,)`` --
         the element-quality field (all >= the Ruppert bound)."""
-        p = np.asarray(self.points, float)[np.asarray(self.faces)]
-        def ang(u, v, w):
-            e1, e2 = v - u, w - u
-            c = np.sum(e1 * e2, 1) / (np.linalg.norm(e1, axis=1) * np.linalg.norm(e2, axis=1) + 1e-30)
-            return np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
-        a, b, c = p[:, 0], p[:, 1], p[:, 2]
-        return np.minimum.reduce([ang(a, b, c), ang(b, c, a), ang(c, a, b)])
+        return self._native.face_min_angles()
 
 
 def _refresh_manifest(directory: Path) -> None:

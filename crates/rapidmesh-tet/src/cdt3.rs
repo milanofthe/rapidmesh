@@ -17,83 +17,8 @@
 //! recovered the boundary only statistically (\cref{sec:conformity}).
 
 use crate::delaunay::DelaunayBuilder;
-use rapidmesh_geom::vec3::{V3, sub, dot};
+use rapidmesh_geom::vec3::V3;
 use crate::site::{Carrier, Site};
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
-
-/// Deterministic hashing: region flooding iterates face buckets, and the mesh
-/// must be reproducible run to run.
-type BH = BuildHasherDefault<rustc_hash::FxHasher>;
-// ---- region classification by flood fill ------------------------------------
-
-/// Assigns each tet a region tag by flood fill, blocked by the surface. The
-/// oracle `surface_face(&sorted_tri)` returns `Some((front, back, n))` if that
-/// tet face lies on the surface, with the region tags on the side the outward
-/// normal `n` points to (front) and the opposite side (back), else `None` for an
-/// interior face. Seeds each surface face's two incident tets by which side of
-/// the face they sit on, then floods the tag across non-surface faces. This is
-/// exact-conformant: no centroid test, the surface partitions the tets directly
-/// (\cref{prop:watertight}). Tags follow the surface's region labelling; `0` is
-/// the background void.
-pub fn classify_regions(
-    tets: &[[usize; 4]],
-    points: &[V3],
-    surface_face: impl Fn(&[usize; 3]) -> Option<(u32, u32, V3)>,
-) -> Vec<u32> {
-    let sorted = |f: [usize; 3]| {
-        let mut s = f;
-        s.sort_unstable();
-        s
-    };
-    // Face -> incident tets (1 on the hull, 2 in the interior).
-    let mut face_tets: HashMap<[usize; 3], Vec<usize>, BH> = HashMap::default();
-    for (ti, t) in tets.iter().enumerate() {
-        for f in &[[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
-            face_tets.entry(sorted(*f)).or_default().push(ti);
-        }
-    }
-    let mut region = vec![u32::MAX; tets.len()];
-    // Seed: each surface face sets the region of its incident tet(s) by side.
-    for (f, owners) in &face_tets {
-        let (front, back, n) = match surface_face(f) {
-            Some(x) => x,
-            None => continue,
-        };
-        for &ti in owners {
-            let apex = *tets[ti].iter().find(|v| !f.contains(v)).unwrap();
-            // The tet is on the front side iff its apex is on the normal side.
-            let s = dot(sub(points[apex], points[f[0]]), n);
-            region[ti] = if s > 0.0 { front } else { back };
-        }
-    }
-    // Flood the tag across non-surface shared faces.
-    let mut stack: Vec<usize> = (0..tets.len()).filter(|&i| region[i] != u32::MAX).collect();
-    while let Some(ti) = stack.pop() {
-        let t = tets[ti];
-        for f in &[[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
-            let key = sorted(*f);
-            if surface_face(&key).is_some() {
-                continue; // a surface face does not connect two regions
-            }
-            if let Some(owners) = face_tets.get(&key) {
-                for &nb in owners {
-                    if nb != ti && region[nb] == u32::MAX {
-                        region[nb] = region[ti];
-                        stack.push(nb);
-                    }
-                }
-            }
-        }
-    }
-    // Any tet the flood never reached (isolated by degeneracy) is background.
-    for r in &mut region {
-        if *r == u32::MAX {
-            *r = 0;
-        }
-    }
-    region
-}
 
 /// Output of [`tetrahedralize_constrained`].
 pub struct Constrained {
@@ -101,12 +26,6 @@ pub struct Constrained {
     pub tets: Vec<[usize; 4]>,
     /// f64 vertex positions (surface verts, interior, recovered Steiner).
     pub points: Vec<V3>,
-    /// The refined constraint triangulation (the surface after recovery splits),
-    /// indices into `points`. Every triangle here is a face of two tets.
-    pub surf_tris: Vec<[usize; 3]>,
-    /// Per refined triangle, the index of the original constraint triangle it was
-    /// split from (so the caller carries region/tag/surface through recovery).
-    pub surf_parent: Vec<usize>,
     /// `points[..n_surf_verts]` are the original surface vertices.
     pub n_surf_verts: usize,
 }
@@ -156,16 +75,13 @@ pub fn tetrahedralize_constrained(
         }
     }
 
-    // Constraint triangles, tagged with their parent index (for region/tag) and
-    // facet carrier. PLANAR facets are conformed by coplanarity (the Delaunay tiles
-    // the plane; region volumes stay bit-exact). CURVED facets are NOT forced: the
-    // curved boundary is the restricted Delaunay of the surface points (extracted
-    // downstream by region difference). Forcing a chosen curved triangulation needed
-    // unbounded Steiner (a barrel band is not near-Delaunay); the restricted Delaunay
-    // is recovery-free and curved geometry is tolerance-based anyway (the pivot).
-    let tris: Vec<[usize; 3]> = tris.to_vec();
-    let parent: Vec<usize> = (0..tris.len()).collect();
-
+    // Constraint triangles are conformed implicitly: PLANAR facets by coplanarity
+    // (the Delaunay tiles the plane; region volumes stay bit-exact). CURVED facets
+    // are NOT forced -- the curved boundary is the restricted Delaunay of the
+    // surface points (extracted downstream by region difference). Forcing a chosen
+    // curved triangulation needed unbounded Steiner (a barrel band is not
+    // near-Delaunay); the restricted Delaunay is recovery-free and curved geometry
+    // is tolerance-based anyway (the pivot).
     let b2a = invert(&vs, db.len());
     let tets: Vec<[usize; 4]> = db
         .tets()
@@ -173,7 +89,7 @@ pub fn tetrahedralize_constrained(
         .map(|t| std::array::from_fn(|j| b2a[t[j]]))
         .collect();
     let points: Vec<V3> = vs.iter().map(|v| v.pos).collect();
-    Constrained { tets, points, surf_tris: tris, surf_parent: parent, n_surf_verts }
+    Constrained { tets, points, n_surf_verts }
 }
 
 /// Inverse map builder index -> `vs` index (`usize::MAX` for builder slots that
@@ -304,30 +220,5 @@ mod tests {
             area += 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
         }
         assert!((area - 6.0).abs() < 1e-9, "cube surface area must be 6, got {area}");
-    }
-
-    #[test]
-    fn cube_region_flood_fill_tags_every_interior_tet() {
-        let (verts, tris, carr) = subdivided_cube(3);
-        let interior = vec![[0.5, 0.5, 0.5], [0.3, 0.6, 0.4], [0.7, 0.4, 0.6]];
-        let c = tetrahedralize_constrained(&verts, &tris, &carr, &interior, [0.0; 3], [1.0; 3]);
-        // Oracle: a face on a cube plane separates inside (region 1) from the
-        // background void (0); the outward normal points out of the cube.
-        let oracle = |f: &[usize; 3]| -> Option<(u32, u32, V3)> {
-            let p = [c.points[f[0]], c.points[f[1]], c.points[f[2]]];
-            for k in 0..3 {
-                for (val, dir) in [(0.0, -1.0), (1.0, 1.0)] {
-                    if p.iter().all(|q| q[k] == val) {
-                        let mut n = [0.0, 0.0, 0.0];
-                        n[k] = dir;
-                        return Some((0, 1, n)); // front (out) = 0, back (in) = 1
-                    }
-                }
-            }
-            None
-        };
-        let region = classify_regions(&c.tets, &c.points, oracle);
-        assert_eq!(region.len(), c.tets.len());
-        assert!(region.iter().all(|&r| r == 1), "every tet inside the cube is region 1");
     }
 }

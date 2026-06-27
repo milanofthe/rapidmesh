@@ -117,10 +117,6 @@ impl FacetBvh {
         FacetBvh { tris, targets, order, nodes }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.tris.is_empty()
-    }
-
     /// Distance from `p` to the nearest facet (INFINITY if empty).
     pub fn nearest_dist(&self, p: V3) -> f64 {
         if self.nodes.is_empty() {
@@ -129,47 +125,6 @@ impl FacetBvh {
         let mut best2 = f64::INFINITY;
         self.nearest_rec(0, p, &mut best2);
         best2.sqrt()
-    }
-
-    /// Nearest facet to `p` as `(distance, facet index)` (index into the build
-    /// order), or `None` if empty. Used by the local-feature-size field, which
-    /// needs WHICH facet is nearest (to test it is across the solid, not a
-    /// convex-edge neighbour).
-    pub fn nearest(&self, p: V3) -> Option<(f64, usize)> {
-        if self.nodes.is_empty() {
-            return None;
-        }
-        let mut best2 = f64::INFINITY;
-        let mut best_i = usize::MAX;
-        self.nearest_idx_rec(0, p, &mut best2, &mut best_i);
-        (best_i != usize::MAX).then(|| (best2.sqrt(), best_i))
-    }
-
-    fn nearest_idx_rec(&self, ni: usize, p: V3, best2: &mut f64, best_i: &mut usize) {
-        let n = &self.nodes[ni];
-        if box_dist2(n.lo, n.hi, p) >= *best2 {
-            return;
-        }
-        if n.count > 0 {
-            for &fi in &self.order[n.start as usize..(n.start + n.count) as usize] {
-                let d2 = point_tri_dist2(p, &self.tris[fi as usize]);
-                if d2 < *best2 {
-                    *best2 = d2;
-                    *best_i = fi as usize;
-                }
-            }
-            return;
-        }
-        let (l, r) = (n.left as usize, n.right as usize);
-        let dl = box_dist2(self.nodes[l].lo, self.nodes[l].hi, p);
-        let dr = box_dist2(self.nodes[r].lo, self.nodes[r].hi, p);
-        if dl <= dr {
-            self.nearest_idx_rec(l, p, best2, best_i);
-            self.nearest_idx_rec(r, p, best2, best_i);
-        } else {
-            self.nearest_idx_rec(r, p, best2, best_i);
-            self.nearest_idx_rec(l, p, best2, best_i);
-        }
     }
 
     fn nearest_rec(&self, ni: usize, p: V3, best2: &mut f64) {
@@ -453,6 +408,5 @@ mod tests {
     fn empty_is_safe() {
         let bvh = FacetBvh::build(&[]);
         assert_eq!(bvh.nearest_dist([0.0; 3]), f64::INFINITY);
-        assert!(bvh.is_empty());
     }
 }

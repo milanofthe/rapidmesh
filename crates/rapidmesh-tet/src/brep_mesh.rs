@@ -318,19 +318,31 @@ pub fn edge_curve(edge: &BEdge) -> Option<Box<dyn Curve>> {
 pub struct SurfaceSites {
     /// Corner + edge points (pinned), then per-face interior points.
     pub sites: Vec<Site>,
+    // The next five fields are per-entity PROVENANCE/sizing emitted alongside the
+    // sites. The volume stage (`cvt::mesh`) currently does NOT read them: it
+    // recomputes a point's sizing from the domain field (`domain.h_at`, which
+    // already folds in per-edge/per-face targets) and takes face tags from the
+    // frozen surface triangulation (`tris`/`SurfaceFace.face_tag`). They are kept
+    // and unit-tested as the provenance a per-entity-aware volume path would
+    // consume directly (the same per-entity-carrier theme as #31/#32), so that
+    // work has a proven mapping to build on rather than re-deriving it.
     /// `sites.len()` -- all of `sites` are surface points.
+    #[allow(dead_code)]
     pub n_surf: usize,
     /// Per site: the B-rep face it tiles, or `u32::MAX` for a shared corner/edge
     /// point (which defers its output tag to an interior face point).
+    #[allow(dead_code)]
     pub point_tile: Vec<u32>,
     /// Per site: the local target edge length it was generated at (the per-entity
-    /// `edge_maxh`/`surf_maxh` resolution). The volume stage uses this as the
-    /// point's `point_size` so the quality post-pass does NOT coarsen an
-    /// intentionally refined edge/face back to the bulk size.
+    /// `edge_maxh`/`surf_maxh` resolution), so a per-entity-aware volume stage can
+    /// avoid coarsening an intentionally refined edge/face back to the bulk size.
+    #[allow(dead_code)]
     pub point_size: Vec<f64>,
     /// Per B-rep face: `(originating plc surface index, face tag)` for output.
+    #[allow(dead_code)]
     pub tiles: Vec<(u32, FaceTag)>,
     /// Number of pinned corner points (the `plc_points` count).
+    #[allow(dead_code)]
     pub plc_points: usize,
     /// The frozen surface triangulation (indices into `sites`), tagged with each
     /// face's region pair / tag / analytic surface. This is what makes the

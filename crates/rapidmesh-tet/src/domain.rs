@@ -2,14 +2,9 @@
 //! domain, refined to the local sizing field h(x). Everything queries it:
 //!
 //!   * `h_at(p)`        — the sizing field (per-leaf, cached).
-//!   * `seed_points()`  — one graded volume seed per interior leaf (small leaves
-//!                        near the boundary, large in the bulk -> graded density).
 //!   * `region_at(p)`   — the material region (cached per leaf; exact ray-cast
 //!                        only on boundary leaves), which accelerates tet
 //!                        classification from O(tets * faces) to ~O(tets).
-//!   * `neighbors(p, r)`— sites within `r`, from the per-leaf site buckets
-//!                        (re-bucketed each Lloyd pass); the Lloyd neighbor
-//!                        search runs on this same tree.
 //!
 //! h(x) = min( region cap, surface_h + grading * dist-to-boundary, point
 //! sources ); Lipschitz by the grading term, so it grows smoothly from the fine
@@ -38,7 +33,6 @@ struct Leaf {
     /// farther from the boundary than the leaf circumradius), so the whole leaf
     /// is one region and the cached `region` is trustworthy without a ray-cast.
     uniform: bool,
-    sites: Vec<u32>,
 }
 
 const SQRT3: f64 = 1.732_050_807_568_877_2;
@@ -60,11 +54,8 @@ pub struct DomainTree {
     root: Node,
     regions: Vec<RegionSoup>,
     bbox: ([f64; 3], [f64; 3]),
-    /// Finest target edge length `s0` (the global `finest_cap`): the base BCC
-    /// spacing for graded seeding.
+    /// Finest target edge length `s0` (the global `finest_cap`): the base spacing.
     finest: f64,
-    /// Coarsest target (the bulk `maxh`): caps the grading levels.
-    maxh: f64,
     /// Hard minimum SURFACE element-size floor (absolute), applied at query time
     /// by [`DomainTree::h_at_surf`]. `0` = off. (The volume floor is applied
     /// inline in `mesh_cdt`, so it is not stored here.)
@@ -277,17 +268,10 @@ impl DomainTree {
             regions,
             bbox,
             finest: spacing,
-            maxh,
             min_h_surf: params.min_h_surf,
         }
     }
 
-    pub fn lo(&self) -> V3 {
-        self.lo
-    }
-    pub fn hi(&self) -> V3 {
-        self.hi
-    }
     /// Finest target edge length `s0` anywhere in the domain (the base spacing).
     pub fn finest(&self) -> f64 {
         self.finest
@@ -367,66 +351,6 @@ impl DomainTree {
         }
     }
 
-    pub fn inside(&self, p: V3) -> bool {
-        self.region_at(p) != 0
-    }
-
-    /// Graded BCC volume seeds, aligned to the domain origin `lo` at the base
-    /// spacing `s0 = finest`.
-    ///
-    /// A BCC lattice is the set of grid points (in half-spacing units `u = s0/2`)
-    /// whose three indices share a parity: all-even is the corner sublattice,
-    /// all-odd is the body-centered sublattice. Its Delaunay dual is the well
-    /// conditioned BCC tetrahedralization, and it tiles boundaries cleanly.
-    ///
-    /// To grade it, each node is assigned a level `L = floor(log2(h(p)/s0))` from
-    /// the octree sizing field and kept only if it is a node of the level-`L` BCC
-    /// (spacing `s0 * 2^L`): corner-`L` nodes have all indices `≡ 0 (mod 2^{L+1})`,
-    /// body-`L` nodes all `≡ 2^L (mod 2^{L+1})`. Where `h = s0` (L = 0) every BCC
-    /// node survives (the full fine lattice, identical to a uniform BCC, so flat
-    /// and faceted interfaces tile exactly); coarse regions decimate to a proper
-    /// coarse BCC. The result is origin-aligned, so it matches the surface
-    /// sampling grid. The caller filters to the interior and clear of the surface.
-    pub fn seed_points(&self) -> Vec<V3> {
-        let s0 = self.finest;
-        if !(s0.is_finite() && s0 > 0.0) {
-            return Vec::new();
-        }
-        let u = 0.5 * s0; // half-spacing grid unit
-        let lmax = (if self.maxh > s0 { (self.maxh / s0).log2().ceil() as i64 + 1 } else { 0 })
-            .clamp(0, 30);
-        // Walk the octree and emit, per leaf, only the level-L BCC nodes inside
-        // it (its `h` sets L). Each leaf spans ~one level-L cell, so this is
-        // O(leaves) = O(output) instead of iterating the whole finest grid over
-        // the bbox (which exploded when a fine size source made `s0` tiny). A
-        // node on a leaf boundary is emitted by both leaves, so dedup on the
-        // integer half-unit index.
-        let center: V3 = std::array::from_fn(|k| 0.5 * (self.lo[k] + self.hi[k]));
-        let half = (0..3).map(|k| self.hi[k] - self.lo[k]).fold(0.0, f64::max) * 0.5 * 1.0001;
-        let mut seen: std::collections::HashSet<[i64; 3]> = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        collect_leaf_bcc(&self.root, center, half, self.lo, u, s0, lmax, &mut seen, &mut out);
-        out
-    }
-
-    /// Clears and re-fills the per-leaf site buckets from `positions`.
-    pub fn rebucket(&mut self, positions: &[V3]) {
-        clear_sites(&mut self.root);
-        let center: V3 = std::array::from_fn(|k| 0.5 * (self.lo[k] + self.hi[k]));
-        let half = (0..3).map(|k| self.hi[k] - self.lo[k]).fold(0.0, f64::max) * 0.5 * 1.0001;
-        for (i, &p) in positions.iter().enumerate() {
-            insert_site(&mut self.root, center, half, p, i as u32);
-        }
-    }
-
-    /// Site indices within Euclidean distance `r` of `p`.
-    pub fn neighbors(&self, p: V3, r: f64) -> Vec<u32> {
-        let mut out = Vec::new();
-        let center: V3 = std::array::from_fn(|k| 0.5 * (self.lo[k] + self.hi[k]));
-        let half = (0..3).map(|k| self.hi[k] - self.lo[k]).fold(0.0, f64::max) * 0.5 * 1.0001;
-        gather(&self.root, center, half, p, r * r, &mut out);
-        out
-    }
 }
 
 
@@ -613,119 +537,7 @@ fn build_node(
         // No boundary facet reaches into the leaf if the center is farther from
         // the boundary than the leaf circumradius (half * sqrt(3)).
         let uniform = d > half * SQRT3;
-        Node::Leaf(Leaf { h, region, uniform, sites: Vec::new() })
-    }
-}
-
-/// Emits the level-L BCC nodes inside each leaf (L from the leaf's `h`), the
-/// graded-seed generator. `lo` is the lattice origin, `u = s0/2` the half-unit;
-/// `seen` dedups nodes shared on leaf boundaries by their integer index.
-#[allow(clippy::too_many_arguments)]
-fn collect_leaf_bcc(
-    node: &Node,
-    center: V3,
-    half: f64,
-    lo: V3,
-    u: f64,
-    s0: f64,
-    lmax: i64,
-    seen: &mut std::collections::HashSet<[i64; 3]>,
-    out: &mut Vec<V3>,
-) {
-    match node {
-        Node::Leaf(l) => {
-            let lvl =
-                (if l.h > s0 { (l.h / s0).log2().floor() as i64 } else { 0 }).clamp(0, lmax);
-            let m = 1i64 << (lvl + 1); // index period of the level-L lattice
-            let want = 1i64 << lvl; // body-sublattice offset (corner offset 0)
-            // Half-open index range [a_lo, a_hi) covering the leaf box per axis.
-            let idx_lo: [i64; 3] =
-                std::array::from_fn(|k| ((center[k] - half - lo[k]) / u).ceil() as i64);
-            let idx_hi: [i64; 3] =
-                std::array::from_fn(|k| ((center[k] + half - lo[k]) / u).ceil() as i64);
-            // First index >= lo with `idx % m == off`.
-            let first = |a_lo: i64, off: i64| a_lo + (off - a_lo).rem_euclid(m);
-            for off in [0, want] {
-                let mut a = first(idx_lo[0], off);
-                while a < idx_hi[0] {
-                    let mut b = first(idx_lo[1], off);
-                    while b < idx_hi[1] {
-                        let mut c = first(idx_lo[2], off);
-                        while c < idx_hi[2] {
-                            if seen.insert([a, b, c]) {
-                                out.push([
-                                    lo[0] + a as f64 * u,
-                                    lo[1] + b as f64 * u,
-                                    lo[2] + c as f64 * u,
-                                ]);
-                            }
-                            c += m;
-                        }
-                        b += m;
-                    }
-                    a += m;
-                }
-            }
-        }
-        Node::Inner(ch) => {
-            for (oct, c) in ch.iter().enumerate() {
-                let (cc, hh) = child_box(center, half, oct);
-                collect_leaf_bcc(c, cc, hh, lo, u, s0, lmax, seen, out);
-            }
-        }
-    }
-}
-
-fn clear_sites(node: &mut Node) {
-    match node {
-        Node::Leaf(l) => l.sites.clear(),
-        Node::Inner(ch) => {
-            for c in ch.iter_mut() {
-                clear_sites(c);
-            }
-        }
-    }
-}
-
-fn insert_site(node: &mut Node, center: V3, half: f64, p: V3, idx: u32) {
-    match node {
-        Node::Leaf(l) => l.sites.push(idx),
-        Node::Inner(ch) => {
-            let mut oct = 0;
-            for k in 0..3 {
-                if p[k] >= center[k] {
-                    oct |= 1 << k;
-                }
-            }
-            let (cc, hh) = child_box(center, half, oct);
-            insert_site(&mut ch[oct], cc, hh, p, idx);
-        }
-    }
-}
-
-fn box_dist2(center: V3, half: f64, p: V3) -> f64 {
-    let mut d2 = 0.0;
-    for k in 0..3 {
-        let e = (p[k] - center[k]).abs() - half;
-        if e > 0.0 {
-            d2 += e * e;
-        }
-    }
-    d2
-}
-
-fn gather(node: &Node, center: V3, half: f64, p: V3, r2: f64, out: &mut Vec<u32>) {
-    if box_dist2(center, half, p) > r2 {
-        return;
-    }
-    match node {
-        Node::Leaf(l) => out.extend_from_slice(&l.sites),
-        Node::Inner(ch) => {
-            for (oct, c) in ch.iter().enumerate() {
-                let (cc, hh) = child_box(center, half, oct);
-                gather(c, cc, hh, p, r2, out);
-            }
-        }
+        Node::Leaf(Leaf { h, region, uniform })
     }
 }
 
@@ -768,27 +580,10 @@ mod tests {
         let t = DomainTree::build(&plc, &MeshParams { maxh: 0.8, ..Default::default() }, &[]);
         assert_ne!(t.region_at([2.0, 2.0, 2.0]), 0, "center inside");
         assert_eq!(t.region_at([-1.0, 2.0, 2.0]), 0, "outside");
-        assert!(t.inside([2.0, 2.0, 2.0]) && !t.inside([5.0, 2.0, 2.0]));
     }
 
     #[test]
-    fn seeds_form_a_bcc_lattice() {
-        // seed_points returns origin-aligned BCC candidates over the bbox; the
-        // caller filters to the interior. A uniform box yields the full fine BCC:
-        // both sublattices present and many candidates land inside.
-        let plc = cube_plc(4.0);
-        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.5, grading: 0.5, ..Default::default() }, &[]);
-        let seeds = t.seed_points();
-        let inside: Vec<_> = seeds.iter().filter(|s| t.inside(**s)).collect();
-        assert!(inside.len() > 50, "expected a populated interior lattice, got {}", inside.len());
-        // s0 = 0.5, u = 0.25: corner nodes at even (i*0.5), body at odd (i*0.5+0.25).
-        let has_corner = inside.iter().any(|s| (s[0] / 0.5).fract().abs() < 1e-9);
-        let has_body = inside.iter().any(|s| ((s[0] - 0.25) / 0.5).fract().abs() < 1e-9);
-        assert!(has_corner && has_body, "both BCC sublattices present");
-    }
-
-    #[test]
-    fn seeds_grade_by_region() {
+    fn grades_by_region() {
         // A coarse box (maxh) with a finer interior cube (region_maxh) seeds the
         // fine region denser than the coarse one.
         let mut scene = Scene::new();
@@ -802,15 +597,5 @@ mod tests {
         );
         // h is finer inside the small cube than out in the bulk.
         assert!(t.h_at([4.0, 4.0, 4.0]) < t.h_at([0.5, 0.5, 0.5]));
-    }
-
-    #[test]
-    fn neighbors_finds_nearby_sites() {
-        let plc = cube_plc(4.0);
-        let mut t = DomainTree::build(&plc, &MeshParams { maxh: 1.0, ..Default::default() }, &[]);
-        let pts = vec![[2.0, 2.0, 2.0], [2.3, 2.0, 2.0], [3.9, 3.9, 3.9]];
-        t.rebucket(&pts);
-        let near = t.neighbors([2.0, 2.0, 2.0], 0.5);
-        assert!(near.contains(&0) && near.contains(&1) && !near.contains(&2));
     }
 }

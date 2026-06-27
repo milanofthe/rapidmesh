@@ -84,14 +84,24 @@ pub struct Site {
     pos: V3,
 }
 
+// The `Edge`/`CurvedEdge`/`Volume` carriers and the relaxation primitive
+// `move_to` are the carrier-RELAXATION model: points distributed along their
+// 1D/3D carrier instead of frozen to the input tessellation. The current path
+// pins edges (the brep emits only `Plane`/`Surface` carriers and `Vertex`
+// corners), so these constructors are not yet wired into production -- they are
+// the scaffolding for the planned edge-carrier work (tasks #31/#32: use the
+// analytic intersection curve as the edge carrier everywhere, eliminate pinned
+// facets). Kept and unit-tested so that work builds on a proven carrier model.
 impl Site {
     pub fn vertex(p: V3) -> Site {
         Site { carrier: Carrier::Vertex, pos: p }
     }
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn free(p: V3) -> Site {
         Site { carrier: Carrier::Volume, pos: p }
     }
     /// A point on the segment `a`-`b` at parameter `t`.
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn on_edge(a: V3, b: V3, t: f64) -> Site {
         Site { carrier: Carrier::Edge { a, b }, pos: add(a, scale(sub(b, a), t)) }
     }
@@ -108,6 +118,7 @@ impl Site {
         s
     }
     /// A point on the curve where `fa` and `fb` meet, between corners `ea`/`eb`.
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn on_curved_edge(fa: EdgeFace, fb: EdgeFace, ea: V3, eb: V3, pos: V3) -> Site {
         let mut s = Site { carrier: Carrier::CurvedEdge { fa, fb, ea, eb }, pos };
         s.pos = s.project(pos);
@@ -118,6 +129,7 @@ impl Site {
     /// already on the carrier, e.g. a surface point the bottom-up stages produced
     /// on its plane/curve). The constructor used to attach carriers to the frozen
     /// surface for the volume stage.
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn at(carrier: Carrier, pos: V3) -> Site {
         Site { carrier, pos }
     }
@@ -125,6 +137,7 @@ impl Site {
     pub fn pos(&self) -> V3 {
         self.pos
     }
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn is_volume(&self) -> bool {
         matches!(self.carrier, Carrier::Volume)
     }
@@ -168,6 +181,7 @@ impl Site {
     }
 
     /// Move toward `tgt`, re-projected onto the carrier. `Vertex` never moves.
+    #[allow(dead_code)] // scaffolding for #31/#32 (see note above)
     pub fn move_to(&mut self, tgt: V3) {
         if !matches!(self.carrier, Carrier::Vertex) {
             self.pos = self.project(tgt);

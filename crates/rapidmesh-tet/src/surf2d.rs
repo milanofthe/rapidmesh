@@ -1123,10 +1123,41 @@ pub fn mesh_polygon_with(
             segments.push((base + i, base + (i + 1) % n));
         }
     }
-    if boundary.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
+    mesh_constrained(
+        boundary, segments, target, |p| pip_loops(p, loops),
+        step, min_angle_deg, 0, cvt_iters, max_passes, on_pass,
+    )
+}
 
+/// THE 2D meshing core, shared by EVERY 2D mesh in the project (the surface
+/// stage's planar patches and the landing page): a fixed boundary (`boundary`
+/// points + constraint `segments`), a sizing `target`, and an `inside`
+/// predicate in -> a graded, sliver-free triangulation out.
+///
+/// A graded CVT seed ([`cvt_fill`]) fills the interior at the field; seeds that
+/// would hide under a contour edge are dropped (edge clearance); then Ruppert
+/// ([`refine_quality_with`]) refines the interior with the boundary PROTECTED --
+/// the caller pre-samples the contours, so re-splitting them would only chase the
+/// seed points off the boundary into thin spikes. `target_count` caps the element
+/// count (0 = field-driven); `step` seeds the CVT grid; `max_passes`/`cvt_iters`
+/// bound the work. Returns `(points, triangles)` with the boundary first
+/// (unchanged) then the interior.
+#[allow(clippy::too_many_arguments)]
+pub fn mesh_constrained(
+    mut boundary: Vec<P2>,
+    mut segments: Vec<(usize, usize)>,
+    target: impl Fn(P2) -> f64,
+    inside: impl Fn(P2) -> bool,
+    step: f64,
+    min_angle_deg: f64,
+    target_count: usize,
+    cvt_iters: usize,
+    max_passes: usize,
+    on_pass: impl FnMut(&[P2], &[[usize; 3]]),
+) -> (Vec<P2>, Vec<[usize; 3]>) {
+    if boundary.len() < 3 {
+        return (boundary, Vec::new());
+    }
     let (mut lo, mut hi) = (boundary[0], boundary[0]);
     for &p in &boundary {
         lo[0] = lo[0].min(p[0]);
@@ -1134,28 +1165,22 @@ pub fn mesh_polygon_with(
         hi[0] = hi[0].max(p[0]);
         hi[1] = hi[1].max(p[1]);
     }
-
-    let inside = |p: P2| pip_loops(p, loops);
     let mut interior = cvt_fill(&boundary, lo, hi, step, &target, cvt_iters, &inside, true);
     // cvt_fill clears boundary POINTS but not boundary EDGES, so a seed can land
     // just under a contour segment and form a flat boundary triangle. Drop seeds
-    // closer than ~half the local size to any segment; the boundary is fixed, so
-    // this is the cleanest place to enforce edge clearance.
+    // closer than ~half the local size to any segment.
     interior.retain(|&p| {
         let r2 = (0.5 * target(p)).powi(2);
         !segments.iter().any(|&(u, v)| pt_seg_dist2(p, boundary[u], boundary[v]) < r2)
     });
-    // The caller pre-samples the contours at the field, so the boundary is
-    // PROTECTED: Ruppert refines the interior but never re-splits a contour edge.
-    // (Encroachment splitting would chase the CVT seed points sitting ~0.5*h off
-    // the boundary, cascading into ever-finer boundary points and the thin
-    // boundary spikes that result.)
+    // The boundary is PROTECTED (caller pre-samples it): Ruppert refines the
+    // interior but never re-splits a contour edge, so no boundary spikes.
     let mut refin = vec![false; segments.len()];
     refine_quality_with(
         &mut boundary, &mut segments, &mut refin, &mut interior,
-        &target, &inside, min_angle_deg, 0, max_passes, on_pass,
+        &target, &inside, min_angle_deg, target_count, max_passes, on_pass,
     );
-    let mut all = boundary.clone();
+    let mut all = boundary;
     all.extend(interior);
     let tris = triangulate_constrained(&all, &segments, &inside);
     (all, tris)

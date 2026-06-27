@@ -1066,34 +1066,45 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // Pure Ruppert from the boundary when refining (it grades to the field
         // itself); otherwise the Lloyd scatter. Mixing Lloyd points with refinement
         // seeds slivers, so refine starts from an empty interior.
-        let mut interior2 = if params.surf_min_angle > 0.0 {
-            Vec::new()
-        } else {
-            cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted)
-        };
         if params.surf_min_angle > 0.0 {
-            let mut bnd: Vec<[f64; 2]> = loc2[..nb].to_vec();
-            let mut refin = vec![true; bsegs.len()];
-            crate::surf2d::refine_quality(&mut bnd, &mut bsegs, &mut refin, &mut interior2, target, inside2, params.surf_min_angle, patch_budget[li]);
-            for &uv in &bnd[nb..] {
+            // Sliver-free 2D path: the unified core (graded CVT seed +
+            // edge-clearance + protected-boundary Ruppert), shared with the
+            // landing page. The boundary stays first (unchanged) in `all2`.
+            let (all2, tris) = crate::surf2d::mesh_constrained(
+                loc2[..nb].to_vec(), bsegs, target, inside2, step,
+                params.surf_min_angle, patch_budget[li], SURF_LLOYD_ITERS, 60, |_, _| {},
+            );
+            for &uv in &all2[nb..] {
+                points.push(lift3(uv, drop, p0, n));
+                gidx.push(points.len() - 1);
+            }
+            for t in tris {
+                faces.push(SurfaceFace {
+                    tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
+                    face_tag: patch.face_tag,
+                    regions: patch.regions,
+                    patch: pi as u32,
+                    surface: patch.surface,
+                });
+            }
+        } else {
+            // Volume stage: plain Lloyd scatter (unchanged for now).
+            let interior2 =
+                cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted);
+            for uv in interior2 {
                 points.push(lift3(uv, drop, p0, n));
                 loc2.push(uv);
                 gidx.push(points.len() - 1);
             }
-        }
-        for uv in interior2 {
-            points.push(lift3(uv, drop, p0, n));
-            loc2.push(uv);
-            gidx.push(points.len() - 1);
-        }
-        for t in crate::surf2d::triangulate_constrained(&loc2, &bsegs, inside2) {
-            faces.push(SurfaceFace {
-                tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
-                face_tag: patch.face_tag,
-                regions: patch.regions,
-                patch: pi as u32,
-                surface: patch.surface,
-            });
+            for t in crate::surf2d::triangulate_constrained(&loc2, &bsegs, inside2) {
+                faces.push(SurfaceFace {
+                    tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
+                    face_tag: patch.face_tag,
+                    regions: patch.regions,
+                    patch: pi as u32,
+                    surface: patch.surface,
+                });
+            }
         }
     }
 

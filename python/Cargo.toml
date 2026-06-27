@@ -12,6 +12,7 @@ rapidmesh-exact = { path = "../crates/rapidmesh-exact" }
 rapidmesh-geom = { path = "../crates/rapidmesh-geom" }
 rapidmesh-brep = { path = "../crates/rapidmesh-brep" }
 rapidmesh-tet = { path = "../crates/rapidmesh-tet" }
+rapidmesh-topo = { path = "../crates/rapidmesh-topo", features = ["mesher"] }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 numpy = "0.22"
 

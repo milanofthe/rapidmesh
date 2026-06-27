@@ -398,6 +398,103 @@ class SurfaceMesh:
                 os.unlink(path)
 
 
+@dataclass
+class Region2D:
+    """A tagged 2D region for :func:`mesh_2d`: an outer loop with optional holes,
+    all in the xy plane. ``tag`` flows to every triangle of this region (the
+    conductor / layer id a MoM build reads for same-tag RWG edges)."""
+
+    outer: list[tuple[float, float]]
+    tag: int = 1
+    holes: list[list[tuple[float, float]]] | None = None
+
+
+class Mesh2D:
+    """A 2D mesh from the production 2D path (the gmsh-grade ``surf2d`` mesher the
+    wasm landing uses) -- the canonical 2D / MoM endpoint.
+
+    Attributes
+    ----------
+    points : (n_points, 2) float64
+        vertex coordinates (2D)
+    tris : (n_tris, 3) uint64
+        triangles (CCW)
+    tri_tags : (n_tris,) int64
+        conductor / layer tag per triangle
+    """
+
+    def __init__(self, native) -> None:
+        self._native = native
+        self.points: np.ndarray = native.points()
+        self.tris: np.ndarray = native.tris()
+        self.tri_tags: np.ndarray = native.tri_tags()
+        self.stats: dict = native.stats()
+
+    def __repr__(self) -> str:
+        s = self.stats
+        return f"Mesh2D({s['n_tris']} tris, {s['n_points']} points, {s['millis']} ms)"
+
+    def rwg_edges(self):
+        """RWG-eligible edges = interior edges shared by two SAME-tag triangles,
+        ``(D, 4)`` int64 ``[v0, v1, tri_plus, tri_minus]``. The solver builds the
+        actual basis/DOFs on top."""
+        return self._native.rwg_edges()
+
+    def boundary_edges(self):
+        """Conductor outline = edges with a free side or a tag change, ``(B, 3)``
+        int64 ``[v0, v1, tri]``."""
+        return self._native.boundary_edges()
+
+    def edges_on_line(self, axis, value, lo, hi, tol=1e-7):
+        """Port helper: boundary edges on the line ``{axis = value}`` within
+        ``[lo, hi]`` (``axis`` is ``'x'``/``'y'`` or 0/1). ``(k, 2)`` int64."""
+        a = {"x": 0, "y": 1}.get(axis, axis)
+        return self._native.edges_on_line(a, value, lo, hi, tol)
+
+    def areas(self):
+        """Per-triangle area, ``(n_tris,)`` float64."""
+        return self._native.areas()
+
+
+def mesh_2d(
+    regions,
+    h: float,
+    *,
+    min_angle_deg: float = 28.0,
+    cvt_iters: int = 4,
+    max_passes: int = 12,
+) -> Mesh2D:
+    """THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
+    (``surf2d`` -- the same gmsh-grade mesher the wasm landing runs), into one
+    bundle. This is the canonical 2D / MoM path (the 3D :meth:`Geometry.mesh` is
+    its 3D counterpart).
+
+    Parameters
+    ----------
+    regions : list[Region2D | tuple]
+        the tagged 2D regions; each a :class:`Region2D`, or an
+        ``(outer, tag, holes)`` tuple (``outer`` a list of ``(x, y)``).
+    h : float
+        target edge length (uniform sizing field).
+    min_angle_deg, cvt_iters, max_passes : optional
+        Ruppert min-angle bound, CVT seed iterations, max refinement passes.
+    """
+    norm = []
+    for r in regions:
+        if isinstance(r, Region2D):
+            outer, tag, holes = r.outer, r.tag, (r.holes or [])
+        else:
+            outer = r[0]
+            tag = r[1] if len(r) > 1 else 1
+            holes = r[2] if len(r) > 2 else []
+        norm.append((
+            [list(p) for p in outer],
+            [[list(p) for p in hl] for hl in holes],
+            int(tag),
+        ))
+    return Mesh2D(_native.mesh_2d(norm, float(h), min_angle_deg, cvt_iters, max_passes))
+
+
 def _refresh_manifest(directory: Path) -> None:
     """Manifest = every geometry with a rapidmesh JSON present, canonical
     comparison scenes first (mirrors the Rust exporter's write_manifest)."""

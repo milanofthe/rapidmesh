@@ -17,6 +17,7 @@ use rapidmesh_tet::{
     mesh_cdt_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams, QualityStats,
     SurfaceMesh, TetMesh,
 };
+use rapidmesh_topo::{mesh_2d as topo_mesh_2d, Mesh2D as TopoMesh2D, Mesh2DOptions, Region2D};
 
 /// Incremental scene builder (one solid/sheet per call); the Python layer
 /// owns naming, defaults, and validation.
@@ -1105,12 +1106,104 @@ fn set_log_level(level: Option<&str>) {
     rapidmesh_exact::log::set_level(level.and_then(rapidmesh_exact::log::Level::parse));
 }
 
+// ---- 2D production path (surf2d): the canonical 2D / MoM endpoint -----------
+
+/// A 2D mesh from the production 2D path (`rapidmesh_topo::mesh_2d`): vertices,
+/// triangles, per-triangle tag, and the MoM topology queries.
+#[pyclass]
+struct PyMesh2D {
+    inner: TopoMesh2D,
+    millis: u64,
+}
+
+#[pymethods]
+impl PyMesh2D {
+    /// Vertex coordinates, shape (n_points, 2).
+    fn points<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let n = self.inner.points.len();
+        let flat: Vec<f64> = self.inner.points.iter().flatten().copied().collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 2), flat).expect("shape").into_pyarray_bound(py)
+    }
+
+    /// Triangle connectivity, shape (n_tris, 3).
+    fn tris<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
+        let n = self.inner.tris.len();
+        let flat: Vec<u64> = self.inner.tris.iter().flat_map(|t| t.map(|v| v as u64)).collect();
+        numpy::ndarray::Array2::from_shape_vec((n, 3), flat).expect("shape").into_pyarray_bound(py)
+    }
+
+    /// Conductor / layer tag per triangle, shape (n_tris,).
+    fn tri_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i64>> {
+        self.inner.tri_tags.clone().into_pyarray_bound(py)
+    }
+
+    /// RWG-eligible edges `[v0, v1, tri_plus, tri_minus]`, shape (D, 4) int64.
+    fn rwg_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
+        let r = self.inner.rwg_candidate_edges();
+        let flat: Vec<i64> = r.iter().flat_map(|e| e.map(|v| v as i64)).collect();
+        numpy::ndarray::Array2::from_shape_vec((r.len(), 4), flat).expect("shape").into_pyarray_bound(py)
+    }
+
+    /// Conductor-outline edges `[v0, v1, tri]`, shape (B, 3) int64.
+    fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
+        let b = self.inner.boundary_edges();
+        let flat: Vec<i64> = b.iter().flat_map(|e| e.map(|v| v as i64)).collect();
+        numpy::ndarray::Array2::from_shape_vec((b.len(), 3), flat).expect("shape").into_pyarray_bound(py)
+    }
+
+    /// Boundary edges on `{axis = value}` within `[lo, hi]` (axis 0/1), shape (k, 2).
+    #[pyo3(signature = (axis, value, lo, hi, tol=1e-7))]
+    fn edges_on_line<'py>(&self, py: Python<'py>, axis: usize, value: f64, lo: f64, hi: f64, tol: f64) -> Bound<'py, PyArray2<i64>> {
+        let e = self.inner.edges_on_line(axis, value, lo, hi, tol);
+        let flat: Vec<i64> = e.iter().flat_map(|p| [p[0] as i64, p[1] as i64]).collect();
+        numpy::ndarray::Array2::from_shape_vec((e.len(), 2), flat).expect("shape").into_pyarray_bound(py)
+    }
+
+    /// Per-triangle area, shape (n_tris,).
+    fn areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.geom.area.clone().into_pyarray_bound(py)
+    }
+
+    /// Headline counts and wall-clock.
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new_bound(py);
+        d.set_item("n_points", self.inner.points.len())?;
+        d.set_item("n_tris", self.inner.tris.len())?;
+        d.set_item("millis", self.millis)?;
+        Ok(d)
+    }
+}
+
+/// THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
+/// (`surf2d`). `regions` are `(outer, holes, tag)`; `h` is the target edge length.
+#[pyfunction]
+#[pyo3(signature = (regions, h, min_angle_deg=28.0, cvt_iters=4, max_passes=12))]
+fn mesh_2d(
+    py: Python<'_>,
+    regions: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>, i64)>,
+    h: f64,
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+) -> PyMesh2D {
+    let t0 = std::time::Instant::now();
+    let regs: Vec<Region2D> = regions
+        .into_iter()
+        .map(|(outer, holes, tag)| Region2D { outer, holes, tag })
+        .collect();
+    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes };
+    let inner = py.allow_threads(|| topo_mesh_2d(&regs, |_p| h, &opts));
+    PyMesh2D { inner, millis: t0.elapsed().as_millis() as u64 }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SceneBuilder>()?;
     m.add_class::<PyMesh>()?;
     m.add_class::<PySurfaceMesh>()?;
+    m.add_class::<PyMesh2D>()?;
     m.add_class::<PyTopology>()?;
+    m.add_function(wrap_pyfunction!(mesh_2d, m)?)?;
     m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
     m.add_function(wrap_pyfunction!(set_log_level, m)?)?;
     Ok(())

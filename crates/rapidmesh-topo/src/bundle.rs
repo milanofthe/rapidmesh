@@ -32,6 +32,7 @@ use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
 /// A tagged 2D region: an outer loop with optional holes, all in the xy plane.
 /// The `tag` flows to every triangle of this region (the conductor / layer id a
 /// MoM build reads for same-tag RWG edges).
+#[derive(Clone, Debug)]
 pub struct Region2D {
     /// Outer boundary loop (closed; CCW).
     pub outer: Vec<[f64; 2]>,
@@ -79,9 +80,21 @@ pub struct Mesh2D {
     pub topo: TriTopology,
     /// Areas, centroids, second moments, edge lengths/midpoints (planar).
     pub geom: TriGeometry,
+    /// The input regions (polygons), retained so the mesh can re-mesh ITSELF with a
+    /// new sizing field — the basis for adaptive (AMR) refinement. See [`Mesh2D::remesh`].
+    pub regions: Vec<Region2D>,
+    /// The meshing options this mesh was built with (retained for `remesh`).
+    pub opts: Mesh2DOptions,
 }
 
 impl Mesh2D {
+    /// Re-mesh the SAME regions with a new sizing field `target` (e.g. an AMR-refined
+    /// size field that shrinks `h` near marked elements). Returns a fresh, equally
+    /// self-remeshable `Mesh2D`. The regions and meshing options are this mesh's own.
+    pub fn remesh(&self, target: impl Fn([f64; 2]) -> f64) -> Mesh2D {
+        mesh_2d(&self.regions, target, &self.opts)
+    }
+
     /// RWG-eligible edges `[v0, v1, tri_plus, tri_minus]` (interior, same-tag).
     /// The canonical query lives on [`TriTopology`] — shared with the 3D-surface
     /// endpoint; this forwards so the 2D bundle exposes everything in one place.
@@ -147,7 +160,7 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
 
     let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
     let geom = TriGeometry::build_2d(&topo, &points);
-    Mesh2D { points, tris, tri_tags, topo, geom }
+    Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
 }
 
 /// Split each edge of a closed loop to the sizing field, so the boundary the

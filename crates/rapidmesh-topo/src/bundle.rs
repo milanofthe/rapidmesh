@@ -136,9 +136,17 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
     let mut tri_tags: Vec<i64> = Vec::new();
 
     for r in regions {
+        // Resample the raw polygon edges onto the sizing field FIRST. The 2D core
+        // protects the boundary it is handed (it assumes a pre-sampled contour,
+        // as the wasm landing supplies), so a coarse input edge would otherwise
+        // stay one long pinned edge and wreck the triangles against it. Sampling
+        // to `h` gives a fine, graded boundary -- and uniform RWG edge lengths
+        // along a conductor, which is what MoM wants.
         let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + r.holes.len());
-        loops.push(r.outer.clone());
-        loops.extend(r.holes.iter().cloned());
+        loops.push(resample_loop(&r.outer, &target));
+        for hl in &r.holes {
+            loops.push(resample_loop(hl, &target));
+        }
         // Representative CVT seed spacing: the target at the outer centroid.
         let step = target(centroid2(&r.outer)).max(1e-9);
         let (pts, tr3) =
@@ -154,6 +162,31 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
     let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
     let geom = TriGeometry::build_2d(&topo, &points);
     Mesh2D { points, tris, tri_tags, topo, geom }
+}
+
+/// Split each edge of a closed loop to the sizing field, so the boundary the
+/// protected core meshes against is fine and graded — never a pinned coarse edge.
+/// A sub-`h` edge keeps its two endpoints (no over-splitting).
+fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
+    let n = lp.len();
+    if n < 2 {
+        return lp.to_vec();
+    }
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let a = lp[i];
+        let b = lp[(i + 1) % n];
+        out.push(a);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = (dx * dx + dy * dy).sqrt();
+        let h = target([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]).max(1e-9);
+        let segs = (len / h).ceil() as usize;
+        for k in 1..segs {
+            let t = k as f64 / segs as f64;
+            out.push([a[0] + dx * t, a[1] + dy * t]);
+        }
+    }
+    out
 }
 
 fn centroid2(pts: &[[f64; 2]]) -> [f64; 2] {
@@ -208,9 +241,27 @@ mod tests {
     use super::*;
     use rapidmesh_geom::RegionTag;
 
+    fn min_angle_deg(p: &[[f64; 2]], tris: &[[u32; 3]]) -> f64 {
+        let ang = |u: [f64; 2], v: [f64; 2], w: [f64; 2]| {
+            let e1 = [v[0] - u[0], v[1] - u[1]];
+            let e2 = [w[0] - u[0], w[1] - u[1]];
+            let d = (e1[0] * e2[0] + e1[1] * e2[1])
+                / ((e1[0] * e1[0] + e1[1] * e1[1]).sqrt() * (e2[0] * e2[0] + e2[1] * e2[1]).sqrt() + 1e-30);
+            d.clamp(-1.0, 1.0).acos().to_degrees()
+        };
+        tris.iter()
+            .map(|t| {
+                let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
+                ang(a, b, c).min(ang(b, c, a)).min(ang(c, a, b))
+            })
+            .fold(180.0, f64::min)
+    }
+
     #[test]
     fn mesh2d_meshes_a_tagged_square() {
         let sq = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 7);
+        // Coarse input edges (length 1) with h = 0.34: only correct if the
+        // endpoint resamples the boundary -- a pinned coarse edge gives slivers.
         let m = mesh_2d(&[sq], |_p| 0.34, &Mesh2DOptions::default());
         assert!(!m.tris.is_empty());
         // every triangle carries the region tag.
@@ -218,13 +269,13 @@ mod tests {
         // the triangulation tiles the square exactly: areas sum to 1.
         let area: f64 = m.geom.area.iter().sum();
         assert!((area - 1.0).abs() < 1e-6, "area sum {area}");
-        // topology + RWG queries are present and consistent (one conductor: every
-        // interior edge is RWG-eligible).
+        // QUALITY: the boundary was resampled to h, so no pinned-coarse-edge
+        // slivers -- the min angle clears a healthy bound.
+        let mn = min_angle_deg(&m.points, &m.tris);
+        assert!(mn > 20.0, "min angle {mn} too low (boundary not resampled?)");
+        // topology + RWG queries are present and consistent.
         assert!(!m.topo.edges.is_empty());
-        assert!(m.rwg_candidate_edges().iter().all(|e| {
-            // both incident triangles exist and share the tag (trivially here).
-            e[2] != NONE && e[3] != NONE
-        }));
+        assert!(m.rwg_candidate_edges().iter().all(|e| e[2] != NONE && e[3] != NONE));
         assert!(!m.boundary_edges().is_empty());
     }
 

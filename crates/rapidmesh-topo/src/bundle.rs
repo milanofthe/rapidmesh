@@ -1,4 +1,4 @@
-//! THE two embedding endpoints: one for 2D/surface, one for 3D/volume.
+//! THE two embedding endpoints: one for 2D, one for 3D.
 //!
 //! Each returns a complete bundle — mesh + topology + element geometry — so a
 //! consumer (rapidmom / rapidfem) gets *everything* from a single call and never
@@ -6,47 +6,83 @@
 //! for embedding rapidmesh:
 //!
 //! ```ignore
-//! let m = rapidmesh_topo::mesh_2d(&plc, &params); // MoM
-//! m.mesh;  m.topo;  m.geom;  m.rwg_candidate_edges();
+//! // 2D / MoM — the production 2D path (surf2d, the gmsh-grade mesher the wasm
+//! // landing uses). Raw tagged 2D polygons in; a planar mesh bundle out.
+//! let m = rapidmesh_topo::mesh_2d(&regions, |_p| 0.05, &Default::default());
+//! m.points; m.tris; m.tri_tags; m.topo; m.geom; m.rwg_candidate_edges();
 //!
-//! let v = rapidmesh_topo::mesh_3d(&plc, &params); // FEM
-//! v.mesh;  v.topo;  v.geom;  v.exact_face_normals();
+//! // 3D / FEM — the volume path.
+//! let v = rapidmesh_topo::mesh_3d(&plc, &params);
+//! v.mesh; v.topo; v.geom; v.exact_face_normals();
 //! ```
 //!
-//! The basis-aware layer (RWG/Nédélec DOFs, quadrature, assembly) lives in the
-//! solver — see `DESIGN.md`.
+//! The 2D path is *the* 2D path: this endpoint, the wasm landing, and the 3D
+//! surface stage's planar patches all run the same `surf2d` core. The basis-aware
+//! layer (RWG/Nédélec DOFs, quadrature, assembly) lives in the solver — see
+//! `DESIGN.md`.
 
 use crate::convention::NONE;
+use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
-use rapidmesh_tet::{mesh_cdt, surface_mesh, MeshParams, SurfaceMesh, TetMesh};
+use rapidmesh_tet::surf2d::mesh_polygon;
+use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
 
-/// Everything about a 2D / surface mesh (the MoM target): the meshed surface, its
-/// derived topology, and its element geometry.
+// ============================== 2D / surface (MoM) ==========================
+
+/// A tagged 2D region: an outer loop with optional holes, all in the xy plane.
+/// The `tag` flows to every triangle of this region (the conductor / layer id a
+/// MoM build reads for same-tag RWG edges).
+pub struct Region2D {
+    /// Outer boundary loop (closed; CCW).
+    pub outer: Vec<[f64; 2]>,
+    /// Hole loops (closed; CW), nested inside `outer`.
+    pub holes: Vec<Vec<[f64; 2]>>,
+    /// Conductor / layer tag carried by this region's triangles.
+    pub tag: i64,
+}
+
+impl Region2D {
+    /// A region with no holes.
+    pub fn new(outer: Vec<[f64; 2]>, tag: i64) -> Self {
+        Region2D { outer, holes: Vec::new(), tag }
+    }
+}
+
+/// Tuning for the production 2D path. `Default` matches the wasm landing.
+#[derive(Debug, Clone, Copy)]
+pub struct Mesh2DOptions {
+    /// Ruppert minimum-angle bound (degrees).
+    pub min_angle_deg: f64,
+    /// CVT (Lloyd) seed-relaxation iterations.
+    pub cvt_iters: usize,
+    /// Maximum Ruppert refinement passes.
+    pub max_passes: usize,
+}
+
+impl Default for Mesh2DOptions {
+    fn default() -> Self {
+        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12 }
+    }
+}
+
+/// Everything about a 2D mesh (the MoM target): the gmsh-grade planar
+/// triangulation from the production 2D path, its derived topology, and its
+/// element geometry. Coordinates are 2D.
 pub struct Mesh2D {
-    /// The surface mesh: points, tagged faces, analytic surfaces.
-    pub mesh: SurfaceMesh,
+    /// Vertices (2D).
+    pub points: Vec<[f64; 2]>,
+    /// Triangles (CCW).
+    pub tris: Vec<[u32; 3]>,
+    /// Conductor / layer tag per triangle (parallel to `tris`).
+    pub tri_tags: Vec<i64>,
     /// Edges, incidence, per-edge tags, vertex stars.
     pub topo: TriTopology,
-    /// Areas, centroids, normals, edge lengths/midpoints.
+    /// Areas, centroids, second moments, edge lengths/midpoints (planar).
     pub geom: TriGeometry,
 }
 
 impl Mesh2D {
-    /// Bundle an existing surface mesh; topology + geometry are derived once.
-    pub fn build(mesh: SurfaceMesh) -> Self {
-        let topo = TriTopology::build(&mesh);
-        let geom = TriGeometry::build_3d(&topo, &mesh.points);
-        Mesh2D { mesh, topo, geom }
-    }
-
-    /// Exact analytic outward normals per boundary face (`None` where planar — the
-    /// facet normal is already exact — or no closed form). Parallel to
-    /// `mesh.faces`.
-    pub fn exact_face_normals(&self) -> Vec<Option<[f64; 3]>> {
-        crate::mesher::exact_face_normals(&self.mesh.points, &self.mesh.faces, &self.mesh.surfaces)
-    }
-
     /// RWG-eligible edges: interior edges shared by two SAME-tag triangles, as
     /// `[v0, v1, tri_plus, tri_minus]`. A topology query — the solver builds the
     /// actual basis/DOFs; this lives here so everything is in one place.
@@ -75,11 +111,11 @@ impl Mesh2D {
     }
 
     /// Port helper: boundary edges whose both endpoints lie on `{axis = value}`
-    /// with the first other coordinate in `[lo, hi]`. Returns vertex pairs.
+    /// (`axis` 0/1) with the other coordinate in `[lo, hi]`. Returns vertex pairs.
     pub fn edges_on_line(&self, axis: usize, value: f64, lo: f64, hi: f64, tol: f64) -> Vec<[u32; 2]> {
-        let other = (0..3).find(|&c| c != axis).unwrap_or(0);
+        let other = if axis == 0 { 1 } else { 0 };
         let on = |vi: u32| {
-            let p = self.mesh.points[vi as usize];
+            let p = self.points[vi as usize];
             (p[axis] - value).abs() <= tol && p[other] >= lo - tol && p[other] <= hi + tol
         };
         self.boundary_edges()
@@ -90,10 +126,50 @@ impl Mesh2D {
     }
 }
 
-/// THE 2D endpoint: mesh a PLC into a complete surface bundle.
-pub fn mesh_2d(plc: &TaggedPlc, params: &MeshParams) -> Mesh2D {
-    Mesh2D::build(surface_mesh(plc, params))
+/// THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
+/// (`surf2d` — the same gmsh-optimized mesher the wasm landing runs), into one
+/// bundle. Each region is meshed (outer + holes) and concatenated, carrying its
+/// tag per triangle. `target` is the sizing field `h(x)`.
+pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Mesh2D {
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    let mut tri_tags: Vec<i64> = Vec::new();
+
+    for r in regions {
+        let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + r.holes.len());
+        loops.push(r.outer.clone());
+        loops.extend(r.holes.iter().cloned());
+        // Representative CVT seed spacing: the target at the outer centroid.
+        let step = target(centroid2(&r.outer)).max(1e-9);
+        let (pts, tr3) =
+            mesh_polygon(&loops, &target, step, opts.min_angle_deg, opts.cvt_iters, opts.max_passes);
+        let base = points.len() as u32;
+        points.extend_from_slice(&pts);
+        for t in &tr3 {
+            tris.push([base + t[0] as u32, base + t[1] as u32, base + t[2] as u32]);
+            tri_tags.push(r.tag);
+        }
+    }
+
+    let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
+    let geom = TriGeometry::build_2d(&topo, &points);
+    Mesh2D { points, tris, tri_tags, topo, geom }
 }
+
+fn centroid2(pts: &[[f64; 2]]) -> [f64; 2] {
+    if pts.is_empty() {
+        return [0.0, 0.0];
+    }
+    let (mut x, mut y) = (0.0, 0.0);
+    for p in pts {
+        x += p[0];
+        y += p[1];
+    }
+    let n = pts.len() as f64;
+    [x / n, y / n]
+}
+
+// ============================== 3D / volume (FEM) ===========================
 
 /// Everything about a 3D / volume mesh (the FEM target): the meshed volume, its
 /// derived topology (with orientation signs), and its element geometry.
@@ -130,39 +206,26 @@ pub fn mesh_3d(plc: &TaggedPlc, params: &MeshParams) -> Mesh3D {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rapidmesh_geom::{FaceTag, RegionTag, SurfaceKind};
-    use rapidmesh_tet::SurfaceFace;
-
-    fn square() -> SurfaceMesh {
-        let face = |tri| SurfaceFace {
-            tri,
-            face_tag: FaceTag(7),
-            regions: [RegionTag(0); 2],
-            patch: 0,
-            surface: 0,
-        };
-        SurfaceMesh {
-            points: vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]],
-            faces: vec![face([0, 1, 2]), face([0, 2, 3])],
-            surfaces: vec![SurfaceKind::Plane],
-            surface_owners: vec![0],
-        }
-    }
+    use rapidmesh_geom::RegionTag;
 
     #[test]
-    fn mesh2d_bundles_everything() {
-        let m = Mesh2D::build(square());
-        // topology + geometry are present and consistent.
-        assert_eq!(m.topo.edges.len(), 5);
-        assert_eq!(m.geom.area.len(), 2);
-        assert!((m.geom.area[0] - 0.5).abs() < 1e-12);
-        // the diagonal is the one RWG-eligible edge; 4 outer edges are boundary.
-        let rwg = m.rwg_candidate_edges();
-        assert_eq!(rwg.len(), 1);
-        assert_eq!([rwg[0][0], rwg[0][1]], [0, 2]);
-        assert_eq!(m.boundary_edges().len(), 4);
-        // planar faces have no analytic override.
-        assert!(m.exact_face_normals().iter().all(|n| n.is_none()));
+    fn mesh2d_meshes_a_tagged_square() {
+        let sq = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 7);
+        let m = mesh_2d(&[sq], |_p| 0.34, &Mesh2DOptions::default());
+        assert!(!m.tris.is_empty());
+        // every triangle carries the region tag.
+        assert!(m.tri_tags.iter().all(|&t| t == 7));
+        // the triangulation tiles the square exactly: areas sum to 1.
+        let area: f64 = m.geom.area.iter().sum();
+        assert!((area - 1.0).abs() < 1e-6, "area sum {area}");
+        // topology + RWG queries are present and consistent (one conductor: every
+        // interior edge is RWG-eligible).
+        assert!(!m.topo.edges.is_empty());
+        assert!(m.rwg_candidate_edges().iter().all(|e| {
+            // both incident triangles exist and share the tag (trivially here).
+            e[2] != NONE && e[3] != NONE
+        }));
+        assert!(!m.boundary_edges().is_empty());
     }
 
     #[test]

@@ -15,8 +15,10 @@
 //! lower-level pieces (`TriTopology`, `TetGeometry`, …) are what they are built
 //! from.
 //!
-//! - [`mesh_2d`] → [`Mesh2D`] — surface / MoM.
-//! - [`mesh_3d`] → [`Mesh3D`] — volume / FEM.
+//! - [`mesh_2d`] → [`Mesh2D`] — planar / MoM, via the production 2D path
+//!   (`surf2d`, the gmsh-grade mesher the wasm landing uses); raw tagged 2D
+//!   polygons in.
+//! - [`mesh_3d`] → [`Mesh3D`] — volume / FEM; a 3D PLC in.
 //!
 //! See `DESIGN.md` for the rationale, conventions, and roadmap.
 //!
@@ -51,4 +53,4 @@ pub use tri::{TriGeometry, TriTopology};
 pub use wire::{FrameReader, FrameWriter};
 
 #[cfg(feature = "mesher")]
-pub use bundle::{mesh_2d, mesh_3d, Mesh2D, Mesh3D};
+pub use bundle::{mesh_2d, mesh_3d, Mesh2D, Mesh2DOptions, Mesh3D, Region2D};

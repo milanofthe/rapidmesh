@@ -17,14 +17,18 @@ and do not use any other accessor:
 
 | | call | returns | for |
 |---|---|---|---|
-| **2D** | `rapidmesh_topo::mesh_2d(&plc, &params)` | `Mesh2D { mesh, topo, geom }` + `rwg_candidate_edges()`, `boundary_edges()`, `edges_on_line()`, `exact_face_normals()` | MoM (rapidmom) |
+| **2D** | `rapidmesh_topo::mesh_2d(&regions, target, &opts)` | `Mesh2D { points, tris, tri_tags, topo, geom }` + `rwg_candidate_edges()`, `boundary_edges()`, `edges_on_line()` | MoM (rapidmom) |
 | **3D** | `rapidmesh_topo::mesh_3d(&plc, &params)` | `Mesh3D { mesh, topo, geom }` + `exact_face_normals()` | FEM (rapidfem) |
 
-Already have a `SurfaceMesh`/`TetMesh`? Use `Mesh2D::build` / `Mesh3D::build`.
+The **2D** endpoint *is* the production 2D path: raw tagged 2D polygons
+(`Region2D { outer, holes, tag }`) → the `surf2d` core (the gmsh-grade mesher the
+wasm landing and the 3D surface stage's planar patches also run). Already have a
+`TetMesh`? `Mesh3D::build`.
 
 Ignore for embedding: `rapidmesh_tet::{mesh_cdt, surface_mesh, …}` (the internal
-mesher these wrap) and `rapidmesh_tet::mom` (the Python bindings' bridge). Both
-predate the endpoints; neither is the Rust front door.
+volume/surface mesher; `surface_mesh` is the 3D path's boundary sub-product, NOT
+the 2D endpoint) and `rapidmesh_tet::mom` (the Python bindings' bridge). Neither
+is the Rust front door.
 
 ## Why this exists
 

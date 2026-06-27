@@ -12,15 +12,16 @@
 //! 4. Optional order-2 midside snapping onto the analytic surface via the
 //!    PLC surface back-references (`project`), for curved boundaries.
 
-// Public surface: the 2D core (`surf2d`), the MoM/FEM accessors (`mom`, the
-// Python bridge), adaptive marking (`adapt`), the sizing-field cache
-// (`quadfield`), and `diagnostics`. Everything else is the internal mesher
-// engine -- `pub(crate)`, reached only through the re-exported entry points
-// below (`mesh_cdt` / `surface_mesh` / `mesh_plc` / `tetrahedralize` / ...).
-// The canonical embedding front door is `rapidmesh_topo::{mesh_2d, mesh_3d}`.
+// Public surface: the 2D core (`surf2d`), adaptive marking (`adapt`), the
+// sizing-field cache (`quadfield`), and `diagnostics`. The MoM/FEM topology +
+// quality accessors live in the downstream `rapidmesh_topo` layer (one
+// implementation for both the 2D and the 3D-surface endpoint). Everything else
+// is the internal mesher engine -- `pub(crate)`, reached only through the
+// re-exported entry points below (`mesh_cdt` / `surface_mesh` / `mesh_plc` /
+// `tetrahedralize` / ...). The canonical embedding front door is
+// `rapidmesh_topo::{mesh_2d, mesh_3d}`.
 pub mod adapt;
 pub mod diagnostics;
-pub mod mom;
 pub mod quadfield;
 pub mod surf2d;
 
@@ -48,5 +49,4 @@ pub use conform::{
 pub use cvt::{frozen_surface, mesh_cdt, mesh_cdt_budgeted, surface_mesh, FrozenSurface};
 pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
-pub use mom::EdgeAdjacency;
 pub use optimize::{optimize, OptimizeParams};

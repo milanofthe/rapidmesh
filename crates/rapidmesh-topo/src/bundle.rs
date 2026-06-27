@@ -21,7 +21,6 @@
 //! layer (RWG/Nédélec DOFs, quadrature, assembly) lives in the solver — see
 //! `DESIGN.md`.
 
-use crate::convention::NONE;
 use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
@@ -83,31 +82,17 @@ pub struct Mesh2D {
 }
 
 impl Mesh2D {
-    /// RWG-eligible edges: interior edges shared by two SAME-tag triangles, as
-    /// `[v0, v1, tri_plus, tri_minus]`. A topology query — the solver builds the
-    /// actual basis/DOFs; this lives here so everything is in one place.
+    /// RWG-eligible edges `[v0, v1, tri_plus, tri_minus]` (interior, same-tag).
+    /// The canonical query lives on [`TriTopology`] — shared with the 3D-surface
+    /// endpoint; this forwards so the 2D bundle exposes everything in one place.
     pub fn rwg_candidate_edges(&self) -> Vec<[u32; 4]> {
-        let t = &self.topo;
-        (0..t.edges.len())
-            .filter(|&e| t.edge_tris[e][1] != NONE && t.edge_tags[e][0] == t.edge_tags[e][1])
-            .map(|e| {
-                let [a, b] = t.edges[e];
-                [a, b, t.edge_tris[e][0], t.edge_tris[e][1]]
-            })
-            .collect()
+        self.topo.rwg_candidate_edges()
     }
 
-    /// Conductor outline: edges with a free side or a tag change, as
-    /// `[v0, v1, tri]`.
+    /// Conductor outline `[v0, v1, tri]` (free side or tag change). Forwards to
+    /// [`TriTopology::boundary_edges`].
     pub fn boundary_edges(&self) -> Vec<[u32; 3]> {
-        let t = &self.topo;
-        (0..t.edges.len())
-            .filter(|&e| t.edge_tris[e][1] == NONE || t.edge_tags[e][0] != t.edge_tags[e][1])
-            .map(|e| {
-                let [a, b] = t.edges[e];
-                [a, b, t.edge_tris[e][0]]
-            })
-            .collect()
+        self.topo.boundary_edges()
     }
 
     /// Port helper: boundary edges whose both endpoints lie on `{axis = value}`
@@ -118,7 +103,8 @@ impl Mesh2D {
             let p = self.points[vi as usize];
             (p[axis] - value).abs() <= tol && p[other] >= lo - tol && p[other] <= hi + tol
         };
-        self.boundary_edges()
+        self.topo
+            .boundary_edges()
             .iter()
             .filter(|e| on(e[0]) && on(e[1]))
             .map(|e| [e[0], e[1]])
@@ -239,6 +225,7 @@ pub fn mesh_3d(plc: &TaggedPlc, params: &MeshParams) -> Mesh3D {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convention::NONE;
     use rapidmesh_geom::RegionTag;
 
     fn min_angle_deg(p: &[[f64; 2]], tris: &[[u32; 3]]) -> f64 {

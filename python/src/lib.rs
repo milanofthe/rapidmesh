@@ -17,7 +17,9 @@ use rapidmesh_tet::{
     mesh_cdt_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams, QualityStats,
     SurfaceMesh, TetMesh,
 };
-use rapidmesh_topo::{mesh_2d as topo_mesh_2d, Mesh2D as TopoMesh2D, Mesh2DOptions, Region2D};
+use rapidmesh_topo::{
+    mesh_2d as topo_mesh_2d, Mesh2D as TopoMesh2D, Mesh2DOptions, Region2D, TriGeometry, TriTopology,
+};
 
 /// Incremental scene builder (one solid/sheet per call); the Python layer
 /// owns naming, defaults, and validation.
@@ -532,8 +534,14 @@ impl SceneBuilder {
             mesh
         });
         let (timings, _stats, _events) = rapidmesh_exact::log::take();
+        // Derive the shared topology + element geometry once (the SurfaceMesh is a
+        // `TriSource`); all MoM/quality accessors below read from these.
+        let topo = TriTopology::build(&mesh);
+        let geom = TriGeometry::build_3d(&topo, &mesh.points);
         PySurfaceMesh {
             mesh,
+            topo,
+            geom,
             millis: t0.elapsed().as_millis() as u64,
             timings,
         }
@@ -903,11 +911,52 @@ fn defects_to_list<'py>(
     PyList::new_bound(py, rows)
 }
 
+/// Edge adjacency from a [`TriTopology`], flattened for numpy: `(edges, tris,
+/// tags)` where `edges[2e..2e+2]` are the endpoints, `tris[2e..2e+2]` the up-to-
+/// two incident triangles (`-1` for a free side), `tags[2e..2e+2]` their tags
+/// (`-1` if none). The shared 2D / 3D-surface adjacency accessor.
+fn topo_edge_adjacency(topo: &TriTopology) -> (Vec<i64>, Vec<i64>, Vec<i64>) {
+    let ti = |t: u32| if t == u32::MAX { -1 } else { t as i64 };
+    let tg = |g: i64| if g == i64::MIN { -1 } else { g };
+    let edges: Vec<i64> = topo.edges.iter().flat_map(|e| [e[0] as i64, e[1] as i64]).collect();
+    let tris: Vec<i64> = topo.edge_tris.iter().flat_map(|t| [ti(t[0]), ti(t[1])]).collect();
+    let tags: Vec<i64> = topo.edge_tags.iter().flat_map(|g| [tg(g[0]), tg(g[1])]).collect();
+    (edges, tris, tags)
+}
+
+/// Boundary edges (from a [`TriTopology`]) whose BOTH endpoints lie on the line
+/// `{axis = value}` with the first other coordinate in `[lo, hi]`. `points` may
+/// be 3D (surface) — only `axis` and the first non-`axis` coordinate are read.
+fn topo_edges_on_line(
+    topo: &TriTopology,
+    points: &[[f64; 3]],
+    axis: usize,
+    value: f64,
+    lo: f64,
+    hi: f64,
+    tol: f64,
+) -> Vec<[u32; 2]> {
+    let other = (0..3).find(|&c| c != axis).unwrap_or(0);
+    let on = |vi: u32| {
+        let p = points[vi as usize];
+        (p[axis] - value).abs() <= tol && p[other] >= lo - tol && p[other] <= hi + tol
+    };
+    topo.boundary_edges()
+        .iter()
+        .filter(|e| on(e[0]) && on(e[1]))
+        .map(|e| [e[0], e[1]])
+        .collect()
+}
+
 /// A boundary surface mesh (surface-only export): vertices plus the tagged
 /// triangulation, without any volume tets.
 #[pyclass]
 struct PySurfaceMesh {
     mesh: SurfaceMesh,
+    /// Derived topology + element geometry from the shared `rapidmesh_topo` layer
+    /// (one implementation for the 2D and the 3D-surface endpoint). Built once.
+    topo: TriTopology,
+    geom: TriGeometry,
     millis: u64,
     /// Ordered (stage, seconds) timings collected during meshing.
     timings: Vec<(String, f64)>,
@@ -987,10 +1036,13 @@ impl PySurfaceMesh {
         Ok(d)
     }
 
-    // ---- MoM/FEM mesh info (computed in Rust; see rapidmesh_tet::mom) -------
+    // ---- MoM/FEM mesh info (the shared rapidmesh_topo topology layer) -------
+    // Same accessor vocabulary as the 2D endpoint (`Mesh2D`): one consistent
+    // surface API for both endpoints, computed from one topology implementation.
 
-    /// `(edges, faces, tags)` each shape `(E, 2)` int64; see
-    /// [`rapidmesh_tet::SurfaceMesh::edge_adjacency`].
+    /// `(edges, faces, tags)` each shape `(E, 2)` int64: edge endpoints
+    /// (`v0 < v1`), the up-to-two incident triangle indices (`-1` for a free
+    /// side), and their tags (`-1` if none).
     fn edge_adjacency<'py>(
         &self,
         py: Python<'py>,
@@ -999,11 +1051,8 @@ impl PySurfaceMesh {
         Bound<'py, PyArray2<i64>>,
         Bound<'py, PyArray2<i64>>,
     ) {
-        let adj = self.mesh.edge_adjacency();
-        let n = adj.edges.len();
-        let edges: Vec<i64> = adj.edges.iter().flat_map(|e| [e[0] as i64, e[1] as i64]).collect();
-        let tris: Vec<i64> = adj.tris.iter().flatten().copied().collect();
-        let tags: Vec<i64> = adj.tags.iter().flatten().copied().collect();
+        let (edges, tris, tags) = topo_edge_adjacency(&self.topo);
+        let n = edges.len() / 2;
         let mk = |v: Vec<i64>| {
             numpy::ndarray::Array2::from_shape_vec((n, 2), v)
                 .expect("shape")
@@ -1014,8 +1063,8 @@ impl PySurfaceMesh {
 
     /// RWG basis edges `[v0, v1, tri_plus, tri_minus]`, shape `(D, 4)` int64.
     fn rwg_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
-        let r = self.mesh.rwg_edges();
-        let flat: Vec<i64> = r.iter().flatten().copied().collect();
+        let r = self.topo.rwg_candidate_edges();
+        let flat: Vec<i64> = r.iter().flat_map(|e| e.map(|v| v as i64)).collect();
         numpy::ndarray::Array2::from_shape_vec((r.len(), 4), flat)
             .expect("shape")
             .into_pyarray_bound(py)
@@ -1023,15 +1072,15 @@ impl PySurfaceMesh {
 
     /// Conductor-outline edges `[v0, v1, tri]`, shape `(B, 3)` int64.
     fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
-        let b = self.mesh.boundary_edges();
-        let flat: Vec<i64> = b.iter().flatten().copied().collect();
+        let b = self.topo.boundary_edges();
+        let flat: Vec<i64> = b.iter().flat_map(|e| e.map(|v| v as i64)).collect();
         numpy::ndarray::Array2::from_shape_vec((b.len(), 3), flat)
             .expect("shape")
             .into_pyarray_bound(py)
     }
 
     /// Boundary edges on the line `{axis = value}` within `[lo, hi]` on the first
-    /// other axis, shape `(k, 2)` int64.
+    /// other axis (`axis` 0/1/2), shape `(k, 2)` int64.
     #[pyo3(signature = (axis, value, lo, hi, tol=1e-7))]
     fn edges_on_line<'py>(
         &self,
@@ -1042,7 +1091,7 @@ impl PySurfaceMesh {
         hi: f64,
         tol: f64,
     ) -> Bound<'py, PyArray2<i64>> {
-        let e = self.mesh.edges_on_line(axis, value, lo, hi, tol);
+        let e = topo_edges_on_line(&self.topo, &self.mesh.points, axis, value, lo, hi, tol);
         let flat: Vec<i64> = e.iter().flat_map(|p| [p[0] as i64, p[1] as i64]).collect();
         numpy::ndarray::Array2::from_shape_vec((e.len(), 2), flat)
             .expect("shape")
@@ -1050,13 +1099,13 @@ impl PySurfaceMesh {
     }
 
     /// Per-triangle area, shape `(n_faces,)`.
-    fn face_areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.mesh.face_areas().into_pyarray_bound(py)
+    fn areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.geom.area.clone().into_pyarray_bound(py)
     }
 
     /// Per-triangle minimum interior angle in degrees, shape `(n_faces,)`.
-    fn face_min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.mesh.face_min_angles().into_pyarray_bound(py)
+    fn min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.geom.min_angle.clone().into_pyarray_bound(py)
     }
 
     /// Dörfler-mark by per-triangle `eta` and return `(marked, centroids, hs)`:
@@ -1159,9 +1208,33 @@ impl PyMesh2D {
         numpy::ndarray::Array2::from_shape_vec((e.len(), 2), flat).expect("shape").into_pyarray_bound(py)
     }
 
+    /// `(edges, faces, tags)` each shape `(E, 2)` int64: edge endpoints, the
+    /// up-to-two incident triangles (`-1` for a free side), and their tags (`-1`
+    /// if none). Same accessor as the 3D-surface endpoint.
+    fn edge_adjacency<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (
+        Bound<'py, PyArray2<i64>>,
+        Bound<'py, PyArray2<i64>>,
+        Bound<'py, PyArray2<i64>>,
+    ) {
+        let (edges, tris, tags) = topo_edge_adjacency(&self.inner.topo);
+        let n = edges.len() / 2;
+        let mk = |v: Vec<i64>| {
+            numpy::ndarray::Array2::from_shape_vec((n, 2), v).expect("shape").into_pyarray_bound(py)
+        };
+        (mk(edges), mk(tris), mk(tags))
+    }
+
     /// Per-triangle area, shape (n_tris,).
     fn areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.inner.geom.area.clone().into_pyarray_bound(py)
+    }
+
+    /// Per-triangle minimum interior angle in degrees, shape (n_tris,).
+    fn min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.geom.min_angle.clone().into_pyarray_bound(py)
     }
 
     /// Headline counts and wall-clock.

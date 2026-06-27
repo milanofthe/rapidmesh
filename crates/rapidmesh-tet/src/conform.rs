@@ -629,7 +629,26 @@ pub fn log_metrics(q: &QualityStats, n_points: usize) {
 /// (`< 15 deg`) triangles (a `warn` when any survive).
 pub fn log_surface_metrics(mesh: &SurfaceMesh) {
     use rapidmesh_exact::log;
-    let angles = mesh.face_min_angles();
+    // Per-triangle minimum interior angle (degrees). Inlined here (the only
+    // in-crate user) so the MoM/quality accessors can live solely in the
+    // downstream `rapidmesh_topo` topology layer.
+    let dist = |u: [f64; 3], v: [f64; 3]| {
+        ((u[0] - v[0]).powi(2) + (u[1] - v[1]).powi(2) + (u[2] - v[2]).powi(2)).sqrt()
+    };
+    let angle = |u: [f64; 3], v: [f64; 3], w: [f64; 3]| {
+        let e1 = [v[0] - u[0], v[1] - u[1], v[2] - u[2]];
+        let e2 = [w[0] - u[0], w[1] - u[1], w[2] - u[2]];
+        let d = (e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2]) / (dist(u, v) * dist(u, w) + 1e-30);
+        d.clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    let angles: Vec<f64> = mesh
+        .faces
+        .iter()
+        .map(|f| {
+            let (a, b, c) = (mesh.points[f.tri[0]], mesh.points[f.tri[1]], mesh.points[f.tri[2]]);
+            angle(a, b, c).min(angle(b, c, a)).min(angle(c, a, b))
+        })
+        .collect();
     let min_ang = angles.iter().copied().fold(f64::MAX, f64::min);
     let min_ang = if min_ang.is_finite() { min_ang } else { 0.0 };
     let n_bad = angles.iter().filter(|&&a| a < 15.0).count();

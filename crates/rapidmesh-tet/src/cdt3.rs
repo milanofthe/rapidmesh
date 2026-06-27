@@ -119,7 +119,7 @@ mod tests {
         let mut idx: HashMap<(i64, i64, i64), usize> = HashMap::new();
         let mut pts: Vec<V3> = Vec::new();
         let key = |p: V3| ((p[0] * 1e6) as i64, (p[1] * 1e6) as i64, (p[2] * 1e6) as i64);
-        let mut vid = |p: V3, pts: &mut Vec<V3>, idx: &mut HashMap<(i64, i64, i64), usize>| {
+        let vid = |p: V3, pts: &mut Vec<V3>, idx: &mut HashMap<(i64, i64, i64), usize>| {
             *idx.entry(key(p)).or_insert_with(|| {
                 pts.push(p);
                 pts.len() - 1

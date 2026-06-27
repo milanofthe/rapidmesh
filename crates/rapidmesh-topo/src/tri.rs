@@ -74,6 +74,32 @@ impl TriTopology {
         let vert_tris = Csr::from_pairs(src.n_verts(), &vt_pairs);
         TriTopology { n_verts: src.n_verts(), tris, edges, tri_edges, edge_tris, edge_tags, vert_tris }
     }
+
+    /// RWG-eligible edges: interior edges shared by two SAME-tag triangles, as
+    /// `[v0, v1, tri_plus, tri_minus]`. Pure topology (the canonical MoM DOF
+    /// candidates for both the 2D and the 3D-surface endpoint); the solver builds
+    /// the actual basis on top.
+    pub fn rwg_candidate_edges(&self) -> Vec<[u32; 4]> {
+        (0..self.edges.len())
+            .filter(|&e| self.edge_tris[e][1] != NONE && self.edge_tags[e][0] == self.edge_tags[e][1])
+            .map(|e| {
+                let [a, b] = self.edges[e];
+                [a, b, self.edge_tris[e][0], self.edge_tris[e][1]]
+            })
+            .collect()
+    }
+
+    /// Conductor outline: edges with a free side or a tag change, as
+    /// `[v0, v1, tri]`. Pure topology.
+    pub fn boundary_edges(&self) -> Vec<[u32; 3]> {
+        (0..self.edges.len())
+            .filter(|&e| self.edge_tris[e][1] == NONE || self.edge_tags[e][0] != self.edge_tags[e][1])
+            .map(|e| {
+                let [a, b] = self.edges[e];
+                [a, b, self.edge_tris[e][0]]
+            })
+            .collect()
+    }
 }
 
 /// Per-element geometry of a triangle mesh. Coordinate-aware: planar (MoM) via
@@ -97,6 +123,9 @@ pub struct TriGeometry {
     pub edge_len: Vec<f64>,
     /// Per-edge midpoint (planar: `z = 0`).
     pub edge_mid: Vec<[f64; 3]>,
+    /// Per-triangle minimum interior angle in degrees (the element-quality field;
+    /// a meshed surface has all `>=` the Ruppert bound). Parallel to `tris`.
+    pub min_angle: Vec<f64>,
 }
 
 impl TriGeometry {
@@ -108,6 +137,7 @@ impl TriGeometry {
         let mut centroid = vec![[0.0; 3]; nt];
         let mut normal = vec![[0.0; 3]; nt];
         let mut inertia = vec![[0.0; 3]; nt];
+        let mut min_angle = vec![0.0; nt];
         for t in 0..nt {
             let [ia, ib, ic] = topo.tris[t];
             let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
@@ -125,6 +155,7 @@ impl TriGeometry {
             }
             let k = area[t] / 12.0;
             inertia[t] = [k * sxx, k * sxy, k * syy];
+            min_angle[t] = tri_min_angle_deg([a[0], a[1], 0.0], [b[0], b[1], 0.0], [c[0], c[1], 0.0]);
         }
         let ne = topo.edges.len();
         let mut edge_len = vec![0.0; ne];
@@ -135,17 +166,19 @@ impl TriGeometry {
             edge_len[e] = (dx * dx + dy * dy).sqrt();
             edge_mid[e] = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, 0.0];
         }
-        TriGeometry { area, centroid, normal, inertia, edge_len, edge_mid }
+        TriGeometry { area, centroid, normal, inertia, edge_len, edge_mid, min_angle }
     }
 
     /// Surface (3D-embedded) geometry: area, centroid, unit normal, edge
-    /// lengths/midpoints. `inertia` is left empty (see the field doc).
+    /// lengths/midpoints, min interior angle. `inertia` is left empty (see the
+    /// field doc).
     pub fn build_3d(topo: &TriTopology, coords: &[[f64; 3]]) -> Self {
         use crate::math::{add, cross, edge_geom, norm, normalize, scale, sub};
         let nt = topo.tris.len();
         let mut area = vec![0.0; nt];
         let mut centroid = vec![[0.0; 3]; nt];
         let mut normal = vec![[0.0; 3]; nt];
+        let mut min_angle = vec![0.0; nt];
         for t in 0..nt {
             let [ia, ib, ic] = topo.tris[t];
             let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
@@ -153,10 +186,22 @@ impl TriGeometry {
             area[t] = 0.5 * norm(n);
             normal[t] = normalize(n); // zero vector for a degenerate triangle
             centroid[t] = scale(add(add(a, b), c), 1.0 / 3.0);
+            min_angle[t] = tri_min_angle_deg(a, b, c);
         }
         let (edge_len, edge_mid) = edge_geom(&topo.edges, coords);
-        TriGeometry { area, centroid, normal, inertia: Vec::new(), edge_len, edge_mid }
+        TriGeometry { area, centroid, normal, inertia: Vec::new(), edge_len, edge_mid, min_angle }
     }
+}
+
+/// Minimum interior angle (degrees) of triangle `(a, b, c)` in 3D.
+fn tri_min_angle_deg(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    use crate::math::{dot, norm, sub};
+    let at = |u: [f64; 3], v: [f64; 3], w: [f64; 3]| {
+        let (e1, e2) = (sub(v, u), sub(w, u));
+        let cos = dot(e1, e2) / (norm(e1) * norm(e2) + 1e-30);
+        cos.clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    at(a, b, c).min(at(b, c, a)).min(at(c, a, b))
 }
 
 #[cfg(test)]

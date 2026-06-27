@@ -295,16 +295,16 @@ class SurfaceMesh:
         )
 
     # ---- MoM/FEM mesh info -------------------------------------------------
-    # Thin wrappers over the Rust implementation (rapidmesh_tet::mom): edge
-    # adjacency, RWG degrees of freedom, the conductor outline, port edges, and
-    # per-triangle quality. Computed natively so a Rust solver (rapidmom) gets the
-    # same data without Python.
+    # The shared rapidmesh_topo topology layer (one implementation for the 2D and
+    # the 3D-surface endpoint), so :class:`Mesh2D` and :class:`SurfaceMesh` expose
+    # the SAME accessor vocabulary: edge adjacency, RWG degrees of freedom, the
+    # conductor outline, port edges, and per-triangle area / min-angle. Computed
+    # natively so a Rust solver (rapidmom) gets the same data without Python.
 
     def edge_adjacency(self):
         """Undirected edge -> incident triangles. Returns ``(edges, faces, tags)``,
         each ``(E, 2)`` int64: edge endpoints (``v0 < v1``); the up-to-two incident
-        triangle indices (``-1`` for a free side); their ``face_tags`` (``-1`` if
-        none). Manifold per conductor."""
+        triangle indices (``-1`` for a free side); their tags (``-1`` if none)."""
         return self._native.edge_adjacency()
 
     def rwg_edges(self):
@@ -325,14 +325,14 @@ class SurfaceMesh:
         a = {"x": 0, "y": 1, "z": 2}.get(axis, axis)
         return self._native.edges_on_line(a, value, lo, hi, tol)
 
-    def face_areas(self):
+    def areas(self):
         """Per-triangle area (input units), shape ``(n_faces,)``."""
-        return self._native.face_areas()
+        return self._native.areas()
 
-    def face_min_angles(self):
+    def min_angles(self):
         """Per-triangle minimum interior angle in degrees, shape ``(n_faces,)`` --
         the element-quality field (all >= the Ruppert bound)."""
-        return self._native.face_min_angles()
+        return self._native.min_angles()
 
     # ---- interactive viewer -----------------------------------------------
 
@@ -434,6 +434,16 @@ class Mesh2D:
         s = self.stats
         return f"Mesh2D({s['n_tris']} tris, {s['n_points']} points, {s['millis']} ms)"
 
+    # ---- MoM/FEM mesh info -------------------------------------------------
+    # Same accessor vocabulary as :class:`SurfaceMesh` (the shared rapidmesh_topo
+    # topology layer): one consistent surface API across the 2D and 3D endpoints.
+
+    def edge_adjacency(self):
+        """Undirected edge -> incident triangles. Returns ``(edges, faces, tags)``,
+        each ``(E, 2)`` int64: edge endpoints (``v0 < v1``); the up-to-two incident
+        triangle indices (``-1`` for a free side); their tags (``-1`` if none)."""
+        return self._native.edge_adjacency()
+
     def rwg_edges(self):
         """RWG-eligible edges = interior edges shared by two SAME-tag triangles,
         ``(D, 4)`` int64 ``[v0, v1, tri_plus, tri_minus]``. The solver builds the
@@ -454,6 +464,11 @@ class Mesh2D:
     def areas(self):
         """Per-triangle area, ``(n_tris,)`` float64."""
         return self._native.areas()
+
+    def min_angles(self):
+        """Per-triangle minimum interior angle in degrees, ``(n_tris,)`` float64 --
+        the element-quality field (all >= the Ruppert bound)."""
+        return self._native.min_angles()
 
 
 def mesh_2d(

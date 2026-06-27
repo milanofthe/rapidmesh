@@ -7,7 +7,7 @@ use crate::source::TetSource;
 use std::collections::HashMap;
 
 /// Derived connectivity of a tet mesh. Pure topology — no coordinates.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TetTopology {
     pub n_verts: usize,
     /// The tet → vertex connectivity (the source elements, as `u32`), so the

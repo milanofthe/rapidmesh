@@ -7,7 +7,7 @@ use crate::source::TriSource;
 use std::collections::HashMap;
 
 /// Derived connectivity of a triangle mesh. Pure topology — no coordinates.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriTopology {
     pub n_verts: usize,
     /// The triangle → vertex connectivity (the source elements, as `u32`), so the
@@ -141,7 +141,7 @@ impl TriGeometry {
     /// Surface (3D-embedded) geometry: area, centroid, unit normal, edge
     /// lengths/midpoints. `inertia` is left empty (see the field doc).
     pub fn build_3d(topo: &TriTopology, coords: &[[f64; 3]]) -> Self {
-        use crate::math::{add, cross, edge_geom, norm, scale, sub};
+        use crate::math::{add, cross, edge_geom, norm, normalize, scale, sub};
         let nt = topo.tris.len();
         let mut area = vec![0.0; nt];
         let mut centroid = vec![[0.0; 3]; nt];
@@ -150,9 +150,8 @@ impl TriGeometry {
             let [ia, ib, ic] = topo.tris[t];
             let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
             let n = cross(sub(b, a), sub(c, a));
-            let len = norm(n);
-            area[t] = 0.5 * len;
-            normal[t] = if len > 0.0 { scale(n, 1.0 / len) } else { [0.0; 3] };
+            area[t] = 0.5 * norm(n);
+            normal[t] = normalize(n); // zero vector for a degenerate triangle
             centroid[t] = scale(add(add(a, b), c), 1.0 / 3.0);
         }
         let (edge_len, edge_mid) = edge_geom(&topo.edges, coords);

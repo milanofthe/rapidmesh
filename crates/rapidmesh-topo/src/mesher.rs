@@ -3,7 +3,8 @@
 //! this wires our `TetMesh` / `SurfaceMesh` into the same complex builders.
 
 use crate::source::{TetSource, TriSource};
-use rapidmesh_tet::{SurfaceMesh, TetMesh};
+use rapidmesh_geom::SurfaceKind;
+use rapidmesh_tet::{SurfaceFace, SurfaceMesh, TetMesh};
 
 impl TetSource for TetMesh {
     fn n_verts(&self) -> usize {
@@ -48,5 +49,131 @@ impl TriSource for TetMesh {
     }
     fn tri_tag(&self, i: usize) -> i64 {
         self.faces[i].face_tag.0 as i64
+    }
+}
+
+// ---- analytic boundary geometry (what a `.msh` cannot carry) ----------------
+//
+// Where a boundary face lies on an analytic `SurfaceKind`, its *exact* normal
+// and curvature are known in closed form — the substrate for curved / higher-
+// order elements. A `Plane` needs no override (the facet normal is already
+// exact); `Extruded` has no closed form here yet.
+
+/// Exact unit normal direction of an analytic surface at a point on it. The
+/// direction is geometric (radially outward from the axis/centre); callers align
+/// the sign to the facet winding (see [`exact_face_normals`]). `None` for `Plane`
+/// and `Extruded`.
+pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
+    use crate::math::{dot, normalize, scale, sub};
+    match kind {
+        SurfaceKind::Plane | SurfaceKind::Extruded { .. } => None,
+        SurfaceKind::Sphere { center, .. } => Some(normalize(sub(p, *center))),
+        SurfaceKind::Cylinder { center, axis, .. } => {
+            let a = normalize(*axis);
+            let w = sub(p, *center);
+            Some(normalize(sub(w, scale(a, dot(w, a)))))
+        }
+        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            let a = normalize(*axis);
+            let w = sub(p, *apex);
+            let rhat = normalize(sub(w, scale(a, dot(w, a))));
+            let cos = 1.0 / (1.0 + tan_half_angle * tan_half_angle).sqrt();
+            let sin = tan_half_angle * cos;
+            // outward of the cone barrel: cosα·r̂ − sinα·â
+            Some(normalize([
+                rhat[0] * cos - a[0] * sin,
+                rhat[1] * cos - a[1] * sin,
+                rhat[2] * cos - a[2] * sin,
+            ]))
+        }
+        SurfaceKind::Torus { center, axis, major_radius, .. } => {
+            let a = normalize(*axis);
+            let w = sub(p, *center);
+            let rhat = normalize(sub(w, scale(a, dot(w, a))));
+            let tube_center = [
+                center[0] + rhat[0] * major_radius,
+                center[1] + rhat[1] * major_radius,
+                center[2] + rhat[2] * major_radius,
+            ];
+            Some(normalize(sub(p, tube_center)))
+        }
+    }
+}
+
+/// Principal curvatures `[κ_max, κ_min]` (1/length) of an analytic surface at a
+/// point. `None` for `Plane` (zero), `Torus`, and `Extruded` (not provided).
+pub fn surface_curvature(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 2]> {
+    use crate::math::{dot, normalize, norm, scale, sub};
+    match kind {
+        SurfaceKind::Sphere { radius, .. } => Some([1.0 / radius, 1.0 / radius]),
+        SurfaceKind::Cylinder { radius, .. } => Some([1.0 / radius, 0.0]),
+        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            let a = normalize(*axis);
+            let w = sub(p, *apex);
+            let rp = norm(sub(w, scale(a, dot(w, a))));
+            if rp <= 0.0 {
+                return None;
+            }
+            let cos = 1.0 / (1.0 + tan_half_angle * tan_half_angle).sqrt();
+            Some([cos / rp, 0.0])
+        }
+        _ => None,
+    }
+}
+
+/// Exact per-face outward unit normals for the boundary faces on a curved
+/// analytic surface, evaluated at the face centroid and sign-aligned to the
+/// facet winding (so they match the mesh's outward orientation). `None` where the
+/// face is planar (facet normal already exact) or the kind has no closed form.
+/// Parallel to `faces`. Works for both `TetMesh` and `SurfaceMesh` (pass their
+/// `points`, `faces`, `surfaces`).
+pub fn exact_face_normals(
+    points: &[[f64; 3]],
+    faces: &[SurfaceFace],
+    surfaces: &[SurfaceKind],
+) -> Vec<Option<[f64; 3]>> {
+    use crate::math::{add, cross, dot, scale, sub};
+    faces
+        .iter()
+        .map(|f| {
+            let kind = &surfaces[f.surface as usize];
+            let [ia, ib, ic] = f.tri;
+            let (a, b, c) = (points[ia], points[ib], points[ic]);
+            let centroid = scale(add(add(a, b), c), 1.0 / 3.0);
+            surface_normal(kind, centroid).map(|n| {
+                let facet = cross(sub(b, a), sub(c, a));
+                if dot(n, facet) < 0.0 {
+                    scale(n, -1.0)
+                } else {
+                    n
+                }
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sphere_normal_and_curvature() {
+        let k = SurfaceKind::Sphere { center: [0.0, 0.0, 0.0], radius: 2.0 };
+        let n = surface_normal(&k, [2.0, 0.0, 0.0]).unwrap();
+        assert!((n[0] - 1.0).abs() < 1e-12 && n[1].abs() < 1e-12 && n[2].abs() < 1e-12);
+        assert_eq!(surface_curvature(&k, [2.0, 0.0, 0.0]), Some([0.5, 0.5]));
+    }
+
+    #[test]
+    fn cylinder_normal_radial() {
+        let k = SurfaceKind::Cylinder { center: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], radius: 3.0 };
+        let n = surface_normal(&k, [0.0, 3.0, 5.0]).unwrap();
+        assert!(n[0].abs() < 1e-12 && (n[1] - 1.0).abs() < 1e-12 && n[2].abs() < 1e-12);
+    }
+
+    #[test]
+    fn plane_has_no_override() {
+        assert!(surface_normal(&SurfaceKind::Plane, [1.0, 2.0, 3.0]).is_none());
+        assert!(surface_curvature(&SurfaceKind::Plane, [1.0, 2.0, 3.0]).is_none());
     }
 }

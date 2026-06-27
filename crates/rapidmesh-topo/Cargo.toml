@@ -13,5 +13,6 @@ default = []
 mesher = ["dep:rapidmesh-tet", "dep:rapidmesh-geom"]
 
 [dependencies]
+bytemuck = { version = "1", features = ["extern_crate_alloc", "min_const_generics"] }
 rapidmesh-tet = { workspace = true, optional = true }
 rapidmesh-geom = { workspace = true, optional = true }

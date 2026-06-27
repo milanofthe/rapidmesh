@@ -3,7 +3,7 @@
 //! allocation, cache-friendly iteration.
 
 /// Compressed adjacency: `row(k)` is the slice of values associated with key `k`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Csr {
     offsets: Vec<u32>,
     data: Vec<u32>,
@@ -45,6 +45,18 @@ impl Csr {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The raw `(offsets, data)` arrays — for zero-copy serialization.
+    #[inline]
+    pub fn as_raw(&self) -> (&[u32], &[u32]) {
+        (&self.offsets, &self.data)
+    }
+
+    /// Reconstruct from raw `(offsets, data)` (e.g. read back from a wire frame).
+    #[inline]
+    pub fn from_raw(offsets: Vec<u32>, data: Vec<u32>) -> Self {
+        Csr { offsets, data }
     }
 }
 

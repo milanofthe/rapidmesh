@@ -26,6 +26,15 @@ pub(crate) fn dot(a: V3, b: V3) -> f64 {
 pub(crate) fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
 }
+#[inline]
+pub(crate) fn normalize(a: V3) -> V3 {
+    let n = norm(a);
+    if n > 0.0 {
+        scale(a, 1.0 / n)
+    } else {
+        a
+    }
+}
 
 /// Determinant of a 3×3 given as rows.
 #[inline]

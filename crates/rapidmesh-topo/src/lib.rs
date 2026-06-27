@@ -24,9 +24,10 @@ mod math;
 mod source;
 mod tet;
 mod tri;
+pub mod wire;
 
 #[cfg(feature = "mesher")]
-mod mesher;
+pub mod mesher;
 
 pub use convention::{
     canonical_edge, sort3_sign, NONE, TET_EDGE_LOCAL, TET_FACE_LOCAL, TRI_EDGE_LOCAL,
@@ -35,3 +36,4 @@ pub use csr::Csr;
 pub use source::{TetSource, TriSource, Tets, Tris};
 pub use tet::{TetGeometry, TetTopology};
 pub use tri::{TriGeometry, TriTopology};
+pub use wire::{FrameReader, FrameWriter};

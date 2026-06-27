@@ -109,10 +109,14 @@ hottest per-element O(n) loops the solvers would otherwise redo.
 
 ## Status
 
-- **Done**: `Csr`, conventions (with the outward-face + shared-face-sign tests),
-  `TriTopology`/`TetTopology` (Tier 1), and `TriGeometry`/`TetGeometry` (Tier 2 —
-  area/volume/centroid/normal/∇λ_i/inertia/edge-length), `mesher`-feature source
-  adapters. 13 tests + a doctest.
-- **Future, still mesh-side**: the analytic exact-normal/curvature hook and the
-  zero-copy header/wire-format.
-- **Out of scope** (solver-side): DOF builders, quadrature, assembly.
+- **Done** — the rapidmesh side is complete:
+  - `Csr`, conventions (outward-face + shared-face-sign tests).
+  - `TriTopology`/`TetTopology` (Tier 1) + `TriGeometry`/`TetGeometry` (Tier 2:
+    area/volume/centroid/normal/∇λ_i/inertia/edge-length).
+  - `wire`: flat POD frame (`to_wire`/`from_wire`) — no serialization, bulk copy,
+    mmap-friendly buffer (topology only; geometry recomputes from coords).
+  - `mesher` feature: source adapters for `TetMesh`/`SurfaceMesh` plus the
+    analytic exact-normal / curvature hook (`surface_normal`,
+    `surface_curvature`, `exact_face_normals`).
+  - 19 tests + a doctest.
+- **Out of scope** (solver-side): DOF builders, quadrature, assembly, physics.

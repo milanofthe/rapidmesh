@@ -92,8 +92,27 @@ Every field is POD `Vec<[T; N]>` → `bytemuck`-castable to `&[u8]`. A stable
 header (counts + offsets) is simultaneously the mmap-able wire format for the
 Python / cross-process path; no per-element serialization.
 
+## Abstraction boundary
+
+rapidmesh provides **facts about the mesh**; the solver picks the
+**discretization**. Anything presupposing a basis is out of this crate and lives
+in the solver repos:
+
+- **In** (here): topology/incidence, orientation signs, element geometry
+  (length, area, volume, centroid, normal, ∇λ_i, second moment) — all basis-free.
+- **Out** (rapidfem / rapidmom): DOF numbering (RWG / Nédélec / Lagrange),
+  quadrature rules, shape functions, assembly, materials, ports-as-excitation.
+
+`∇λ_i` and the triangle second moment sit just inside the line: they are pure
+simplex calculus / geometric moments (no basis), offered because they are the
+hottest per-element O(n) loops the solvers would otherwise redo.
+
 ## Status
 
-Scaffold: `Csr`, conventions, `TriTopology`/`TetTopology` constructors with
-convention tests are implemented. `TriGeometry`/`TetGeometry`, the analytic-normal
-hook, the zero-copy header, and the Tier-3 DOF builders are stubs / future work.
+- **Done**: `Csr`, conventions (with the outward-face + shared-face-sign tests),
+  `TriTopology`/`TetTopology` (Tier 1), and `TriGeometry`/`TetGeometry` (Tier 2 —
+  area/volume/centroid/normal/∇λ_i/inertia/edge-length), `mesher`-feature source
+  adapters. 13 tests + a doctest.
+- **Future, still mesh-side**: the analytic exact-normal/curvature hook and the
+  zero-copy header/wire-format.
+- **Out of scope** (solver-side): DOF builders, quadrature, assembly.

@@ -20,6 +20,7 @@
 
 pub mod convention;
 pub mod csr;
+mod math;
 mod source;
 mod tet;
 mod tri;

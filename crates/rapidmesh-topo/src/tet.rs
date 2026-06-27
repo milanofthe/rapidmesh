@@ -10,6 +10,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default)]
 pub struct TetTopology {
     pub n_verts: usize,
+    /// The tet → vertex connectivity (the source elements, as `u32`), so the
+    /// complex is self-contained and the geometry builders need only coordinates.
+    pub tets: Vec<[u32; 4]>,
     /// Unique edges, canonical `(min, max)`.
     pub edges: Vec<[u32; 2]>,
     /// Unique faces, canonical (vertex ids ascending).
@@ -45,10 +48,12 @@ impl TetTopology {
         let mut tet_edge_sign = vec![[0i8; 6]; nt];
         let mut tet_faces = vec![[0u32; 4]; nt];
         let mut tet_face_sign = vec![[0i8; 4]; nt];
+        let mut tets = vec![[0u32; 4]; nt];
         let mut vt_pairs: Vec<(u32, u32)> = Vec::with_capacity(nt * 4);
 
         for t in 0..nt {
             let tet = src.tet(t);
+            tets[t] = tet;
             for &v in &tet {
                 vt_pairs.push((v, t as u32));
             }
@@ -106,6 +111,7 @@ impl TetTopology {
 
         TetTopology {
             n_verts: src.n_verts(),
+            tets,
             edges,
             faces,
             tet_edges,
@@ -120,22 +126,85 @@ impl TetTopology {
     }
 }
 
-/// Per-element geometry of a tet mesh. **Stub** — see `DESIGN.md`. `grad` will
-/// hold ∇λ_i (the inverse Jacobian), the only per-element datum a P1/Nédélec
-/// assembly needs.
+/// Per-element geometry of a tet mesh. All basis-free facts about the embedding.
+/// `grad` holds ∇λ_i (the barycentric-coordinate gradients = the inverse-
+/// transpose Jacobian) — pure simplex calculus, the only per-element datum a
+/// P1/Nédélec assembly needs.
 #[derive(Debug, Clone, Default)]
 pub struct TetGeometry {
+    /// Unsigned tet volume.
     pub volume: Vec<f64>,
+    /// ∇λ_i for the 4 local vertices (constant per tet). `Σ_i ∇λ_i = 0`.
     pub grad: Vec<[[f64; 3]; 4]>,
+    /// Per-edge length (parallel to `TetTopology::edges`).
     pub edge_len: Vec<f64>,
+    /// Per-face area (parallel to `TetTopology::faces`).
     pub face_area: Vec<f64>,
+    /// Per-face unit normal: boundary outward, interior `t0 → t1` (oriented away
+    /// from `face_tets[f][0]`'s opposite vertex — outward for a boundary face).
     pub face_normal: Vec<[f64; 3]>,
     pub face_centroid: Vec<[f64; 3]>,
 }
 
 impl TetGeometry {
-    pub fn build(_topo: &TetTopology, _coords: &[[f64; 3]]) -> Self {
-        unimplemented!("TetGeometry::build — Tier-2 stub")
+    pub fn build(topo: &TetTopology, coords: &[[f64; 3]]) -> Self {
+        use crate::math::{add, cross, det3, dot, edge_geom, inv3, norm, scale, sub};
+
+        let nt = topo.tets.len();
+        let mut volume = vec![0.0; nt];
+        let mut grad = vec![[[0.0; 3]; 4]; nt];
+        for t in 0..nt {
+            let [i0, i1, i2, i3] = topo.tets[t];
+            let (p0, p1, p2, p3) = (
+                coords[i0 as usize],
+                coords[i1 as usize],
+                coords[i2 as usize],
+                coords[i3 as usize],
+            );
+            // T has columns (p1-p0, p2-p0, p3-p0); det(T) = 6 * signed volume.
+            let (e1, e2, e3) = (sub(p1, p0), sub(p2, p0), sub(p3, p0));
+            let m = [[e1[0], e2[0], e3[0]], [e1[1], e2[1], e3[1]], [e1[2], e2[2], e3[2]]];
+            volume[t] = det3(m).abs() / 6.0;
+            if let Some(inv) = inv3(m) {
+                // λ_{1,2,3} = (T^{-1}(x - p0))_{0,1,2} -> ∇λ_i = rows of T^{-1}.
+                let (g1, g2, g3) = (inv[0], inv[1], inv[2]);
+                grad[t][1] = g1;
+                grad[t][2] = g2;
+                grad[t][3] = g3;
+                grad[t][0] = [-(g1[0] + g2[0] + g3[0]), -(g1[1] + g2[1] + g3[1]), -(g1[2] + g2[2] + g3[2])];
+            }
+        }
+
+        let (edge_len, _) = edge_geom(&topo.edges, coords);
+
+        let nf = topo.faces.len();
+        let mut face_area = vec![0.0; nf];
+        let mut face_normal = vec![[0.0; 3]; nf];
+        let mut face_centroid = vec![[0.0; 3]; nf];
+        for f in 0..nf {
+            let [ia, ib, ic] = topo.faces[f];
+            let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
+            let n = cross(sub(b, a), sub(c, a));
+            let len = norm(n);
+            face_area[f] = 0.5 * len;
+            let centroid = scale(add(add(a, b), c), 1.0 / 3.0);
+            face_centroid[f] = centroid;
+            let mut nn = if len > 0.0 { scale(n, 1.0 / len) } else { [0.0; 3] };
+            // Orient away from face_tets[f][0]'s opposite vertex: outward for a
+            // boundary face, t0 -> t1 for an interior one.
+            let t0 = topo.face_tets[f][0];
+            if t0 != NONE {
+                let tet = topo.tets[t0 as usize];
+                if let Some(&ov) = tet.iter().find(|&&v| v != ia && v != ib && v != ic) {
+                    if dot(nn, sub(centroid, coords[ov as usize])) < 0.0 {
+                        nn = scale(nn, -1.0);
+                    }
+                }
+            }
+            face_normal[f] = nn;
+        }
+
+        TetGeometry { volume, grad, edge_len, face_area, face_normal, face_centroid }
     }
 }
 
@@ -181,5 +250,48 @@ mod tests {
             topo.tet_face_sign[t][k]
         };
         assert_eq!(sign_in(0), -sign_in(1));
+    }
+
+    #[test]
+    fn geometry_unit_tet() {
+        let topo = TetTopology::build(&Tets { tets: &[[0, 1, 2, 3]], n_verts: 4 });
+        let coords = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let g = TetGeometry::build(&topo, &coords);
+        assert!((g.volume[0] - 1.0 / 6.0).abs() < 1e-12);
+        // ∇λ_0 = (-1,-1,-1).
+        for k in 0..3 {
+            assert!((g.grad[0][0][k] + 1.0).abs() < 1e-12);
+        }
+        // Σ_i ∇λ_i = 0.
+        let mut s = [0.0; 3];
+        for i in 0..4 {
+            for k in 0..3 {
+                s[k] += g.grad[0][i][k];
+            }
+        }
+        for k in 0..3 {
+            assert!(s[k].abs() < 1e-12);
+        }
+        // all four faces are boundary -> unit, outward normals.
+        let tetc = [0.25, 0.25, 0.25];
+        for f in 0..topo.faces.len() {
+            let n = g.face_normal[f];
+            let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!((nl - 1.0).abs() < 1e-12);
+            let c = g.face_centroid[f];
+            let out = n[0] * (c[0] - tetc[0]) + n[1] * (c[1] - tetc[1]) + n[2] * (c[2] - tetc[2]);
+            assert!(out > 0.0, "face {f} normal not outward");
+        }
+    }
+
+    #[test]
+    fn geometry_grad_scaled_tet() {
+        let topo = TetTopology::build(&Tets { tets: &[[0, 1, 2, 3]], n_verts: 4 });
+        let coords = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
+        let g = TetGeometry::build(&topo, &coords);
+        assert!((g.volume[0] - 4.0).abs() < 1e-12); // (2*3*4)/6
+        assert!((g.grad[0][1][0] - 0.5).abs() < 1e-12);
+        assert!((g.grad[0][2][1] - 1.0 / 3.0).abs() < 1e-12);
+        assert!((g.grad[0][3][2] - 0.25).abs() < 1e-12);
     }
 }

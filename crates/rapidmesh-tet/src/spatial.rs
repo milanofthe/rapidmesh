@@ -13,48 +13,6 @@ fn dist2(a: V3, b: V3) -> f64 {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
 
-/// Spreads the low 21 bits of `x` to every third bit (3D Morton split).
-fn split3(x: u64) -> u64 {
-    let mut x = x & 0x1f_ffff;
-    x = (x | x << 32) & 0x1f00_0000_00ff_ffff;
-    x = (x | x << 16) & 0x1f00_00ff_0000_ffff;
-    x = (x | x << 8) & 0x100f_00f0_0f00_f00f;
-    x = (x | x << 4) & 0x10c3_0c30_c30c_30c3;
-    x = (x | x << 2) & 0x1249_2492_4924_9249;
-    x
-}
-
-/// A permutation of `0..points.len()` ordering the points along a Morton
-/// (Z-order) curve. Inserting in this order keeps consecutive points spatially
-/// close, so an incremental Delaunay's point-location walk stays short (the
-/// classic BRIO/space-filling-curve speedup): near-linear construction instead
-/// of the long walks a geometrically-unsorted insertion order causes.
-pub fn morton_order(points: &[V3]) -> Vec<usize> {
-    let n = points.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut lo = points[0];
-    let mut hi = points[0];
-    for p in points {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
-    let span: [f64; 3] = std::array::from_fn(|k| (hi[k] - lo[k]).max(1e-300));
-    const MASK: u64 = (1 << 21) - 1;
-    let max = MASK as f64;
-    let code = |p: V3| -> u64 {
-        let q: [u64; 3] =
-            std::array::from_fn(|k| (((p[k] - lo[k]) / span[k] * max).round() as u64).min(MASK));
-        split3(q[0]) | (split3(q[1]) << 1) | (split3(q[2]) << 2)
-    };
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by_key(|&i| code(points[i]));
-    idx
-}
-
 /// A density-adaptive, aspect-RATIO-preserving spatial insertion order: the
 /// points in octree depth-first order. The octree subdivides into CUBIC octants,
 /// so a flat or anisotropic point set is not stretched the way `morton_order`'s
@@ -142,15 +100,6 @@ impl Octree {
         }
     }
 
-    /// All point indices within Euclidean distance `r` of `q`.
-    pub fn within_radius(&self, q: V3, r: f64) -> Vec<u32> {
-        let mut out = Vec::new();
-        if self.pts.is_empty() {
-            return out;
-        }
-        within_in(&self.root, &self.pts, self.center, self.half, q, r * r, &mut out);
-        out
-    }
 }
 
 fn child_box(center: V3, half: f64, octant: usize) -> (V3, f64) {
@@ -240,27 +189,6 @@ fn nearest_in(node: &Node, pts: &[V3], center: V3, half: f64, q: V3, best: &mut 
     }
 }
 
-fn within_in(node: &Node, pts: &[V3], center: V3, half: f64, q: V3, r2: f64, out: &mut Vec<u32>) {
-    if box_dist2(center, half, q) > r2 {
-        return;
-    }
-    match node {
-        Node::Leaf(idx) => {
-            for &i in idx {
-                if dist2(pts[i as usize], q) <= r2 {
-                    out.push(i);
-                }
-            }
-        }
-        Node::Inner(children) => {
-            for o in 0..8 {
-                let (cc, ch) = child_box(center, half, o);
-                within_in(&children[o], pts, cc, ch, q, r2, out);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,25 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn within_radius_matches_brute_force() {
-        let pts = grid(8);
-        let tree = Octree::build(&pts);
-        let q = [1.5, -0.7, 1.4];
-        let r = 1.0;
-        let mut got = tree.within_radius(q, r);
-        got.sort_unstable();
-        let mut want: Vec<u32> = (0..pts.len() as u32)
-            .filter(|&i| dist2(pts[i as usize], q) <= r * r)
-            .collect();
-        want.sort_unstable();
-        assert_eq!(got, want);
-    }
-
-    #[test]
     fn empty_tree_is_safe() {
         let tree = Octree::build(&[]);
         assert_eq!(tree.nearest([0.0, 0.0, 0.0]), None);
-        assert!(tree.within_radius([0.0, 0.0, 0.0], 10.0).is_empty());
     }
 
     #[test]
@@ -337,6 +249,5 @@ mod tests {
         let pts = vec![[1.0, 1.0, 1.0]; 100];
         let tree = Octree::build(&pts);
         assert!(tree.nearest([1.0, 1.0, 1.0]).is_some());
-        assert_eq!(tree.within_radius([1.0, 1.0, 1.0], 0.1).len(), 100);
     }
 }

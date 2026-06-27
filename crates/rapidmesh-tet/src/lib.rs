@@ -37,7 +37,6 @@ mod geomutil;
 pub(crate) mod optimize;
 pub(crate) mod project;
 pub(crate) mod seed;
-pub(crate) mod sizefield;
 pub(crate) mod site;
 pub(crate) mod spatial;
 pub(crate) mod surfchart;

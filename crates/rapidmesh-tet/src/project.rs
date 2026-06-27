@@ -65,16 +65,6 @@ pub fn closest_on_plane(p: V3, origin: V3, normal: V3) -> V3 {
     sub(p, scale(n, d))
 }
 
-/// Plane (origin, unit normal) of the triangle `tri`, or `None` if degenerate.
-pub fn plane_of_tri(tri: [V3; 3]) -> Option<(V3, V3)> {
-    let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
-    if norm(n) == 0.0 {
-        None
-    } else {
-        Some((tri[0], normalize(n)))
-    }
-}
-
 /// Closest point on the analytic surface. `Plane` returns `p` unchanged (use
 /// `closest_on_plane` with the facet plane instead). Degenerate placements
 /// (point on the axis of a cylinder/cone, on the torus axis) fall back to a
@@ -171,21 +161,12 @@ pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
     }
 }
 
-/// Signed distance of `p` to the analytic surface (positive outside for the
-/// convex kinds), via the closest-surface point. `Plane` returns 0.
-pub fn distance_to_surface(kind: &SurfaceKind, p: V3) -> f64 {
-    match kind {
-        SurfaceKind::Plane => 0.0,
-        _ => norm(sub(p, closest_on_surface(kind, p))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn on_surface(kind: &SurfaceKind, q: V3, tol: f64) -> bool {
-        distance_to_surface(kind, q) < tol
+        norm(sub(q, closest_on_surface(kind, q))) < tol
     }
 
     #[test]

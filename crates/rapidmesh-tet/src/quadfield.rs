@@ -6,7 +6,7 @@
 //! adaptive refinement (AMR), and far cheaper than re-evaluating an expensive
 //! field at every one of the mesher's millions of queries.
 //!
-//! Distinct from [`crate::sizefield::SizeField`], which is the geometry's own
+//! Distinct from the [`crate::seed::SizingField`], the geometry's own
 //! gradient-limited *sizing field* (what size to mesh to); a `QuadtreeField` is
 //! a generic background cache that any field can be baked into for fast lookup.
 

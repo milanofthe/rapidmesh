@@ -32,6 +32,22 @@ def _cyl_faces(tol_edge=1e-2, tol_surf=1e-2, maxh_surf=math.inf):
     return len(m.faces)
 
 
+def _box_faces(maxh, setup=None):
+    g = rm.Geometry(maxh=maxh)
+    g.box(4.0, 4.0, 4.0, (0.0, 0.0, 0.0))
+    if setup is not None:
+        setup(g)
+    return len(g.surface_mesh(maxh=maxh).faces)
+
+
+_ALL_BOX_NORMALS = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+
+
+def _refine_all_faces(g, h=0.5):
+    for n in _ALL_BOX_NORMALS:
+        g.surf(normal=n).maxh = h
+
+
 # ---- global knobs --------------------------------------------------------
 
 def test_global_maxh_refines():
@@ -96,6 +112,33 @@ def test_per_surface_normal_selects_faces():
     one = _ntets(4.0, setup=lambda g: setattr(g.surf(normal=(0.0, 0.0, 1.0)), "maxh", 0.5))
     allf = _ntets(4.0, setup=lambda g: setattr(g.surf(), "maxh", 0.5))
     assert one <= allf
+
+
+# ---- global cap vs per-entity consistency (no path silently ignores a knob) ---
+
+def test_global_surf_refines_volume():
+    # The global surface cap must refine the VOLUME, not just the surface tiling
+    # (regression guard: cap_surf was omitted from the domain sizing field).
+    assert _ntets(4.0, setup=lambda g: setattr(g.surf(), "maxh", 0.5)) > 4 * _ntets(4.0)
+
+
+def test_global_surf_equals_per_entity_all_faces():
+    # The global cap and the equivalent per-entity override on EVERY face produce
+    # the same volume field, hence the same mesh.
+    glob = _ntets(4.0, setup=lambda g: setattr(g.surf(), "maxh", 0.5))
+    per_entity = _ntets(4.0, setup=_refine_all_faces)
+    assert glob == per_entity
+
+
+def test_per_entity_surf_refines_surface_export():
+    # A per-entity surf override must reach surface_mesh() too (regression guard:
+    # the surface export built its domain without the per-entity overrides).
+    assert _box_faces(4.0, setup=_refine_all_faces) > 4 * _box_faces(4.0)
+
+
+def test_maxh_vol_refines_box_interior():
+    # The global volume cap must densify the interior, not merely a boundary band.
+    assert _ntets(4.0, maxh_vol=0.5) > 10 * _ntets(4.0)
 
 
 def test_hierarchical_composition_runs_and_refines():

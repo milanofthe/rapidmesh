@@ -202,8 +202,13 @@ impl DomainTree {
                     h
                 }
             };
-            // Per-FACE override (resolved `surf_maxh`, finest wins), then curvature.
+            // Per-FACE override (resolved `surf_maxh`, finest wins), the GLOBAL
+            // surface cap (`maxh_surf`), then curvature. `surf_cap()` defaults to
+            // `maxh` (no-op) unless a global surface cap is set, so this keeps the
+            // global `g.surf().maxh` consistent with the per-entity override: both
+            // now refine the volume field behind the surface, not just the tiling.
             base.min(facet_surf.get(i).copied().unwrap_or(f64::INFINITY))
+                .min(params.surf_cap())
                 .min(curvature_target(i))
         };
         let facets: Vec<(Tri, f64)> = plc
@@ -228,6 +233,9 @@ impl DomainTree {
         for &(_, sh) in &params.size_points {
             s0 = s0.min(sh);
         }
+        // The global volume cap (`maxh_vol`) floors the base spacing so the
+        // INTERIOR refines under `g.region().maxh`, not just the near-surface band.
+        s0 = s0.min(params.vol_cap());
         let spacing = if s0.is_finite() && s0 > 0.0 { s0 } else { diag / 8.0 };
         let min_half = (0.5 * spacing).max(1e-9 * diag.max(1.0));
 
@@ -244,14 +252,20 @@ impl DomainTree {
         //     point-to-segment graded distance). Filled by WP-R3; empty here.
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
-        let edge_segments: Vec<(Tri, f64)> = edge_sizing_segments(plc, params.tol_edge, maxh);
+        // `edge_cap()` is the global edge cap (`maxh_edge`); defaults to `maxh`.
+        let edge_segments: Vec<(Tri, f64)> =
+            edge_sizing_segments(plc, params.tol_edge, params.edge_cap());
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).
         let dist_to_boundary = |p: V3| -> f64 { bvh.nearest_dist(p) };
         let h_of = |p: V3, region: u32| -> f64 {
+            // `vol_cap()` is the global volume cap (`maxh_vol`); defaults to `maxh`
+            // (no-op) unless set. Composed here so the global `g.region().maxh`
+            // drives the interior field directly, like the per-region/per-entity caps.
             let mut h = region_cap(region)
                 .min(maxh)
+                .min(params.vol_cap())
                 .min(bvh.graded_min(p, grading))
                 .min(edge_bvh.graded_min(p, grading));
             for (sp, sh) in &params.size_points {

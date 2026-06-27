@@ -6,6 +6,7 @@ members = [
     "crates/rapidmesh-csg",
     "crates/rapidmesh-brep",
     "crates/rapidmesh-tet",
+    "crates/rapidmesh-topo",
     "crates/rapidmesh",
     "crates/rapidmesh-testutil",
     "crates/rapidmesh-wasm",
@@ -24,6 +25,7 @@ rapidmesh-testutil = { path = "crates/rapidmesh-testutil" }
 rapidmesh-csg = { path = "crates/rapidmesh-csg" }
 rapidmesh-brep = { path = "crates/rapidmesh-brep" }
 rapidmesh-tet = { path = "crates/rapidmesh-tet" }
+rapidmesh-topo = { path = "crates/rapidmesh-topo" }
 geometry-predicates = "0.3"
 rayon = "1"
 rustc-hash = "2"

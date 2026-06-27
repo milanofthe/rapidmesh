@@ -12,28 +12,35 @@
 //! 4. Optional order-2 midside snapping onto the analytic surface via the
 //!    PLC surface back-references (`project`), for curved boundaries.
 
+// Public surface: the 2D core (`surf2d`), the MoM/FEM accessors (`mom`, the
+// Python bridge), adaptive marking (`adapt`), the sizing-field cache
+// (`quadfield`), and `diagnostics`. Everything else is the internal mesher
+// engine -- `pub(crate)`, reached only through the re-exported entry points
+// below (`mesh_cdt` / `surface_mesh` / `mesh_plc` / `tetrahedralize` / ...).
+// The canonical embedding front door is `rapidmesh_topo::{mesh_2d, mesh_3d}`.
 pub mod adapt;
-pub mod brep_mesh;
-pub mod cdt3;
-pub mod conform;
-pub mod constants;
-pub mod curve;
-pub mod cvt;
-pub mod delaunay;
 pub mod diagnostics;
-pub mod domain;
-pub mod facetbvh;
-mod geomutil;
 pub mod mom;
-pub mod optimize;
-pub mod project;
-pub mod seed;
 pub mod quadfield;
-pub mod sizefield;
-pub mod site;
-pub mod spatial;
 pub mod surf2d;
-pub mod surfchart;
+
+pub(crate) mod brep_mesh;
+pub(crate) mod cdt3;
+pub(crate) mod conform;
+pub(crate) mod constants;
+pub(crate) mod curve;
+pub(crate) mod cvt;
+pub(crate) mod delaunay;
+pub(crate) mod domain;
+pub(crate) mod facetbvh;
+mod geomutil;
+pub(crate) mod optimize;
+pub(crate) mod project;
+pub(crate) mod seed;
+pub(crate) mod sizefield;
+pub(crate) mod site;
+pub(crate) mod spatial;
+pub(crate) mod surfchart;
 
 pub use conform::{
     log_metrics, log_surface_metrics, mesh_plc, mesh_plc_with, quality_stats, MeshParams,

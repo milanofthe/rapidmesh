@@ -9,6 +9,23 @@ round-trip a `.msh`/JSON.
 It is **not** a solver and **not** FEM-specific. Basis-aware machinery
 (RWG / Nédélec DOF maps, quadrature rules) layers *on top* of this crate.
 
+## Integration — there are exactly two endpoints
+
+A Rust solver embeds rapidmesh through **one** of two front doors (enable the
+`mesher` feature). Each returns a complete bundle — do not assemble pieces by hand
+and do not use any other accessor:
+
+| | call | returns | for |
+|---|---|---|---|
+| **2D** | `rapidmesh_topo::mesh_2d(&plc, &params)` | `Mesh2D { mesh, topo, geom }` + `rwg_candidate_edges()`, `boundary_edges()`, `edges_on_line()`, `exact_face_normals()` | MoM (rapidmom) |
+| **3D** | `rapidmesh_topo::mesh_3d(&plc, &params)` | `Mesh3D { mesh, topo, geom }` + `exact_face_normals()` | FEM (rapidfem) |
+
+Already have a `SurfaceMesh`/`TetMesh`? Use `Mesh2D::build` / `Mesh3D::build`.
+
+Ignore for embedding: `rapidmesh_tet::{mesh_cdt, surface_mesh, …}` (the internal
+mesher these wrap) and `rapidmesh_tet::mom` (the Python bindings' bridge). Both
+predate the endpoints; neither is the Rust front door.
+
 ## Why this exists
 
 Today the downstream solvers rebuild what the mesher already knew:

@@ -8,6 +8,16 @@
 //!
 //! This crate is basis-free. RWG / Nédélec DOF maps and quadrature layer on top.
 //!
+//! # The two endpoints (with the `mesher` feature)
+//!
+//! For embedding, there are exactly two front doors — one for 2D, one for 3D —
+//! each returning a complete bundle (mesh + topology + geometry). Use these; the
+//! lower-level pieces (`TriTopology`, `TetGeometry`, …) are what they are built
+//! from.
+//!
+//! - [`mesh_2d`] → [`Mesh2D`] — surface / MoM.
+//! - [`mesh_3d`] → [`Mesh3D`] — volume / FEM.
+//!
 //! See `DESIGN.md` for the rationale, conventions, and roadmap.
 //!
 //! ```
@@ -28,6 +38,8 @@ pub mod wire;
 
 #[cfg(feature = "mesher")]
 pub mod mesher;
+#[cfg(feature = "mesher")]
+mod bundle;
 
 pub use convention::{
     canonical_edge, sort3_sign, NONE, TET_EDGE_LOCAL, TET_FACE_LOCAL, TRI_EDGE_LOCAL,
@@ -37,3 +49,6 @@ pub use source::{TetSource, TriSource, Tets, Tris};
 pub use tet::{TetGeometry, TetTopology};
 pub use tri::{TriGeometry, TriTopology};
 pub use wire::{FrameReader, FrameWriter};
+
+#[cfg(feature = "mesher")]
+pub use bundle::{mesh_2d, mesh_3d, Mesh2D, Mesh3D};

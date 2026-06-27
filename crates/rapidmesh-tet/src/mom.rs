@@ -1,8 +1,13 @@
 //! MoM/FEM mesh info derived from a [`SurfaceMesh`]: edge adjacency and the RWG /
 //! boundary / port / element-quality data a method-of-moments or FEM solver reads
-//! off the surface. Pure topology + geometry over `points` and `faces`, so a Rust
-//! consumer (rapidmom) gets exactly what the Python wrapper used to compute on
-//! numpy -- no Python in the loop.
+//! off the surface. Pure topology + geometry over `points` and `faces`.
+//!
+//! NOTE — this module backs the **Python** bindings (the numpy-shaped accessors).
+//! **Rust** consumers should embed via the single canonical endpoint instead:
+//! `rapidmesh_topo::mesh_2d(...)` returns a `Mesh2D` bundling the mesh, topology,
+//! geometry, and these same RWG/boundary queries — one front door, everything
+//! exposed. (This module lives in `rapidmesh-tet`, upstream of `rapidmesh-topo`,
+//! so it cannot delegate to it; keep new Rust analysis work in `rapidmesh-topo`.)
 
 use crate::conform::SurfaceMesh;
 use rapidmesh_geom::vec3::{cross, dot, len, sub};

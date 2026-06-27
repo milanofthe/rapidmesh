@@ -424,6 +424,25 @@ fn recover_curve(
     // a CURVED face (so a planar polygon is never mistaken for a circle); the fit
     // tolerance is loose enough to accept a faceted polygon's vertices, which lie
     // approximately on the true circle.
+    // Exact sphere-sphere intersection: the circle on the radical plane, derived
+    // from BOTH spheres' centres/radii -- NOT a fit to the faceted chain (whose
+    // sagitta error is exactly what leaves the straddler slivers). Chain-
+    // independent, so the recovered circle lies exactly on both spheres.
+    let spheres: Vec<(V3, f64)> = rad
+        .iter()
+        .filter_map(|f| match &plc.surfaces[faces[f.0 as usize].plc_surface as usize] {
+            SurfaceKind::Sphere { center, radius } => Some((*center, *radius)),
+            _ => None,
+        })
+        .collect();
+    if spheres.len() >= 2 {
+        if let Some((center, axis, radius, x)) =
+            sphere_sphere_circle(spheres[0].0, spheres[0].1, spheres[1].0, spheres[1].1, chain)
+        {
+            return Curve::Circle { center, axis, radius, x };
+        }
+    }
+
     let circ = rad
         .iter()
         .find_map(|f| {
@@ -496,6 +515,29 @@ fn chain_plane(chain: &[V3]) -> Option<(V3, V3)> {
 /// the chain's plane: `(center, unit axis, radius, unit in-plane x)`. This keeps
 /// the edge on the same analytic radius as the face's surface points (a fitted
 /// circle would sit a chord-sagitta inside, mismatching the barrel at the rim).
+/// Exact intersection circle of two distinct spheres: the circle on the radical
+/// plane (perpendicular to the centre line, at the exact offset). Returns
+/// `(center, unit axis, radius, unit in-plane x toward the chain start)`. None if
+/// the spheres are concentric, tangent, or disjoint.
+fn sphere_sphere_circle(c1: V3, r1: f64, c2: V3, r2: f64, chain: &[V3]) -> Option<(V3, V3, f64, V3)> {
+    let dvec = sub(c2, c1);
+    let d2 = dot(dvec, dvec);
+    if d2 < 1e-18 {
+        return None; // concentric
+    }
+    let d = d2.sqrt();
+    let axis = scale(dvec, 1.0 / d);
+    let a = (d2 + r1 * r1 - r2 * r2) / (2.0 * d);
+    let rr = r1 * r1 - a * a;
+    if rr <= 1e-18 {
+        return None; // tangent or disjoint
+    }
+    let center = add(c1, scale(axis, a));
+    let dchain = sub(chain[0], center);
+    let x = norm(std::array::from_fn(|k| dchain[k] - axis[k] * dot(dchain, axis)));
+    Some((center, axis, rr.sqrt(), x))
+}
+
 fn analytic_circle(chain: &[V3], kind: &SurfaceKind) -> Option<(V3, V3, f64, V3)> {
     let (o, n) = chain_plane(chain)?;
     let xref = |c: V3, axis: V3| {

@@ -69,6 +69,7 @@ impl Default for Mesh2DOptions {
 /// Everything about a 2D mesh (the MoM target): the gmsh-grade planar
 /// triangulation from the production 2D path, its derived topology, and its
 /// element geometry. Coordinates are 2D.
+#[derive(Clone)]
 pub struct Mesh2D {
     /// Vertices (2D).
     pub points: Vec<[f64; 2]>,

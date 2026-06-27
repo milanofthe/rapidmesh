@@ -1050,13 +1050,6 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             }
         }
         let nb = loc2.len();
-        let (mut lo2, mut hi2) = (loc2[0], loc2[0]);
-        for &p in &loc2[..nb] {
-            for k in 0..2 {
-                lo2[k] = lo2[k].min(p[k]);
-                hi2[k] = hi2[k].max(p[k]);
-            }
-        }
         let inside2 =
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let step = SURFACE_OVERSAMPLE * domain.finest();
@@ -1066,45 +1059,26 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // Pure Ruppert from the boundary when refining (it grades to the field
         // itself); otherwise the Lloyd scatter. Mixing Lloyd points with refinement
         // seeds slivers, so refine starts from an empty interior.
-        if params.surf_min_angle > 0.0 {
-            // Sliver-free 2D path: the unified core (graded CVT seed +
-            // edge-clearance + protected-boundary Ruppert), shared with the
-            // landing page. The boundary stays first (unchanged) in `all2`.
-            let (all2, tris) = crate::surf2d::mesh_constrained(
-                loc2[..nb].to_vec(), bsegs, target, inside2, step,
-                params.surf_min_angle, patch_budget[li], SURF_LLOYD_ITERS, 60, |_, _| {},
-            );
-            for &uv in &all2[nb..] {
-                points.push(lift3(uv, drop, p0, n));
-                gidx.push(points.len() - 1);
-            }
-            for t in tris {
-                faces.push(SurfaceFace {
-                    tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
-                    face_tag: patch.face_tag,
-                    regions: patch.regions,
-                    patch: pi as u32,
-                    surface: patch.surface,
-                });
-            }
-        } else {
-            // Volume stage: plain Lloyd scatter (unchanged for now).
-            let interior2 =
-                cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted);
-            for uv in interior2 {
-                points.push(lift3(uv, drop, p0, n));
-                loc2.push(uv);
-                gidx.push(points.len() - 1);
-            }
-            for t in crate::surf2d::triangulate_constrained(&loc2, &bsegs, inside2) {
-                faces.push(SurfaceFace {
-                    tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
-                    face_tag: patch.face_tag,
-                    regions: patch.regions,
-                    patch: pi as u32,
-                    surface: patch.surface,
-                });
-            }
+        // ONE 2D path for every planar patch -- the volume stage AND the
+        // surface product go through the shared core. surf_min_angle=0 (volume)
+        // -> size-only refinement on a protected, edge-cleared boundary; >0
+        // (surface product) -> full Ruppert. The boundary stays first in `all2`.
+        let (all2, tris) = crate::surf2d::mesh_constrained(
+            loc2[..nb].to_vec(), bsegs, target, inside2, step,
+            params.surf_min_angle, patch_budget[li], SURF_LLOYD_ITERS, 60, |_, _| {},
+        );
+        for &uv in &all2[nb..] {
+            points.push(lift3(uv, drop, p0, n));
+            gidx.push(points.len() - 1);
+        }
+        for t in tris {
+            faces.push(SurfaceFace {
+                tri: [gidx[t[0]], gidx[t[1]], gidx[t[2]]],
+                face_tag: patch.face_tag,
+                regions: patch.regions,
+                patch: pi as u32,
+                surface: patch.surface,
+            });
         }
     }
 

@@ -159,6 +159,44 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
         }
     }
 
+    // CONFORMAL WELD: each region was meshed separately (own vertices), so two regions that ABUT
+    // share a boundary but with two coincident copies of every vertex on it. Canonical resampling
+    // (see `resample_loop`) makes those copies bit-identical, so merging coincident vertices yields
+    // a mesh that is conformal across the abutment — the shared edge becomes a true interior edge,
+    // an RWG DOF bridges it, and the multi-conductor current path is continuous (what gmsh's
+    // `fragment` produced). Without this, abutting conductors are electrically disconnected
+    // (open winding → capacitive port, zero coupling).
+    if regions.len() > 1 {
+        let (mut lo, mut hi) = (points[0], points[0]);
+        for &p in &points {
+            lo[0] = lo[0].min(p[0]);
+            lo[1] = lo[1].min(p[1]);
+            hi[0] = hi[0].max(p[0]);
+            hi[1] = hi[1].max(p[1]);
+        }
+        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-12);
+        let inv = 1.0 / (extent * 1e-9); // weld within 1e-9·extent; distinct verts are ≫ that apart
+        let mut map: std::collections::HashMap<(i64, i64), u32> = std::collections::HashMap::new();
+        let mut welded: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+        let mut remap = vec![0u32; points.len()];
+        for (i, p) in points.iter().enumerate() {
+            let key = ((p[0] * inv).round() as i64, (p[1] * inv).round() as i64);
+            let idx = *map.entry(key).or_insert_with(|| {
+                welded.push(*p);
+                (welded.len() - 1) as u32
+            });
+            remap[i] = idx;
+        }
+        if welded.len() < points.len() {
+            for t in &mut tris {
+                t[0] = remap[t[0] as usize];
+                t[1] = remap[t[1] as usize];
+                t[2] = remap[t[2] as usize];
+            }
+            points = welded;
+        }
+    }
+
     let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
     let geom = TriGeometry::build_2d(&topo, &points);
     Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
@@ -189,8 +227,13 @@ fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64
         if len < 1e-12 {
             continue;
         }
-        let ha = target(a).max(1e-9);
-        let hb = target(b).max(1e-9);
+        // CANONICAL orientation (lexicographic lo→hi): a boundary edge SHARED by two abutting
+        // regions is resampled to the IDENTICAL point set from either side (same lo/hi/grading),
+        // so the separately-meshed regions weld conformally at the abutment (see `mesh_2d`).
+        let rev = (a[0], a[1]) > (b[0], b[1]);
+        let (lo, hi) = if rev { (b, a) } else { (a, b) };
+        let ha = target(lo).max(1e-9);
+        let hb = target(hi).max(1e-9);
         // Segment count = ∫₀ᴸ ds/h(s) with h linear in arc length (= the graded element count).
         let uniform = (ha - hb).abs() <= 1e-9 * ha.max(hb);
         let segs = if uniform {
@@ -198,16 +241,22 @@ fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64
         } else {
             (len / (hb - ha) * (hb / ha).ln()).abs().ceil().max(1.0) as usize
         };
-        for k in 1..segs {
+        // Canonical interior point at fraction k/segs along lo→hi (geometric grading h_k =
+        // ha·(hb/ha)^frac ⇒ arc position t; first segment ≈ ha, last ≈ hb).
+        let pt = |k: usize| -> [f64; 2] {
             let frac = k as f64 / segs as f64;
-            // Geometric grading h_k = ha·(hb/ha)^frac ⇒ arc position t (linear-h inverse), so the
-            // local segment length follows h(s): first segment ≈ ha, last ≈ hb.
-            let t = if uniform {
-                frac
-            } else {
-                (ha * (hb / ha).powf(frac) - ha) / (hb - ha)
-            };
-            out.push([a[0] + dx * t, a[1] + dy * t]);
+            let t = if uniform { frac } else { (ha * (hb / ha).powf(frac) - ha) / (hb - ha) };
+            [lo[0] + (hi[0] - lo[0]) * t, lo[1] + (hi[1] - lo[1]) * t]
+        };
+        // Emit the canonical points in the a→b traversal order (reversed if the edge runs hi→lo).
+        if rev {
+            for k in (1..segs).rev() {
+                out.push(pt(k));
+            }
+        } else {
+            for k in 1..segs {
+                out.push(pt(k));
+            }
         }
     }
     out

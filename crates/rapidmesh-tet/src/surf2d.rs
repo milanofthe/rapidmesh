@@ -778,9 +778,10 @@ pub fn refine_quality_with(
             }
         }
     }
-    // The Ruppert refinement met the angle bound but left the interior (the rows
-    // just inside the fixed boundary especially) uneven; relax it for shape.
-    smooth_interior(boundary, segments, interior, &inside, min_angle_deg, 4);
+    // The Ruppert refinement met the angle bound but left the elements uneven;
+    // relax the whole mesh (interior freely, the outline sliding) to convergence for
+    // near-equilateral, gmsh-grade shape.
+    smooth_mesh(boundary, segments, interior, &inside, min_angle_deg, 50);
 }
 
 /// Sizing-field-driven Ruppert/Chew refinement (see [`refine_quality_with`])
@@ -802,84 +803,147 @@ pub fn refine_quality(
     );
 }
 
-/// Boundary-preserving ODT smoothing: after the Ruppert refinement has met the
-/// angle bound, relax each INTERIOR vertex toward the area-weighted optimal-
-/// Delaunay target of its incident triangles (the boundary edge points stay
-/// FIXED), re-triangulating each pass. A move is taken only if it keeps every
-/// incident triangle in-domain, un-flipped, and still at or above the angle bound
-/// -- so the no-sliver guarantee and the triangle count are preserved while the
-/// interior evens out. Jacobi updates (all moves from the pass-start layout); any
-/// transient roughening is re-Delaunay'd and re-checked next pass.
-fn smooth_interior(
-    boundary: &[P2],
+/// Holistic ODT mesh optimisation (SOTA element quality): after Ruppert meets the
+/// angle bound, relax EVERY movable vertex toward its area-weighted optimal-Delaunay
+/// target until convergence. Interior vertices move freely; a BOUNDARY vertex whose
+/// two outline segments are collinear (an edge-interior point) SLIDES along that
+/// edge, while corners (a segment-angle vertex) stay pinned — so the conductor
+/// outline is preserved exactly, yet the edge triangles even out to near-equilateral
+/// the way a full-mesh smoother (gmsh) does, instead of staying skewed against a
+/// frozen boundary. Gauss-Seidel sweep (each move sees the latest positions),
+/// per-move guarded: a move is applied only if every incident triangle stays
+/// in-domain, un-flipped, and at/above the angle bound — the no-sliver guarantee and
+/// the triangle count are preserved. Stops early once the largest move is below a
+/// thousandth of the local edge length.
+fn smooth_mesh(
+    boundary: &mut Vec<P2>,
     segments: &[(usize, usize)],
     interior: &mut Vec<P2>,
     inside: impl Fn(P2) -> bool,
     min_angle_deg: f64,
-    iters: usize,
+    max_iters: usize,
 ) {
     let nb = boundary.len();
-    let sarea2 = |p: [P2; 3]| {
-        (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0])
-    };
-    let mesh_min_angle = |tris: &[[usize; 3]], all: &[P2]| {
-        tris.iter().fold(f64::INFINITY, |m, t| {
-            let a = tri_angles(all[t[0]], all[t[1]], all[t[2]]);
-            m.min(a[0].min(a[1]).min(a[2]))
+    if nb == 0 {
+        return;
+    }
+    let sarea2 = |a: P2, b: P2, c: P2| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+
+    // Contour adjacency of each boundary vertex (its two neighbours along the resampled
+    // outline) -> a slide tangent if the outline is locally straight there, else pinned.
+    let mut nbr = vec![[usize::MAX; 2]; nb];
+    for &(u, v) in segments {
+        if u < nb && v < nb {
+            for (a, b) in [(u, v), (v, u)] {
+                if nbr[a][0] == usize::MAX {
+                    nbr[a][0] = b;
+                } else if nbr[a][1] == usize::MAX && nbr[a][0] != b {
+                    nbr[a][1] = b;
+                }
+            }
+        }
+    }
+    let tangent: Vec<Option<[f64; 2]>> = (0..nb)
+        .map(|i| {
+            let [n0, n1] = nbr[i];
+            if n0 == usize::MAX || n1 == usize::MAX {
+                return None;
+            }
+            let (a, p, b) = (boundary[n0], boundary[i], boundary[n1]);
+            let d0 = [p[0] - a[0], p[1] - a[1]];
+            let d1 = [b[0] - p[0], b[1] - p[1]];
+            let l0 = (d0[0] * d0[0] + d0[1] * d0[1]).sqrt();
+            let l1 = (d1[0] * d1[0] + d1[1] * d1[1]).sqrt();
+            if l0 < 1e-300 || l1 < 1e-300 {
+                return None;
+            }
+            // |sin∠| between the two outline segments: ~0 ⇒ edge-interior ⇒ slide; else corner.
+            let cross = (d0[0] * d1[1] - d0[1] * d1[0]).abs() / (l0 * l1);
+            if cross > 1e-3 {
+                return None;
+            }
+            let t = [b[0] - a[0], b[1] - a[1]];
+            let lt = (t[0] * t[0] + t[1] * t[1]).sqrt();
+            Some([t[0] / lt, t[1] / lt])
         })
-    };
-    for _ in 0..iters {
-        let mut all = boundary.to_vec();
+        .collect();
+
+    const RELAX: f64 = 0.9;
+    for _ in 0..max_iters {
+        let mut all: Vec<P2> = boundary.clone();
         all.extend_from_slice(interior);
         let tris = triangulate_constrained(&all, segments, &inside);
-        let mut num = vec![[0.0f64; 2]; all.len()];
-        let mut den = vec![0.0f64; all.len()];
         let mut incident: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
         for (ti, t) in tris.iter().enumerate() {
-            let p = [all[t[0]], all[t[1]], all[t[2]]];
-            let w = 0.5 * sarea2(p).abs();
-            let s3 = [p[0][0] + p[1][0] + p[2][0], p[0][1] + p[1][1] + p[2][1]];
             for &i in t {
-                num[i][0] += w * (s3[0] - all[i][0]);
-                num[i][1] += w * (s3[1] - all[i][1]);
-                den[i] += w;
                 incident[i].push(ti);
             }
         }
-        let saved: Vec<P2> = interior.clone();
-        for k in 0..interior.len() {
-            let i = nb + k;
-            if den[i] == 0.0 {
+        let mut max_rel = 0.0f64;
+        // Gauss-Seidel: each vertex relaxes against the latest positions of its neighbours.
+        for i in 0..all.len() {
+            let tang = if i < nb {
+                match tangent[i] {
+                    Some(t) => Some(t),
+                    None => continue, // pinned corner / open contour
+                }
+            } else {
+                None
+            };
+            if incident[i].is_empty() {
                 continue;
             }
-            // 2D optimal-Delaunay target, UNDER-RELAXED (0.6) so simultaneous
-            // (Jacobi) moves stay gentle. x* = (Σ|T|·(other two verts))/(2 Σ|T|).
-            let tgt = [num[i][0] / (2.0 * den[i]), num[i][1] / (2.0 * den[i])];
-            let mv = [all[i][0] + 0.6 * (tgt[0] - all[i][0]), all[i][1] + 0.6 * (tgt[1] - all[i][1])];
-            if !inside(mv) {
+            // ODT optimum x* = (Σ|T|·(sum of the OTHER two verts)) / (2 Σ|T|), plus the
+            // local edge scale for the convergence test.
+            let (mut num, mut den, mut hmin) = ([0.0f64; 2], 0.0f64, f64::INFINITY);
+            for &ti in &incident[i] {
+                let t = tris[ti];
+                let (a, b, c) = (all[t[0]], all[t[1]], all[t[2]]);
+                let w = 0.5 * sarea2(a, b, c).abs();
+                num[0] += w * (a[0] + b[0] + c[0] - all[i][0]);
+                num[1] += w * (a[1] + b[1] + c[1] - all[i][1]);
+                den += w;
+                for (u, v) in [(a, b), (b, c), (c, a)] {
+                    hmin = hmin.min((u[0] - v[0]).powi(2) + (u[1] - v[1]).powi(2));
+                }
+            }
+            if den <= 0.0 {
+                continue;
+            }
+            let target = [num[0] / (2.0 * den), num[1] / (2.0 * den)];
+            let mut delta = [target[0] - all[i][0], target[1] - all[i][1]];
+            if let Some(t) = tang {
+                let dp = delta[0] * t[0] + delta[1] * t[1]; // keep only the along-edge component
+                delta = [dp * t[0], dp * t[1]];
+            }
+            let cand = [all[i][0] + RELAX * delta[0], all[i][1] + RELAX * delta[1]];
+            if i >= nb && !inside(cand) {
                 continue;
             }
             let ok = incident[i].iter().all(|&ti| {
                 let t = tris[ti];
-                let q: [P2; 3] = std::array::from_fn(|j| if t[j] == i { mv } else { all[t[j]] });
+                let q: [P2; 3] = std::array::from_fn(|j| if t[j] == i { cand } else { all[t[j]] });
+                let base = sarea2(all[t[0]], all[t[1]], all[t[2]]);
                 let a = tri_angles(q[0], q[1], q[2]);
-                sarea2(q).signum() == sarea2([all[t[0]], all[t[1]], all[t[2]]]).signum()
+                sarea2(q[0], q[1], q[2]).signum() == base.signum()
                     && a[0].min(a[1]).min(a[2]) >= min_angle_deg
             });
             if ok {
-                interior[k] = mv;
+                let mv2 = (cand[0] - all[i][0]).powi(2) + (cand[1] - all[i][1]).powi(2);
+                if hmin.is_finite() && hmin > 0.0 {
+                    max_rel = max_rel.max(mv2 / hmin);
+                }
+                all[i] = cand;
             }
         }
-        // Pass-level guarantee: the per-move guard sees only the pass-start mesh, so
-        // re-triangulate and, if the simultaneous moves dropped the global min angle
-        // below the bound, revert this whole pass and stop -- the smoothing is then
-        // monotone and never introduces a sliver.
-        let mut all2 = boundary.to_vec();
-        all2.extend_from_slice(interior);
-        let tris2 = triangulate_constrained(&all2, segments, &inside);
-        if mesh_min_angle(&tris2, &all2) < min_angle_deg {
-            *interior = saved;
-            break;
+        for i in 0..nb {
+            boundary[i] = all[i];
+        }
+        for k in 0..interior.len() {
+            interior[k] = all[nb + k];
+        }
+        if max_rel < 1e-6 {
+            break; // converged: largest move < 0.1 % of the local edge length
         }
     }
 }

@@ -164,9 +164,16 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
     Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
 }
 
-/// Split each edge of a closed loop to the sizing field, so the boundary the
-/// protected core meshes against is fine and graded — never a pinned coarse edge.
-/// A sub-`h` edge keeps its two endpoints (no over-splitting).
+/// Split each edge of a closed loop to the sizing field, so the boundary the protected core
+/// meshes against is fine and **graded** — never a pinned coarse edge, and never an abrupt
+/// short-next-to-long jump at a corner (which pins a sliver the Ruppert core cannot fix, since
+/// it may not move boundary vertices).
+///
+/// The grading is the key: `h` is sampled at the two EDGE ENDPOINTS (not the midpoint), so two
+/// edges sharing a corner agree on the spacing there — the last segment of one edge and the first
+/// of the next are both ≈ `h(corner)`. Within an edge the segment length is graded geometrically
+/// from `h(a)` to `h(b)`, so adjacent segment lengths differ by only the size-field ratio, never a
+/// jump. Corners are preserved.
 fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
     let n = lp.len();
     if n < 2 {
@@ -176,13 +183,30 @@ fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64
     for i in 0..n {
         let a = lp[i];
         let b = lp[(i + 1) % n];
-        out.push(a);
+        out.push(a); // keep the corner
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let len = (dx * dx + dy * dy).sqrt();
-        let h = target([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]).max(1e-9);
-        let segs = (len / h).ceil() as usize;
+        if len < 1e-12 {
+            continue;
+        }
+        let ha = target(a).max(1e-9);
+        let hb = target(b).max(1e-9);
+        // Segment count = ∫₀ᴸ ds/h(s) with h linear in arc length (= the graded element count).
+        let uniform = (ha - hb).abs() <= 1e-9 * ha.max(hb);
+        let segs = if uniform {
+            (len / ha).ceil().max(1.0) as usize
+        } else {
+            (len / (hb - ha) * (hb / ha).ln()).abs().ceil().max(1.0) as usize
+        };
         for k in 1..segs {
-            let t = k as f64 / segs as f64;
+            let frac = k as f64 / segs as f64;
+            // Geometric grading h_k = ha·(hb/ha)^frac ⇒ arc position t (linear-h inverse), so the
+            // local segment length follows h(s): first segment ≈ ha, last ≈ hb.
+            let t = if uniform {
+                frac
+            } else {
+                (ha * (hb / ha).powf(frac) - ha) / (hb - ha)
+            };
             out.push([a[0] + dx * t, a[1] + dy * t]);
         }
     }

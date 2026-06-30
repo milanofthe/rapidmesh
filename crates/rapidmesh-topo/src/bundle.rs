@@ -131,75 +131,147 @@ impl Mesh2D {
 /// bundle. Each region is meshed (outer + holes) and concatenated, carrying its
 /// tag per triangle. `target` is the sizing field `h(x)`.
 pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Mesh2D {
+    // Merge overlapping/abutting input regions into connected shapes BEFORE triangulating: a
+    // conductor handed in as many polygons (e.g. a transformer winding as dozens of abutting arcs)
+    // becomes ONE region with a single CONFORMING mesh, so its RWG/edge graph is continuous (no
+    // open winding). Non-touching regions stay separate. This robust 2D union (i_overlay) replaces
+    // the old coincident-vertex weld, which only handled full-edge abutments and silently left
+    // partial-edge / point joints disconnected.
+    let merged: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> = if regions.len() > 1 {
+        union_regions(regions)
+    } else {
+        regions.iter().map(|r| (r.outer.clone(), r.holes.clone())).collect()
+    };
+
     let mut points: Vec<[f64; 2]> = Vec::new();
     let mut tris: Vec<[u32; 3]> = Vec::new();
-    let mut tri_tags: Vec<i64> = Vec::new();
 
-    for r in regions {
-        // Resample the raw polygon edges onto the sizing field FIRST. The 2D core
-        // protects the boundary it is handed (it assumes a pre-sampled contour,
-        // as the wasm landing supplies), so a coarse input edge would otherwise
-        // stay one long pinned edge and wreck the triangles against it. Sampling
-        // to `h` gives a fine, graded boundary -- and uniform RWG edge lengths
-        // along a conductor, which is what MoM wants.
-        let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + r.holes.len());
-        loops.push(resample_loop(&r.outer, &target));
-        for hl in &r.holes {
+    for (outer, holes) in &merged {
+        if outer.len() < 3 {
+            continue;
+        }
+        // Resample the raw polygon edges onto the sizing field FIRST (the 2D core protects the
+        // boundary it is handed), giving a fine, graded boundary and uniform RWG edge lengths.
+        let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + holes.len());
+        loops.push(resample_loop(outer, &target));
+        for hl in holes {
             loops.push(resample_loop(hl, &target));
         }
-        // Representative CVT seed spacing: the target at the outer centroid.
-        let step = target(centroid2(&r.outer)).max(1e-9);
+        let step = target(centroid2(outer)).max(1e-9);
         let (pts, tr3) =
             mesh_polygon(&loops, &target, step, opts.min_angle_deg, opts.cvt_iters, opts.max_passes);
         let base = points.len() as u32;
         points.extend_from_slice(&pts);
         for t in &tr3 {
             tris.push([base + t[0] as u32, base + t[1] as u32, base + t[2] as u32]);
-            tri_tags.push(r.tag);
         }
     }
 
-    // CONFORMAL WELD: each region was meshed separately (own vertices), so two regions that ABUT
-    // share a boundary but with two coincident copies of every vertex on it. Canonical resampling
-    // (see `resample_loop`) makes those copies bit-identical, so merging coincident vertices yields
-    // a mesh that is conformal across the abutment — the shared edge becomes a true interior edge,
-    // an RWG DOF bridges it, and the multi-conductor current path is continuous (what gmsh's
-    // `fragment` produced). Without this, abutting conductors are electrically disconnected
-    // (open winding → capacitive port, zero coupling).
-    if regions.len() > 1 {
-        let (mut lo, mut hi) = (points[0], points[0]);
-        for &p in &points {
-            lo[0] = lo[0].min(p[0]);
-            lo[1] = lo[1].min(p[1]);
-            hi[0] = hi[0].max(p[0]);
-            hi[1] = hi[1].max(p[1]);
-        }
-        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-12);
-        let inv = 1.0 / (extent * 1e-9); // weld within 1e-9·extent; distinct verts are ≫ that apart
-        let mut map: std::collections::HashMap<(i64, i64), u32> = std::collections::HashMap::new();
-        let mut welded: Vec<[f64; 2]> = Vec::with_capacity(points.len());
-        let mut remap = vec![0u32; points.len()];
-        for (i, p) in points.iter().enumerate() {
-            let key = ((p[0] * inv).round() as i64, (p[1] * inv).round() as i64);
-            let idx = *map.entry(key).or_insert_with(|| {
-                welded.push(*p);
-                (welded.len() - 1) as u32
-            });
-            remap[i] = idx;
-        }
-        if welded.len() < points.len() {
-            for t in &mut tris {
-                t[0] = remap[t[0] as usize];
-                t[1] = remap[t[1] as usize];
-                t[2] = remap[t[2] as usize];
-            }
-            points = welded;
-        }
-    }
+    // Tags per ORIGINAL region (so a merged multi-conductor layer keeps its conductor labels):
+    // one region → its tag directly (fast, exact previous behaviour); several → point-in-polygon
+    // of each triangle centroid over the original regions.
+    let tri_tags: Vec<i64> = if regions.len() == 1 {
+        vec![regions[0].tag; tris.len()]
+    } else {
+        tris.iter()
+            .map(|t| {
+                let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]);
+                tag_at([(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0], regions)
+            })
+            .collect()
+    };
 
     let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
     let geom = TriGeometry::build_2d(&topo, &points);
     Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
+}
+
+/// Robust 2D union of all region polygons into connected shapes (i_overlay, MIT). Overlapping or
+/// abutting regions merge into one shape; separate ones stay separate. Outers are forced CCW and
+/// holes CW so the non-zero fill rule unions correctly regardless of the input orientation. Each
+/// output is `(outer, holes)` in i_overlay's canonical orientation (outer CCW, holes CW).
+fn union_regions(regions: &[Region2D]) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::float::simplify::SimplifyShape;
+    let mut contours: Vec<Vec<[f64; 2]>> = Vec::new();
+    for r in regions {
+        if r.outer.len() >= 3 {
+            contours.push(oriented(&r.outer, true));
+            for h in &r.holes {
+                if h.len() >= 3 {
+                    contours.push(oriented(h, false));
+                }
+            }
+        }
+    }
+    contours
+        .simplify_shape(FillRule::NonZero, 0.0)
+        .into_iter()
+        .map(|shape| {
+            let mut it = shape.into_iter();
+            let outer = it.next().unwrap_or_default();
+            (outer, it.collect())
+        })
+        .collect()
+}
+
+/// Signed area (CCW positive).
+fn signed_area(p: &[[f64; 2]]) -> f64 {
+    let n = p.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += p[i][0] * p[j][1] - p[j][0] * p[i][1];
+    }
+    0.5 * a
+}
+
+/// `p` re-oriented to CCW (`ccw=true`) or CW (`ccw=false`).
+fn oriented(p: &[[f64; 2]], ccw: bool) -> Vec<[f64; 2]> {
+    let mut v = p.to_vec();
+    if (signed_area(p) > 0.0) != ccw {
+        v.reverse();
+    }
+    v
+}
+
+/// Even-odd ray cast: is `p` strictly inside the ring?
+fn point_in_ring(p: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[j]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Tag of the original region containing `p` (outer minus holes); falls back to the nearest
+/// region's tag (for a centroid nudged just outside by the union's coordinate snapping).
+fn tag_at(p: [f64; 2], regions: &[Region2D]) -> i64 {
+    for r in regions {
+        if point_in_ring(p, &r.outer) && !r.holes.iter().any(|h| point_in_ring(p, h)) {
+            return r.tag;
+        }
+    }
+    regions
+        .iter()
+        .min_by(|x, y| {
+            let d = |r: &Region2D| {
+                let c = centroid2(&r.outer);
+                (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2)
+            };
+            d(x).partial_cmp(&d(y)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|r| r.tag)
+        .unwrap_or(0)
 }
 
 /// Split each edge of a closed loop to the sizing field, so the boundary the protected core
@@ -351,6 +423,61 @@ mod tests {
         assert!(!m.topo.edges.is_empty());
         assert!(m.rwg_candidate_edges().iter().all(|e| e[2] != NONE && e[3] != NONE));
         assert!(!m.boundary_edges().is_empty());
+    }
+
+    /// RWG-connected components: triangles linked by an inner edge (shared by two triangles).
+    fn n_components(m: &Mesh2D) -> usize {
+        let nt = m.tris.len();
+        let mut parent: Vec<usize> = (0..nt).collect();
+        fn find(p: &mut [usize], mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        for inc in &m.topo.edge_tris {
+            if inc[1] != NONE {
+                let (a, b) = (find(&mut parent, inc[0] as usize), find(&mut parent, inc[1] as usize));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+        (0..nt).map(|i| find(&mut parent, i)).collect::<std::collections::HashSet<_>>().len()
+    }
+
+    /// THE FIX: two conductor regions sharing a full edge must mesh as ONE connected component
+    /// (continuous RWG graph) while keeping BOTH conductor tags. Before the per-region union this
+    /// produced two disjoint components — an open, non-conducting winding.
+    #[test]
+    fn abutting_regions_weld_into_one_component() {
+        let a = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1);
+        let b = Region2D::new(vec![[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]], 2);
+        let m = mesh_2d(&[a, b], |_p| 0.34, &Mesh2DOptions::default());
+        assert_eq!(n_components(&m), 1, "abutting regions must weld into one component");
+        assert!(m.tri_tags.iter().any(|&t| t == 1) && m.tri_tags.iter().any(|&t| t == 2), "both tags kept");
+        let area: f64 = m.geom.area.iter().sum();
+        assert!((area - 2.0).abs() < 1e-6, "area {area}");
+    }
+
+    /// Partial-edge abutment (B meets only the middle of A's edge) — the case the old vertex weld
+    /// could not handle — must also weld via the union.
+    #[test]
+    fn partial_edge_abut_welds() {
+        let a = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1);
+        let b = Region2D::new(vec![[1.0, 0.25], [2.0, 0.25], [2.0, 0.75], [1.0, 0.75]], 2);
+        let m = mesh_2d(&[a, b], |_p| 0.2, &Mesh2DOptions::default());
+        assert_eq!(n_components(&m), 1, "partial-edge abutment must weld");
+    }
+
+    /// Non-touching regions stay separate (two components, two tags).
+    #[test]
+    fn separate_regions_stay_disconnected() {
+        let a = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1);
+        let b = Region2D::new(vec![[3.0, 0.0], [4.0, 0.0], [4.0, 1.0], [3.0, 1.0]], 2);
+        let m = mesh_2d(&[a, b], |_p| 0.34, &Mesh2DOptions::default());
+        assert_eq!(n_components(&m), 2, "non-touching regions stay separate");
     }
 
     #[test]

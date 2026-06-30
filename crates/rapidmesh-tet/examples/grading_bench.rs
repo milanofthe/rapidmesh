@@ -2,7 +2,7 @@
 //! the centre, coarse at the rim) with `surf2d::mesh_polygon`, and dump the mesh
 //! as JSON for the gmsh comparison (see scratchpad/grading_compare.py).
 
-use rapidmesh_tet::surf2d::mesh_polygon;
+use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
 
 type P2 = [f64; 2];
 
@@ -34,7 +34,8 @@ fn main() {
 
     let loops = vec![outline];
     // rapidmesh's best quality: more CVT relaxation, full Ruppert.
-    let (pts, tris) = mesh_polygon(&loops, field, h_min, 25.0, 10, 60);
+    let params = PolyMeshParams { step: h_min, min_angle_deg: 25.0, target_count: 0, cvt_iters: 10, max_passes: 60 };
+    let (pts, tris) = mesh_polygon(&loops, field, &params, |_, _| {});
 
     print!("{{\"points\":[");
     for (i, p) in pts.iter().enumerate() {

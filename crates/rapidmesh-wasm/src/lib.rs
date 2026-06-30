@@ -10,7 +10,7 @@
 //! the refinement live.
 
 use rapidmesh_tet::quadfield::QuadtreeField;
-use rapidmesh_tet::surf2d::{mesh_polygon, mesh_polygon_with};
+use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
 use wasm_bindgen::prelude::*;
 
 type P2 = [f64; 2];
@@ -199,8 +199,10 @@ pub fn triangulate(
         [0.0, 0.0], [width, height], h_near, 12,
         |p| graded(p, &loops[1..], h_near, h_far, grade),
     );
-    let (pts, tris) =
-        mesh_polygon(&loops, |p| field.eval(p), h_near, min_angle, CVT_ITERS, REFINE_PASSES);
+    let params = PolyMeshParams {
+        step: h_near, min_angle_deg: min_angle, target_count: 0, cvt_iters: CVT_ITERS, max_passes: REFINE_PASSES,
+    };
+    let (pts, tris) = mesh_polygon(&loops, |p| field.eval(p), &params, |_, _| {});
     Mesh2D { pts: pack_points(&pts), tris: pack_tris(&tris) }
 }
 
@@ -227,13 +229,13 @@ pub fn triangulate_steps(
     let mut step_pts: Vec<Vec<f32>> = Vec::new();
     let mut step_tris: Vec<Vec<u32>> = Vec::new();
     let mut last_n = usize::MAX;
-    let (pts, tris) = mesh_polygon_with(
+    let params = PolyMeshParams {
+        step: h_near, min_angle_deg: min_angle, target_count: 0, cvt_iters: CVT_ITERS, max_passes: REFINE_PASSES,
+    };
+    let (pts, tris) = mesh_polygon(
         &loops,
         |p| field.eval(p),
-        h_near,
-        min_angle,
-        CVT_ITERS,
-        REFINE_PASSES,
+        &params,
         |all, tris| {
             if all.len() != last_n {
                 last_n = all.len();

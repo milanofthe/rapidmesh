@@ -1138,6 +1138,26 @@ fn pt_seg_dist2(p: P2, a: P2, b: P2) -> f64 {
     (p[0] - (a[0] + t * vx)).powi(2) + (p[1] - (a[1] + t * vy)).powi(2)
 }
 
+/// Knobs for [`mesh_polygon`] -- everything but the contour loops, the sizing field,
+/// and the per-pass callback. `step` seeds the CVT grid (about the finest target edge
+/// length); `target_count` is the triangle BUDGET (`0` = field-driven, else the mesh
+/// is capped at `min(field-resolved, budget)`); `min_angle_deg` is the Ruppert quality
+/// bound; `cvt_iters`/`max_passes` bound the work.
+#[derive(Clone, Copy, Debug)]
+pub struct PolyMeshParams {
+    pub step: f64,
+    pub min_angle_deg: f64,
+    pub target_count: usize,
+    pub cvt_iters: usize,
+    pub max_passes: usize,
+}
+
+impl Default for PolyMeshParams {
+    fn default() -> Self {
+        PolyMeshParams { step: 0.0, min_angle_deg: 28.0, target_count: 0, cvt_iters: 4, max_passes: 12 }
+    }
+}
+
 /// Mesh a polygon-with-holes in ONE call -- the 2D entry point: contour loops
 /// and a sizing field in, a sliver-free graded triangle mesh out. This is the
 /// same path the surface stage runs per planar patch: a graded CVT seed
@@ -1147,31 +1167,16 @@ fn pt_seg_dist2(p: P2, a: P2, b: P2) -> f64 {
 ///
 /// `loops` are the boundary contours -- the outer boundary followed by the holes
 /// (orientation irrelevant; membership is even-odd). `target` is the desired edge
-/// length at any point (uniform or graded). `step` seeds the CVT grid and should
-/// be about the finest target edge length. `min_angle_deg` is the Ruppert quality
-/// bound (e.g. 20). Returns `(points, triangles)`.
+/// length at any point (uniform or graded). `on_pass(points, triangles)` fires once
+/// per Ruppert pass with the current intermediate mesh (a no-op `|_, _| {}` for the
+/// non-animated path). Returns `(points, triangles)`.
+///
+/// THE single 2D loops entry point: every knob (the CVT seed `step`, the Ruppert
+/// quality bound, the triangle BUDGET, the work bounds) rides in [`PolyMeshParams`].
 pub fn mesh_polygon(
     loops: &[Vec<P2>],
     target: impl Fn(P2) -> f64,
-    step: f64,
-    min_angle_deg: f64,
-    cvt_iters: usize,
-    max_passes: usize,
-) -> (Vec<P2>, Vec<[usize; 3]>) {
-    mesh_polygon_with(loops, target, step, min_angle_deg, cvt_iters, max_passes, |_, _| {})
-}
-
-/// [`mesh_polygon`] with a per-pass callback: `on_pass(points, triangles)` fires
-/// once per Ruppert pass with the current intermediate mesh -- for animating the
-/// refinement.
-#[allow(clippy::too_many_arguments)]
-pub fn mesh_polygon_with(
-    loops: &[Vec<P2>],
-    target: impl Fn(P2) -> f64,
-    step: f64,
-    min_angle_deg: f64,
-    cvt_iters: usize,
-    max_passes: usize,
+    params: &PolyMeshParams,
     on_pass: impl FnMut(&[P2], &[[usize; 3]]),
 ) -> (Vec<P2>, Vec<[usize; 3]>) {
     let mut boundary: Vec<P2> = Vec::new();
@@ -1189,7 +1194,7 @@ pub fn mesh_polygon_with(
     }
     mesh_constrained(
         boundary, segments, target, |p| pip_loops(p, loops),
-        step, min_angle_deg, 0, cvt_iters, max_passes, on_pass,
+        params.step, params.min_angle_deg, params.target_count, params.cvt_iters, params.max_passes, on_pass,
     )
 }
 

@@ -24,7 +24,7 @@
 use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
-use rapidmesh_tet::surf2d::mesh_polygon;
+use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
 use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
 
 // ============================== 2D / surface (MoM) ==========================
@@ -58,11 +58,17 @@ pub struct Mesh2DOptions {
     pub cvt_iters: usize,
     /// Maximum Ruppert refinement passes.
     pub max_passes: usize,
+    /// Triangle BUDGET (`0` = field-driven, the default). When `> 0` the Ruppert refinement is
+    /// capped at this many triangles: the worst (most over-sized / angle-violating) elements are
+    /// refined first, so with [`mesh_layers`] the cap is GLOBAL across every patch of every group
+    /// and the budget flows to where the geometry needs it (emergent, not an a-priori split). The
+    /// count-driven path for controlled element / DOF counts.
+    pub target_count: usize,
 }
 
 impl Default for Mesh2DOptions {
     fn default() -> Self {
-        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12 }
+        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0 }
     }
 }
 
@@ -126,61 +132,204 @@ impl Mesh2D {
     }
 }
 
-/// THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
-/// (`surf2d` — the same gmsh-optimized mesher the wasm landing runs), into one
-/// bundle. Each region is meshed (outer + holes) and concatenated, carrying its
-/// tag per triangle. `target` is the sizing field `h(x)`.
+/// THE 2D endpoint: mesh ONE layer's tagged polygons through the production 2D path
+/// (`surf2d`). A convenience over [`mesh_layers`] for the single-group case (the AMR
+/// remesh, the tests, every existing caller). `target` is the sizing field `h(x)`.
 pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Mesh2D {
-    // Merge overlapping/abutting input regions into connected shapes BEFORE triangulating: a
-    // conductor handed in as many polygons (e.g. a transformer winding as dozens of abutting arcs)
-    // becomes ONE region with a single CONFORMING mesh, so its RWG/edge graph is continuous (no
-    // open winding). Non-touching regions stay separate. This robust 2D union (i_overlay) replaces
-    // the old coincident-vertex weld, which only handled full-edge abutments and silently left
-    // partial-edge / point joints disconnected.
-    let merged: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> = if regions.len() > 1 {
-        union_regions(regions)
-    } else {
-        regions.iter().map(|r| (r.outer.clone(), r.holes.clone())).collect()
-    };
+    let groups = [regions.to_vec()];
+    mesh_layers(&groups, target, opts)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), regions, opts))
+}
 
-    let mut points: Vec<[f64; 2]> = Vec::new();
-    let mut tris: Vec<[u32; 3]> = Vec::new();
-
-    for (outer, holes) in &merged {
-        if outer.len() < 3 {
-            continue;
-        }
-        // Resample the raw polygon edges onto the sizing field FIRST (the 2D core protects the
-        // boundary it is handed), giving a fine, graded boundary and uniform RWG edge lengths.
-        let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + holes.len());
-        loops.push(resample_loop(outer, &target));
-        for hl in holes {
-            loops.push(resample_loop(hl, &target));
-        }
-        let step = target(centroid2(outer)).max(1e-9);
-        let (pts, tr3) =
-            mesh_polygon(&loops, &target, step, opts.min_angle_deg, opts.cvt_iters, opts.max_passes);
-        let base = points.len() as u32;
-        points.extend_from_slice(&pts);
-        for t in &tr3 {
-            tris.push([base + t[0] as u32, base + t[1] as u32, base + t[2] as u32]);
+/// THE grouped 2D endpoint: mesh ALL tagged polygons of ALL layers in ONE shot under ONE
+/// global triangle budget. Each `group` is a layer's regions. WITHIN a group, overlapping /
+/// abutting regions are unioned (i_overlay) into connected, conformally meshed patches — so a
+/// winding handed in as many abutting arcs becomes one RWG-connected component (no open
+/// winding); regions of DIFFERENT groups never merge (different metal layers, free to overlap
+/// in the plane).
+///
+/// The merged patches of every group are packed side by side into ONE virtual canvas (disjoint
+/// bins, each separated by a gap ≥ the largest patch extent, so no patch's refinement can see or
+/// bridge to another) and meshed in a SINGLE constrained triangulation. With `opts.target_count
+/// > 0` the Ruppert budget is therefore GLOBAL: the worst (most over-sized / angle-violating)
+/// triangles across ALL patches of ALL groups draw from one shared count, so the budget flows to
+/// where the geometry needs it — an emergent distribution, not an a-priori per-layer / per-area
+/// split. The mesh is then un-translated back to world coordinates and split per group; tags are
+/// assigned per ORIGINAL region. Returns one [`Mesh2D`] per input group, in input order.
+pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Vec<Mesh2D> {
+    // 1. Per group: union into merged, pairwise-disjoint patches (record the owning group).
+    struct Patch {
+        group: usize,
+        outer: Vec<[f64; 2]>,
+        holes: Vec<Vec<[f64; 2]>>,
+    }
+    let mut patches: Vec<Patch> = Vec::new();
+    for (g, regions) in groups.iter().enumerate() {
+        let merged: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> = if regions.len() > 1 {
+            union_regions(regions)
+        } else {
+            regions.iter().filter(|r| r.outer.len() >= 3).map(|r| (r.outer.clone(), r.holes.clone())).collect()
+        };
+        for (outer, holes) in merged {
+            if outer.len() >= 3 {
+                patches.push(Patch { group: g, outer, holes });
+            }
         }
     }
+    if patches.is_empty() {
+        return groups.iter().map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts)).collect();
+    }
 
-    // Tags per ORIGINAL region (so a merged multi-conductor layer keeps its conductor labels):
-    // one region → its tag directly (fast, exact previous behaviour); several → point-in-polygon
-    // of each triangle centroid over the original regions.
-    let tri_tags: Vec<i64> = if regions.len() == 1 {
-        vec![regions[0].tag; tris.len()]
+    // 2. Effective sizing. FIELD-DRIVEN (`budget == 0`): the user's graded / AMR field. COUNT-DRIVEN
+    //    (`budget > 0`): ONE global triangle budget realised as a UNIFORM size `h_avg =
+    //    sqrt(total_area / budget)` — the CVT seed `step = 1.39·h_avg` then deposits ≈ budget
+    //    triangles in a SINGLE pass (the count scales as `step^-2`; 1.39 = sqrt(1.94), the empirical
+    //    seed-density constant) and the Ruppert cap (= budget) trims any over-refinement. Closed
+    //    form, single pass — NOT an iterative size retune. The uniform resolution shares the budget
+    //    across ALL patches of ALL groups by area, while worst-first refinement adds detail where the
+    //    geometry needs it. `total_area` is the meshed area (outers minus holes).
+    let budget = opts.target_count;
+    let total_area: f64 = patches
+        .iter()
+        .map(|p| (signed_area(&p.outer).abs() - p.holes.iter().map(|h| signed_area(h).abs()).sum::<f64>()).max(0.0))
+        .sum::<f64>()
+        .max(1e-30);
+    let h_avg = (total_area / budget.max(1) as f64).sqrt();
+    let bnd_field: Box<dyn Fn([f64; 2]) -> f64 + '_> =
+        if budget > 0 { Box::new(move |_p| h_avg) } else { Box::new(|p| target(p)) };
+
+    // 3. Resample each patch's boundary onto `bnd_field` (world coords) — the protected core meshes
+    //    against this — and measure its bbox + the finest field sample (the field-driven CVT seed).
+    let mut rs_loops: Vec<Vec<Vec<[f64; 2]>>> = Vec::with_capacity(patches.len());
+    let mut bbmin: Vec<[f64; 2]> = Vec::with_capacity(patches.len());
+    let mut extent = 0.0f64;
+    let mut field_step = f64::INFINITY;
+    for p in &patches {
+        let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + p.holes.len());
+        loops.push(resample_loop(&p.outer, &bnd_field));
+        for h in &p.holes {
+            loops.push(resample_loop(h, &bnd_field));
+        }
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for lp in &loops {
+            for &q in lp {
+                lo[0] = lo[0].min(q[0]);
+                lo[1] = lo[1].min(q[1]);
+                hi[0] = hi[0].max(q[0]);
+                hi[1] = hi[1].max(q[1]);
+            }
+        }
+        extent = extent.max(hi[0] - lo[0]).max(hi[1] - lo[1]);
+        field_step = field_step.min(bnd_field(centroid2(&p.outer)).max(1e-12));
+        rs_loops.push(loops);
+        bbmin.push(lo);
+    }
+    let step = if budget > 0 {
+        1.39 * h_avg
+    } else if field_step.is_finite() && field_step > 0.0 {
+        field_step
     } else {
-        tris.iter()
-            .map(|t| {
-                let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]);
-                tag_at([(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0], regions)
-            })
-            .collect()
+        (extent * 0.05).max(1e-9)
+    };
+    let cell = extent + extent.max(step * 4.0); // bin pitch: patch extent + a ≥extent gap
+
+    // 3. Pack the patches into a square-ish grid of `cell`-sized bins. `offset[i]` shifts patch i's
+    //    bbox-min onto its bin corner; `grid` maps a bin (col,row) back to its patch index.
+    let ncols = (patches.len() as f64).sqrt().ceil().max(1.0) as usize;
+    let nrows = patches.len().div_ceil(ncols);
+    let mut offset: Vec<[f64; 2]> = Vec::with_capacity(patches.len());
+    let mut grid: Vec<i64> = vec![-1; ncols * nrows];
+    let mut all_loops: Vec<Vec<[f64; 2]>> = Vec::new();
+    for (i, loops) in rs_loops.iter().enumerate() {
+        let (col, row) = (i % ncols, i / ncols);
+        let off = [col as f64 * cell - bbmin[i][0], row as f64 * cell - bbmin[i][1]];
+        offset.push(off);
+        grid[row * ncols + col] = i as i64;
+        for lp in loops {
+            all_loops.push(lp.iter().map(|q| [q[0] + off[0], q[1] + off[1]]).collect());
+        }
+    }
+    // Bin lookup: a canvas point's patch (vertices live in their patch's bin; gap points snap to a
+    // neighbour — only their field value is read, and gap triangles are filtered by `inside`).
+    let bin_at = |p: [f64; 2]| -> usize {
+        let col = (p[0] / cell).floor().clamp(0.0, (ncols - 1) as f64) as usize;
+        let row = (p[1] / cell).floor().clamp(0.0, (nrows - 1) as f64) as usize;
+        let g = grid[row * ncols + col];
+        if g >= 0 { g as usize } else { 0 }
     };
 
+    // Field on the canvas: uniform under a budget; else un-translate each query to its world frame.
+    let canvas_target = |p: [f64; 2]| -> f64 {
+        if budget > 0 {
+            h_avg
+        } else {
+            let i = bin_at(p);
+            target([p[0] - offset[i][0], p[1] - offset[i][1]])
+        }
+    };
+
+    // ONE constrained mesh over the whole canvas — the GLOBAL budget lives here.
+    let params = PolyMeshParams {
+        step,
+        min_angle_deg: opts.min_angle_deg,
+        target_count: opts.target_count,
+        cvt_iters: opts.cvt_iters,
+        max_passes: opts.max_passes,
+    };
+    let (cpoints, ctris) = mesh_polygon(&all_loops, canvas_target, &params, |_, _| {});
+
+    // 6. Read back: un-translate every vertex, then split the triangles per group. Each emitted
+    //    triangle lies wholly within one patch (cross-gap triangles were filtered by `inside`), so
+    //    a triangle's group is the group of its first vertex's patch. Reindex per group.
+    let pt_patch: Vec<usize> = cpoints.iter().map(|&p| bin_at(p)).collect();
+    let world: Vec<[f64; 2]> =
+        cpoints.iter().enumerate().map(|(k, &p)| { let o = offset[pt_patch[k]]; [p[0] - o[0], p[1] - o[1]] }).collect();
+
+    let mut out: Vec<Mesh2D> = Vec::with_capacity(groups.len());
+    for (g, regions) in groups.iter().enumerate() {
+        let mut remap: Vec<i32> = vec![-1; world.len()];
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for t in &ctris {
+            if patches[pt_patch[t[0]]].group != g {
+                continue;
+            }
+            let mut nt = [0u32; 3];
+            for (k, &gi) in t.iter().enumerate() {
+                if remap[gi] < 0 {
+                    remap[gi] = points.len() as i32;
+                    points.push(world[gi]);
+                }
+                nt[k] = remap[gi] as u32;
+            }
+            tris.push(nt);
+        }
+        // Tags per ORIGINAL region: one region → its tag directly; several → containment.
+        let tri_tags: Vec<i64> = if regions.len() == 1 {
+            vec![regions[0].tag; tris.len()]
+        } else {
+            tris.iter()
+                .map(|t| {
+                    let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]);
+                    tag_at([(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0], regions)
+                })
+                .collect()
+        };
+        out.push(assemble_mesh2d(points, tris, tri_tags, regions, opts));
+    }
+    out
+}
+
+/// Build the full [`Mesh2D`] bundle (topology + element geometry) from a planar triangulation.
+fn assemble_mesh2d(
+    points: Vec<[f64; 2]>,
+    tris: Vec<[u32; 3]>,
+    tri_tags: Vec<i64>,
+    regions: &[Region2D],
+    opts: &Mesh2DOptions,
+) -> Mesh2D {
     let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
     let geom = TriGeometry::build_2d(&topo, &points);
     Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
@@ -478,6 +627,48 @@ mod tests {
         let b = Region2D::new(vec![[3.0, 0.0], [4.0, 0.0], [4.0, 1.0], [3.0, 1.0]], 2);
         let m = mesh_2d(&[a, b], |_p| 0.34, &Mesh2DOptions::default());
         assert_eq!(n_components(&m), 2, "non-touching regions stay separate");
+    }
+
+    /// Count-driven meshing: a triangle budget lands the mesh near the requested count, regardless
+    /// of the (here coarse) sizing field.
+    #[test]
+    fn target_count_budgets_the_mesh() {
+        let sq = Region2D::new(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], 1);
+        for target in [200usize, 800] {
+            let opts = Mesh2DOptions { target_count: target, ..Default::default() };
+            let m = mesh_2d(&[sq.clone()], |_p| 5.0, &opts); // coarse field; the budget drives it
+            let n = m.tris.len();
+            assert!((n as f64) > 0.6 * target as f64 && (n as f64) < 1.6 * target as f64,
+                    "budget {target}: got {n} triangles");
+            let area: f64 = m.geom.area.iter().sum();
+            assert!((area - 100.0).abs() < 1e-6, "area {area}");
+        }
+    }
+
+    /// GLOBAL budget across GROUPS (layers): the total triangle count lands near the requested
+    /// budget, every group is meshed (its own points/tris, correctly tagged), and groups on
+    /// overlapping planes never merge — the count-driven `mesh_layers` contract.
+    #[test]
+    fn mesh_layers_shares_one_global_budget() {
+        // Two layers, geometrically OVERLAPPING in the plane (different metals): a big square on
+        // group 0, a smaller square at the same xy on group 1. They must NOT merge.
+        let big = Region2D::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]], 1);
+        let small = Region2D::new(vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0], [5.0, 15.0]], 2);
+        for &budget in &[2000usize, 8000] {
+            let opts = Mesh2DOptions { target_count: budget, ..Default::default() };
+            let ms = mesh_layers(&[vec![big.clone()], vec![small.clone()]], |_q| 1.0, &opts);
+            assert_eq!(ms.len(), 2, "one mesh per group");
+            let n: usize = ms.iter().map(|m| m.tris.len()).sum();
+            assert!((n as f64) > 0.7 * budget as f64 && (n as f64) < 1.4 * budget as f64, "budget {budget}: got {n}");
+            assert!(ms[0].tri_tags.iter().all(|&t| t == 1) && !ms[0].tris.is_empty(), "group 0 tagged 1");
+            assert!(ms[1].tri_tags.iter().all(|&t| t == 2) && !ms[1].tris.is_empty(), "group 1 tagged 2");
+            // areas are preserved per group (400 and 100), proving the un-translation round-trips.
+            let a0: f64 = ms[0].geom.area.iter().sum();
+            let a1: f64 = ms[1].geom.area.iter().sum();
+            assert!((a0 - 400.0).abs() < 1e-3 && (a1 - 100.0).abs() < 1e-3, "areas {a0} {a1}");
+            // bigger layer draws more of the shared budget (area-proportional emergence).
+            assert!(ms[0].tris.len() > ms[1].tris.len(), "big layer takes more budget");
+        }
     }
 
     #[test]

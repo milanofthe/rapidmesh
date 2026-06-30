@@ -781,7 +781,7 @@ pub fn refine_quality_with(
     // The Ruppert refinement met the angle bound but left the elements uneven;
     // relax the whole mesh (interior freely, the outline sliding) to convergence for
     // near-equilateral, gmsh-grade shape.
-    smooth_mesh(boundary, segments, interior, &inside, min_angle_deg, 50);
+    smooth_mesh(boundary, segments, interior, &inside, &target, min_angle_deg, 50);
 }
 
 /// Sizing-field-driven Ruppert/Chew refinement (see [`refine_quality_with`])
@@ -820,6 +820,7 @@ fn smooth_mesh(
     segments: &[(usize, usize)],
     interior: &mut Vec<P2>,
     inside: impl Fn(P2) -> bool,
+    target: impl Fn(P2) -> f64,
     min_angle_deg: f64,
     max_iters: usize,
 ) {
@@ -899,7 +900,14 @@ fn smooth_mesh(
             for &ti in &incident[i] {
                 let t = tris[ti];
                 let (a, b, c) = (all[t[0]], all[t[1]], all[t[2]]);
-                let w = 0.5 * sarea2(a, b, c).abs();
+                // DENSITY-weighted ODT: weight by area · ρ, ρ = 1/h² from the sizing field at the
+                // triangle centroid. Plain area weighting equidistributes to UNIFORM size and so
+                // fights a graded field at the fine↔coarse transitions (skewed elements); weighting
+                // by the target density makes the optimum follow the field → smooth, well-shaped
+                // graded transitions. ρ is a smooth scalar, so the no-flip / angle guard still holds.
+                let cen = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0];
+                let h = target(cen).max(1e-12);
+                let w = 0.5 * sarea2(a, b, c).abs() / (h * h);
                 num[0] += w * (a[0] + b[0] + c[0] - all[i][0]);
                 num[1] += w * (a[1] + b[1] + c[1] - all[i][1]);
                 den += w;

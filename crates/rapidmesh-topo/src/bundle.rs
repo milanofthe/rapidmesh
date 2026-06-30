@@ -24,6 +24,7 @@
 use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
+use rapidmesh_tet::quadfield::QuadtreeField;
 use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
 use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
 
@@ -185,6 +186,24 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         return groups.iter().map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts)).collect();
     }
 
+    // 1b. BAKE the sizing field onto a quadtree once (world coords), so an expensive field — an
+    //     AMR indicator that locates a triangle per query, a distance field — is evaluated in
+    //     O(depth) at the mesher's millions of queries instead of being recomputed each time. A flat
+    //     field bakes to a single leaf (negligible). This is THE canonical way to feed rapidmesh a
+    //     graded / adaptive sizing field.
+    let (mut wlo, mut whi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let mut h_seed = f64::INFINITY;
+    for p in &patches {
+        for &q in &p.outer {
+            wlo[0] = wlo[0].min(q[0]); wlo[1] = wlo[1].min(q[1]);
+            whi[0] = whi[0].max(q[0]); whi[1] = whi[1].max(q[1]);
+        }
+        h_seed = h_seed.min(target(centroid2(&p.outer)).max(1e-12));
+    }
+    let min_cell = (0.2 * h_seed).max((whi[0] - wlo[0]).max(whi[1] - wlo[1]) * 1e-4).max(1e-12);
+    let qf = QuadtreeField::from_fn(wlo, whi, min_cell, 16, |p| target(p).max(1e-12));
+    let tfield = |p: [f64; 2]| -> f64 { qf.eval(p) };
+
     // 2. Effective sizing. The mesh is graded to the field `f(x)`; with a triangle BUDGET the SAME
     //    field SHAPE is scaled by ONE global factor so the mesh lands ~`budget` triangles. A flat
     //    field then gives a uniform budget mesh (the scaling sweep); a graded / AMR field distributes
@@ -220,7 +239,7 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
                 for j in 0..ny {
                     let q = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
                     if point_in_ring(q, &p.outer) && !p.holes.iter().any(|hl| point_in_ring(q, hl)) {
-                        samples.push((target(q).max(1e-12), cell_a));
+                        samples.push((tfield(q).max(1e-12), cell_a));
                     }
                 }
             }
@@ -242,7 +261,7 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     } else {
         1.0
     };
-    let field = |p: [f64; 2]| -> f64 { (s_scale * target(p)).max(minh) };
+    let field = |p: [f64; 2]| -> f64 { (s_scale * tfield(p)).max(minh) };
     // Finest FINAL size (sets the field-limited CVT seed step under a budget).
     let f_min = samples.iter().map(|&(t, _)| (s_scale * t).max(minh)).fold(f64::INFINITY, f64::min);
 

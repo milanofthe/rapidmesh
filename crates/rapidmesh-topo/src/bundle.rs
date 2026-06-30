@@ -68,6 +68,10 @@ pub struct Mesh2DOptions {
     /// whole budget — the floor caps the local density and lets the budget spread to the other
     /// important regions. Essential for budgeted AMR.
     pub minh: f64,
+    /// HARD maximum element size (`0` = none). Applied AFTER the budget scaling — the gmsh
+    /// `MeshSizeMax` analogue: caps the COARSEST element so low-error regions still resolve the
+    /// geometry, bounding the fine↔coarse contrast to `maxh/minh` (no extreme size jumps).
+    pub maxh: f64,
     /// Sizing-field GRADING (Lipschitz slope, `0` = none): the size field is gradient-limited so it
     /// changes no faster than this per unit distance. Smooths sharp fine→coarse transitions (e.g. an
     /// AMR indicator field) into a graded mesh — essential for element quality.
@@ -76,7 +80,7 @@ pub struct Mesh2DOptions {
 
 impl Default for Mesh2DOptions {
     fn default() -> Self {
-        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0, grading: 0.0 }
+        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0, maxh: 0.0, grading: 0.0 }
     }
 }
 
@@ -219,6 +223,7 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     //    path (`eff_scale = 1`).
     let budget = opts.target_count;
     let minh = opts.minh.max(0.0);
+    let maxh = if opts.maxh > 0.0 { opts.maxh } else { f64::INFINITY };
     // Sample the field over the patches — `(value, cell area)` — for the budget scaling. The final
     // size is `h(p) = max(s · f(p), minh)`; the scale `s` is found by bisecting the FLOORED count
     // `K · ∫ 1/h² dA = budget` (closed-form, single pass, no re-meshing). The `minh` floor caps the
@@ -253,7 +258,7 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     // Empirical triangle-count constant for the field-limited CVT+Ruppert.
     const COUNT_K: f64 = 4.0;
     let count_of = |s: f64| -> f64 {
-        COUNT_K * samples.iter().map(|&(t, a)| { let hh = (s * t).max(minh); a / (hh * hh) }).sum::<f64>()
+        COUNT_K * samples.iter().map(|&(t, a)| { let hh = (s * t).clamp(minh, maxh); a / (hh * hh) }).sum::<f64>()
     };
     let s_scale: f64 = if budget > 0 && !samples.is_empty() {
         // count(s) decreases in s; geometric bisection to count(s) = budget.
@@ -266,9 +271,9 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     } else {
         1.0
     };
-    let field = |p: [f64; 2]| -> f64 { (s_scale * tfield(p)).max(minh) };
+    let field = |p: [f64; 2]| -> f64 { (s_scale * tfield(p)).clamp(minh, maxh) };
     // Finest FINAL size (sets the field-limited CVT seed step under a budget).
-    let f_min = samples.iter().map(|&(t, _)| (s_scale * t).max(minh)).fold(f64::INFINITY, f64::min);
+    let f_min = samples.iter().map(|&(t, _)| (s_scale * t).clamp(minh, maxh)).fold(f64::INFINITY, f64::min);
 
     // 3. Resample each patch's boundary onto `field` (world coords) — the protected core meshes
     //    against this — and measure its bbox + the finest field sample (the field-driven CVT seed).

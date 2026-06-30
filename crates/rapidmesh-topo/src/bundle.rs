@@ -58,17 +58,20 @@ pub struct Mesh2DOptions {
     pub cvt_iters: usize,
     /// Maximum Ruppert refinement passes.
     pub max_passes: usize,
-    /// Triangle BUDGET (`0` = field-driven, the default). When `> 0` the Ruppert refinement is
-    /// capped at this many triangles: the worst (most over-sized / angle-violating) elements are
-    /// refined first, so with [`mesh_layers`] the cap is GLOBAL across every patch of every group
-    /// and the budget flows to where the geometry needs it (emergent, not an a-priori split). The
-    /// count-driven path for controlled element / DOF counts.
+    /// Triangle BUDGET (`0` = field-driven, the default). When `> 0` the provided sizing field is
+    /// scaled by ONE global factor so the mesh lands ~`target_count` triangles — the field sets WHERE
+    /// the elements go, the budget HOW MANY (shared across every patch of every group).
     pub target_count: usize,
+    /// HARD minimum element size (`0` = none). Applied AFTER the budget scaling, so a refined /
+    /// AMR field cannot drive a hotspot (the conductor-edge singularity) below it and swallow the
+    /// whole budget — the floor caps the local density and lets the budget spread to the other
+    /// important regions. Essential for budgeted AMR.
+    pub minh: f64,
 }
 
 impl Default for Mesh2DOptions {
     fn default() -> Self {
-        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0 }
+        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0 }
     }
 }
 
@@ -182,25 +185,68 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         return groups.iter().map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts)).collect();
     }
 
-    // 2. Effective sizing. FIELD-DRIVEN (`budget == 0`): the user's graded / AMR field. COUNT-DRIVEN
-    //    (`budget > 0`): ONE global triangle budget realised as a UNIFORM size `h_avg =
-    //    sqrt(total_area / budget)` — the CVT seed `step = 1.39·h_avg` then deposits ≈ budget
-    //    triangles in a SINGLE pass (the count scales as `step^-2`; 1.39 = sqrt(1.94), the empirical
-    //    seed-density constant) and the Ruppert cap (= budget) trims any over-refinement. Closed
-    //    form, single pass — NOT an iterative size retune. The uniform resolution shares the budget
-    //    across ALL patches of ALL groups by area, while worst-first refinement adds detail where the
-    //    geometry needs it. `total_area` is the meshed area (outers minus holes).
+    // 2. Effective sizing. The mesh is graded to the field `f(x)`; with a triangle BUDGET the SAME
+    //    field SHAPE is scaled by ONE global factor so the mesh lands ~`budget` triangles. A flat
+    //    field then gives a uniform budget mesh (the scaling sweep); a graded / AMR field distributes
+    //    the budget where it is fine (more elements at the marked edges) — the sizing field controls
+    //    WHERE, the budget controls HOW MANY. The scale is closed-form from the field's natural count
+    //    integral `N = ∫ K/f² dA` (the triangle count scales as `1/scale²` under `f → scale·f`), so
+    //    it is single-pass — NOT an iterative size retune. `budget == 0` is the plain field-driven
+    //    path (`eff_scale = 1`).
     let budget = opts.target_count;
-    let total_area: f64 = patches
-        .iter()
-        .map(|p| (signed_area(&p.outer).abs() - p.holes.iter().map(|h| signed_area(h).abs()).sum::<f64>()).max(0.0))
-        .sum::<f64>()
-        .max(1e-30);
-    let h_avg = (total_area / budget.max(1) as f64).sqrt();
-    let bnd_field: Box<dyn Fn([f64; 2]) -> f64 + '_> =
-        if budget > 0 { Box::new(move |_p| h_avg) } else { Box::new(|p| target(p)) };
+    let minh = opts.minh.max(0.0);
+    // Sample the field over the patches — `(value, cell area)` — for the budget scaling. The final
+    // size is `h(p) = max(s · f(p), minh)`; the scale `s` is found by bisecting the FLOORED count
+    // `K · ∫ 1/h² dA = budget` (closed-form, single pass, no re-meshing). The `minh` floor caps the
+    // local density, so a hotspot can't draw the whole budget — it spreads to the other regions.
+    let mut samples: Vec<(f64, f64)> = Vec::new();
+    if budget > 0 {
+        const NDIV: usize = 96;
+        for p in &patches {
+            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            for &q in &p.outer {
+                lo[0] = lo[0].min(q[0]); lo[1] = lo[1].min(q[1]);
+                hi[0] = hi[0].max(q[0]); hi[1] = hi[1].max(q[1]);
+            }
+            let (w, h) = ((hi[0] - lo[0]).max(1e-30), (hi[1] - lo[1]).max(1e-30));
+            let (nx, ny) = if w >= h {
+                (NDIV, (NDIV as f64 * h / w).ceil().max(1.0) as usize)
+            } else {
+                ((NDIV as f64 * w / h).ceil().max(1.0) as usize, NDIV)
+            };
+            let (dx, dy) = (w / nx as f64, h / ny as f64);
+            let cell_a = dx * dy;
+            for i in 0..nx {
+                for j in 0..ny {
+                    let q = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
+                    if point_in_ring(q, &p.outer) && !p.holes.iter().any(|hl| point_in_ring(q, hl)) {
+                        samples.push((target(q).max(1e-12), cell_a));
+                    }
+                }
+            }
+        }
+    }
+    // Empirical triangle-count constant for the field-limited CVT+Ruppert.
+    const COUNT_K: f64 = 4.0;
+    let count_of = |s: f64| -> f64 {
+        COUNT_K * samples.iter().map(|&(t, a)| { let hh = (s * t).max(minh); a / (hh * hh) }).sum::<f64>()
+    };
+    let s_scale: f64 = if budget > 0 && !samples.is_empty() {
+        // count(s) decreases in s; geometric bisection to count(s) = budget.
+        let (mut lo, mut hi) = (1e-12f64, 1e12f64);
+        for _ in 0..64 {
+            let m = (lo * hi).sqrt();
+            if count_of(m) > budget as f64 { lo = m } else { hi = m }
+        }
+        (lo * hi).sqrt()
+    } else {
+        1.0
+    };
+    let field = |p: [f64; 2]| -> f64 { (s_scale * target(p)).max(minh) };
+    // Finest FINAL size (sets the field-limited CVT seed step under a budget).
+    let f_min = samples.iter().map(|&(t, _)| (s_scale * t).max(minh)).fold(f64::INFINITY, f64::min);
 
-    // 3. Resample each patch's boundary onto `bnd_field` (world coords) — the protected core meshes
+    // 3. Resample each patch's boundary onto `field` (world coords) — the protected core meshes
     //    against this — and measure its bbox + the finest field sample (the field-driven CVT seed).
     let mut rs_loops: Vec<Vec<Vec<[f64; 2]>>> = Vec::with_capacity(patches.len());
     let mut bbmin: Vec<[f64; 2]> = Vec::with_capacity(patches.len());
@@ -208,9 +254,9 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     let mut field_step = f64::INFINITY;
     for p in &patches {
         let mut loops: Vec<Vec<[f64; 2]>> = Vec::with_capacity(1 + p.holes.len());
-        loops.push(resample_loop(&p.outer, &bnd_field));
+        loops.push(resample_loop(&p.outer, &field));
         for h in &p.holes {
-            loops.push(resample_loop(h, &bnd_field));
+            loops.push(resample_loop(h, &field));
         }
         let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for lp in &loops {
@@ -222,12 +268,13 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
             }
         }
         extent = extent.max(hi[0] - lo[0]).max(hi[1] - lo[1]);
-        field_step = field_step.min(bnd_field(centroid2(&p.outer)).max(1e-12));
+        field_step = field_step.min(field(centroid2(&p.outer)).max(1e-12));
         rs_loops.push(loops);
         bbmin.push(lo);
     }
-    let step = if budget > 0 {
-        1.39 * h_avg
+    let step = if budget > 0 && f_min.is_finite() {
+        // field-limited: seed at the finest FINAL size so the graded field drives the local density.
+        (0.7 * f_min).max(1e-12)
     } else if field_step.is_finite() && field_step > 0.0 {
         field_step
     } else {
@@ -260,14 +307,10 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         if g >= 0 { g as usize } else { 0 }
     };
 
-    // Field on the canvas: uniform under a budget; else un-translate each query to its world frame.
+    // Field on the canvas: un-translate each query to its patch's world frame, then the scaled field.
     let canvas_target = |p: [f64; 2]| -> f64 {
-        if budget > 0 {
-            h_avg
-        } else {
-            let i = bin_at(p);
-            target([p[0] - offset[i][0], p[1] - offset[i][1]])
-        }
+        let i = bin_at(p);
+        field([p[0] - offset[i][0], p[1] - offset[i][1]])
     };
 
     // ONE constrained mesh over the whole canvas — the GLOBAL budget lives here.

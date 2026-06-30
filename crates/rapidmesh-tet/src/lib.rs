@@ -22,6 +22,7 @@
 // `rapidmesh_topo::{mesh_2d, mesh_3d}`.
 pub mod adapt;
 pub mod diagnostics;
+pub mod gradefield;
 pub mod quadfield;
 pub mod surf2d;
 

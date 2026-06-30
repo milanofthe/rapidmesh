@@ -24,7 +24,7 @@
 use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
-use rapidmesh_tet::quadfield::QuadtreeField;
+use rapidmesh_tet::gradefield::GradedField;
 use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
 use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
 
@@ -68,11 +68,15 @@ pub struct Mesh2DOptions {
     /// whole budget — the floor caps the local density and lets the budget spread to the other
     /// important regions. Essential for budgeted AMR.
     pub minh: f64,
+    /// Sizing-field GRADING (Lipschitz slope, `0` = none): the size field is gradient-limited so it
+    /// changes no faster than this per unit distance. Smooths sharp fine→coarse transitions (e.g. an
+    /// AMR indicator field) into a graded mesh — essential for element quality.
+    pub grading: f64,
 }
 
 impl Default for Mesh2DOptions {
     fn default() -> Self {
-        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0 }
+        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0, grading: 0.0 }
     }
 }
 
@@ -186,11 +190,11 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         return groups.iter().map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts)).collect();
     }
 
-    // 1b. BAKE the sizing field onto a quadtree once (world coords), so an expensive field — an
-    //     AMR indicator that locates a triangle per query, a distance field — is evaluated in
-    //     O(depth) at the mesher's millions of queries instead of being recomputed each time. A flat
-    //     field bakes to a single leaf (negligible). This is THE canonical way to feed rapidmesh a
-    //     graded / adaptive sizing field.
+    // 1b. SAMPLE the sizing field onto a grid (world coords) and GRADIENT-LIMIT it once: an expensive
+    //     field (an AMR indicator that locates a triangle per query, a distance field) is then
+    //     evaluated in O(1), and — crucially — sharp fine→coarse jumps are Lipschitz-smoothed to slope
+    //     `opts.grading` so the mesh grades cleanly (element quality). A flat field is unaffected.
+    //     This is THE canonical way to feed rapidmesh a graded / adaptive sizing field.
     let (mut wlo, mut whi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     let mut h_seed = f64::INFINITY;
     for p in &patches {
@@ -200,9 +204,10 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         }
         h_seed = h_seed.min(target(centroid2(&p.outer)).max(1e-12));
     }
-    let min_cell = (0.2 * h_seed).max((whi[0] - wlo[0]).max(whi[1] - wlo[1]) * 1e-4).max(1e-12);
-    let qf = QuadtreeField::from_fn(wlo, whi, min_cell, 16, |p| target(p).max(1e-12));
-    let tfield = |p: [f64; 2]| -> f64 { qf.eval(p) };
+    let finest = if opts.minh > 0.0 { h_seed.min(opts.minh) } else { h_seed };
+    let grid_cell = (0.5 * finest).max(1e-12); // GradedField caps the grid at MAX_N cells/axis
+    let gf = GradedField::from_fn(wlo, whi, grid_cell, opts.grading, |p| target(p).max(1e-12));
+    let tfield = |p: [f64; 2]| -> f64 { gf.eval(p) };
 
     // 2. Effective sizing. The mesh is graded to the field `f(x)`; with a triangle BUDGET the SAME
     //    field SHAPE is scaled by ONE global factor so the mesh lands ~`budget` triangles. A flat

@@ -665,8 +665,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         .collect();
     let bvh = FacetBvh::build(&facets);
 
-    // Chord-sagitta band per facet: the analytic carrier of a curved face
-    // deviates from its chord facet by up to `L^2 / (8R)`.
+    // Chord-sagitta band per facet: how far the analytic carrier deviates from
+    // the chord facet, MEASURED as the offset of the facet's centroid and edge
+    // midpoints from the carrier (an `L^2/8R` formula over-estimates wildly on
+    // elongated facets -- a barrel wall's diagonal is not a curvature chord).
     let facet_band: Vec<f64> = plc
         .triangles
         .iter()
@@ -683,12 +685,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 plc.vertices[t[2] as usize],
             );
             let cen: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
-            let rr = surf.curvature_radius(surf.project_uv(cen));
-            if !rr.is_finite() || rr <= 0.0 {
-                return 0.0;
-            }
-            let lmax = dist(a, b).max(dist(b, c)).max(dist(c, a));
-            lmax * lmax / (8.0 * rr)
+            [cen, mid3(a, b), mid3(b, c), mid3(c, a)]
+                .into_iter()
+                .map(|q| signed_offset(surf, q).abs())
+                .fold(0.0f64, f64::max)
         })
         .collect();
     let band = facet_band.iter().copied().fold(0.0f64, f64::max) * 1.5;

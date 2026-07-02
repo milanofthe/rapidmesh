@@ -1,0 +1,9 @@
+# Local benchmarking machine: compile for the host CPU (AVX2/FMA
+# auto-vectorization of the [f64; 3] kernels). The corpus numbers in
+# bench/history are produced with these flags; the wasm crate carries its own
+# target and is unaffected.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-cpu=native"]

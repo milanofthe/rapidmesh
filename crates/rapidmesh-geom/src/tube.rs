@@ -6,7 +6,7 @@
 //! made the coil geometries 10x slower than their discrete-carrier
 //! predecessor, and flat prune passes only doubled the scan.
 
-use crate::vec3::{dist, dot, sub, V3};
+use crate::vec3::{dot, sub, V3};
 
 /// A polyline sweep centerline with an AABB segment tree for closest queries.
 #[derive(Debug)]
@@ -153,6 +153,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vec3::dist;
 
     #[test]
     fn tree_closest_matches_linear_scan() {

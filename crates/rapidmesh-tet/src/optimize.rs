@@ -331,6 +331,11 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     const STALL_LIMIT: usize = 4;
     // Vertices changed by the previous pass; `None` = everything (pass 0).
     let mut dirty: Option<DSet<usize>> = None;
+    // Collapse working state (see try_edge_collapse): reused buffers and the
+    // per-vertex surface-face count, rebuilt each pass before the collapse
+    // stage.
+    let mut cscratch = CollapseScratch::default();
+    let mut n_sfaces: Vec<u32> = Vec::new();
     // Persistent working state (the refinement queue's medicine applied to
     // the optimizer): tet slots are append-only with an alive mask and ONE
     // final compaction, so the vertex->tet incidence, the per-tet quality
@@ -683,6 +688,19 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // --------------------------------------------- edge collapse
         // Before the flip owner maps are built: collapses rewrite tets in
         // place, and the entry lists must reflect the result.
+        //
+        // Vertex -> surface-face count for both collapse stages: interior
+        // vertices (0) skip the b_faces star scan, surface vertices without
+        // a constrained target edge are rejected before any scan. Rebuilt
+        // per pass (surf/insert stages mutate faces); the collapse commit
+        // keeps it current between the two stages.
+        n_sfaces.clear();
+        n_sfaces.resize(mesh.points.len(), 0u32);
+        for sf in &mesh.faces {
+            for &v in &sf.tri {
+                n_sfaces[v] += 1;
+            }
+        }
         {
             let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
             let mut bad: Vec<(f64, u32)> = Vec::new();
@@ -716,6 +734,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     &edge_budget2,
                     &face_budget2,
                     &mut next_dirty,
+                    &mut n_sfaces,
+                    &mut cscratch,
                     ti,
                     0.0,
                 ) {
@@ -774,6 +794,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     &edge_budget2,
                     &face_budget2,
                     &mut next_dirty,
+                    &mut n_sfaces,
+                    &mut cscratch,
                     ti,
                     floor2,
                 ) {
@@ -1630,6 +1652,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 .map(|c| c.swap(0, Ordering::Relaxed))
                 .collect();
             eprintln!("  collapse rejects [surface {}, link {}, valid {}, quality {}, fold {}]", cr[1], cr[2], cr[3], cr[4], cr[5]);
+            let cp: Vec<u64> = COLLAPSE_PROF
+                .iter()
+                .map(|c| c.swap(0, Ordering::Relaxed))
+                .collect();
+            eprintln!(
+                "  collapse prof: calls {} (b {}, targets {}), ms [b_faces {:.1}, features {:.1}, a_patches {:.1}, link {:.1}, gates {:.1}, commit {:.1}]",
+                cp[6], cp[7], cp[8],
+                cp[0] as f64 / 1e6, cp[1] as f64 / 1e6, cp[2] as f64 / 1e6,
+                cp[3] as f64 / 1e6, cp[4] as f64 / 1e6, cp[5] as f64 / 1e6
+            );
             eprintln!(
                 "opt pass {_pass}: surf {:?}, smooth {:?}, flips {:?} (entries {:?}, 2-3 {:?}, eremove {:?}, insert {:?}), ops {ops}, dirty {}",
                 t_surf,
@@ -1770,6 +1802,11 @@ fn try_edge_collapse(
     edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
     face_budget2: &impl Fn(rapidmesh_geom::FaceTag, u32) -> f64,
     next_dirty: &mut DSet<usize>,
+    // Surface-face count per vertex (rebuilt by the caller before the
+    // collapse stages, kept current by the commit below): 0 means interior,
+    // so the b_faces star scan can be skipped outright.
+    n_sfaces: &mut [u32],
+    scratch: &mut CollapseScratch,
     ti: usize,
     // > 0 enables COARSENING: only edges shorter than this (squared) are
     // collapsed, and the gate is do-no-harm (keep the local minimum
@@ -1779,7 +1816,12 @@ fn try_edge_collapse(
 ) -> bool {
     let coarsen = coarsen_floor2 > 0.0;
     let t = mesh.tets[ti];
-    let ctrace = std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some();
+    // Hoisted: env::var_os takes the process env lock on every call, and this
+    // function runs once per collapse candidate.
+    static CTRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ctrace =
+        *CTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some());
+    cprof_count(6);
     if ctrace {
         eprintln!(
             "collapse cand tet {ti} {t:?} q {:.4} (plc < {})",
@@ -1792,82 +1834,118 @@ fn try_edge_collapse(
         if b < mesh.plc_points {
             continue; // never remove PLC vertices
         }
-        // b's alive star and surface faces.
-        let star_b: Vec<usize> = g_incident[b]
-            .iter()
-            .filter(|&&x| alive[x as usize])
-            .map(|&x| x as usize)
-            .collect();
-        let mut b_faces: Vec<(u32, [usize; 3])> = Vec::new();
-        for &tb in &star_b {
-            let tt = mesh.tets[tb];
-            for fi in TET_FACES_OPT {
-                let f = fi.map(|k| tt[k]);
-                if !f.contains(&b) {
-                    continue;
-                }
-                let key = sorted3(f);
-                if let Some(&idx) = face_idx.get(&key) {
-                    if !b_faces.iter().any(|&(i, _)| i == idx) {
-                        b_faces.push((idx, key));
+        let b_on_surface = n_sfaces[b] > 0;
+        // Early-out: a surface vertex only ever collapses along one of its
+        // constrained edges -- without one among the three targets, every
+        // target dies at the surface gate, so skip the star scans outright
+        // (the dominant case by far: ~half of all target attempts).
+        if b_on_surface
+            && !t.iter().enumerate().any(|(aj, &a)| {
+                aj != bi && constrained_edges.contains(&(a.min(b), a.max(b)))
+            })
+        {
+            creject(1);
+            continue;
+        }
+        cprof_count(7);
+        let prof_bf = std::time::Instant::now();
+        // b's alive star and surface faces (interior b: no face can exist,
+        // skip the star x face_idx scan).
+        scratch.star_b.clear();
+        scratch.star_b.extend(
+            g_incident[b]
+                .iter()
+                .filter(|&&x| alive[x as usize])
+                .map(|&x| x as usize),
+        );
+        scratch.b_faces.clear();
+        if b_on_surface {
+            for &tb in &scratch.star_b {
+                let tt = mesh.tets[tb];
+                for fi in TET_FACES_OPT {
+                    let f = fi.map(|k| tt[k]);
+                    if !f.contains(&b) {
+                        continue;
+                    }
+                    let key = sorted3(f);
+                    if let Some(&idx) = face_idx.get(&key) {
+                        if !scratch.b_faces.iter().any(|&(i, _)| i == idx) {
+                            scratch.b_faces.push((idx, key));
+                        }
                     }
                 }
             }
         }
-        let b_patches: Vec<u32> = {
-            let mut ps: Vec<u32> = b_faces
-                .iter()
-                .map(|&(idx, _)| mesh.faces[idx as usize].patch)
-                .collect();
-            ps.sort_unstable();
-            ps.dedup();
-            ps
-        };
+        drop(ProfGuard(0, prof_bf));
+        let prof_ft = std::time::Instant::now();
+        scratch.b_patches.clear();
+        scratch
+            .b_patches
+            .extend(scratch.b_faces.iter().map(|&(idx, _)| mesh.faces[idx as usize].patch));
+        scratch.b_patches.sort_unstable();
+        scratch.b_patches.dedup();
         // Feature neighbors of b among its surface edges: a surface edge
         // whose face count differs from 2 or whose two faces belong to
         // different smooth groups (creases, sheet rims). Materialized up
         // front: the gates below mutate mesh.points speculatively.
-        let feature_nbrs_of_b: Vec<usize> = {
-            let mut nb: Vec<usize> = b_faces
+        scratch.feature_nbrs.clear();
+        scratch.feature_nbrs.extend(
+            scratch
+                .b_faces
                 .iter()
                 .flat_map(|&(_, key)| key)
-                .filter(|&x| x != b)
-                .collect();
-            nb.sort_unstable();
-            nb.dedup();
-            nb.retain(|&x| {
+                .filter(|&x| x != b),
+        );
+        scratch.feature_nbrs.sort_unstable();
+        scratch.feature_nbrs.dedup();
+        {
+            let b_faces = &scratch.b_faces;
+            scratch.feature_nbrs.retain(|&x| {
                 if !constrained_edges.contains(&(x.min(b), x.max(b))) {
                     return false;
                 }
-                let efs: Vec<u32> = b_faces
-                    .iter()
-                    .filter(|&&(_, key)| key.contains(&x))
-                    .map(|&(idx, _)| idx)
-                    .collect();
-                efs.len() != 2
+                let mut efs = [0u32; 2];
+                let mut n_efs = 0usize;
+                for &(idx, key) in b_faces {
+                    if key.contains(&x) {
+                        if n_efs < 2 {
+                            efs[n_efs] = idx;
+                        }
+                        n_efs += 1;
+                    }
+                }
+                n_efs != 2
                     || face_group(mesh, efs[0] as usize) != face_group(mesh, efs[1] as usize)
             });
-            nb
-        };
-        let b_has_features = !feature_nbrs_of_b.is_empty();
+        }
+        let b_has_features = !scratch.feature_nbrs.is_empty();
+        drop(ProfGuard(1, prof_ft));
 
         'targets: for (ai, &a) in t.iter().enumerate() {
             if ai == bi {
                 continue;
             }
+            cprof_count(8);
             // Coarsening targets the short edge only: a do-no-harm collapse
             // of a well-sized edge would coarsen the mesh below its target.
             if coarsen && dist2_pts(mesh.points[a], mesh.points[b]) >= coarsen_floor2 {
                 continue;
             }
-            if !b_faces.is_empty() {
+            if !scratch.b_faces.is_empty() {
+                let _prof = ProfGuard(2, std::time::Instant::now());
                 // Surface b: only along a surface edge into its own
                 // constraint set.
                 if !constrained_edges.contains(&(a.min(b), a.max(b))) {
                     creject(1);
                     continue;
                 }
-                let mut a_patches: Vec<u32> = Vec::new();
+                // An interior a has no patches at all, so the subset check
+                // below fails without the star scan.
+                if n_sfaces[a] == 0 {
+                    creject(1);
+                    continue;
+                }
+                scratch.a_patches.clear();
                 for &ta in g_incident[a].iter().filter(|&&x| alive[x as usize]) {
                     let tt = mesh.tets[ta as usize];
                     for fi in TET_FACES_OPT {
@@ -1876,57 +1954,62 @@ fn try_edge_collapse(
                             continue;
                         }
                         if let Some(&idx) = face_idx.get(&sorted3(f)) {
-                            a_patches.push(mesh.faces[idx as usize].patch);
+                            scratch.a_patches.push(mesh.faces[idx as usize].patch);
                         }
                     }
                 }
-                a_patches.sort_unstable();
-                a_patches.dedup();
-                if !b_patches.iter().all(|p| a_patches.contains(p)) {
+                scratch.a_patches.sort_unstable();
+                scratch.a_patches.dedup();
+                if !scratch.b_patches.iter().all(|p| scratch.a_patches.contains(p)) {
                     creject(1);
                     continue;
                 }
-                if b_has_features && !feature_nbrs_of_b.contains(&a) {
+                if b_has_features && !scratch.feature_nbrs.contains(&a) {
                     creject(1);
                     continue;
                 }
             }
 
             // The (a, b) ring dies; the rest of b's star is rewritten.
-            let mut dying: Vec<usize> = Vec::new();
-            let mut rewritten: Vec<usize> = Vec::new();
-            for &tb in &star_b {
+            let _prof_link = ProfGuard(3, std::time::Instant::now());
+            scratch.dying.clear();
+            scratch.rewritten.clear();
+            for &tb in &scratch.star_b {
                 if mesh.tets[tb].contains(&a) {
-                    dying.push(tb);
+                    scratch.dying.push(tb);
                 } else {
-                    rewritten.push(tb);
+                    scratch.rewritten.push(tb);
                 }
             }
-            if dying.is_empty() || rewritten.is_empty() {
+            if scratch.dying.is_empty() || scratch.rewritten.is_empty() {
                 continue;
             }
             // Link condition: a rewritten tet must not duplicate an existing
             // tet of a's star (a non-manifold pinch would silently overlap).
-            let a_star_keys: DSet<[usize; 4]> = g_incident[a]
-                .iter()
-                .filter(|&&x| alive[x as usize])
-                .map(|&x| {
-                    let mut k = mesh.tets[x as usize];
-                    k.sort_unstable();
-                    k
-                })
-                .collect();
-            for &tr in &rewritten {
+            // Sorted scratch + binary search instead of a per-target hash set.
+            scratch.a_star_keys.clear();
+            scratch.a_star_keys.extend(
+                g_incident[a]
+                    .iter()
+                    .filter(|&&x| alive[x as usize])
+                    .map(|&x| {
+                        let mut k = mesh.tets[x as usize];
+                        k.sort_unstable();
+                        k
+                    }),
+            );
+            scratch.a_star_keys.sort_unstable();
+            for &tr in &scratch.rewritten {
                 let mut k = mesh.tets[tr].map(|v| if v == b { a } else { v });
                 k.sort_unstable();
-                if a_star_keys.contains(&k) {
+                if scratch.a_star_keys.binary_search(&k).is_ok() {
                     creject(2);
                     continue 'targets;
                 }
             }
             // Surface link condition: a rewritten surface face must not
             // collide with an existing one.
-            for &(_, key) in &b_faces {
+            for &(_, key) in &scratch.b_faces {
                 if key.contains(&a) {
                     continue; // dies
                 }
@@ -1944,23 +2027,29 @@ fn try_edge_collapse(
             // onto one edge -- four faces at one edge, a non-manifold
             // pillow the face-collision check above cannot see (the face
             // TRIPLES stay distinct).
-            if !b_faces.is_empty() {
-                let dying_apexes: Vec<usize> = b_faces
-                    .iter()
-                    .filter(|&&(_, key)| key.contains(&a))
-                    .flat_map(|&(_, key)| key)
-                    .filter(|&v| v != a && v != b)
-                    .collect();
-                let mut b_edge_nbrs: Vec<usize> = b_faces
-                    .iter()
-                    .filter(|&&(_, key)| !key.contains(&a))
-                    .flat_map(|&(_, key)| key)
-                    .filter(|&v| v != b)
-                    .collect();
-                b_edge_nbrs.sort_unstable();
-                b_edge_nbrs.dedup();
-                for x in b_edge_nbrs {
-                    if dying_apexes.contains(&x) {
+            if !scratch.b_faces.is_empty() {
+                scratch.dying_apexes.clear();
+                scratch.dying_apexes.extend(
+                    scratch
+                        .b_faces
+                        .iter()
+                        .filter(|&&(_, key)| key.contains(&a))
+                        .flat_map(|&(_, key)| key)
+                        .filter(|&v| v != a && v != b),
+                );
+                scratch.b_edge_nbrs.clear();
+                scratch.b_edge_nbrs.extend(
+                    scratch
+                        .b_faces
+                        .iter()
+                        .filter(|&&(_, key)| !key.contains(&a))
+                        .flat_map(|&(_, key)| key)
+                        .filter(|&v| v != b),
+                );
+                scratch.b_edge_nbrs.sort_unstable();
+                scratch.b_edge_nbrs.dedup();
+                for &x in &scratch.b_edge_nbrs {
+                    if scratch.dying_apexes.contains(&x) {
                         continue;
                     }
                     if constrained_edges.contains(&(x.min(a), x.max(a))) {
@@ -1970,6 +2059,8 @@ fn try_edge_collapse(
                 }
             }
 
+            drop(_prof_link);
+            let _prof_gates = ProfGuard(4, std::time::Instant::now());
             // Gates: validity, quality, sizing, surface fold-over. The
             // merged vertex may itself MOVE (midpoint, or all the way to b)
             // when both endpoints are interior Steiner points -- a pinned
@@ -1977,17 +2068,18 @@ fn try_edge_collapse(
             // rejection; interior vertices are always Steiner (PLC vertices
             // live on patches), so the merged position is free. A moving
             // target adds a's surviving star to the checked complex.
-            let star_a: Vec<usize> = g_incident[a]
-                .iter()
-                .filter(|&&x| alive[x as usize])
-                .map(|&x| x as usize)
-                .collect();
-            let surviving_a: Vec<usize> = star_a
-                .iter()
-                .copied()
-                .filter(|ta| !mesh.tets[*ta].contains(&b))
-                .collect();
-            let a_free = b_faces.is_empty() && !constrained_verts.contains(&a);
+            scratch.star_a.clear();
+            scratch.star_a.extend(
+                g_incident[a]
+                    .iter()
+                    .filter(|&&x| alive[x as usize])
+                    .map(|&x| x as usize),
+            );
+            scratch.surviving_a.clear();
+            scratch
+                .surviving_a
+                .extend(scratch.star_a.iter().copied().filter(|ta| !mesh.tets[*ta].contains(&b)));
+            let a_free = scratch.b_faces.is_empty() && !constrained_verts.contains(&a);
             let pa0 = mesh.points[a];
             let pb0 = mesh.points[b];
             let candidates: &[[f64; 3]] = if a_free {
@@ -2004,7 +2096,7 @@ fn try_edge_collapse(
                 std::slice::from_ref(&pa0)
             };
             let mut old_q = f64::MAX;
-            for &tb in star_b.iter().chain(surviving_a.iter()) {
+            for &tb in scratch.star_b.iter().chain(scratch.surviving_a.iter()) {
                 old_q = old_q.min(cached_q_free(&mesh.points, &mesh.tets, tet_q, tb));
             }
             let mut accepted_pos: Option<[f64; 3]> = None;
@@ -2016,7 +2108,7 @@ fn try_edge_collapse(
                 // face stays within that face's face/surface budget (the
                 // region gate below does not see per-face targets, which let
                 // collapses on fine-budget surfaces re-coarsen them).
-                for &(idx, key) in &b_faces {
+                for &(idx, key) in &scratch.b_faces {
                     let sf = &mesh.faces[idx as usize];
                     let fb2 = face_budget2(sf.face_tag, sf.surface);
                     if !fb2.is_finite() {
@@ -2034,23 +2126,27 @@ fn try_edge_collapse(
                         }
                     }
                 }
-                let checked: Vec<([usize; 4], rapidmesh_geom::RegionTag, bool)> = rewritten
-                    .iter()
-                    .map(|&tr| {
-                        (
-                            mesh.tets[tr].map(|v| if v == b { a } else { v }),
-                            mesh.tet_regions[tr],
-                            true,
-                        )
-                    })
-                    .chain(
-                        surviving_a
-                            .iter()
-                            .filter(|_| moved)
-                            .map(|&ta| (mesh.tets[ta], mesh.tet_regions[ta], false)),
-                    )
-                    .collect();
-                for (n, r, _from_b) in checked {
+                scratch.checked.clear();
+                scratch.checked.extend(
+                    scratch
+                        .rewritten
+                        .iter()
+                        .map(|&tr| {
+                            (
+                                mesh.tets[tr].map(|v| if v == b { a } else { v }),
+                                mesh.tet_regions[tr],
+                                true,
+                            )
+                        })
+                        .chain(
+                            scratch
+                                .surviving_a
+                                .iter()
+                                .filter(|_| moved)
+                                .map(|&ta| (mesh.tets[ta], mesh.tet_regions[ta], false)),
+                        ),
+                );
+                for &(n, r, _from_b) in &scratch.checked {
                     // Sizing contract PER EDGE, HARD: every merged edge
                     // stays within the region budget outright. Status-quo
                     // clauses (grow up to a local predecessor) launder
@@ -2104,14 +2200,14 @@ fn try_edge_collapse(
             let Some(pos) = accepted_pos else {
                 creject(3);
                 if ctrace {
-                    eprintln!("  b {b} -> a {a}: no valid position (dying {}, rewritten {}, old_q {old_q:.4})", dying.len(), rewritten.len());
+                    eprintln!("  b {b} -> a {a}: no valid position (dying {}, rewritten {}, old_q {old_q:.4})", scratch.dying.len(), scratch.rewritten.len());
                 }
                 continue;
             };
             mesh.points[a] = pos;
             // Surface fold-over: every rewritten surface face keeps its
             // normal direction.
-            for &(idx, key) in &b_faces {
+            for &(idx, key) in &scratch.b_faces {
                 if key.contains(&a) {
                     continue;
                 }
@@ -2126,26 +2222,33 @@ fn try_edge_collapse(
             }
 
             // ----------------------------------------------- commit
-            for &td in &dying {
+            drop(_prof_gates);
+            let _prof_commit = ProfGuard(5, std::time::Instant::now());
+            for &td in &scratch.dying {
                 alive[td] = false;
             }
-            for &tr in &rewritten {
+            for &tr in &scratch.rewritten {
                 let o = mesh.tets[tr];
                 let n = o.map(|v| if v == b { a } else { v });
                 mesh.tets[tr] = n;
                 tet_q[tr] = f64::NAN;
                 update_incidence(g_incident, tr as u32, o, n);
             }
-            for &ta in &surviving_a {
+            for &ta in &scratch.surviving_a {
                 tet_q[ta] = f64::NAN;
             }
             // Surface bookkeeping: dying faces leave, the rest re-cones to a.
-            let mut dying_faces: Vec<u32> = Vec::new();
-            for &(idx, key) in &b_faces {
+            // n_sfaces follows exactly: a dying face releases all three
+            // corners, a re-coned face moves one incidence from b to a.
+            scratch.dying_faces.clear();
+            for &(idx, key) in &scratch.b_faces {
                 if key.contains(&a) {
-                    dying_faces.push(idx);
+                    scratch.dying_faces.push(idx);
                     face_idx.remove(&key);
                     constrained_faces.remove(&key);
+                    for &v in &key {
+                        n_sfaces[v] -= 1;
+                    }
                 } else {
                     let tri = mesh.faces[idx as usize].tri;
                     let new_tri = tri.map(|v| if v == b { a } else { v });
@@ -2155,6 +2258,8 @@ fn try_edge_collapse(
                     constrained_faces.remove(&key);
                     constrained_faces.insert(nk);
                     mesh.faces[idx as usize].tri = new_tri;
+                    n_sfaces[b] -= 1;
+                    n_sfaces[a] += 1;
                     for e in 0..3 {
                         let (x, y) = (new_tri[e], new_tri[(e + 1) % 3]);
                         constrained_edges.insert((x.min(y), x.max(y)));
@@ -2163,21 +2268,24 @@ fn try_edge_collapse(
             }
             // Drop every surface edge at b (b has no surface faces left).
             {
-                let mut nb: Vec<usize> = b_faces
-                    .iter()
-                    .flat_map(|&(_, key)| key)
-                    .filter(|&x| x != b)
-                    .collect();
-                nb.sort_unstable();
-                nb.dedup();
-                for x in nb {
+                scratch.b_nbrs.clear();
+                scratch.b_nbrs.extend(
+                    scratch
+                        .b_faces
+                        .iter()
+                        .flat_map(|&(_, key)| key)
+                        .filter(|&x| x != b),
+                );
+                scratch.b_nbrs.sort_unstable();
+                scratch.b_nbrs.dedup();
+                for &x in &scratch.b_nbrs {
                     constrained_edges.remove(&(x.min(b), x.max(b)));
                 }
             }
             // Remove dying face records (swap_remove, descending; fix the
             // moved record's index entry).
-            dying_faces.sort_unstable_by(|x, y| y.cmp(x));
-            for idx in dying_faces {
+            scratch.dying_faces.sort_unstable_by(|x, y| y.cmp(x));
+            for &idx in &scratch.dying_faces {
                 let idx = idx as usize;
                 mesh.faces.swap_remove(idx);
                 if idx < mesh.faces.len() {
@@ -2185,7 +2293,7 @@ fn try_edge_collapse(
                     face_idx.insert(moved_key, idx as u32);
                 }
             }
-            for &tb in star_b.iter().chain(surviving_a.iter()) {
+            for &tb in scratch.star_b.iter().chain(scratch.surviving_a.iter()) {
                 for &v in &mesh.tets[tb] {
                     next_dirty.insert(v);
                 }
@@ -2304,6 +2412,53 @@ pub static COLLAPSE_REJECTS: [std::sync::atomic::AtomicUsize; 6] = [
 
 fn creject(i: usize) {
     COLLAPSE_REJECTS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Collapse section profile (RAPIDMESH_OPT_TRACE): nanoseconds in
+/// [0 b_faces, 1 features, 2 a_patches, 3 link, 4 gates, 5 commit], counts in
+/// [6 calls, 7 b-loops, 8 target-loops]. Always accumulated (an atomic add
+/// per section is noise next to the section itself), drained by the trace
+/// print.
+pub static COLLAPSE_PROF: [std::sync::atomic::AtomicU64; 9] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 9];
+
+fn cprof_count(i: usize) {
+    COLLAPSE_PROF[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Adds the elapsed time of its scope to a `COLLAPSE_PROF` slot on drop, so
+/// the `continue` exits of the collapse gates are measured without touching
+/// their control flow.
+struct ProfGuard(usize, std::time::Instant);
+impl Drop for ProfGuard {
+    fn drop(&mut self) {
+        COLLAPSE_PROF[self.0].fetch_add(
+            self.1.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+/// Reused buffers for [`try_edge_collapse`]: it runs millions of times per
+/// optimize call, and its temporaries were the hottest allocation site of
+/// the whole mesher (a dozen Vecs per target attempt).
+#[derive(Default)]
+struct CollapseScratch {
+    star_b: Vec<usize>,
+    b_faces: Vec<(u32, [usize; 3])>,
+    b_patches: Vec<u32>,
+    feature_nbrs: Vec<usize>,
+    a_patches: Vec<u32>,
+    dying: Vec<usize>,
+    rewritten: Vec<usize>,
+    a_star_keys: Vec<[usize; 4]>,
+    star_a: Vec<usize>,
+    surviving_a: Vec<usize>,
+    checked: Vec<([usize; 4], rapidmesh_geom::RegionTag, bool)>,
+    dying_apexes: Vec<usize>,
+    b_edge_nbrs: Vec<usize>,
+    dying_faces: Vec<u32>,
+    b_nbrs: Vec<usize>,
 }
 
 /// Maintains the vertex->tet incidence across an in-place rewrite of slot

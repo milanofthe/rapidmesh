@@ -17,3 +17,10 @@ pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 numpy = "0.22"
 
 [workspace]
+
+# This file opens its OWN (empty) workspace, so the root workspace's release
+# profile does not apply here -- duplicate it: the binding is what the corpus
+# actually benchmarks.
+[profile.release]
+lto = "thin"
+codegen-units = 1

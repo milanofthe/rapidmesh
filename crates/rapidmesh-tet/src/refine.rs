@@ -166,14 +166,17 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
     let mut t = 0.0f64;
     let mut s_prev = signed_offset(surf, a);
     let mut guard = 0;
+    let mut evals = 1u64;
     while t < 1.0 {
         guard += 1;
         if guard > 4096 {
+            CC_GUARD_TRIPS.with(|c| c.set(c.get() + 1));
             break;
         }
         let step = ((s_prev.abs() * 0.8) / len).max(min_step);
         let t2 = (t + step).min(1.0);
         let s2 = signed_offset(surf, at(t2));
+        evals += 1;
         if s_prev != 0.0 && s2 != 0.0 && s_prev.signum() != s2.signum() {
             let (mut lo, mut hi, lo_neg) = (t, t2, s_prev < 0.0);
             for _ in 0..40 {
@@ -184,12 +187,23 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
                     hi = m;
                 }
             }
+            evals += 40;
             out.push(0.5 * (lo + hi));
         }
         t = t2;
         s_prev = s2;
     }
+    CC_EVALS.with(|c| c.set(c.get() + evals));
     out
+}
+
+thread_local! {
+    /// Sphere-tracing telemetry (RAPIDMESH_REFINE_TRACE): total offset
+    /// evaluations and 4096-step-guard trips of [`carrier_crossings`]. A
+    /// guard trip means a segment grazed a carrier for its whole length
+    /// (offset ~ 0 everywhere, so the safe step degenerates to `min_step`).
+    static CC_EVALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CC_GUARD_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The refinement state: Delaunay + provenance + feature segments + oracles.
@@ -1997,10 +2011,11 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stage("refine.lloyd", t_lloyd.elapsed().as_secs_f64());
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         eprintln!(
-            "REFINE facet_ins {} (size {} shape {} offface {}) cell_ins {} seg_split {} ins_rejected {} ball_none {} cross_found {} member_reject {} cc_none {}",
+            "REFINE facet_ins {} (size {} shape {} offface {}) cell_ins {} seg_split {} ins_rejected {} ball_none {} cross_found {} member_reject {} cc_none {} trace_evals {} guard_trips {}",
             r.n_facet_ins, r.n_bad_size, r.n_bad_shape, r.n_bad_offface,
             r.n_cell_ins, r.n_seg_split, r.n_ins_rejected, r.n_ball_none,
-            r.n_cross_found.get(), r.n_member_reject.get(), r.n_cc_none.get()
+            r.n_cross_found.get(), r.n_member_reject.get(), r.n_cc_none.get(),
+            CC_EVALS.with(|c| c.get()), CC_GUARD_TRIPS.with(|c| c.get())
         );
     }
 

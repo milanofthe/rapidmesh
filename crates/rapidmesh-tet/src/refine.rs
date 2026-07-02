@@ -47,8 +47,9 @@ type DMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<rustc_hash:
 /// optimizer's surface pass owns the final facet quality.
 const FACET_ANGLE_DEG: f64 = 15.0;
 /// Surface-ball size factor: a surface facet refines when its Delaunay-ball
-/// radius exceeds `FACET_SIZE * h(x)`.
-const FACET_SIZE: f64 = 1.0;
+/// radius exceeds `FACET_SIZE * h(x)`. Edges can reach ~2x the ball radius, so
+/// 0.7 keeps the gmsh `maxh = max edge length` contract (~1.4 h worst case).
+const FACET_SIZE: f64 = 0.7;
 /// Cell size factor: a tet refines when its circumradius exceeds
 /// `CELL_SIZE * h(cc)` (`r ~ 0.61 h` for a regular tet of edge `h`).
 const CELL_SIZE: f64 = 0.75;
@@ -386,16 +387,45 @@ impl<'a> Refiner<'a> {
 
     /// True if `p` lies inside some vertex's protecting ball.
     fn in_ball(&self, p: V3) -> bool {
+        self.ball_owner(p).is_some()
+    }
+
+    /// The protected vertex whose ball contains `p`, if any.
+    fn ball_owner(&self, p: V3) -> Option<usize> {
         let cell: [i64; 3] = std::array::from_fn(|k| (p[k] / self.seg_cell).floor() as i64);
         if let Some(vs) = self.ball_grid.get(&cell) {
             for &v in vs {
                 let r = self.ball[v];
                 if r > 0.0 && dist(p, self.pos(v)) < r {
-                    return true;
+                    return Some(v);
                 }
             }
         }
-        false
+        None
+    }
+
+    /// Splits a live segment incident to protected vertex `v` (Cheng-Dey-Ramos:
+    /// a crowded ball refines its feature, shrinking the balls until the
+    /// blocked repair fits). Returns true if a split happened.
+    fn split_ball_feature(&mut self, v: usize) -> bool {
+        self.split_ball_feature_with(v, false)
+    }
+
+    fn split_ball_feature_with(&mut self, v: usize, force: bool) -> bool {
+        let key = self
+            .segs
+            .iter()
+            .filter(|(_, s)| s.va == v || s.vb == v)
+            .map(|(&k, s)| {
+                let l = dist(self.pos(s.va), self.pos(s.vb));
+                (k, l)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, _)| k);
+        match key {
+            Some(k) => self.split_seg_with(k, force).is_some(),
+            None => false,
+        }
     }
 
     // ---------------- feature segments ------------------------------------
@@ -481,12 +511,21 @@ impl<'a> Refiner<'a> {
     /// Returns the new vertex, or `None` when the segment is at the floor (the
     /// encroachment is then accepted -- the small-angle guard).
     fn split_seg(&mut self, key: (usize, usize)) -> Option<usize> {
+        self.split_seg_with(key, false)
+    }
+
+    /// [`Self::split_seg`] with `force`: a manifold repair may split below the
+    /// small-angle floor (correctness beats the churn guard).
+    fn split_seg_with(&mut self, key: (usize, usize), force: bool) -> Option<usize> {
         let seg = *self.segs.get(&key)?;
         let (a, b) = (self.pos(seg.va), self.pos(seg.vb));
         let len = dist(a, b);
         let h = self.h_at(mid3(a, b));
-        if len < SEG_FLOOR * h {
+        if !force && len < SEG_FLOOR * h {
             return None;
+        }
+        if len < 1e-6 * h {
+            return None; // absolute backstop even when forced
         }
         let sm = 0.5 * (seg.sa + seg.sb);
         let p = match &self.curves[seg.ei as usize] {
@@ -562,10 +601,23 @@ impl<'a> Refiner<'a> {
             }
             // Pull exactly onto the carrier.
             let x = surf.eval_uv(surf.project_uv(x0));
-            // Membership: the crossing must lie on THIS trimmed face.
+            // Membership: the crossing must lie on THIS trimmed face -- or,
+            // near a feature edge, on the NEIGHBOUR face's carrier too (the
+            // nearest-facet test attributes an on-edge crossing to whichever
+            // wall wins the tie; rejecting it there opened flood-fill leaks
+            // through the edges of an interior void).
             let Some((fi, d)) = self.bvh.nearest_index(x) else { continue };
-            if self.facet_face[fi] == f && d <= self.h_at(x) {
-                return Some(x);
+            if d <= self.h_at(x) {
+                let owner = self.facet_face[fi];
+                if owner == f {
+                    return Some(x);
+                }
+                if owner != u32::MAX {
+                    let osurf = self.brep.surface(self.brep.faces[owner as usize].surface);
+                    if signed_offset(osurf, x).abs() <= 1e-7 * self.diag {
+                        return Some(x);
+                    }
+                }
             }
             self.n_member_reject.set(self.n_member_reject.get() + 1);
         }
@@ -651,24 +703,45 @@ impl<'a> Refiner<'a> {
     /// [`Self::facet_surface_ball`] but works on vertex indices (the extraction
     /// has no live slots). `None` neighbour = hull side (dual ray).
     fn facet_is_wall(&self, t1: &[usize; 4], t2: Option<&[usize; 4]>, fv: [usize; 3]) -> bool {
+        // A facet whose three vertices lie on ONE face's carrier and whose
+        // centroid sticks to that carrier IS part of the (sampled) surface,
+        // whether or not its Voronoi dual happens to cross: a flat tet spanning
+        // an unseeded cavity puts both circumcenters on one side, the dual
+        // test alone misses the wall, and the flood fill swallows the void.
+        // (The centroid check keeps far-apart chord triangles -- 3 points on a
+        // barrel spanning the interior -- from being walled off.)
+        for &f in &self.vfaces[fv[0]] {
+            if !(self.vfaces[fv[1]].contains(&f) && self.vfaces[fv[2]].contains(&f)) {
+                continue;
+            }
+            let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
+            let cen: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
+            let surf = self.brep.surface(self.brep.faces[f as usize].surface);
+            if signed_offset(surf, cen).abs() <= 0.2 * self.h_at(cen) {
+                return true;
+            }
+        }
+        // Centroid side test, NOT the circumcenter dual: the dual of a flat
+        // wall-piercing tet (two wall points + an interior point) can sit on
+        // one side entirely and miss the crossing; the two tets' centroids are
+        // local and reliable. The segment between them crosses the surface iff
+        // the facet separates material from cavity here.
         let p1: [V3; 4] = std::array::from_fn(|k| self.pos(t1[k]));
-        let Some((c1, r1)) = tet_circumcenter(p1) else {
-            return false;
-        };
-        let (c2, r2) = match t2 {
+        let c1: V3 = std::array::from_fn(|k| 0.25 * (p1[0][k] + p1[1][k] + p1[2][k] + p1[3][k]));
+        let c2: V3 = match t2 {
             Some(t) => {
                 let p2: [V3; 4] = std::array::from_fn(|k| self.pos(t[k]));
-                match tet_circumcenter(p2) {
-                    Some(x) => x,
-                    None => return false,
-                }
+                std::array::from_fn(|k| 0.25 * (p2[0][k] + p2[1][k] + p2[2][k] + p2[3][k]))
             }
             None => match self.hull_dual_end(c1, fv) {
-                Some(e) => (e, f64::INFINITY),
+                Some(e) => e,
                 None => return false,
             },
         };
-        if r2.is_finite() && self.bvh.nearest_dist(self.pos(fv[0])) > r1.max(r2) {
+        // Prune: both centroids farther from the surface than their distance
+        // cannot straddle it.
+        let len = dist(c1, c2);
+        if self.bvh.nearest_dist(c1) > len && self.bvh.nearest_dist(c2) > len {
             return false;
         }
         let mut cands: Vec<u32> = Vec::new();
@@ -677,16 +750,96 @@ impl<'a> Refiner<'a> {
                 cands.push(f);
             }
         }
-        if cands.is_empty() {
-            cands = self.faces_near_segment(c1, c2);
+        for f in self.faces_near_segment(c1, c2) {
+            if !cands.contains(&f) {
+                cands.push(f);
+            }
         }
-        let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
-        let fc: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
-        let rf = crate::geomutil::circumradius(a, b, c);
-        let near = Some((fc, 2.0 * rf.min(self.diag) + 2.0 * self.h_at(fc)));
         cands
             .into_iter()
-            .any(|f| self.face_crossing(f, c1, c2, near).is_some())
+            .any(|f| self.face_crossing(f, c1, c2, None).is_some())
+    }
+
+    /// Manifold guard: a tet whose vertices carry signed offsets of BOTH signs
+    /// to a nearby face carrier PIERCES that surface -- a hole in the
+    /// restricted wall no facet criterion sees (the dual of a flat piercing
+    /// tet does not cross). Returns the pierced face and the centroid's
+    /// on-carrier projection as the repair point.
+    fn pierce_repair(&self, tet: [usize; 4]) -> Option<(u32, V3)> {
+        let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
+        let cen: V3 =
+            std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
+        // cheap prune: a tet farther from the surface than its own extent
+        // cannot pierce.
+        let mut ext = 0.0f64;
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                ext = ext.max(dist(p[a], p[b]));
+            }
+        }
+        if self.bvh.nearest_dist(cen) > ext {
+            return None;
+        }
+        // candidate faces: provenance of the vertices + the nearest facet
+        let mut cands: Vec<u32> = Vec::new();
+        for &v in &tet {
+            for &f in &self.vfaces[v] {
+                if !cands.contains(&f) {
+                    cands.push(f);
+                }
+            }
+        }
+        if let Some((fi, _)) = self.bvh.nearest_index(cen) {
+            let f = self.facet_face[fi];
+            if f != u32::MAX && !cands.contains(&f) {
+                cands.push(f);
+            }
+        }
+        for f in cands {
+            let surf = self.brep.surface(self.brep.faces[f as usize].surface);
+            let tol = 1e-7 * self.diag;
+            let (mut pos, mut neg) = (false, false);
+            for q in p {
+                let s = signed_offset(surf, q);
+                if s > tol {
+                    pos = true;
+                }
+                if s < -tol {
+                    neg = true;
+                }
+            }
+            if !(pos && neg) {
+                continue;
+            }
+            // pierced: repair at the piercing EDGE's crossing with the carrier
+            // (the centroid footpoint often lands on an existing wall point and
+            // dies to the duplicate guard; an edge crossing lies strictly
+            // between two off-surface endpoints).
+            for a in 0..4 {
+                for b in (a + 1)..4 {
+                    let (sa, sb) = (signed_offset(surf, p[a]), signed_offset(surf, p[b]));
+                    if !(sa > tol && sb < -tol || sa < -tol && sb > tol) {
+                        continue;
+                    }
+                    let (mut qa, mut qb, a_neg) = (p[a], p[b], sa < 0.0);
+                    for _ in 0..40 {
+                        let m = mid3(qa, qb);
+                        if (signed_offset(surf, m) < 0.0) == a_neg {
+                            qa = m;
+                        } else {
+                            qb = m;
+                        }
+                    }
+                    let x = surf.eval_uv(surf.project_uv(mid3(qa, qb)));
+                    if let Some((fi, d)) = self.bvh.nearest_index(x) {
+                        if self.facet_face[fi] == f && d <= self.h_at(x) {
+                            return Some((f, x));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     // ---------------- insertion with feature protection --------------------
@@ -695,13 +848,31 @@ impl<'a> Refiner<'a> {
     /// segment (then the segment splits instead) or duplicates a vertex.
     /// Returns true if the triangulation changed.
     fn insert_protected(&mut self, p: V3, prov: Prov, faces: Vec<u32>) -> bool {
+        self.insert_protected_with(p, prov, faces, false)
+    }
+
+    /// [`Self::insert_protected`] with `manifold_repair` semantics: a candidate
+    /// blocked by a protecting ball refines the ball's feature instead of
+    /// being dropped (used by the pierce sweep, whose insertions are
+    /// correctness repairs, not quality refinements).
+    fn insert_protected_with(
+        &mut self,
+        p: V3,
+        prov: Prov,
+        faces: Vec<u32>,
+        manifold_repair: bool,
+    ) -> bool {
         if self.db.len() >= self.max_points {
             return false;
         }
-        // Inside a protecting ball: the candidate is simply dropped -- the
-        // feature is authoritative there, and splitting its segments instead
-        // would let surface/cell refinement grind the features ever finer.
-        if self.in_ball(p) {
+        // Inside a protecting ball: quality-driven candidates are dropped (the
+        // feature is authoritative there); MANIFOLD repairs may instead refine
+        // the crowded ball's feature -- its balls shrink and the repair fits on
+        // a later sweep (a pierce left unrepaired is a hole in the wall).
+        if let Some(owner) = self.ball_owner(p) {
+            if manifold_repair {
+                return self.split_ball_feature_with(owner, true);
+            }
             return false;
         }
         if let Some(key) = self.encroached_seg(p) {
@@ -822,6 +993,12 @@ impl<'a> Refiner<'a> {
             }
             return false;
         }
+        // Interior points hugging the surface pierce the (coarser) wall
+        // sampling: a tet of two wall points and one hugger connects the two
+        // sides straight through the wall, a hole no facet criterion sees.
+        if self.bvh.nearest_dist(cc) < 0.3 * h {
+            return false;
+        }
         self.insert_protected(cc, Prov::Interior, Vec::new())
     }
 }
@@ -935,7 +1112,20 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             } else {
                 diag / crate::constants::DEFAULT_SUBDIV
             };
-            params.min_h_surf.max(h_ref / 8.0).max(1e-12)
+            // The auto floor clamps CURVATURE-driven runaway; explicit user
+            // targets (per-edge / per-face / per-region / point sources) may
+            // be finer and win.
+            let user_min = params
+                .edge_maxh
+                .iter()
+                .chain(&params.surf_maxh)
+                .chain(&params.face_maxh)
+                .chain(&params.surface_maxh)
+                .chain(&params.region_maxh)
+                .map(|&(_, h)| h)
+                .chain(params.size_points.iter().map(|&(_, h)| h))
+                .fold(f64::INFINITY, f64::min);
+            params.min_h_surf.max((h_ref / 8.0).min(user_min)).max(1e-12)
         },
         n_facet_ins: 0,
         n_cell_ins: 0,
@@ -976,15 +1166,20 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let t_feat = std::time::Instant::now();
     for (ei, edge) in brep.edges.iter().enumerate() {
         let Some(curve) = &r.curves[ei] else { continue };
+        // The auto LFS floor must not overrule an EXPLICIT user target: a
+        // per-edge maxh finer than the floor wins (the floor only clamps
+        // curvature-driven runaway).
+        let user_cap = params.edge_maxh_for(ei);
+        let floor = r.h_floor.min(user_cap);
         let cap = edge
             .chain
             .iter()
             .map(|&p| r.h_at(p))
             .fold(f64::INFINITY, f64::min)
-            .min(params.edge_maxh_for(ei))
-            .max(r.h_floor);
+            .min(user_cap)
+            .max(floor);
         let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
-        let ss = distribute_floored(&**curve, params.edge_tol_for(ei), cap, grad, r.h_floor);
+        let ss = distribute_floored(&**curve, params.edge_tol_for(ei), cap, grad, floor);
         let fs = r.edge_faces(ei as u32);
         // Vertex ids along the edge WITH their arc params, in curve order (a
         // rejected near-duplicate sample drops its param too, so segments stay
@@ -1169,6 +1364,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         r.queue.push_back((slot, t));
     }
     let mut cells: VecDeque<(u32, [usize; 4])> = VecDeque::new();
+    let mut pierce_rounds = 0usize;
     loop {
         // Phase 1: drain all facet work (insertions re-feed r.queue).
         while let Some((slot, tet)) = r.queue.pop_front() {
@@ -1197,7 +1393,35 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 break;
             }
         }
-        if !advanced && r.queue.is_empty() {
+        if advanced || !r.queue.is_empty() {
+            continue;
+        }
+        // Phase 3: manifold (pierce) sweep -- runs only when facet and cell
+        // work is exhausted; any repair feeds phase 1 again. Hard-capped: a
+        // repair can spawn new pierces next to the coarse duplicate guard, and
+        // an uncapped sweep then cascades for minutes on large scenes.
+        pierce_rounds += 1;
+        if pierce_rounds > 8 {
+            break;
+        }
+        let mut pierced = false;
+        let mut blocked = 0u64;
+        for (slot, tet) in r.db.tets_with_slots() {
+            if r.db.tet_at(slot) != Some(tet) {
+                continue;
+            }
+            if let Some((f, x)) = r.pierce_repair(tet) {
+                if r.insert_protected_with(x, Prov::Face(f), vec![f], true) {
+                    pierced = true;
+                } else {
+                    blocked += 1;
+                }
+            }
+        }
+        if !pierced {
+            if blocked > 0 && std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+                eprintln!("PIERCE {} unrepairable (insertion blocked)", blocked);
+            }
             break;
         }
     }
@@ -1279,8 +1503,12 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         continue;
                     }
                     let tgt: V3 = std::array::from_fn(|k| num[gi][k] / (3.0 * den[gi]));
-                    // stay inside, out of protecting balls, off the surface
-                    if r.in_ball(tgt) || r.domain.region_at(tgt) == 0 {
+                    // stay inside, out of protecting balls, clear of the
+                    // surface (a hugger pierces the coarser wall sampling)
+                    if r.in_ball(tgt)
+                        || r.domain.region_at(tgt) == 0
+                        || r.bvh.nearest_dist(tgt) < 0.3 * r.h_at(tgt)
+                    {
                         continue;
                     }
                     max_move = max_move.max(dist(*p, tgt));
@@ -1329,29 +1557,26 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
             // Write the relaxed positions back into the refiner's DT by a
             // final rebuild (the extraction below reads r.db).
+            // FIXED points first, interiors second: a relaxed interior point
+            // that drifted near the surface must lose the near-duplicate tie
+            // against a surface/feature point, never displace it -- one
+            // displaced wall point is a hole in the restricted surface and a
+            // flood-fill leak (an interior void then fills solid).
             let mut db = DelaunayBuilder::enclosing(lo, hi);
             let mut prov2: Vec<Prov> = Vec::with_capacity(n_all);
             let mut vfaces2: Vec<Vec<u32>> = Vec::with_capacity(n_all);
             let mut fi = 0usize;
-            let mut ii = 0usize;
             for v in 0..n_all {
                 if matches!(r.prov[v], Prov::Interior) {
-                    if db.try_insert(interior[ii]).is_some() {
-                        prov2.push(Prov::Interior);
-                        vfaces2.push(Vec::new());
-                    }
-                    ii += 1;
-                } else {
-                    if db.try_insert(fixed[fi]).is_some() {
-                        prov2.push(r.prov[v].clone());
-                        vfaces2.push(r.vfaces[v].clone());
-                    }
-                    fi += 1;
+                    continue;
                 }
+                if db.try_insert(fixed[fi]).is_some() {
+                    prov2.push(r.prov[v].clone());
+                    vfaces2.push(r.vfaces[v].clone());
+                }
+                fi += 1;
             }
-            // Points the adaptive Lloyd insertion ADDED (beyond the original
-            // interior count) live at the tail of `interior`.
-            for &p in &interior[ii..] {
+            for &p in &interior {
                 if db.try_insert(p).is_some() {
                     prov2.push(Prov::Interior);
                     vfaces2.push(Vec::new());
@@ -1407,12 +1632,33 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         x
     }
+    let mut n_walls = 0u64;
+    let dbg_leak = std::env::var_os("RAPIDMESH_DEBUG_LEAK").is_some();
+    let in_void = |c: &V3| -> bool {
+        c[0] > 1.0 && c[0] < 3.0 && c[1] > 1.0 && c[1] < 3.0 && c[2] > 0.5 && c[2] < 1.5
+    };
+    let ctr = |t: &[usize; 4]| -> V3 {
+        std::array::from_fn(|k| {
+            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
+        })
+    };
     for (fkey, &(a, b)) in &owners {
         if b == u32::MAX {
             continue; // hull facet: always a component boundary
         }
         if r.facet_is_wall(&all_tets[a as usize], Some(&all_tets[b as usize]), *fkey) {
+            n_walls += 1;
             continue;
+        }
+        if dbg_leak {
+            let (ca, cb) = (ctr(&all_tets[a as usize]), ctr(&all_tets[b as usize]));
+            if in_void(&ca) != in_void(&cb) {
+                let fp: [V3; 3] = std::array::from_fn(|k| points[fkey[k]]);
+                eprintln!(
+                    "LEAK facet ({:.3?} {:.3?} {:.3?}) ca ({:.3},{:.3},{:.3}) cb ({:.3},{:.3},{:.3})",
+                    fp[0], fp[1], fp[2], ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]
+                );
+            }
         }
         let (ra, rb) = (find(&mut uf, a), find(&mut uf, b));
         if ra != rb {
@@ -1437,6 +1683,23 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut comp_region: DMap<u32, u32> = DMap::default();
     for (&root, &(_, ti)) in &comp_best {
         comp_region.insert(root, r.region_at_c(centroid_of(&all_tets[ti as usize])));
+    }
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        let mut sizes: DMap<u32, usize> = DMap::default();
+        for ti in 0..all_tets.len() as u32 {
+            *sizes.entry(find(&mut uf, ti)).or_insert(0) += 1;
+        }
+        let mut info: Vec<(usize, u32, V3)> = comp_best
+            .iter()
+            .map(|(&root, &(_, ti))| {
+                (sizes[&root], comp_region[&root], centroid_of(&all_tets[ti as usize]))
+            })
+            .collect();
+        info.sort_by(|a, b| b.0.cmp(&a.0));
+        eprintln!("CLASSIFY walls {} components {}:", n_walls, comp_best.len());
+        for (n, reg, c) in info.iter().take(8) {
+            eprintln!("  comp size {n} region {reg} anchor ({:.3}, {:.3}, {:.3})", c[0], c[1], c[2]);
+        }
     }
     let mut region_of: Vec<u32> = Vec::with_capacity(all_tets.len());
     for ti in 0..all_tets.len() as u32 {

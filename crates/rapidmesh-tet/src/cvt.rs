@@ -252,7 +252,11 @@ pub fn mesh_cdt_budgeted(
     optimize_passes: Option<usize>,
 ) -> (TetMesh, MeshParams) {
     let mesh_once = |p: &MeshParams| -> TetMesh {
-        let mut m = mesh_cdt(plc, p);
+        // The volume backend is the restricted-Delaunay REFINEMENT core
+        // (analytic carriers, protecting balls, manifold sweeps), not the
+        // legacy frozen-surface CDT below -- the budget loop and the
+        // optimize pass wrap it unchanged.
+        let mut m = crate::conform::mesh_plc_with(plc, p);
         if let Some(passes) = optimize_passes {
             let opt = crate::optimize::OptimizeParams {
                 passes,

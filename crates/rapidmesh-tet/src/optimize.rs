@@ -1822,6 +1822,10 @@ fn try_edge_collapse(
     let ctrace =
         *CTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some());
     cprof_count(6);
+    scratch.ak_arena.clear();
+    scratch.ak_valid = [false; 4];
+    scratch.ap_arena.clear();
+    scratch.ap_valid = [false; 4];
     if ctrace {
         eprintln!(
             "collapse cand tet {ti} {t:?} q {:.4} (plc < {})",
@@ -1858,6 +1862,17 @@ fn try_edge_collapse(
                 .filter(|&&x| alive[x as usize])
                 .map(|&x| x as usize),
         );
+        scratch.star_b_mask.clear();
+        scratch.star_b_mask.extend(scratch.star_b.iter().map(|&tb| {
+            let tt = mesh.tets[tb];
+            let mut m = 0u8;
+            for (i, &v) in t.iter().enumerate() {
+                if tt.contains(&v) {
+                    m |= 1 << i;
+                }
+            }
+            m
+        }));
         scratch.b_faces.clear();
         if b_on_surface {
             for &tb in &scratch.star_b {
@@ -1945,22 +1960,35 @@ fn try_edge_collapse(
                     creject(1);
                     continue;
                 }
-                scratch.a_patches.clear();
-                for &ta in g_incident[a].iter().filter(|&&x| alive[x as usize]) {
-                    let tt = mesh.tets[ta as usize];
-                    for fi in TET_FACES_OPT {
-                        let f = fi.map(|k| tt[k]);
-                        if !f.contains(&a) {
-                            continue;
-                        }
-                        if let Some(&idx) = face_idx.get(&sorted3(f)) {
-                            scratch.a_patches.push(mesh.faces[idx as usize].patch);
+                if !scratch.ap_valid[ai] {
+                    let start = scratch.ap_arena.len();
+                    for &ta in g_incident[a].iter().filter(|&&x| alive[x as usize]) {
+                        let tt = mesh.tets[ta as usize];
+                        for fi in TET_FACES_OPT {
+                            let f = fi.map(|k| tt[k]);
+                            if !f.contains(&a) {
+                                continue;
+                            }
+                            if let Some(&idx) = face_idx.get(&sorted3(f)) {
+                                scratch.ap_arena.push(mesh.faces[idx as usize].patch);
+                            }
                         }
                     }
+                    scratch.ap_arena[start..].sort_unstable();
+                    let mut w = start;
+                    for r in start..scratch.ap_arena.len() {
+                        if r == start || scratch.ap_arena[r] != scratch.ap_arena[w - 1] {
+                            scratch.ap_arena[w] = scratch.ap_arena[r];
+                            w += 1;
+                        }
+                    }
+                    scratch.ap_arena.truncate(w);
+                    scratch.ap_range[ai] = (start as u32, w as u32);
+                    scratch.ap_valid[ai] = true;
                 }
-                scratch.a_patches.sort_unstable();
-                scratch.a_patches.dedup();
-                if !scratch.b_patches.iter().all(|p| scratch.a_patches.contains(p)) {
+                let (aps, ape) = scratch.ap_range[ai];
+                let a_patches = &scratch.ap_arena[aps as usize..ape as usize];
+                if !scratch.b_patches.iter().all(|p| a_patches.contains(p)) {
                     creject(1);
                     continue;
                 }
@@ -1974,8 +2002,9 @@ fn try_edge_collapse(
             let _prof_link = ProfGuard(3, std::time::Instant::now());
             scratch.dying.clear();
             scratch.rewritten.clear();
-            for &tb in &scratch.star_b {
-                if mesh.tets[tb].contains(&a) {
+            let abit = 1u8 << ai;
+            for (&tb, &m) in scratch.star_b.iter().zip(&scratch.star_b_mask) {
+                if m & abit != 0 {
                     scratch.dying.push(tb);
                 } else {
                     scratch.rewritten.push(tb);
@@ -1986,23 +2015,30 @@ fn try_edge_collapse(
             }
             // Link condition: a rewritten tet must not duplicate an existing
             // tet of a's star (a non-manifold pinch would silently overlap).
-            // Sorted scratch + binary search instead of a per-target hash set.
-            scratch.a_star_keys.clear();
-            scratch.a_star_keys.extend(
-                g_incident[a]
-                    .iter()
-                    .filter(|&&x| alive[x as usize])
-                    .map(|&x| {
-                        let mut k = mesh.tets[x as usize];
-                        k.sort_unstable();
-                        k
-                    }),
-            );
-            scratch.a_star_keys.sort_unstable();
+            // Sorted per-call cache + binary search instead of a per-target
+            // hash set.
+            if !scratch.ak_valid[ai] {
+                let start = scratch.ak_arena.len();
+                scratch.ak_arena.extend(
+                    g_incident[a]
+                        .iter()
+                        .filter(|&&x| alive[x as usize])
+                        .map(|&x| {
+                            let mut k = mesh.tets[x as usize];
+                            k.sort_unstable();
+                            k
+                        }),
+                );
+                scratch.ak_arena[start..].sort_unstable();
+                scratch.ak_range[ai] = (start as u32, scratch.ak_arena.len() as u32);
+                scratch.ak_valid[ai] = true;
+            }
+            let (aks, ake) = scratch.ak_range[ai];
+            let a_star_keys = &scratch.ak_arena[aks as usize..ake as usize];
             for &tr in &scratch.rewritten {
                 let mut k = mesh.tets[tr].map(|v| if v == b { a } else { v });
                 k.sort_unstable();
-                if scratch.a_star_keys.binary_search(&k).is_ok() {
+                if a_star_keys.binary_search(&k).is_ok() {
                     creject(2);
                     continue 'targets;
                 }
@@ -2445,13 +2481,15 @@ impl Drop for ProfGuard {
 #[derive(Default)]
 struct CollapseScratch {
     star_b: Vec<usize>,
+    /// Per star_b tet: which of the candidate tet's four vertices it
+    /// contains (bit i = contains t[i]) -- the dying/rewritten split per
+    /// target is then a bit test instead of a 4-way compare.
+    star_b_mask: Vec<u8>,
     b_faces: Vec<(u32, [usize; 3])>,
     b_patches: Vec<u32>,
     feature_nbrs: Vec<usize>,
-    a_patches: Vec<u32>,
     dying: Vec<usize>,
     rewritten: Vec<usize>,
-    a_star_keys: Vec<[usize; 4]>,
     star_a: Vec<usize>,
     surviving_a: Vec<usize>,
     checked: Vec<([usize; 4], rapidmesh_geom::RegionTag, bool)>,
@@ -2459,6 +2497,16 @@ struct CollapseScratch {
     b_edge_nbrs: Vec<usize>,
     dying_faces: Vec<u32>,
     b_nbrs: Vec<usize>,
+    /// Lazy per-call caches keyed by the target's corner index `ai` (a's
+    /// star does not change between the speculative gates -- only a commit
+    /// mutates, and a commit returns): the sorted tet keys of a's star and
+    /// a's patch set, each an arena slice.
+    ak_arena: Vec<[usize; 4]>,
+    ak_range: [(u32, u32); 4],
+    ak_valid: [bool; 4],
+    ap_arena: Vec<u32>,
+    ap_range: [(u32, u32); 4],
+    ap_valid: [bool; 4],
 }
 
 /// Maintains the vertex->tet incidence across an in-place rewrite of slot

@@ -173,13 +173,20 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
             CC_GUARD_TRIPS.with(|c| c.set(c.get() + 1));
             break;
         }
-        let step = ((s_prev.abs() * 0.8) / len).max(min_step);
+        // |offset| lower-bounds the true distance (the offset of a 1-Lipschitz
+        // signed distance-like field), so stepping 0.9 of it cannot skip a
+        // crossing.
+        let step = ((s_prev.abs() * 0.9) / len).max(min_step);
         let t2 = (t + step).min(1.0);
         let s2 = signed_offset(surf, at(t2));
         evals += 1;
         if s_prev != 0.0 && s2 != 0.0 && s_prev.signum() != s2.signum() {
+            // 14 halvings resolve the bracket to ~6e-5 of the segment; both
+            // consumers then pull the point exactly onto the carrier via
+            // `closest` before using it, so tighter bisection buys nothing
+            // (it was 40 rounds -- a third of ALL oracle evaluations).
             let (mut lo, mut hi, lo_neg) = (t, t2, s_prev < 0.0);
-            for _ in 0..40 {
+            for _ in 0..14 {
                 let m = 0.5 * (lo + hi);
                 if (signed_offset(surf, at(m)) < 0.0) == lo_neg {
                     lo = m;
@@ -187,7 +194,7 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
                     hi = m;
                 }
             }
-            evals += 40;
+            evals += 14;
             out.push(0.5 * (lo + hi));
         }
         t = t2;
@@ -204,6 +211,30 @@ thread_local! {
     /// (offset ~ 0 everywhere, so the safe step degenerates to `min_step`).
     static CC_EVALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static CC_GUARD_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Parameter range of segment `a -> b` inside the (slightly inflated) ball
+/// `(c, r)`, or `None` when the segment misses it entirely.
+fn clip_segment_to_ball(a: V3, b: V3, c: V3, r: f64) -> Option<(f64, f64)> {
+    let d = sub(b, a);
+    let m = sub(a, c);
+    let aa = dot(d, d);
+    if !(aa > 0.0) {
+        return Some((0.0, 1.0));
+    }
+    let r = r * 1.0001;
+    let bb = dot(m, d);
+    let cc = dot(m, m) - r * r;
+    let disc = bb * bb - aa * cc;
+    if disc <= 0.0 {
+        return None;
+    }
+    let s = disc.sqrt();
+    let (t0, t1) = (((-bb - s) / aa).max(0.0), ((-bb + s) / aa).min(1.0));
+    if t0 >= t1 {
+        return None;
+    }
+    Some((t0, t1))
 }
 
 /// The refinement state: Delaunay + provenance + feature segments + oracles.
@@ -338,7 +369,10 @@ impl<'a> Refiner<'a> {
         for f in self.faces_near_segment(q, p) {
             let surf = self.brep.surface(self.brep.faces[f as usize].surface);
             for tm in carrier_crossings(surf, q, p) {
-                let x: V3 = std::array::from_fn(|k| q[k] + tm * (p[k] - q[k]));
+                let x0: V3 = std::array::from_fn(|k| q[k] + tm * (p[k] - q[k]));
+                // Pull exactly onto the carrier (the bisection stops at
+                // ~6e-5 of the segment, coarser than the planar band).
+                let x = surf.closest(x0).0;
                 // membership: nearest facet must belong to THIS face and be
                 // within its own band (else the crossing is off the trim).
                 if let Some((fi, dst)) = self.bvh.nearest_index(x) {
@@ -623,6 +657,20 @@ impl<'a> Refiner<'a> {
     /// whose huge surface balls then drive a refinement cascade).
     fn face_crossing(&self, f: u32, a: V3, b: V3, near: Option<(V3, f64)>) -> Option<V3> {
         let surf = self.brep.surface(self.brep.faces[f as usize].surface);
+        // Clip the segment to the locality ball BEFORE tracing: any crossing
+        // outside it is discarded below anyway, and dual segments (sliver
+        // circumcenters, hull rays) can be orders of magnitude longer than
+        // the ball -- tracing their far part is pure waste.
+        let (a, b) = match near {
+            Some((c, rmax)) => match clip_segment_to_ball(a, b, c, rmax) {
+                Some((t0, t1)) => (
+                    std::array::from_fn(|k| a[k] + t0 * (b[k] - a[k])),
+                    std::array::from_fn(|k| a[k] + t1 * (b[k] - a[k])),
+                ),
+                None => return None,
+            },
+            None => (a, b),
+        };
         for t in carrier_crossings(surf, a, b) {
             self.n_cross_found.set(self.n_cross_found.get() + 1);
             let x0: V3 = std::array::from_fn(|k| a[k] + t * (b[k] - a[k]));

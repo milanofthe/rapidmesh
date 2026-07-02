@@ -1286,7 +1286,44 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     max_move = max_move.max(dist(*p, tgt));
                     *p = tgt;
                 }
-                if max_move < 0.02 * r.h_floor {
+                // Adaptive insertion at the COARSEST spots (the cvt.rs recipe):
+                // a tet whose longest edge exceeds the local target marks a
+                // hole in the interior distribution -- THIN regions (a torus
+                // tube ~2-3 h across) get almost no grid seeds (the surface
+                // clearance eats them), the flat surface slivers there survive,
+                // and only points injected between the walls break them. The
+                // next pass relaxes the newcomers in.
+                let mut inserted = 0usize;
+                for t in db.tets() {
+                    let pi: [usize; 4] = std::array::from_fn(|k| b2p[t[k]]);
+                    let p: [V3; 4] = std::array::from_fn(|k| all[pi[k]]);
+                    let (mut best_len, mut mid) = (0.0f64, [0.0f64; 3]);
+                    for a in 0..4 {
+                        for b in (a + 1)..4 {
+                            let l = dist(p[a], p[b]);
+                            if l > best_len {
+                                best_len = l;
+                                mid = mid3(p[a], p[b]);
+                            }
+                        }
+                    }
+                    let h = r.h_at(mid);
+                    if best_len <= 1.4 * h {
+                        continue;
+                    }
+                    if r.in_ball(mid)
+                        || r.domain.region_at(mid) == 0
+                        || r.bvh.nearest_dist(mid) < 0.4 * h
+                    {
+                        continue;
+                    }
+                    // clearance from the existing points of THIS tet suffices
+                    // as a cheap crowding guard (the midpoint of the longest
+                    // edge is far from all four by construction).
+                    interior.push(mid);
+                    inserted += 1;
+                }
+                if inserted == 0 && max_move < 0.02 * r.h_floor {
                     break;
                 }
             }
@@ -1310,6 +1347,14 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         vfaces2.push(r.vfaces[v].clone());
                     }
                     fi += 1;
+                }
+            }
+            // Points the adaptive Lloyd insertion ADDED (beyond the original
+            // interior count) live at the tail of `interior`.
+            for &p in &interior[ii..] {
+                if db.try_insert(p).is_some() {
+                    prov2.push(Prov::Interior);
+                    vfaces2.push(Vec::new());
                 }
             }
             r.db = db;

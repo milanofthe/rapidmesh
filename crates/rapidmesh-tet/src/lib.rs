@@ -38,6 +38,7 @@ pub(crate) mod facetbvh;
 mod geomutil;
 pub(crate) mod optimize;
 pub(crate) mod project;
+pub(crate) mod refine;
 pub(crate) mod seed;
 pub(crate) mod site;
 pub(crate) mod spatial;
@@ -48,6 +49,7 @@ pub use conform::{
     QualityStats, SurfaceFace, SurfaceMesh, TetMesh,
 };
 pub use cvt::{frozen_surface, mesh_cdt, mesh_cdt_budgeted, surface_mesh, FrozenSurface};
+pub use refine::mesh_refine;
 pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};

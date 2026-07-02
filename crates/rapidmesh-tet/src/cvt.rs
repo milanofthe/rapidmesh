@@ -870,7 +870,7 @@ fn group_boundary_edges(plc: &TaggedPlc, members: &[usize]) -> Vec<(usize, usize
 /// along a refined edge). Shared by the volume path (`mesh_cdt`) and the
 /// surface-only export (`surface_mesh`), so BOTH honor the same sizing knobs
 /// (per-entity AND global caps, which `DomainTree::build` composes).
-fn build_sizing_domain(
+pub(crate) fn build_sizing_domain(
     plc: &TaggedPlc,
     params: &MeshParams,
     brep: &rapidmesh_brep::Brep,

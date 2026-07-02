@@ -3,6 +3,7 @@
 //! the PLC's polyhedral region volumes exactly, orientation and conformity.
 
 use num_rational::BigRational;
+use num_traits::ToPrimitive;
 use num_traits::Zero;
 use rapidmesh_geom::{cylinder, sheet_rect, solid_box, FaceTag, RegionTag, Scene, TaggedPlc};
 use rapidmesh_tet::{
@@ -70,9 +71,10 @@ fn mesh_region_volume6(m: &TetMesh, r: RegionTag) -> BigRational {
 /// volume contract; see `mesh_region_volume6`).
 fn assert_close6(have: BigRational, want: BigRational) {
     let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
+    let rel = (&diff / &want).to_f64().unwrap_or(f64::NAN);
     assert!(
         diff <= want.clone() * rat(1e-9),
-        "region volume off by more than 1e-9 relative (want {want})"
+        "region volume off by {rel:.3e} relative (want {want})"
     );
 }
 

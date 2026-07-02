@@ -73,8 +73,17 @@ pub enum Curve {
         t: [f64; 2],
         z: f64,
     },
+    /// Ellipse: an oblique plane section of a cylinder. `center` + `a·cos(t)·major`
+    /// + `b·sin(t)·minor`, with `axis = major x minor` the section-plane normal.
+    /// Exact closed form (curvature drives the sizing analytically, like `Circle`).
+    Ellipse { center: V3, major: V3, minor: V3, a: f64, b: f64 },
     /// Intersection of two surfaces, evaluated lazily by projecting the vertex
-    /// chain onto both (the mesher reuses its surface projections).
+    /// chain onto both (the mesher reuses its surface projections). Covers every
+    /// analytic∩analytic curve with no closed form (cylinder∩cylinder, oblique
+    /// cone sections, torus intersections): the chain is densified and each
+    /// sample pulled onto BOTH carriers by alternating projection, so the edge
+    /// follows the true curve instead of the faceted arrangement chain (whose
+    /// sagitta error is the straddler-sliver root cause).
     Intersection { a: SurfaceId, b: SurfaceId },
     /// Faceted fallback: the edge IS its vertex chain (no analytic refinement).
     Polyline,

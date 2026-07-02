@@ -253,8 +253,14 @@ impl DomainTree {
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
         // `edge_cap()` is the global edge cap (`maxh_edge`); defaults to `maxh`.
+        // NB: pass the RESOLVED bulk size, not `params.edge_cap()` raw -- with
+        // `maxh = INFINITY` (per-dimension caps only) the raw cap is infinite,
+        // and the curvature baseline walk inside then never accumulates enough
+        // arc length: on a CLOSED rim loop (a cylinder rim, where every vertex
+        // has exactly two neighbours and no junction ever breaks the walk) it
+        // circles forever.
         let edge_segments: Vec<(Tri, f64)> =
-            edge_sizing_segments(plc, params.tol_edge, params.edge_cap());
+            edge_sizing_segments(plc, params.tol_edge, params.edge_cap().min(maxh));
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).
@@ -492,6 +498,11 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
                 }
                 _ => break, // junction / open end
             };
+            // Full lap on a CLOSED loop: one circuit is the longest meaningful
+            // baseline; without this, an oversized `eps` walks forever.
+            if next == start {
+                break;
+            }
             acc += dist(plc.vertices[cur as usize], plc.vertices[next as usize]);
             prev = cur;
             cur = next;

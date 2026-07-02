@@ -230,6 +230,13 @@ struct Refiner<'a> {
     facet_face: Vec<u32>,
     /// Curve evaluators per B-rep edge (arc-length parametrised).
     curves: Vec<Option<Box<dyn crate::curve::Curve>>>,
+    /// Pierce repairs blocked by the duplicate guard, resolved by SNAPPING the
+    /// blocking interior point onto the carrier instead: `vertex -> (position
+    /// on carrier, face)`. Applied at the final rebuild (the builder cannot
+    /// move points in place).
+    snaps: DMap<usize, (V3, u32)>,
+    /// Snap positions in application order (scratch for the final rebuild).
+    snaps_pos: Vec<(usize, V3)>,
     /// Work queue of tet slots to (re-)examine, with their vertices for
     /// validation (slots are reused by the builder's free list).
     queue: VecDeque<(u32, [usize; 4])>,
@@ -1101,6 +1108,8 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         bvh,
         facet_face,
         curves,
+        snaps: DMap::default(),
+        snaps_pos: Vec::new(),
         queue: VecDeque::new(),
         diag,
         max_points: params.max_points,
@@ -1405,6 +1414,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         let mut pierced = false;
         let mut blocked = 0u64;
+        // nearest-vertex accelerator for the snap fallback (positions are
+        // frozen within one sweep round)
+        let pts_now: Vec<V3> = (0..r.db.len()).map(|v| r.db.approx_point(v)).collect();
+        let tree = crate::spatial::Octree::build(&pts_now);
         for (slot, tet) in r.db.tets_with_slots() {
             if r.db.tet_at(slot) != Some(tet) {
                 continue;
@@ -1412,9 +1425,26 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             if let Some((f, x)) = r.pierce_repair(tet) {
                 if r.insert_protected_with(x, Prov::Face(f), vec![f], true) {
                     pierced = true;
-                } else {
-                    blocked += 1;
+                    continue;
                 }
+                // Blocked (usually the duplicate guard): the blocker is a point
+                // ALMOST on the wall. If it is interior, snap it onto the
+                // carrier -- the final rebuild takes the moved position, the
+                // wall closes, and the volume balance with it. Features are
+                // never snapped (they are the authority; the ball path handles
+                // them).
+                if let Some(v) = tree.nearest(x) {
+                    let v = v as usize;
+                    if matches!(r.prov[v], Prov::Interior)
+                        && dist(pts_now[v], x) <= DUP_FRAC * r.h_at(x)
+                        && !r.snaps.contains_key(&v)
+                    {
+                        r.snaps.insert(v, (x, f));
+                        pierced = true;
+                        continue;
+                    }
+                }
+                blocked += 1;
             }
         }
         if !pierced {
@@ -1422,6 +1452,9 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 eprintln!("PIERCE {} unrepairable (insertion blocked)", blocked);
             }
             break;
+        }
+        if r.snaps.len() > 4096 {
+            break; // runaway backstop
         }
     }
     rmlog::stat("refine.points", r.db.len() as f64);
@@ -1437,13 +1470,25 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let t_lloyd = std::time::Instant::now();
     {
         let n_all = r.db.len();
+        // Pierce snaps first: a snapped interior point moves ONTO its carrier
+        // and becomes a face point (fixed) before the split below.
+        if !r.snaps.is_empty() {
+            let snaps = std::mem::take(&mut r.snaps);
+            for (v, (x, f)) in snaps {
+                r.prov[v] = Prov::Face(f);
+                r.vfaces[v] = vec![f];
+                r.snaps_pos.push((v, x));
+            }
+        }
+        let snap_pos: DMap<usize, V3> = r.snaps_pos.iter().copied().collect();
+        let posv = |v: usize| -> V3 { snap_pos.get(&v).copied().unwrap_or_else(|| r.pos(v)) };
         let fixed: Vec<V3> = (0..n_all)
             .filter(|&v| !matches!(r.prov[v], Prov::Interior))
-            .map(|v| r.pos(v))
+            .map(posv)
             .collect();
         let mut interior: Vec<V3> = (0..n_all)
             .filter(|&v| matches!(r.prov[v], Prov::Interior))
-            .map(|v| r.pos(v))
+            .map(posv)
             .collect();
         if !interior.is_empty() {
             let mut base = DelaunayBuilder::enclosing(lo, hi);

@@ -2226,6 +2226,73 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         let root = find(&mut uf, ti);
         region_of.push(*comp_region.get(&root).unwrap_or(&0));
     }
+    // SPECKLE SMOOTHING: an on-carrier band tet takes its side from the
+    // centroid's offset SIGN, which is noise at sagitta scale -- adjacent
+    // band tets alternate regions, the interface gets speckled, and each
+    // speckle rim is a 4-face edge of one region (the per-region
+    // non-manifold pinches clustered on curved material interfaces like a
+    // via barrel). The side of a ~zero-volume band tet is arbitrary but must
+    // be COHERENT: flip any band tet whose facet neighbours hold a 3+
+    // majority of one other region, to a fixpoint. Real region tets (deep
+    // anchors) never flip, so exact volumes stay exact.
+    {
+        let mut nbrs: Vec<[u32; 4]> = vec![[u32::MAX; 4]; all_tets.len()];
+        let mut push_nb = |ti: u32, nb: u32| {
+            for s in nbrs[ti as usize].iter_mut() {
+                if *s == u32::MAX {
+                    *s = nb;
+                    return;
+                }
+            }
+        };
+        for (_, &(a, b)) in &owners {
+            if b == u32::MAX {
+                continue;
+            }
+            push_nb(a, b);
+            push_nb(b, a);
+        }
+        let mut flipped = 0usize;
+        for _round in 0..8 {
+            let mut changed = false;
+            for ti in 0..all_tets.len() {
+                let c = centroid_of(&all_tets[ti]);
+                if depths[ti] > 0.05 * r.h_at(c) {
+                    continue; // not a band tet: its label is trustworthy
+                }
+                let mut votes: [(u32, u8); 4] = [(u32::MAX, 0); 4];
+                for &nb in &nbrs[ti] {
+                    if nb == u32::MAX {
+                        continue;
+                    }
+                    let rg = region_of[nb as usize];
+                    for v in votes.iter_mut() {
+                        if v.0 == rg {
+                            v.1 += 1;
+                            break;
+                        }
+                        if v.0 == u32::MAX {
+                            *v = (rg, 1);
+                            break;
+                        }
+                    }
+                }
+                if let Some(&(rg, cnt)) = votes.iter().max_by_key(|v| v.1) {
+                    if cnt >= 3 && rg != u32::MAX && rg != region_of[ti] {
+                        region_of[ti] = rg;
+                        changed = true;
+                        flipped += 1;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        if flipped > 0 && std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+            eprintln!("CLASSIFY speckle smoothing flipped {flipped} band tets");
+        }
+    }
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         // per-region f64 volume: the balance sheet of the classification
         let mut rv: DMap<u32, f64> = DMap::default();

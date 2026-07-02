@@ -232,11 +232,9 @@ struct Refiner<'a> {
     curves: Vec<Option<Box<dyn crate::curve::Curve>>>,
     /// Pierce repairs blocked by the duplicate guard, resolved by SNAPPING the
     /// blocking interior point onto the carrier instead: `vertex -> (position
-    /// on carrier, face)`. Applied at the final rebuild (the builder cannot
-    /// move points in place).
+    /// on carrier, face)`. Applied at the next [`Self::rebuild_points`] (the
+    /// builder cannot move points in place).
     snaps: DMap<usize, (V3, u32)>,
-    /// Snap positions in application order (scratch for the final rebuild).
-    snaps_pos: Vec<(usize, V3)>,
     /// Work queue of tet slots to (re-)examine, with their vertices for
     /// validation (slots are reused by the builder's free list).
     queue: VecDeque<(u32, [usize; 4])>,
@@ -364,6 +362,19 @@ impl<'a> Refiner<'a> {
             region = arrive;
         }
         Some(region)
+    }
+
+    /// Trimmed-face membership: a point `x` ON face `f`'s carrier lies on the
+    /// face's sampled region iff its nearest PLC facet belongs to `f` and the
+    /// distance stays within that facet's own sagitta band. The band is the
+    /// MEASURED chord-to-carrier gap, so flat faces get a near-zero tolerance
+    /// -- an h-fraction there admitted phantom face points up to 0.1 h beyond
+    /// a trim edge, which then pierced the adjacent face's plane at box
+    /// corners -- while curved faces keep their legitimate sagitta slack.
+    fn on_trimmed_face(&self, f: u32, x: V3) -> bool {
+        self.bvh.nearest_index(x).is_some_and(|(fi, d)| {
+            self.facet_face[fi] == f && d <= self.facet_band[fi].max(1e-7 * self.diag)
+        })
     }
 
     // ---------------- protecting balls -------------------------------------
@@ -925,10 +936,14 @@ impl<'a> Refiner<'a> {
                         }
                     }
                     let x = surf.closest(mid3(qa, qb)).0;
-                    if let Some((fi, d)) = self.bvh.nearest_index(x) {
-                        if self.facet_face[fi] == f && d <= self.h_at(x) {
-                            return Some((f, x));
-                        }
+                    // Tight trimmed-face membership: a loose h-bound accepted
+                    // plane crossings BEYOND a convex feature edge -- tets
+                    // spanning two adjacent faces pierce the extended carrier
+                    // PLANE of one of them, which is no hole at all, and
+                    // their phantom repairs churned against the edge's
+                    // protected zone.
+                    if self.on_trimmed_face(f, x) {
+                        return Some((f, x));
                     }
                 }
             }
@@ -989,7 +1004,18 @@ impl<'a> Refiner<'a> {
             return false;
         }
         if let Some(key) = self.encroached_seg(p) {
-            return self.split_seg(key).is_some();
+            if self.split_seg(key).is_some() {
+                return true;
+            }
+            // Segment at the sizing floor, no further split possible. A
+            // QUALITY candidate is dropped (Ruppert: never insert into a
+            // diametral zone), but a MANIFOLD repair outranks the rule: the
+            // point lies ON a face carrier and closes a hole in the wall --
+            // leaving the pierce open costs region-volume correctness. The
+            // floor caps any cascade (the segment never splits again).
+            if !manifold_repair {
+                return false;
+            }
         }
         let h = self.h_at(p);
         let guard = (DUP_FRAC * h) * (DUP_FRAC * h);
@@ -1016,6 +1042,66 @@ impl<'a> Refiner<'a> {
         for slot in self.db.last_created().to_vec() {
             if let Some(t) = self.db.tet_at(slot) {
                 self.queue.push_back((slot, t));
+            }
+        }
+    }
+
+    /// Rebuilds the DT from scratch at `new_pos` (every existing vertex) plus
+    /// `extra` new interior points. FIXED (non-interior) vertices insert
+    /// first: a relaxed interior point that drifted near the surface must
+    /// lose the near-duplicate tie against a surface/feature point, never
+    /// displace it -- one displaced wall point is a hole in the restricted
+    /// surface and a flood-fill leak. Pending pierce SNAPS apply first (the
+    /// snapped vertex becomes a face point at its on-carrier position), and
+    /// the protecting-ball state is REMAPPED onto the new indices, so ball
+    /// guards keep working for insertions after the rebuild.
+    fn rebuild_points(&mut self, lo: V3, hi: V3, new_pos: &mut [V3], extra: &[V3]) {
+        let n_all = self.db.len();
+        debug_assert_eq!(new_pos.len(), n_all);
+        if !self.snaps.is_empty() {
+            let snaps = std::mem::take(&mut self.snaps);
+            for (v, (x, f)) in snaps {
+                self.prov[v] = Prov::Face(f);
+                self.vfaces[v] = vec![f];
+                new_pos[v] = x;
+            }
+        }
+        let mut db = DelaunayBuilder::enclosing(lo, hi);
+        let mut prov2: Vec<Prov> = Vec::with_capacity(n_all + extra.len());
+        let mut vfaces2: Vec<Vec<u32>> = Vec::with_capacity(n_all + extra.len());
+        let mut ball2: Vec<f64> = Vec::with_capacity(n_all + extra.len());
+        for pass in 0..2 {
+            for v in 0..n_all {
+                let is_interior = matches!(self.prov[v], Prov::Interior);
+                if (pass == 0) == is_interior {
+                    continue;
+                }
+                if db.try_insert(new_pos[v]).is_some() {
+                    prov2.push(self.prov[v].clone());
+                    vfaces2.push(self.vfaces[v].clone());
+                    ball2.push(if is_interior {
+                        0.0
+                    } else {
+                        self.ball.get(v).copied().unwrap_or(0.0)
+                    });
+                }
+            }
+        }
+        for &p in extra {
+            if db.try_insert(p).is_some() {
+                prov2.push(Prov::Interior);
+                vfaces2.push(Vec::new());
+                ball2.push(0.0);
+            }
+        }
+        self.db = db;
+        self.prov = prov2;
+        self.vfaces = vfaces2;
+        self.ball = vec![0.0; ball2.len()];
+        self.ball_grid.clear();
+        for (v, r0) in ball2.into_iter().enumerate() {
+            if r0 > 0.0 {
+                self.set_ball(v, r0);
             }
         }
     }
@@ -1237,7 +1323,6 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         facet_face,
         curves,
         snaps: DMap::default(),
-        snaps_pos: Vec::new(),
         queue: VecDeque::new(),
         diag,
         max_points: params.max_points,
@@ -1604,14 +1689,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             for ((a, b), wf) in rim_edges {
                 let surf = r.brep.surface(r.brep.faces[wf as usize].surface);
                 let x = surf.closest(mid3(r.pos(a), r.pos(b))).0;
-                // membership on the trimmed face
-                if let Some((fi, d)) = r.bvh.nearest_index(x) {
-                    if r.facet_face[fi] == wf
-                        && d <= r.h_at(x)
-                        && r.insert_protected_with(x, Prov::Face(wf), vec![wf], true)
-                    {
-                        pierced = true;
-                    }
+                if r.on_trimmed_face(wf, x)
+                    && r.insert_protected_with(x, Prov::Face(wf), vec![wf], true)
+                {
+                    pierced = true;
                 }
             }
         }
@@ -1671,26 +1752,20 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // from a frozen base (surface points inserted once, interiors re-inserted).
     let t_lloyd = std::time::Instant::now();
     {
-        let n_all = r.db.len();
-        // Pierce snaps first: a snapped interior point moves ONTO its carrier
-        // and becomes a face point (fixed) before the split below.
+        // Pierce snaps from the refinement loop: apply them via a rebuild so
+        // the snapped points act as FIXED face points during the relaxation.
         if !r.snaps.is_empty() {
-            let snaps = std::mem::take(&mut r.snaps);
-            for (v, (x, f)) in snaps {
-                r.prov[v] = Prov::Face(f);
-                r.vfaces[v] = vec![f];
-                r.snaps_pos.push((v, x));
-            }
+            let mut cur: Vec<V3> = (0..r.db.len()).map(|v| r.pos(v)).collect();
+            r.rebuild_points(lo, hi, &mut cur, &[]);
         }
-        let snap_pos: DMap<usize, V3> = r.snaps_pos.iter().copied().collect();
-        let posv = |v: usize| -> V3 { snap_pos.get(&v).copied().unwrap_or_else(|| r.pos(v)) };
+        let n_all = r.db.len();
         let fixed: Vec<V3> = (0..n_all)
             .filter(|&v| !matches!(r.prov[v], Prov::Interior))
-            .map(posv)
+            .map(|v| r.pos(v))
             .collect();
         let mut interior: Vec<V3> = (0..n_all)
             .filter(|&v| matches!(r.prov[v], Prov::Interior))
-            .map(posv)
+            .map(|v| r.pos(v))
             .collect();
         if !interior.is_empty() {
             let mut base = DelaunayBuilder::enclosing(lo, hi);
@@ -1801,36 +1876,120 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     break;
                 }
             }
-            // Write the relaxed positions back into the refiner's DT by a
-            // final rebuild (the extraction below reads r.db).
-            // FIXED points first, interiors second: a relaxed interior point
-            // that drifted near the surface must lose the near-duplicate tie
-            // against a surface/feature point, never displace it -- one
-            // displaced wall point is a hole in the restricted surface and a
-            // flood-fill leak (an interior void then fills solid).
-            let mut db = DelaunayBuilder::enclosing(lo, hi);
-            let mut prov2: Vec<Prov> = Vec::with_capacity(n_all);
-            let mut vfaces2: Vec<Vec<u32>> = Vec::with_capacity(n_all);
-            let mut fi = 0usize;
-            for v in 0..n_all {
+            // Write the relaxed positions back into the refiner's DT: fixed
+            // vertices keep their position, interiors take their relaxed
+            // one, adaptive insertions append as new interior points.
+            let mut new_pos: Vec<V3> = (0..n_all).map(|v| r.pos(v)).collect();
+            let mut it = interior.iter();
+            for (v, np) in new_pos.iter_mut().enumerate() {
                 if matches!(r.prov[v], Prov::Interior) {
+                    *np = *it.next().expect("one relaxed position per interior");
+                }
+            }
+            let extra: Vec<V3> = it.copied().collect();
+            let _ = &fixed;
+            r.rebuild_points(lo, hi, &mut new_pos, &extra);
+        }
+        // Post-Lloyd conformity: the relaxation moves interior points AFTER
+        // the last manifold sweep, and a moved point can pull an edge back
+        // across a wall -- piercing tets the refinement loop never saw (the
+        // extraction census found dozens; their misassigned half-volumes are
+        // a ~1e-2 relative region bias). Each cycle: (1) insertion rounds
+        // put the carrier crossing of every piercer into the DT until that
+        // runs dry, (2) piercers whose repair point is BLOCKED (duplicate
+        // guard, segment encroachment at the sizing floor) instead SNAP
+        // their closest interior vertex onto the carrier, applied by a
+        // rebuild. The snap changes local geometry, so the next cycle
+        // re-checks; quality repair of the snapped neighbourhood is the
+        // optimizer's job.
+        let trace = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
+        'cycles: for cycle in 0..4 {
+            // (1) piercer insertion rounds until dry
+            for _round in 0..8 {
+                let mut fixed_any = false;
+                for (slot, tet) in r.db.tets_with_slots() {
+                    if r.db.tet_at(slot) != Some(tet) {
+                        continue;
+                    }
+                    if let Some((f, x)) = r.pierce_repair(tet) {
+                        if r.insert_protected_with(x, Prov::Face(f), vec![f], true) {
+                            fixed_any = true;
+                        }
+                    }
+                }
+                if !fixed_any {
+                    break;
+                }
+            }
+            // Blocked piercers: pull the interior vertex nearest to the
+            // carrier onto it. Only near-carrier vertices move (a far pull
+            // would fold the neighbourhood); the rest stay for the
+            // classification's centroid fallback.
+            let mut snapped = 0usize;
+            let mut left = 0usize;
+            for (slot, tet) in r.db.tets_with_slots() {
+                if r.db.tet_at(slot) != Some(tet) {
                     continue;
                 }
-                if db.try_insert(fixed[fi]).is_some() {
-                    prov2.push(r.prov[v].clone());
-                    vfaces2.push(r.vfaces[v].clone());
+                let Some((f, _)) = r.pierce_repair(tet) else {
+                    continue;
+                };
+                let surf = r.brep.surface(r.brep.faces[f as usize].surface);
+                let mut best: Option<(f64, usize)> = None;
+                for &v in &tet {
+                    if !matches!(r.prov[v], Prov::Interior) || r.snaps.contains_key(&v) {
+                        continue;
+                    }
+                    let d = signed_offset(surf, r.pos(v)).abs();
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, v));
+                    }
                 }
-                fi += 1;
-            }
-            for &p in &interior {
-                if db.try_insert(p).is_some() {
-                    prov2.push(Prov::Interior);
-                    vfaces2.push(Vec::new());
+                // Snap only onto the TRIMMED face: `closest` projects onto
+                // the unbounded carrier, and near a corner the footpoint can
+                // land beyond the trim edge -- a phantom face point in the
+                // neighbouring region that itself pierces the adjacent
+                // face's plane (self-inflicted piercers at box corners).
+                match best {
+                    Some((d, v))
+                        if d <= 0.4 * r.h_at(r.pos(v))
+                            && r.on_trimmed_face(f, surf.closest(r.pos(v)).0) =>
+                    {
+                        let x = surf.closest(r.pos(v)).0;
+                        r.snaps.insert(v, (x, f));
+                        snapped += 1;
+                    }
+                    _ => {
+                        left += 1;
+                        if trace {
+                            let provs: Vec<String> =
+                                tet.iter().map(|&v| format!("{:?}", r.prov[v])).collect();
+                            let offs: Vec<f64> = tet
+                                .iter()
+                                .map(|&v| signed_offset(surf, r.pos(v)))
+                                .collect();
+                            let ps: Vec<String> = tet
+                                .iter()
+                                .map(|&v| {
+                                    let p = r.pos(v);
+                                    format!("({:.3},{:.3},{:.3})", p[0], p[1], p[2])
+                                })
+                                .collect();
+                            eprintln!(
+                                "POSTLLOYD left: f {f} best {best:?} provs {provs:?} offs {offs:?} pos {ps:?}"
+                            );
+                        }
+                    }
                 }
             }
-            r.db = db;
-            r.prov = prov2;
-            r.vfaces = vfaces2;
+            if trace {
+                eprintln!("POSTLLOYD cycle {cycle}: snapped {snapped} left {left}");
+            }
+            if snapped == 0 {
+                break 'cycles;
+            }
+            let mut cur: Vec<V3> = (0..r.db.len()).map(|v| r.pos(v)).collect();
+            r.rebuild_points(lo, hi, &mut cur, &[]);
         }
     }
     rmlog::stage("refine.lloyd", t_lloyd.elapsed().as_secs_f64());
@@ -1846,6 +2005,20 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // ---- extraction ---------------------------------------------------------
     let points: Vec<V3> = (0..r.db.len()).map(|v| r.db.approx_point(v)).collect();
     let all_tets = r.db.tets();
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        // final-state pierce census: piercers left over AFTER the last sweep
+        // (Lloyd moves can create new ones the loop never saw)
+        let mut n_pierce = 0usize;
+        let mut vol = 0.0f64;
+        for t in &all_tets {
+            if r.pierce_repair(*t).is_some() {
+                n_pierce += 1;
+                let p: [V3; 4] = std::array::from_fn(|k| points[t[k]]);
+                vol += dot(sub(p[1], p[0]), cross(sub(p[2], p[0]), sub(p[3], p[0]))).abs() / 6.0;
+            }
+        }
+        eprintln!("EXTRACT piercing tets {n_pierce} (volume {vol:.6})");
+    }
     let mut tets: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
     // Region per tet by FLOOD FILL over non-wall facets: two tets sharing a
@@ -1897,6 +2070,8 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
         })
     };
+    // Non-wall internal facets, kept for the bridge-guard watershed below.
+    let mut nonwall: Vec<(u32, u32)> = Vec::new();
     for (fkey, &(a, b)) in &owners {
         if b == u32::MAX {
             continue; // hull facet: always a component boundary
@@ -1915,6 +2090,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 );
             }
         }
+        nonwall.push((a, b));
         let (ra, rb) = (find(&mut uf, a), find(&mut uf, b));
         if ra != rb {
             uf[ra.max(rb) as usize] = ra.min(rb);
@@ -1927,9 +2103,11 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
     };
     let mut comp_best: DMap<u32, (f64, u32)> = DMap::default();
+    let mut depths: Vec<f64> = Vec::with_capacity(all_tets.len());
     for (ti, t) in all_tets.iter().enumerate() {
         let root = find(&mut uf, ti as u32);
         let d = r.bvh.nearest_dist(centroid_of(t));
+        depths.push(d);
         let e = comp_best.entry(root).or_insert((-1.0, 0));
         if d > e.0 {
             *e = (d, ti as u32);
@@ -1938,6 +2116,89 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut comp_region: DMap<u32, u32> = DMap::default();
     for (&root, &(_, ti)) in &comp_best {
         comp_region.insert(root, r.region_at_c(centroid_of(&all_tets[ti as usize])));
+    }
+    // BRIDGE GUARD: one leaked facet chain merges inside and outside into a
+    // single component, and the single-anchor label then wipes out a whole
+    // region (torus tangential belt: chains of on-carrier sliver tets whose
+    // centroid side is noise classified the body as ONE component, region
+    // volume 0). Detect: sample the DEEP tets of each component; if their
+    // domain queries disagree, the component contains a bridge. Repair:
+    // watershed re-fill from the deep tets outward over non-wall adjacency,
+    // deepest first -- each true region floods up to the ambiguous band and
+    // the bridge splits between them. Consistent components are untouched,
+    // so the exact-volume path stays exact.
+    let mut region_override: DMap<u32, u32> = DMap::default();
+    {
+        let mut comp_tets: DMap<u32, Vec<u32>> = DMap::default();
+        for ti in 0..all_tets.len() as u32 {
+            comp_tets.entry(find(&mut uf, ti)).or_default().push(ti);
+        }
+        let mut bridged: Vec<(u32, Vec<(u32, u32)>)> = Vec::new(); // root -> seeds
+        for (&root, tids) in &comp_tets {
+            let mut deep: Vec<u32> = tids
+                .iter()
+                .copied()
+                .filter(|&ti| {
+                    let c = centroid_of(&all_tets[ti as usize]);
+                    depths[ti as usize] >= 0.3 * r.h_at(c)
+                })
+                .collect();
+            if deep.len() < 2 {
+                continue;
+            }
+            deep.sort_by(|&x, &y| depths[y as usize].total_cmp(&depths[x as usize]));
+            let step = (deep.len() / 16).max(1);
+            let seeds: Vec<(u32, u32)> = deep
+                .iter()
+                .step_by(step)
+                .take(16)
+                .map(|&ti| (ti, r.region_at_c(centroid_of(&all_tets[ti as usize]))))
+                .collect();
+            if seeds.iter().any(|&(_, rg)| rg != seeds[0].1) {
+                bridged.push((root, seeds));
+            }
+        }
+        if !bridged.is_empty() {
+            // adjacency restricted to bridged components
+            let in_bridged: DMap<u32, ()> = bridged
+                .iter()
+                .flat_map(|(root, _)| comp_tets[root].iter().map(|&ti| (ti, ())))
+                .collect();
+            let mut adj: DMap<u32, Vec<u32>> = DMap::default();
+            for &(a, b) in &nonwall {
+                if in_bridged.contains_key(&a) {
+                    adj.entry(a).or_default().push(b);
+                    adj.entry(b).or_default().push(a);
+                }
+            }
+            for (root, seeds) in &bridged {
+                if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+                    eprintln!(
+                        "CLASSIFY bridge in component of {} tets, watershed from {} seeds",
+                        comp_tets[root].len(),
+                        seeds.len()
+                    );
+                }
+                let mut heap: std::collections::BinaryHeap<(u64, u32, u32)> =
+                    std::collections::BinaryHeap::new();
+                for &(ti, rg) in seeds {
+                    heap.push((depths[ti as usize].to_bits(), ti, rg));
+                }
+                while let Some((_, ti, rg)) = heap.pop() {
+                    if region_override.contains_key(&ti) {
+                        continue;
+                    }
+                    region_override.insert(ti, rg);
+                    if let Some(nbs) = adj.get(&ti) {
+                        for &nb in nbs.clone().iter() {
+                            if !region_override.contains_key(&nb) {
+                                heap.push((depths[nb as usize].to_bits(), nb, rg));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         let mut sizes: DMap<u32, usize> = DMap::default();
@@ -1958,6 +2219,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     let mut region_of: Vec<u32> = Vec::with_capacity(all_tets.len());
     for ti in 0..all_tets.len() as u32 {
+        if let Some(&rg) = region_override.get(&ti) {
+            region_of.push(rg);
+            continue;
+        }
         let root = find(&mut uf, ti);
         region_of.push(*comp_region.get(&root).unwrap_or(&0));
     }

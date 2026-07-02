@@ -209,7 +209,6 @@ fn cylinder_via_in_box_meshes_exactly() {
 }
 
 #[test]
-#[ignore = "CVT rewrite WP4/WP8: boundary refinement + quality post-pass not yet wired"]
 fn sized_box_respects_maxh_and_quality() {
     let mut scene = Scene::new();
     let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]));
@@ -690,19 +689,26 @@ fn torus_meshes_exactly() {
         8,
     ));
     let plc = scene.assemble();
-    let want = plc_region_volume6(&plc, r);
     let params = MeshParams {
         maxh: 0.4,
         ..MeshParams::default()
     };
     let mesh = mesh_plc_with(&plc, &params);
     let have = mesh_region_volume6(&mesh, r);
-    // mesh_cdt freezes a FACETED surface, so the curved torus volume matches the
-    // analytic body only up to the facet chord (the removed restricted-Delaunay
-    // path kept the exact curve). Gate at a faceting-scale relative tolerance.
-    let tol = want.clone() * rat(3e-2);
-    let diff = if have > want.clone() { have - want.clone() } else { want - have };
-    assert!(diff <= tol, "torus volume off by more than the faceting tolerance");
+    // The refinement core meshes onto the ANALYTIC carriers, so the volume
+    // approaches the true torus body 2 pi^2 R rho^2 -- NOT the chordal PLC
+    // (16x8 facets sit ~10% inside per circle). Gate against the analytic
+    // volume at a mesh-resolution tolerance (piecewise-linear boundary at
+    // maxh 0.4 on rho 0.5).
+    let want = rat(6.0 * 2.0 * std::f64::consts::PI.powi(2) * 2.0 * 0.5 * 0.5);
+    let tol = want.clone() * rat(2e-2);
+    let diff = if have > want.clone() { have.clone() - want.clone() } else { want.clone() - have.clone() };
+    assert!(
+        diff <= tol,
+        "torus volume off the analytic body by more than mesh resolution: have {} want {}",
+        have.to_f64().unwrap_or(f64::NAN) / 6.0,
+        want.to_f64().unwrap_or(f64::NAN) / 6.0,
+    );
     check_structure(&mesh);
 }
 

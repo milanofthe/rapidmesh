@@ -201,13 +201,19 @@ def _jobs_for(name: str, kind: str, mp: Path, out_normal: Path, out_debug: Path)
     return normal, debug
 
 
-def render_corpus() -> None:
+def render_corpus(prebuilt: set[str] | None = None) -> None:
     """Renders every geometry in the unified corpus with the NEW constrained
     per-region mesher into TWO directories: `corpus/` (normal view) and
     `corpus_debug/` (diagnostic view), via a PERSISTENT headless WebGPU
     rasterizer (the exact viewer pipeline, no browser). Each geometry's two PNGs
     are produced -- and the debug view annotated with metrics + meshing-time
-    breakdown -- the moment its mesh is ready. Both dirs are cleared first."""
+    breakdown -- the moment its mesh is ready. Both dirs are cleared first.
+
+    ``prebuilt`` names geometries whose viewer JSON + ``.meta.json`` sidecar
+    were just written by ``corpus.bench(dump_meshes=True)``: those render from
+    the benchmark meshes directly instead of meshing a second time (the
+    re-mesh used to double every corpus run). Standalone runs (no ``prebuilt``)
+    keep meshing everything themselves."""
     out = GAL / "corpus"
     dbg = GAL / "corpus_debug"
     for d in (out, dbg):
@@ -220,17 +226,23 @@ def render_corpus() -> None:
     try:
         for name, _cat, kind, make in C.CORPUS:
             try:
-                t0 = time.time()
-                m = make()
-                wall = time.time() - t0
-                if kind == "surf":
-                    vd, n, diag = V._surface_viewer_dict(m, name), len(m.faces), None
-                else:
-                    vd, n, diag = m.to_viewer_dict(name), int(m.stats["n_tets"]), m.diagnostics
-                timings = getattr(m, "timings", None)
                 mp = MESHES / f"gal_{name}.json"
-                mp.write_text(json.dumps(vd))
-                del m
+                meta_p = MESHES / f"gal_{name}.meta.json"
+                if prebuilt is not None and name in prebuilt and mp.exists() and meta_p.exists():
+                    meta = json.loads(meta_p.read_text())
+                    n, diag = meta["n"], meta["diag"]
+                    wall, timings = meta["wall"], meta["timings"]
+                else:
+                    t0 = time.time()
+                    m = make()
+                    wall = time.time() - t0
+                    if kind == "surf":
+                        vd, n, diag = V._surface_viewer_dict(m, name), len(m.faces), None
+                    else:
+                        vd, n, diag = m.to_viewer_dict(name), int(m.stats["n_tets"]), m.diagnostics
+                    timings = getattr(m, "timings", None)
+                    mp.write_text(json.dumps(vd))
+                    del m
                 normal, debug = _jobs_for(name, kind, mp, out / f"{name}.png", dbg / f"{name}.png")
                 ras.render(normal)
                 if ras.render(debug) and (dbg / f"{name}.png").exists():

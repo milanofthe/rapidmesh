@@ -377,11 +377,18 @@ def names() -> list[str]:
     return [e[0] for e in CORPUS]
 
 
-def bench(only=None) -> list[dict]:
+def bench(only=None, dump_meshes: bool = False) -> list[dict]:
     """Runs every geometry through the mesher, recording quality + timing.
     A geometry that panics (e.g. an assembly degeneracy) is recorded, not fatal,
     so the benchmark always completes. Returns one record per geometry.
+
+    ``dump_meshes`` writes each mesh's viewer JSON + a render-metadata sidecar
+    (viewer/public/meshes/gal_<name>.json/.meta.json) so the gallery render can
+    REUSE the benchmark meshes instead of meshing everything a second time --
+    the re-mesh used to double the wall time of every corpus run.
     """
+    import json as _json
+
     rows: list[dict] = []
     for name, cat, kind, make in CORPUS:
         if only is not None and name not in only:
@@ -400,8 +407,10 @@ def bench(only=None) -> list[dict]:
                 millis=int((time.time() - t0) * 1000),
             )
             # Located diagnostics (volume meshes): the conformity/quality map.
+            diag = None
             if kind == "vol":
                 d = m.diagnostics
+                diag = d
                 rec.update(
                     watertight=bool(d["watertight"]),
                     n_slivers=int(d["n_slivers"]),
@@ -410,6 +419,36 @@ def bench(only=None) -> list[dict]:
                     max_surf_dev=round(float(d["max_surface_deviation"]), 6),
                     n_defects=len(d["defects"]),
                 )
+            if dump_meshes:
+                from report import render_gallery as _RG
+
+                _RG.MESHES.mkdir(parents=True, exist_ok=True)
+                vd = (
+                    V._surface_viewer_dict(m, name)
+                    if kind == "surf"
+                    else m.to_viewer_dict(name)
+                )
+                (_RG.MESHES / f"gal_{name}.json").write_text(_json.dumps(vd))
+                meta = {
+                    "kind": kind,
+                    "n": rec["n_elems"],
+                    "wall": rec["millis"] / 1000.0,
+                    "timings": dict(getattr(m, "timings", None) or {}) or None,
+                    "diag": None
+                    if diag is None
+                    else {
+                        k: diag[k]
+                        for k in (
+                            "watertight",
+                            "min_dihedral_deg",
+                            "n_slivers",
+                            "n_straddlers",
+                            "n_nonmanifold_edges",
+                            "max_surface_deviation",
+                        )
+                    },
+                }
+                (_RG.MESHES / f"gal_{name}.meta.json").write_text(_json.dumps(meta))
         except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
             rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
         state = rec.get("status")
@@ -428,7 +467,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     print(f"corpus: {len(CORPUS)} geometries")
-    rows = bench()
+    rows = bench(dump_meshes=not args.no_render)
     out = REPO / "report" / "validation" / "benchmark.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1))
@@ -509,5 +548,7 @@ if __name__ == "__main__":
     if not args.no_render:
         print("\nrendering gallery (corpus)...")
         from report import render_gallery
-        render_gallery.render_corpus()
+        render_gallery.render_corpus(
+            prebuilt={r["name"] for r in rows if r["status"] == "ok"}
+        )
         print(f"-> {REPO / 'report' / 'figures' / 'gallery' / 'corpus'}")

@@ -709,6 +709,16 @@ impl<'a> Refiner<'a> {
     /// [`Self::facet_surface_ball`] but works on vertex indices (the extraction
     /// has no live slots). `None` neighbour = hull side (dual ray).
     fn facet_is_wall(&self, t1: &[usize; 4], t2: Option<&[usize; 4]>, fv: [usize; 3]) -> bool {
+        self.facet_wall_face(t1, t2, fv).is_some()
+    }
+
+    /// [`Self::facet_is_wall`], returning WHICH face the facet walls off.
+    fn facet_wall_face(
+        &self,
+        t1: &[usize; 4],
+        t2: Option<&[usize; 4]>,
+        fv: [usize; 3],
+    ) -> Option<u32> {
         // A facet whose three vertices lie on ONE face's carrier and whose
         // centroid sticks to that carrier IS part of the (sampled) surface,
         // whether or not its Voronoi dual happens to cross: a flat tet spanning
@@ -724,7 +734,7 @@ impl<'a> Refiner<'a> {
             let cen: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
             let surf = self.brep.surface(self.brep.faces[f as usize].surface);
             if signed_offset(surf, cen).abs() <= 0.2 * self.h_at(cen) {
-                return true;
+                return Some(f);
             }
         }
         // Centroid side test, NOT the circumcenter dual: the dual of a flat
@@ -741,14 +751,14 @@ impl<'a> Refiner<'a> {
             }
             None => match self.hull_dual_end(c1, fv) {
                 Some(e) => e,
-                None => return false,
+                None => return None,
             },
         };
         // Prune: both centroids farther from the surface than their distance
         // cannot straddle it.
         let len = dist(c1, c2);
         if self.bvh.nearest_dist(c1) > len && self.bvh.nearest_dist(c2) > len {
-            return false;
+            return None;
         }
         let mut cands: Vec<u32> = Vec::new();
         for &f in &self.vfaces[fv[0]] {
@@ -761,9 +771,19 @@ impl<'a> Refiner<'a> {
                 cands.push(f);
             }
         }
+        // KNOWN GAP (next work item): the centroid-segment test admits
+        // false-positive walls -- the segment of two neighbouring centroids can
+        // cross a surface lying entirely on one side of their common facet
+        // (slanted tets hugging a plane). The flood boundary then sits one tet
+        // layer off the true interface: a systematic per-region volume bias of
+        // ~1e-3 relative (air/diel 59.938/4.062 instead of 60/4). Requiring the
+        // crossing to lie ON the shared facet over-corrects (it also drops the
+        // true interface walls whose crossing the membership pull moves); the
+        // correct predicate needs the crossing BEFORE the on-face pull tested
+        // against the facet, with the provenance shortcut untouched.
         cands
             .into_iter()
-            .any(|f| self.face_crossing(f, c1, c2, None).is_some())
+            .find(|&f| self.face_crossing(f, c1, c2, None).is_some())
     }
 
     /// Manifold guard: a tet whose vertices carry signed offsets of BOTH signs
@@ -1404,15 +1424,69 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         if advanced || !r.queue.is_empty() {
             continue;
         }
-        // Phase 3: manifold (pierce) sweep -- runs only when facet and cell
-        // work is exhausted; any repair feeds phase 1 again. Hard-capped: a
-        // repair can spawn new pierces next to the coarse duplicate guard, and
-        // an uncapped sweep then cascades for minutes on large scenes.
+        // Phase 3: manifold sweep -- runs only when facet and cell work is
+        // exhausted; any repair feeds phase 1 again. Hard-capped: a repair can
+        // spawn new work next to the coarse duplicate guard, and an uncapped
+        // sweep then cascades for minutes on large scenes. Two detectors:
+        //  (a) EDGE PARITY of the wall set: a wall edge with exactly one
+        //      incident wall facet is a hole rim (the restricted surface is
+        //      open there) -- repaired at the edge midpoint on the carrier.
+        //      Feature edges are exempt (3+ walls meet there legally).
+        //  (b) TET PIERCE: a tet with carrier offsets of both signs crosses a
+        //      face outright -- repaired at the piercing edge's crossing.
         pierce_rounds += 1;
         if pierce_rounds > 8 {
             break;
         }
         let mut pierced = false;
+        {
+            // (a) wall set + edge incidence
+            let all: Vec<[usize; 4]> = r.db.tets();
+            let mut owners: DMap<[usize; 3], (u32, u32)> = DMap::default();
+            for (ti, t) in all.iter().enumerate() {
+                for fl in &FACET_LOCAL {
+                    let mut f = [t[fl[0]], t[fl[1]], t[fl[2]]];
+                    f.sort_unstable();
+                    let e = owners.entry(f).or_insert((u32::MAX, u32::MAX));
+                    if e.0 == u32::MAX {
+                        e.0 = ti as u32;
+                    } else {
+                        e.1 = ti as u32;
+                    }
+                }
+            }
+            let mut edge_walls: DMap<(usize, usize), (u32, u32)> = DMap::default(); // count, face
+            for (fkey, &(a, b)) in &owners {
+                let t2 = (b != u32::MAX).then(|| &all[b as usize]);
+                let Some(wf) = r.facet_wall_face(&all[a as usize], t2, *fkey) else {
+                    continue;
+                };
+                for k in 0..3 {
+                    let (x, y) = (fkey[k], fkey[(k + 1) % 3]);
+                    let e = edge_walls.entry((x.min(y), x.max(y))).or_insert((0, wf));
+                    e.0 += 1;
+                }
+            }
+            let is_feature = |v: usize| matches!(r.prov[v], Prov::Corner | Prov::Edge(_));
+            let rim_edges: Vec<((usize, usize), u32)> = edge_walls
+                .iter()
+                .filter(|(&(a, b), &(cnt, _))| cnt == 1 && !(is_feature(a) && is_feature(b)))
+                .map(|(&e, &(_, wf))| (e, wf))
+                .collect();
+            for ((a, b), wf) in rim_edges {
+                let surf = r.brep.surface(r.brep.faces[wf as usize].surface);
+                let x = surf.closest(mid3(r.pos(a), r.pos(b))).0;
+                // membership on the trimmed face
+                if let Some((fi, d)) = r.bvh.nearest_index(x) {
+                    if r.facet_face[fi] == wf
+                        && d <= r.h_at(x)
+                        && r.insert_protected_with(x, Prov::Face(wf), vec![wf], true)
+                    {
+                        pierced = true;
+                    }
+                }
+            }
+        }
         let mut blocked = 0u64;
         // nearest-vertex accelerator for the snap fallback (positions are
         // frozen within one sweep round)
@@ -1677,9 +1751,18 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         x
     }
     let mut n_walls = 0u64;
-    let dbg_leak = std::env::var_os("RAPIDMESH_DEBUG_LEAK").is_some();
+    // RAPIDMESH_DEBUG_LEAK="x0,y0,z0,x1,y1,z1": report non-wall facets whose
+    // two tets straddle this box's boundary (the classification-leak tracer).
+    let dbg_box: Option<[f64; 6]> = std::env::var("RAPIDMESH_DEBUG_LEAK")
+        .ok()
+        .and_then(|s| {
+            let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (v.len() == 6).then(|| std::array::from_fn(|i| v[i]))
+        });
+    let dbg_leak = dbg_box.is_some();
     let in_void = |c: &V3| -> bool {
-        c[0] > 1.0 && c[0] < 3.0 && c[1] > 1.0 && c[1] < 3.0 && c[2] > 0.5 && c[2] < 1.5
+        let b = dbg_box.unwrap_or([0.0; 6]);
+        c[0] > b[0] && c[0] < b[3] && c[1] > b[1] && c[1] < b[4] && c[2] > b[2] && c[2] < b[5]
     };
     let ctr = |t: &[usize; 4]| -> V3 {
         std::array::from_fn(|k| {
@@ -1749,6 +1832,18 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     for ti in 0..all_tets.len() as u32 {
         let root = find(&mut uf, ti);
         region_of.push(*comp_region.get(&root).unwrap_or(&0));
+    }
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        // per-region f64 volume: the balance sheet of the classification
+        let mut rv: DMap<u32, f64> = DMap::default();
+        for (ti, t) in all_tets.iter().enumerate() {
+            let p: [V3; 4] = std::array::from_fn(|k| points[t[k]]);
+            let v = dot(sub(p[1], p[0]), cross(sub(p[2], p[0]), sub(p[3], p[0]))).abs() / 6.0;
+            *rv.entry(region_of[ti]).or_insert(0.0) += v;
+        }
+        let mut rvv: Vec<(u32, f64)> = rv.into_iter().collect();
+        rvv.sort_unstable_by_key(|e| e.0);
+        eprintln!("CLASSIFY region volumes: {rvv:?}");
     }
     rmlog::stage("refine.classify", t_class.elapsed().as_secs_f64());
     for (t, &reg) in all_tets.iter().zip(&region_of) {

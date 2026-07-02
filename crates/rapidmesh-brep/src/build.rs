@@ -289,7 +289,32 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         } else {
             signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default()
         };
-        let kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
+        let mut kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
+        // A `Plane` kind whose facets are NOT coplanar is a faceted CURVED
+        // face without an analytic recovery -- loft mantles, swept tubes,
+        // helix coils all tag their whole side wall as one Plane surface. A
+        // plane fit through such a face is a garbage carrier (the refinement
+        // core projects and classifies against it, shredding the mesh into
+        // fragments). Carry it as a DISCRETE patch of its own facets instead:
+        // the same closest-point oracle that remeshes STL imports.
+        if matches!(kind, SurfaceKind::Plane) && !face_facets_coplanar(&faces[fid], plc, tol) {
+            let mut vmap: HashMap<usize, u32> = HashMap::default();
+            let mut dpoints: Vec<V3> = Vec::new();
+            let mut dtris: Vec<[u32; 3]> = Vec::new();
+            for &tfi in &faces[fid].facets {
+                let t = plc.triangles[tfi as usize];
+                let ids: [u32; 3] = std::array::from_fn(|k| {
+                    *vmap.entry(t[k] as usize).or_insert_with(|| {
+                        dpoints.push(plc.vertices[t[k] as usize]);
+                        (dpoints.len() - 1) as u32
+                    })
+                });
+                dtris.push(ids);
+            }
+            kind = SurfaceKind::Discrete(std::sync::Arc::new(
+                rapidmesh_geom::DiscreteSurface::new(dpoints, dtris),
+            ));
+        }
         let sid = SurfaceId(surfaces.len() as u32);
         // One surface per face, in face order: `Curve::Intersection` (built in
         // recover_curve, before this loop) references faces' surfaces by this
@@ -567,6 +592,19 @@ fn circle_fits_chain(chain: &[V3], c: &(V3, V3, f64, V3)) -> bool {
         let z = dot(d, axis);
         let rho = (dot(d, d) - z * z).max(0.0).sqrt();
         z.abs() < tol && (rho - radius).abs() < tol
+    })
+}
+
+/// True if every facet vertex of the face lies on the plane of its FIRST
+/// facet (within `tol`): the gate that separates a real planar face from a
+/// faceted curved side wall mis-tagged as `Plane`.
+fn face_facets_coplanar(face: &Face, plc: &TaggedPlc, tol: f64) -> bool {
+    let Some((o, n)) = exact_face_plane(face, plc) else {
+        return true;
+    };
+    face.facets.iter().all(|&tfi| {
+        let t = plc.triangles[tfi as usize];
+        (0..3).all(|k| dot(sub(plc.vertices[t[k] as usize], o), n).abs() <= tol)
     })
 }
 

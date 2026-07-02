@@ -16,6 +16,7 @@
 
 use crate::conform::TetMesh;
 use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
+use rapidmesh_brep::Surface;
 use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -2716,7 +2717,27 @@ fn surface_pass(
                     .map(|k| (mesh.points[c][k] - mesh.points[d][k]).powi(2))
                     .sum::<f64>()
                     .sqrt();
-                if residual(c, d) > residual(a, b) + 1e-9 * scale {
+                // Fidelity budget: the new diagonal may hug the surface WORSE
+                // than the old one, up to the chord sagitta any on-surface
+                // diagonal of this length has anyway (`L^2/8R` via the local
+                // curvature radius). The strict "never worse" ratchet guard
+                // predates vertices sitting EXACTLY on their carriers; it
+                // blocked exactly the flips that repair boundary slivers along
+                // intersection curves, and with both endpoints on the carrier
+                // the wedge-shaving ratchet it prevented cannot start.
+                let m: [f64; 3] = std::array::from_fn(|k| {
+                    0.5 * (mesh.points[c][k] + mesh.points[d][k])
+                });
+                let rr = {
+                    let s = Surface::from_kind(&kind, &[]);
+                    s.curvature_radius(s.project_uv(m))
+                };
+                let budget = if rr.is_finite() && rr > 0.0 {
+                    scale * scale / (8.0 * rr)
+                } else {
+                    0.0
+                };
+                if residual(c, d) > residual(a, b).max(budget) + 1e-9 * scale {
                     continue;
                 }
             }

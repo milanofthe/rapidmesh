@@ -36,6 +36,7 @@ use rapidmesh_brep::{Brep, Surface};
 use rapidmesh_csg::Tri;
 use rapidmesh_geom::vec3::{cross, dist, dot, scale, sub, V3};
 use rapidmesh_geom::{FaceTag, RegionTag, TaggedPlc};
+use smallvec::SmallVec;
 use std::collections::VecDeque;
 use std::hash::BuildHasherDefault;
 
@@ -155,14 +156,14 @@ fn signed_offset(surf: &Surface, p: V3) -> f64 {
 /// the carrier, so a thin feature (a torus tube, a plate) crossed twice between
 /// two same-sign endpoints is not skipped -- the failure mode of plain
 /// endpoint-sign bisection. Each sign change is then bisected tight.
-fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
+fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
     let len = dist(a, b);
     if !(len > 0.0) {
-        return Vec::new();
+        return SmallVec::new();
     }
     let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
     let min_step = 1e-4;
-    let mut out = Vec::new();
+    let mut out = SmallVec::new();
     let mut t = 0.0f64;
     let mut s_prev = signed_offset(surf, a);
     let mut guard = 0;
@@ -365,7 +366,7 @@ impl<'a> Refiner<'a> {
         let mut region = self.domain.region_at(q);
         // Crossings of segment q -> p with every nearby analytic face
         // (sphere-traced: thin features crossed twice are not skipped).
-        let mut crossings: Vec<(f64, usize)> = Vec::new(); // (t along q->p, plc facet)
+        let mut crossings: SmallVec<[(f64, usize); 8]> = SmallVec::new(); // (t along q->p, plc facet)
         for f in self.faces_near_segment(q, p) {
             let surf = self.brep.surface(self.brep.faces[f as usize].surface);
             for tm in carrier_crossings(surf, q, p) {
@@ -629,8 +630,8 @@ impl<'a> Refiner<'a> {
 
     /// The B-rep faces a dual segment could cross: the faces owning the PLC
     /// facets nearest to a few samples along the segment.
-    fn faces_near_segment(&self, a: V3, b: V3) -> Vec<u32> {
-        let mut out: Vec<u32> = Vec::new();
+    fn faces_near_segment(&self, a: V3, b: V3) -> SmallVec<[u32; 8]> {
+        let mut out: SmallVec<[u32; 8]> = SmallVec::new();
         let len = dist(a, b);
         let pad = len.max(1e-3 * self.diag);
         for i in 0..=8 {
@@ -737,7 +738,7 @@ impl<'a> Refiner<'a> {
             return None;
         }
         // Candidate faces from provenance first (cheap), else BVH proximity.
-        let mut cands: Vec<u32> = Vec::new();
+        let mut cands: SmallVec<[u32; 8]> = SmallVec::new();
         for &f in &self.vfaces[fv[0]] {
             if self.vfaces[fv[1]].contains(&f) && self.vfaces[fv[2]].contains(&f) {
                 cands.push(f);
@@ -816,7 +817,7 @@ impl<'a> Refiner<'a> {
         if self.bvh.nearest_dist(c1) > len && self.bvh.nearest_dist(c2) > len {
             return None;
         }
-        let mut cands: Vec<u32> = Vec::new();
+        let mut cands: SmallVec<[u32; 8]> = SmallVec::new();
         for &f in &self.vfaces[fv[0]] {
             if self.vfaces[fv[1]].contains(&f) && self.vfaces[fv[2]].contains(&f) {
                 cands.push(f);

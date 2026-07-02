@@ -465,6 +465,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         let t_surf = t0.elapsed();
         acc_surf += t_surf;
         edge_watch("surf", mesh, &alive);
+        manifold_watch("surf", mesh, &alive);
         volume_watch("surf", mesh, &alive);
         let t1 = std::time::Instant::now();
 
@@ -640,6 +641,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         let t_smooth = t1.elapsed();
         acc_smooth += t_smooth;
         edge_watch("smooth", mesh, &alive);
+        manifold_watch("smooth", mesh, &alive);
         volume_watch("smooth", mesh, &alive);
 
         // --------------------------------------------- sliver smoothing
@@ -662,6 +664,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &mut next_dirty,
         );
         edge_watch("sliver", mesh, &alive);
+        manifold_watch("sliver", mesh, &alive);
         volume_watch("sliver", mesh, &alive);
 
         // --------------------------------------------- edge collapse
@@ -708,6 +711,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
         }
         edge_watch("collapse", mesh, &alive);
+        manifold_watch("collapse", mesh, &alive);
         volume_watch("collapse", mesh, &alive);
 
         // --------------------------------------- coarsening collapse
@@ -764,6 +768,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
         }
         edge_watch("coarsen", mesh, &alive);
+        manifold_watch("coarsen", mesh, &alive);
         volume_watch("coarsen", mesh, &alive);
         let t2 = std::time::Instant::now();
 
@@ -1621,6 +1626,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             );
         }
         volume_watch("apply", mesh, &alive);
+        manifold_watch("apply", mesh, &alive);
         total_ops += ops;
         if ops == 0 {
             break;
@@ -1908,6 +1914,39 @@ fn try_edge_collapse(
                     continue 'targets;
                 }
             }
+            // Surface EDGE link condition: a surface edge (b, x) that the
+            // collapse rewrites to (a, x) must not FUSE onto an existing
+            // surface edge (a, x), unless x is an apex of a dying face
+            // {a, b, x} (there the two edges legally merge into the
+            // surviving fan). Fusing two manifold edges stacks their faces
+            // onto one edge -- four faces at one edge, a non-manifold
+            // pillow the face-collision check above cannot see (the face
+            // TRIPLES stay distinct).
+            if !b_faces.is_empty() {
+                let dying_apexes: Vec<usize> = b_faces
+                    .iter()
+                    .filter(|&&(_, key)| key.contains(&a))
+                    .flat_map(|&(_, key)| key)
+                    .filter(|&v| v != a && v != b)
+                    .collect();
+                let mut b_edge_nbrs: Vec<usize> = b_faces
+                    .iter()
+                    .filter(|&&(_, key)| !key.contains(&a))
+                    .flat_map(|&(_, key)| key)
+                    .filter(|&v| v != b)
+                    .collect();
+                b_edge_nbrs.sort_unstable();
+                b_edge_nbrs.dedup();
+                for x in b_edge_nbrs {
+                    if dying_apexes.contains(&x) {
+                        continue;
+                    }
+                    if constrained_edges.contains(&(x.min(a), x.max(a))) {
+                        creject(2);
+                        continue 'targets;
+                    }
+                }
+            }
 
             // Gates: validity, quality, sizing, surface fold-over. The
             // merged vertex may itself MOVE (midpoint, or all the way to b)
@@ -2157,6 +2196,43 @@ fn volume_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
             + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
     }
     eprintln!("  [vol {label}] {:.9}", v6 / 6.0);
+}
+
+/// Stage watchdog (RAPIDMESH_MANIFOLD_WATCH): edges of the surface-face set
+/// with incidence != 2 that are not on a feature line (rough check: counts
+/// only same-face-key pairs would need the full key; this reports raw >2
+/// incidences, the pillow signature).
+fn manifold_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
+    if std::env::var_os("RAPIDMESH_MANIFOLD_WATCH").is_none() {
+        return;
+    }
+    let mut cnt: DMap<(usize, usize), u32> = DMap::default();
+    for sf in &mesh.faces {
+        for e in 0..3 {
+            let (a, b) = (sf.tri[e], sf.tri[(e + 1) % 3]);
+            *cnt.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    let bad: Vec<_> = cnt.iter().filter(|(_, &c)| c > 2).collect();
+    if !bad.is_empty() {
+        eprintln!("  [manifold {label}] {} edges with >2 faces, first: {:?}", bad.len(), bad[0]);
+        let &(a, b) = bad[0].0;
+        for (fi, sf) in mesh.faces.iter().enumerate() {
+            if sf.tri.contains(&a) && sf.tri.contains(&b) {
+                // is this face a facet of an alive tet?
+                let mut support = 0;
+                for (ti, t) in mesh.tets.iter().enumerate() {
+                    if alive[ti] && sf.tri.iter().all(|v| t.contains(v)) {
+                        support += 1;
+                    }
+                }
+                eprintln!(
+                    "    face {fi}: tri {:?} regions {:?} patch {} tet-support {support}",
+                    sf.tri, sf.regions, sf.patch
+                );
+            }
+        }
+    }
 }
 
 /// Stage watchdog (RAPIDMESH_EDGE_WATCH): max alive edge after a stage.

@@ -720,24 +720,6 @@ impl<'a> Refiner<'a> {
         t2: Option<&[usize; 4]>,
         fv: [usize; 3],
     ) -> Option<u32> {
-        // A facet whose three vertices lie on ONE face's carrier and whose
-        // centroid sticks to that carrier IS part of the (sampled) surface,
-        // whether or not its Voronoi dual happens to cross: a flat tet spanning
-        // an unseeded cavity puts both circumcenters on one side, the dual
-        // test alone misses the wall, and the flood fill swallows the void.
-        // (The centroid check keeps far-apart chord triangles -- 3 points on a
-        // barrel spanning the interior -- from being walled off.)
-        for &f in &self.vfaces[fv[0]] {
-            if !(self.vfaces[fv[1]].contains(&f) && self.vfaces[fv[2]].contains(&f)) {
-                continue;
-            }
-            let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
-            let cen: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
-            let surf = self.brep.surface(self.brep.faces[f as usize].surface);
-            if signed_offset(surf, cen).abs() <= 0.2 * self.h_at(cen) {
-                return Some(f);
-            }
-        }
         // Centroid side test, NOT the circumcenter dual: the dual of a flat
         // wall-piercing tet (two wall points + an interior point) can sit on
         // one side entirely and miss the crossing; the two tets' centroids are
@@ -796,7 +778,19 @@ impl<'a> Refiner<'a> {
             match (pos, neg) {
                 (true, false) => 1,
                 (false, true) => -1,
-                (false, false) => 0, // fully on-face (degenerate flat tet)
+                // ALL vertices on the carrier: this is NOT necessarily a
+                // degenerate sliver -- a chord tet spanning an unseeded void
+                // has all four vertices ON the surface and its whole volume
+                // on one side. The centroid tells that side (for a truly
+                // flat sliver it is sign noise, but CONSISTENT per tet,
+                // which is all manifoldness needs). An undecided 0 here made
+                // every facet of such tets a non-wall and let the flood fill
+                // swallow entire voids; walling them on ALL sides (the old
+                // provenance shortcut) fragmented the sagitta band into
+                // thousands of enclaves instead.
+                (false, false) => {
+                    if signed_offset(surf, cen) >= 0.0 { 1 } else { -1 }
+                }
                 (true, true) => {
                     // piercing: dominant side by centroid
                     self.n_side_pierce.set(self.n_side_pierce.get() + 1);
@@ -804,6 +798,10 @@ impl<'a> Refiner<'a> {
                 }
             }
         };
+        let wtrace = std::env::var_os("RAPIDMESH_WALL_TRACE").is_some();
+        if wtrace && cands.is_empty() {
+            eprintln!("WALL no cands, fv {fv:?}");
+        }
         for f in cands {
             let surf = self.brep.surface(self.brep.faces[f as usize].surface);
             // both tets must actually TOUCH this carrier's neighbourhood: the
@@ -812,6 +810,9 @@ impl<'a> Refiner<'a> {
                 .iter()
                 .any(|&v| signed_offset(surf, self.pos(v)).abs() <= 0.5 * self.h_at(self.pos(v)));
             if !near_facet {
+                if wtrace {
+                    eprintln!("WALL f {f} not near, fv {fv:?}");
+                }
                 continue;
             }
             let s1 = side_of(surf, t1, c1);
@@ -819,6 +820,9 @@ impl<'a> Refiner<'a> {
                 Some(t) => side_of(surf, t, c2),
                 None => -s1, // hull side: outward is the other side by definition
             };
+            if wtrace {
+                eprintln!("WALL f {f} sides {s1} {s2}, fv {fv:?}");
+            }
             if s1 * s2 == -1 {
                 // opposite sides: confirm the trimmed-face membership at the
                 // facet centroid's footpoint (not at a distant crossing)
@@ -829,6 +833,9 @@ impl<'a> Refiner<'a> {
                 let x = surf.closest(fc).0;
                 if let Some((fi, d)) = self.bvh.nearest_index(x) {
                     let owner = self.facet_face[fi];
+                    if wtrace {
+                        eprintln!("WALL f {f} membership owner {owner} d {d:.4} h {:.4}", self.h_at(x));
+                    }
                     if d <= self.h_at(x) && owner == f {
                         return Some(f);
                     }

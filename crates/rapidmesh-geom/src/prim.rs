@@ -851,7 +851,7 @@ pub fn pipe(path: &[[f64; 3]], radius: f64, segments: usize) -> Faceted {
     let mut f = Faceted::new();
     // The barrel's analytic carrier: constant-radius tube about the path.
     let s = f.add_surface(SurfaceKind::Tube {
-        path: std::sync::Arc::new(path.to_vec()),
+        path: std::sync::Arc::new(crate::tube::TubePath::new(path.to_vec())),
         radius,
     });
     let rings: Vec<Vec<[f64; 3]>> = (0..n).map(ring).collect();

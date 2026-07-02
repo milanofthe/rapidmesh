@@ -49,7 +49,7 @@ pub enum Surface {
     /// `dist(p, path) = radius`. Queried by closest-point projection like
     /// [`Surface::Discrete`], but the oracle is analytic per segment -- smooth
     /// where it matters and with exact curvature `radius` for sizing.
-    Tube { path: Arc<Vec<V3>>, radius: f64 },
+    Tube { path: Arc<rapidmesh_geom::TubePath>, radius: f64 },
 }
 
 impl Surface {
@@ -106,7 +106,7 @@ impl Surface {
         match self {
             Surface::Discrete(d) => d.closest(p),
             Surface::Tube { path, radius } => {
-                let q = closest_on_polyline(path, p);
+                let q = path.closest(p);
                 let d: V3 = sub(p, q);
                 let l = dot(d, d).sqrt();
                 let n: V3 = if l > 1e-12 {
@@ -353,30 +353,6 @@ fn nurbs_footpoint(surf: &NurbsSurface, p: V3) -> P2 {
 }
 
 
-/// Closest point on an open polyline to `p` (linear scan over the segments;
-/// sweep paths are a few hundred segments at most).
-fn closest_on_polyline(path: &[V3], p: V3) -> V3 {
-    let mut best = path[0];
-    let mut best_d2 = f64::MAX;
-    for w in path.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let ab = sub(b, a);
-        let len2 = dot(ab, ab);
-        let t = if len2 > 0.0 {
-            (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let q: V3 = std::array::from_fn(|k| a[k] + t * ab[k]);
-        let d = sub(p, q);
-        let d2 = dot(d, d);
-        if d2 < best_d2 {
-            best_d2 = d2;
-            best = q;
-        }
-    }
-    best
-}
 
 #[cfg(test)]
 mod tests {

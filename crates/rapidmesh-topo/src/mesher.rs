@@ -72,22 +72,9 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
         SurfaceKind::Discrete(d) => Some(d.closest(p).1),
         // tube: radially outward from the closest path point
         SurfaceKind::Tube { path, .. } => {
-            let mut best = path[0];
-            let mut best_d2 = f64::MAX;
-            for w in path.windows(2) {
-                let (a, b) = (w[0], w[1]);
-                let ab = sub(b, a);
-                let len2 = dot(ab, ab);
-                let t = if len2 > 0.0 { (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
-                let q: [f64; 3] = std::array::from_fn(|k| a[k] + t * ab[k]);
-                let d = sub(p, q);
-                let d2 = dot(d, d);
-                if d2 < best_d2 {
-                    best_d2 = d2;
-                    best = q;
-                }
-            }
-            (best_d2 > 1e-24).then(|| normalize(sub(p, best)))
+            let q = path.closest(p);
+            let d = sub(p, q);
+            (dot(d, d) > 1e-24).then(|| normalize(d))
         }
         SurfaceKind::Sphere { center, .. } => Some(normalize(sub(p, *center))),
         SurfaceKind::Cylinder { center, axis, .. } => {

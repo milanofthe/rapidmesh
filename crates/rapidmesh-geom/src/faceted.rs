@@ -95,8 +95,8 @@ pub enum SurfaceKind {
     /// segment, so the carrier is smooth in the ways that matter (no facet
     /// coplanarity, exact curvature `radius` for sizing).
     Tube {
-        /// Sweep centerline (ordered, open or closed by repetition).
-        path: Arc<Vec<[f64; 3]>>,
+        /// Sweep centerline with its closest-point accelerator.
+        path: Arc<crate::tube::TubePath>,
         /// Tube radius.
         radius: f64,
     },
@@ -258,7 +258,9 @@ impl Faceted {
                         }
                     }
                     SurfaceKind::Tube { path, radius } => SurfaceKind::Tube {
-                        path: Arc::new(path.iter().map(|&q| map(q)).collect()),
+                        path: Arc::new(crate::tube::TubePath::new(
+                            path.pts.iter().map(|&q| map(q)).collect(),
+                        )),
                         radius: *radius,
                     },
                     // The discrete carrier IS its point set: map the points,

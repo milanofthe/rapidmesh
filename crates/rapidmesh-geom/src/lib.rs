@@ -15,10 +15,12 @@ pub mod nurbs_surface;
 pub mod plc;
 pub mod polygon;
 pub mod prim;
+pub mod tube;
 pub mod scene;
 pub mod vec3;
 
 pub use discrete::DiscreteSurface;
+pub use tube::TubePath;
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
 pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, ImportError};
 pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};

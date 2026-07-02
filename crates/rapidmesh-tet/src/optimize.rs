@@ -240,6 +240,17 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     let opt_t0 = std::time::Instant::now();
     let mut acc_surf = std::time::Duration::ZERO;
     let mut acc_smooth = std::time::Duration::ZERO;
+    let mut acc_sliver = std::time::Duration::ZERO;
+    let mut acc_collapse = std::time::Duration::ZERO;
+    let mut acc_coarsen = std::time::Duration::ZERO;
+    let mut acc_eremove = std::time::Duration::ZERO;
+    let mut acc_flips = std::time::Duration::ZERO;
+    let mut t_mark = std::time::Instant::now();
+    let mut lap = move || {
+        let d = t_mark.elapsed();
+        t_mark = std::time::Instant::now();
+        d
+    };
     // Squared edge-length budget per region: quality operations may create
     // edges up to the sizing contract, or up to the local status quo where
     // the mesh is already coarser (never blocking improvements there).
@@ -640,6 +651,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
 
         let t_smooth = t1.elapsed();
         acc_smooth += t_smooth;
+        let _ = lap(); // reset the stage stopwatch after surf/smooth (they time themselves)
         edge_watch("smooth", mesh, &alive);
         manifold_watch("smooth", mesh, &alive);
         volume_watch("smooth", mesh, &alive);
@@ -663,6 +675,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &face_budget2,
             &mut next_dirty,
         );
+        acc_sliver += lap();
         edge_watch("sliver", mesh, &alive);
         manifold_watch("sliver", mesh, &alive);
         volume_watch("sliver", mesh, &alive);
@@ -710,6 +723,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
         }
+        acc_collapse += lap();
         edge_watch("collapse", mesh, &alive);
         manifold_watch("collapse", mesh, &alive);
         volume_watch("collapse", mesh, &alive);
@@ -767,6 +781,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
         }
+        acc_coarsen += lap();
         edge_watch("coarsen", mesh, &alive);
         manifold_watch("coarsen", mesh, &alive);
         volume_watch("coarsen", mesh, &alive);
@@ -1150,6 +1165,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
 
         let t_eremove = t2.elapsed();
+        acc_eremove += lap();
         edge_watch("eremove", mesh, &alive);
         // --------------------------------------------- vertex insertion
         // (see INSERT_BELOW_DEG). The cavity is the bad tet plus its alive
@@ -1574,6 +1590,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
         }
 
+        acc_flips += lap();
         volume_watch("flips+insert(pre-apply)", mesh, &alive);
         // Apply: append the pass's new tets; retired slots stay dead until
         // the single final compaction (stable ids keep the caches valid).
@@ -1715,6 +1732,11 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     use rapidmesh_exact::log as rmlog;
     rmlog::stage("optimize.surface", acc_surf.as_secs_f64());
     rmlog::stage("optimize.smooth", acc_smooth.as_secs_f64());
+    rmlog::stage("optimize.sliver", acc_sliver.as_secs_f64());
+    rmlog::stage("optimize.collapse", acc_collapse.as_secs_f64());
+    rmlog::stage("optimize.coarsen", acc_coarsen.as_secs_f64());
+    rmlog::stage("optimize.eremove", acc_eremove.as_secs_f64());
+    rmlog::stage("optimize.flips", acc_flips.as_secs_f64());
     rmlog::stage("optimize.total", opt_t0.elapsed().as_secs_f64());
     rmlog::stat("optimize.ops", total_ops as f64);
     total_ops

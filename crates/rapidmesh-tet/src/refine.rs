@@ -1903,6 +1903,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // re-checks; quality repair of the snapped neighbourhood is the
         // optimizer's job.
         let trace = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
+        let t_post = std::time::Instant::now();
         'cycles: for cycle in 0..4 {
             // (1) piercer insertion rounds until dry
             for _round in 0..8 {
@@ -1991,6 +1992,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let mut cur: Vec<V3> = (0..r.db.len()).map(|v| r.pos(v)).collect();
             r.rebuild_points(lo, hi, &mut cur, &[]);
         }
+        rmlog::stage("refine.postlloyd", t_post.elapsed().as_secs_f64());
     }
     rmlog::stage("refine.lloyd", t_lloyd.elapsed().as_secs_f64());
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
@@ -2071,6 +2073,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
     };
     // Non-wall internal facets, kept for the bridge-guard watershed below.
+    let t_walls = std::time::Instant::now();
     let mut nonwall: Vec<(u32, u32)> = Vec::new();
     for (fkey, &(a, b)) in &owners {
         if b == u32::MAX {
@@ -2096,6 +2099,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             uf[ra.max(rb) as usize] = ra.min(rb);
         }
     }
+    rmlog::stage("refine.walls", t_walls.elapsed().as_secs_f64());
     // Deepest tet per component -> one unambiguous label.
     let centroid_of = |t: &[usize; 4]| -> V3 {
         std::array::from_fn(|k| {

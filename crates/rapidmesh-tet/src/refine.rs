@@ -41,9 +41,11 @@ use std::hash::BuildHasherDefault;
 
 type DMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
 
-/// Facet-shape bound: minimum surface-facet angle (degrees). 30 is the provable
-/// refinement limit; slightly below leaves headroom on curved carriers.
-const FACET_ANGLE_DEG: f64 = 25.0;
+/// Facet-shape bound: minimum surface-facet angle (degrees). Deliberately mild:
+/// on curved carriers the first-crossing surface-ball center is not the exact
+/// Chew circumcenter, so an aggressive bound churns instead of terminating; the
+/// optimizer's surface pass owns the final facet quality.
+const FACET_ANGLE_DEG: f64 = 15.0;
 /// Surface-ball size factor: a surface facet refines when its Delaunay-ball
 /// radius exceeds `FACET_SIZE * h(x)`.
 const FACET_SIZE: f64 = 1.0;
@@ -138,12 +140,54 @@ fn tri_min_angle(a: V3, b: V3, c: V3) -> f64 {
 
 /// Signed offset of `p` from a surface: distance along the carrier normal at
 /// the footpoint. Generic over every carrier via `project_uv`/`eval_uv`/
-/// `normal`; the sign flips exactly at the surface, which is all the crossing
-/// bisection needs.
+/// `normal`; the sign flips exactly at the surface, and near the surface the
+/// magnitude approximates the Euclidean distance (the sphere-tracing bound).
 fn signed_offset(surf: &Surface, p: V3) -> f64 {
     let uv = surf.project_uv(p);
     let foot = surf.eval_uv(uv);
     dot(sub(p, foot), surf.normal(uv))
+}
+
+/// ALL crossings of segment `a -> b` with a carrier, as parameters `t` in
+/// `(0, 1)`, by sphere tracing: the step never exceeds the current distance to
+/// the carrier, so a thin feature (a torus tube, a plate) crossed twice between
+/// two same-sign endpoints is not skipped -- the failure mode of plain
+/// endpoint-sign bisection. Each sign change is then bisected tight.
+fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
+    let len = dist(a, b);
+    if !(len > 0.0) {
+        return Vec::new();
+    }
+    let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
+    let min_step = 1e-4;
+    let mut out = Vec::new();
+    let mut t = 0.0f64;
+    let mut s_prev = signed_offset(surf, a);
+    let mut guard = 0;
+    while t < 1.0 {
+        guard += 1;
+        if guard > 4096 {
+            break;
+        }
+        let step = ((s_prev.abs() * 0.8) / len).max(min_step);
+        let t2 = (t + step).min(1.0);
+        let s2 = signed_offset(surf, at(t2));
+        if s_prev != 0.0 && s2 != 0.0 && s_prev.signum() != s2.signum() {
+            let (mut lo, mut hi, lo_neg) = (t, t2, s_prev < 0.0);
+            for _ in 0..40 {
+                let m = 0.5 * (lo + hi);
+                if (signed_offset(surf, at(m)) < 0.0) == lo_neg {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            out.push(0.5 * (lo + hi));
+        }
+        t = t2;
+        s_prev = s2;
+    }
+    out
 }
 
 /// The refinement state: Delaunay + provenance + feature segments + oracles.
@@ -180,6 +224,18 @@ struct Refiner<'a> {
     diag: f64,
     max_points: usize,
     radius_edge: f64,
+    /// Diagnostics (RAPIDMESH_REFINE_TRACE): why insertions happen / fail.
+    n_facet_ins: u64,
+    n_cell_ins: u64,
+    n_seg_split: u64,
+    n_ins_rejected: u64,
+    n_ball_none: u64,
+    n_bad_size: u64,
+    n_bad_shape: u64,
+    n_bad_offface: u64,
+    n_cross_found: std::cell::Cell<u64>,
+    n_member_reject: std::cell::Cell<u64>,
+    n_cc_none: std::cell::Cell<u64>,
 }
 
 impl<'a> Refiner<'a> {
@@ -240,41 +296,22 @@ impl<'a> Refiner<'a> {
             }
         }
         let mut region = self.domain.region_at(q);
-        // Crossings of segment q -> p with every nearby analytic face.
+        // Crossings of segment q -> p with every nearby analytic face
+        // (sphere-traced: thin features crossed twice are not skipped).
         let mut crossings: Vec<(f64, usize)> = Vec::new(); // (t along q->p, plc facet)
         for f in self.faces_near_segment(q, p) {
             let surf = self.brep.surface(self.brep.faces[f as usize].surface);
-            // sample sign changes along the segment
-            const N: usize = 24;
-            let at = |t: f64| -> V3 { std::array::from_fn(|k| q[k] + t * (p[k] - q[k])) };
-            let mut s_prev = signed_offset(surf, q);
-            for i in 1..=N {
-                let t1 = i as f64 / N as f64;
-                let s1 = signed_offset(surf, at(t1));
-                if s_prev.signum() != s1.signum() {
-                    // bisect to the crossing
-                    let (mut lo, mut hi, lo_neg) = ((i - 1) as f64 / N as f64, t1, s_prev < 0.0);
-                    for _ in 0..40 {
-                        let m = 0.5 * (lo + hi);
-                        if (signed_offset(surf, at(m)) < 0.0) == lo_neg {
-                            lo = m;
-                        } else {
-                            hi = m;
-                        }
-                    }
-                    let tm = 0.5 * (lo + hi);
-                    let x = at(tm);
-                    // membership: nearest facet must belong to THIS face and be
-                    // within its own band (else the crossing is off the trim).
-                    if let Some((fi, dst)) = self.bvh.nearest_index(x) {
-                        if self.facet_face[fi] == f
-                            && dst <= self.facet_band[fi].max(1e-7 * self.diag)
-                        {
-                            crossings.push((tm, fi));
-                        }
+            for tm in carrier_crossings(surf, q, p) {
+                let x: V3 = std::array::from_fn(|k| q[k] + tm * (p[k] - q[k]));
+                // membership: nearest facet must belong to THIS face and be
+                // within its own band (else the crossing is off the trim).
+                if let Some((fi, dst)) = self.bvh.nearest_index(x) {
+                    if self.facet_face[fi] == f
+                        && dst <= self.facet_band[fi].max(1e-7 * self.diag)
+                    {
+                        crossings.push((tm, fi));
                     }
                 }
-                s_prev = s1;
             }
         }
         crossings.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -402,6 +439,7 @@ impl<'a> Refiner<'a> {
         };
         let v = self.db.try_insert(p)?;
         self.segs.remove(&key);
+        self.n_seg_split += 1;
         self.prov.push(Prov::Edge(seg.ei));
         self.vfaces.push(self.edge_faces(seg.ei));
         self.add_seg(Seg { ei: seg.ei, va: seg.va, vb: v, sa: seg.sa, sb: sm });
@@ -444,34 +482,24 @@ impl<'a> Refiner<'a> {
         out
     }
 
-    /// Crossing of the segment `a -> b` with face `f`'s carrier, restricted to
-    /// the trimmed face (membership via the nearest-PLC-facet ownership test).
+    /// First membership-valid crossing of the segment `a -> b` with face `f`'s
+    /// carrier (sphere-traced, so double crossings through thin features are
+    /// found), restricted to the trimmed face via nearest-PLC-facet ownership.
     fn face_crossing(&self, f: u32, a: V3, b: V3) -> Option<V3> {
         let surf = self.brep.surface(self.brep.faces[f as usize].surface);
-        let (sa, sb) = (signed_offset(surf, a), signed_offset(surf, b));
-        if sa.signum() == sb.signum() && sa != 0.0 && sb != 0.0 {
-            return None;
-        }
-        let (mut lo, mut hi, lo_neg) = (a, b, sa < 0.0);
-        for _ in 0..48 {
-            let m = mid3(lo, hi);
-            let sm = signed_offset(surf, m);
-            if (sm < 0.0) == lo_neg {
-                lo = m;
-            } else {
-                hi = m;
+        for t in carrier_crossings(surf, a, b) {
+            self.n_cross_found.set(self.n_cross_found.get() + 1);
+            let x0: V3 = std::array::from_fn(|k| a[k] + t * (b[k] - a[k]));
+            // Pull exactly onto the carrier.
+            let x = surf.eval_uv(surf.project_uv(x0));
+            // Membership: the crossing must lie on THIS trimmed face.
+            let Some((fi, d)) = self.bvh.nearest_index(x) else { continue };
+            if self.facet_face[fi] == f && d <= self.h_at(x) {
+                return Some(x);
             }
+            self.n_member_reject.set(self.n_member_reject.get() + 1);
         }
-        let x0 = mid3(lo, hi);
-        // Pull exactly onto the carrier.
-        let x = surf.eval_uv(surf.project_uv(x0));
-        // Membership: the crossing must lie on THIS trimmed face.
-        let (fi, d) = self.bvh.nearest_index(x)?;
-        let h = self.h_at(x);
-        if self.facet_face[fi] != f || d > h {
-            return None;
-        }
-        Some(x)
+        None
     }
 
     /// The restricted-Delaunay surface ball of the facet opposite corner `i` of
@@ -480,10 +508,13 @@ impl<'a> Refiner<'a> {
     fn facet_surface_ball(&self, slot: u32, i: usize, tet: [usize; 4]) -> Option<(u32, V3, f64)> {
         let fv: [usize; 3] = std::array::from_fn(|k| tet[FACET_LOCAL[i][k]]);
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
-        let (c1, _) = tet_circumcenter(p)?;
+        let Some((c1, r1)) = tet_circumcenter(p) else {
+            self.n_cc_none.set(self.n_cc_none.get() + 1);
+            return None;
+        };
         // Dual endpoint on the other side: neighbour circumcenter, or an
         // outward ray for hull facets (the neighbour holds a super corner).
-        let c2: V3 = {
+        let (c2, r2): (V3, f64) = {
             let nb_tet = self
                 .db
                 .neighbor_at(slot, i)
@@ -491,11 +522,18 @@ impl<'a> Refiner<'a> {
             match nb_tet {
                 Some(nt) => {
                     let np: [V3; 4] = std::array::from_fn(|k| self.pos(nt[k]));
-                    tet_circumcenter(np)?.0
+                    tet_circumcenter(np)?
                 }
-                None => self.hull_dual_end(c1, fv)?,
+                None => (self.hull_dual_end(c1, fv)?, f64::INFINITY),
             }
         };
+        // Sound prune: a crossing point x lies ON the dual segment, so
+        // |x - v0| <= max(|c1 - v0|, |c2 - v0|) = max(r1, r2). If the facet's
+        // vertex is farther from the whole surface than that, no crossing
+        // exists -- skips the expensive oracle for the deep-interior bulk.
+        if r2.is_finite() && self.bvh.nearest_dist(self.pos(fv[0])) > r1.max(r2) {
+            return None;
+        }
         // Candidate faces from provenance first (cheap), else BVH proximity.
         let mut cands: Vec<u32> = Vec::new();
         for &f in &self.vfaces[fv[0]] {
@@ -551,9 +589,16 @@ impl<'a> Refiner<'a> {
                 self.prov.push(prov);
                 self.vfaces.push(faces);
                 self.queue_created();
+                match self.prov.last() {
+                    Some(Prov::Interior) => self.n_cell_ins += 1,
+                    _ => self.n_facet_ins += 1,
+                }
                 true
             }
-            None => false,
+            None => {
+                self.n_ins_rejected += 1;
+                false
+            }
         }
     }
 
@@ -567,12 +612,12 @@ impl<'a> Refiner<'a> {
 
     // ---------------- criteria ---------------------------------------------
 
-    /// Checks the tet in `slot` against the facet + cell criteria, inserting at
+    /// Checks the tet's four facets against the surface criteria, inserting at
     /// most one refinement point. Returns true if an insertion happened.
-    fn process(&mut self, slot: u32, tet: [usize; 4]) -> bool {
-        // Facets first: any bad restricted facet refines before the cell.
+    fn process_facets(&mut self, slot: u32, tet: [usize; 4]) -> bool {
         for i in 0..4 {
             let Some((f, x, r)) = self.facet_surface_ball(slot, i, tet) else {
+                self.n_ball_none += 1;
                 continue;
             };
             let fv: [usize; 3] = std::array::from_fn(|k| tet[FACET_LOCAL[i][k]]);
@@ -581,12 +626,37 @@ impl<'a> Refiner<'a> {
                 self.vfaces[v].contains(&f) || matches!(self.prov[v], Prov::Corner)
             });
             let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
-            let bad = r > FACET_SIZE * h || tri_min_angle(a, b, c) < FACET_ANGLE_DEG || !on_face;
-            if bad && self.insert_protected(x, Prov::Face(f), vec![f]) {
+            // The off-face rule (a vertex not on `f` sits in a surface facet)
+            // only refines ABOVE a size floor: in thin regions every interior
+            // point is near the surface, and unbounded off-face insertion
+            // ping-pongs with cell refinement (torus blowup). Sub-floor
+            // boundary slivers are the optimizer's sliver stage's job.
+            let bad_size = r > FACET_SIZE * h;
+            // Shape and off-face rules only refine ABOVE a size floor: on a
+            // curved carrier the surface-ball center of a skinny facet can be
+            // far away, so inserting it does not fix the local shape -- the
+            // churn bounds only through the floor. Sub-floor skinny/off-face
+            // facets are the optimizer's sliver stage's job.
+            let bad_shape = tri_min_angle(a, b, c) < FACET_ANGLE_DEG && r > 0.8 * h;
+            let bad_off = !on_face && r > 0.5 * h;
+            if (bad_size || bad_shape || bad_off) && self.insert_protected(x, Prov::Face(f), vec![f]) {
+                if bad_size {
+                    self.n_bad_size += 1;
+                } else if bad_shape {
+                    self.n_bad_shape += 1;
+                } else {
+                    self.n_bad_offface += 1;
+                }
                 return true;
             }
         }
-        // Cell: only tets inside a meshed region.
+        false
+    }
+
+    /// Checks the tet against the cell criteria (size, radius-edge), inserting
+    /// its circumcenter when bad. Returns true if an insertion happened.
+    fn process_cell(&mut self, slot: u32, tet: [usize; 4]) -> bool {
+        // Only tets inside a meshed region.
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
         let centroid: V3 =
             std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
@@ -610,9 +680,16 @@ impl<'a> Refiner<'a> {
         // A circumcenter in another region means the boundary lies between:
         // refine the crossing facet instead (never insert across an interface).
         if self.region_at_c(cc) != region {
+            // Refine the crossing facet instead of the cell -- but ONLY when
+            // that facet is bad by its OWN size criterion. If the boundary is
+            // already at target density, the cell is simply skipped (a boundary
+            // sliver for the sliver stage): an unconditional fallback bombards
+            // a thin region's boundary at the duplicate-guard density.
             for i in 0..4 {
-                if let Some((f, x, _)) = self.facet_surface_ball(slot, i, tet) {
-                    if self.insert_protected(x, Prov::Face(f), vec![f]) {
+                if let Some((f, x, rb)) = self.facet_surface_ball(slot, i, tet) {
+                    if rb > FACET_SIZE * self.h_at(x)
+                        && self.insert_protected(x, Prov::Face(f), vec![f])
+                    {
                         return true;
                     }
                 }
@@ -641,6 +718,14 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
 
     let brep = rapidmesh_brep::build::from_plc(plc);
     let domain = crate::cvt::build_sizing_domain(plc, params, &brep);
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        for t in plc.triangles.iter().take(3) {
+            let c: V3 = std::array::from_fn(|k| {
+                (plc.vertices[t[0] as usize][k] + plc.vertices[t[1] as usize][k] + plc.vertices[t[2] as usize][k]) / 3.0
+            });
+            eprintln!("TRACE h_at({c:?}) = {}", domain.h_at(c));
+        }
+    }
 
     // Global facet BVH: membership tests + boundary tagging.
     let mut facet_face = vec![u32::MAX; plc.triangles.len()];
@@ -716,6 +801,17 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         diag,
         max_points: params.max_points,
         radius_edge: params.radius_edge_bound.max(1.0),
+        n_facet_ins: 0,
+        n_cell_ins: 0,
+        n_seg_split: 0,
+        n_ins_rejected: 0,
+        n_ball_none: 0,
+        n_bad_size: 0,
+        n_bad_shape: 0,
+        n_bad_offface: 0,
+        n_cross_found: std::cell::Cell::new(0),
+        n_member_reject: std::cell::Cell::new(0),
+        n_cc_none: std::cell::Cell::new(0),
     };
 
     // ---- protect 0-features: corners --------------------------------------
@@ -794,42 +890,100 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         if has_edge || face.facets.is_empty() {
             continue;
         }
-        // A closed face: seed a handful of its input facet vertices (they lie
-        // on the carrier) so the restricted Delaunay has something to grow from.
+        // A closed face: seed WELL-SPREAD on-carrier points so the restricted
+        // Delaunay has something to grow from. Farthest-point sampling over the
+        // facet centroids -- a fixed stride over a structured tessellation can
+        // pick one ring of COCIRCULAR points (every tet circumcenter degenerate,
+        // no dual, no refinement: the torus failure).
         let surf = brep.surface(face.surface);
-        let step = (face.facets.len() / 6).max(1);
-        for &ti in face.facets.iter().step_by(step).take(8) {
-            let t = plc.triangles[ti as usize];
-            let c: V3 = std::array::from_fn(|k| {
-                (plc.vertices[t[0] as usize][k]
-                    + plc.vertices[t[1] as usize][k]
-                    + plc.vertices[t[2] as usize][k])
-                    / 3.0
-            });
-            let p = surf.eval_uv(surf.project_uv(c));
+        let cents: Vec<V3> = face
+            .facets
+            .iter()
+            .map(|&ti| {
+                let t = plc.triangles[ti as usize];
+                std::array::from_fn(|k| {
+                    (plc.vertices[t[0] as usize][k]
+                        + plc.vertices[t[1] as usize][k]
+                        + plc.vertices[t[2] as usize][k])
+                        / 3.0
+                })
+            })
+            .collect();
+        let n_seed = 32.min(cents.len());
+        let mut chosen: Vec<usize> = vec![0];
+        let mut dist2: Vec<f64> = cents.iter().map(|&c| {
+            let d = sub(c, cents[0]);
+            dot(d, d)
+        }).collect();
+        while chosen.len() < n_seed {
+            let (best, _) = dist2
+                .iter()
+                .enumerate()
+                .fold((0, -1.0), |acc, (i, &d)| if d > acc.1 { (i, d) } else { acc });
+            chosen.push(best);
+            for (i, &c) in cents.iter().enumerate() {
+                let d = sub(c, cents[best]);
+                dist2[i] = dist2[i].min(dot(d, d));
+            }
+        }
+        for &ci in &chosen {
+            let p = surf.eval_uv(surf.project_uv(cents[ci]));
             r.insert_protected(p, Prov::Face(fid as u32), vec![fid as u32]);
         }
     }
 
     // ---- main refinement loop ----------------------------------------------
+    // Two phases with a GLOBAL priority: every bad surface facet is refined
+    // before any cell circumcenter is inserted. Interleaving them puts interior
+    // points next to a still-coarse surface, and each such point later violates
+    // the off-face rule -- a churn that over-refines thin regions severalfold.
     let t_refine = std::time::Instant::now();
     for (slot, t) in r.db.tets_with_slots() {
         r.queue.push_back((slot, t));
     }
-    while let Some((slot, tet)) = r.queue.pop_front() {
-        if r.db.tet_at(slot) != Some(tet) {
-            continue; // slot died or was reused
-        }
-        if r.process(slot, tet) {
-            // The insertion re-queued the created slots; the current tet may
-            // have died -- if it survived, re-check it too.
-            if r.db.tet_at(slot) == Some(tet) {
-                r.queue.push_back((slot, tet));
+    let mut cells: VecDeque<(u32, [usize; 4])> = VecDeque::new();
+    loop {
+        // Phase 1: drain all facet work (insertions re-feed r.queue).
+        while let Some((slot, tet)) = r.queue.pop_front() {
+            if r.db.tet_at(slot) != Some(tet) {
+                continue; // slot died or was reused
             }
+            if r.process_facets(slot, tet) {
+                if r.db.tet_at(slot) == Some(tet) {
+                    r.queue.push_back((slot, tet));
+                }
+            } else {
+                cells.push_back((slot, tet));
+            }
+        }
+        // Phase 2: one cell insertion, then re-drain facets.
+        let mut advanced = false;
+        while let Some((slot, tet)) = cells.pop_front() {
+            if r.db.tet_at(slot) != Some(tet) {
+                continue;
+            }
+            if r.process_cell(slot, tet) {
+                if r.db.tet_at(slot) == Some(tet) {
+                    cells.push_back((slot, tet));
+                }
+                advanced = true;
+                break;
+            }
+        }
+        if !advanced && r.queue.is_empty() {
+            break;
         }
     }
     rmlog::stat("refine.points", r.db.len() as f64);
     rmlog::stage("refine.loop", t_refine.elapsed().as_secs_f64());
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        eprintln!(
+            "REFINE facet_ins {} (size {} shape {} offface {}) cell_ins {} seg_split {} ins_rejected {} ball_none {} cross_found {} member_reject {} cc_none {}",
+            r.n_facet_ins, r.n_bad_size, r.n_bad_shape, r.n_bad_offface,
+            r.n_cell_ins, r.n_seg_split, r.n_ins_rejected, r.n_ball_none,
+            r.n_cross_found.get(), r.n_member_reject.get(), r.n_cc_none.get()
+        );
+    }
 
     // ---- extraction ---------------------------------------------------------
     let points: Vec<V3> = (0..r.db.len()).map(|v| r.db.approx_point(v)).collect();
@@ -913,4 +1067,30 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     rmlog::stat("refine.tets", mesh.tets.len() as f64);
     rmlog::stage("refine.total", t_start.elapsed().as_secs_f64());
     mesh
+}
+
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+    use rapidmesh_geom::SurfaceKind;
+
+    #[test]
+    fn torus_segment_crossings() {
+        let kind = SurfaceKind::Torus {
+            center: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            major_radius: 1.2,
+            minor_radius: 0.4,
+        };
+        let surf = Surface::from_kind(&kind, &[]);
+        // vertical line through the tube at x = 1.2: crosses at z = -0.4, +0.4
+        let c = carrier_crossings(&surf, [1.2, 0.0, -2.0], [1.2, 0.0, 2.0]);
+        assert_eq!(c.len(), 2, "tube crossed twice, got {c:?}");
+        // horizontal line through the hole: crosses tube walls 4 times
+        let c = carrier_crossings(&surf, [-3.0, 0.0, 0.0], [3.0, 0.0, 0.0]);
+        assert_eq!(c.len(), 4, "diameter crosses 4 walls, got {c:?}");
+        // line far away: no crossing
+        let c = carrier_crossings(&surf, [-3.0, 0.0, 3.0], [3.0, 0.0, 3.0]);
+        assert!(c.is_empty(), "far line must not cross, got {c:?}");
+    }
 }

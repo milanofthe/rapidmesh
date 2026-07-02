@@ -1021,3 +1021,31 @@ fn per_edge_maxh_refines_that_edge() {
     // 0.25 on a length-4 edge -> ~16 segments -> >=10 points on it.
     assert!(near(&fine) >= 10, "per-edge maxh=0.25 should give many points on edge 0: {} -> {}", near(&coarse), near(&fine));
 }
+
+/// Fine shell, coarse bulk on a CYLINDER (`maxh_surf` far below `maxh_vol`) --
+/// the corpus case `cyl_coarse_interior`, which drove the refinement into a
+/// multi-minute cascade. Regression: must mesh in bounded time with a sane
+/// count.
+#[test]
+fn cylinder_coarse_interior_terminates() {
+    let mut scene = Scene::new();
+    scene.add_solid(cylinder([0.0, 0.0, -1.0], [0.0, 0.0, 2.0], 0.8, 48));
+    let plc = scene.assemble();
+    // exactly the python-binding mapping of mesh(maxh_surf=0.13, maxh_vol=0.55):
+    // no global maxh, only the per-dimension caps
+    let params = MeshParams {
+        maxh: f64::INFINITY,
+        cap_surf: 0.13,
+        cap_vol: 0.55,
+        max_points: 60_000,
+        ..MeshParams::default()
+    };
+    let t0 = std::time::Instant::now();
+    let mesh = mesh_plc_with(&plc, &params);
+    assert!(!mesh.tets.is_empty());
+    assert!(
+        t0.elapsed().as_secs() < 30,
+        "fine-shell/coarse-bulk cylinder took {:?}",
+        t0.elapsed()
+    );
+}

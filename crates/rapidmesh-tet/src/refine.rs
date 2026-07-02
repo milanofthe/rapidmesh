@@ -1045,8 +1045,15 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max).max(1e-12);
 
+    let trace0 = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
     let brep = rapidmesh_brep::build::from_plc(plc);
+    if trace0 {
+        eprintln!("CHECKPOINT brep: {} faces {} edges", brep.faces.len(), brep.edges.len());
+    }
     let domain = crate::cvt::build_sizing_domain(plc, params, &brep);
+    if trace0 {
+        eprintln!("CHECKPOINT domain built, finest {}", domain.finest());
+    }
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         for t in plc.triangles.iter().take(3) {
             let c: V3 = std::array::from_fn(|k| {
@@ -1110,6 +1117,9 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     // Curve evaluator per B-rep edge.
     let curves: Vec<Option<Box<dyn crate::curve::Curve>>> =
         brep.edges.iter().map(|e| edge_curve(&brep, e)).collect();
+    if trace0 {
+        eprintln!("CHECKPOINT curves built");
+    }
 
     let mut r = Refiner {
         brep: &brep,
@@ -1248,6 +1258,9 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     rmlog::stat("refine.feature_points", r.db.len() as f64);
     rmlog::stage("refine.features", t_feat.elapsed().as_secs_f64());
+    if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+        eprintln!("CHECKPOINT features done: {} points", r.db.len());
+    }
 
     // ---- seed edge-less faces (closed spheres etc.) ------------------------
     for (fid, face) in brep.faces.iter().enumerate() {
@@ -1325,6 +1338,9 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             ((span[1] / step).ceil() as i64).max(1),
             ((span[2] / step).ceil() as i64).max(1),
         );
+        if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
+            eprintln!("CHECKPOINT seeding grid step {step:.6} -> {nx} x {ny} x {nz} cells");
+        }
         let ncell = step.max(1e-9);
         let ckey = |p: V3| -> [i64; 3] {
             std::array::from_fn(|k| (p[k] / ncell).floor() as i64)
@@ -1393,7 +1409,18 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     let mut cells: VecDeque<(u32, [usize; 4])> = VecDeque::new();
     let mut pierce_rounds = 0usize;
+    let trace_hb = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
+    let mut hb_iter = 0u64;
+    let mut hb_last = std::time::Instant::now();
     loop {
+        hb_iter += 1;
+        if trace_hb && hb_last.elapsed().as_secs() >= 5 {
+            eprintln!(
+                "HEARTBEAT iter {hb_iter} points {} fq {} cq {} pierce_rounds {pierce_rounds} facet_ins {} cell_ins {} seg_split {}",
+                r.db.len(), r.queue.len(), cells.len(), r.n_facet_ins, r.n_cell_ins, r.n_seg_split
+            );
+            hb_last = std::time::Instant::now();
+        }
         // Phase 1: drain all facet work (insertions re-feed r.queue).
         while let Some((slot, tet)) = r.queue.pop_front() {
             if r.db.tet_at(slot) != Some(tet) {

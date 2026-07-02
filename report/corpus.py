@@ -23,6 +23,29 @@ for p in (str(REPO), str(REPO / "python" / "examples")):
         sys.path.insert(0, p)
 
 import rapidmesh as rm  # noqa: E402
+
+# ---- binding freshness guard: benching a stale native module silently
+# benchmarks last week's mesher (locked .pyd on Windows survives a failed
+# maturin overwrite). Refuse to run when any Rust source is newer.
+def _assert_fresh_binding():
+    import glob as _glob
+    import os as _os
+    pyd = max(
+        (_os.path.getmtime(f) for f in _glob.glob(_os.path.join(_os.path.dirname(rm.__file__), "*.pyd"))),
+        default=0.0,
+    )
+    newest_rs = max(
+        (_os.path.getmtime(f) for f in _glob.glob(str(REPO / "crates" / "**" / "*.rs"), recursive=True)),
+        default=0.0,
+    )
+    if pyd < newest_rs:
+        raise SystemExit(
+            "rapidmesh binding is STALE (pyd older than the Rust sources): "
+            "run `maturin develop --release` in python/ first"
+        )
+
+
+_assert_fresh_binding()
 from report import validate as V  # noqa: E402
 import showcase as _SC  # noqa: E402
 import rapidfem_geometries as _RF  # noqa: E402

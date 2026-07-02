@@ -1264,7 +1264,7 @@ fn mesh_2d(
         .into_iter()
         .map(|(outer, holes, tag)| Region2D { outer, holes, tag })
         .collect();
-    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes };
+    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes, ..Default::default() };
     let inner = py.allow_threads(|| topo_mesh_2d(&regs, |_p| h, &opts));
     PyMesh2D { inner, millis: t0.elapsed().as_millis() as u64 }
 }

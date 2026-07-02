@@ -259,6 +259,7 @@ struct Refiner<'a> {
     n_cross_found: std::cell::Cell<u64>,
     n_member_reject: std::cell::Cell<u64>,
     n_cc_none: std::cell::Cell<u64>,
+    n_side_pierce: std::cell::Cell<u64>,
 }
 
 impl<'a> Refiner<'a> {
@@ -771,19 +772,79 @@ impl<'a> Refiner<'a> {
                 cands.push(f);
             }
         }
-        // KNOWN GAP (next work item): the centroid-segment test admits
-        // false-positive walls -- the segment of two neighbouring centroids can
-        // cross a surface lying entirely on one side of their common facet
-        // (slanted tets hugging a plane). The flood boundary then sits one tet
-        // layer off the true interface: a systematic per-region volume bias of
-        // ~1e-3 relative (air/diel 59.938/4.062 instead of 60/4). Requiring the
-        // crossing to lie ON the shared facet over-corrects (it also drops the
-        // true interface walls whose crossing the membership pull moves); the
-        // correct predicate needs the crossing BEFORE the on-face pull tested
-        // against the facet, with the provenance shortcut untouched.
-        cands
-            .into_iter()
-            .find(|&f| self.face_crossing(f, c1, c2, None).is_some())
+        // SEPARATION predicate: the facet walls off face `f` iff the two tets
+        // lie on OPPOSITE sides of `f`'s carrier (one-sided negative vs
+        // one-sided positive, with an on-face tolerance). Two tets hugging the
+        // SAME side -- whose centroid segment can still cross the carrier
+        // elsewhere -- are the false positives that shifted the flood boundary
+        // one tet layer off the interface (a systematic ~1e-3 volume bias).
+        // A mixed (piercing) tet falls back to the centroid side: pierces are
+        // repaired by the manifold sweep, and the residue must not open the
+        // wall entirely.
+        let tol_on = 1e-6 * self.diag;
+        let side_of = |surf: &Surface, t: &[usize; 4], cen: V3| -> i8 {
+            let (mut pos, mut neg) = (false, false);
+            for &v in t {
+                let s = signed_offset(surf, self.pos(v));
+                if s > tol_on {
+                    pos = true;
+                }
+                if s < -tol_on {
+                    neg = true;
+                }
+            }
+            match (pos, neg) {
+                (true, false) => 1,
+                (false, true) => -1,
+                (false, false) => 0, // fully on-face (degenerate flat tet)
+                (true, true) => {
+                    // piercing: dominant side by centroid
+                    self.n_side_pierce.set(self.n_side_pierce.get() + 1);
+                    if signed_offset(surf, cen) >= 0.0 { 1 } else { -1 }
+                }
+            }
+        };
+        for f in cands {
+            let surf = self.brep.surface(self.brep.faces[f as usize].surface);
+            // both tets must actually TOUCH this carrier's neighbourhood: the
+            // shared facet's vertices are the contact set
+            let near_facet = fv
+                .iter()
+                .any(|&v| signed_offset(surf, self.pos(v)).abs() <= 0.5 * self.h_at(self.pos(v)));
+            if !near_facet {
+                continue;
+            }
+            let s1 = side_of(surf, t1, c1);
+            let s2 = match t2 {
+                Some(t) => side_of(surf, t, c2),
+                None => -s1, // hull side: outward is the other side by definition
+            };
+            if s1 * s2 == -1 {
+                // opposite sides: confirm the trimmed-face membership at the
+                // facet centroid's footpoint (not at a distant crossing)
+                let fc: V3 = {
+                    let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
+                    std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0)
+                };
+                let x = surf.closest(fc).0;
+                if let Some((fi, d)) = self.bvh.nearest_index(x) {
+                    let owner = self.facet_face[fi];
+                    if d <= self.h_at(x) && owner == f {
+                        return Some(f);
+                    }
+                    // near a feature edge the neighbour face may own the
+                    // footpoint; accept when it shares the carrier locally
+                    if d <= self.h_at(x) && owner != u32::MAX {
+                        let osurf =
+                            self.brep.surface(self.brep.faces[owner as usize].surface);
+                        if signed_offset(osurf, x).abs() <= tol_on {
+                            return Some(f);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Manifold guard: a tet whose vertices carry signed offsets of BOTH signs
@@ -868,6 +929,25 @@ impl<'a> Refiner<'a> {
         None
     }
 
+    /// True if `p` keeps enough clearance from the surface: at least `frac`
+    /// of the SURFACE target size at the nearest facet (not the volume size at
+    /// `p` -- with a fine interface under a coarse bulk, the volume size lets
+    /// interior points sit closer to the wall than the wall's own point
+    /// spacing, and their Delaunay edges then pierce it).
+    fn surface_clear(&self, p: V3, frac: f64) -> bool {
+        let Some((fi, d)) = self.bvh.nearest_index(p) else {
+            return true;
+        };
+        let t = self.plc.triangles[fi];
+        let cen: V3 = std::array::from_fn(|k| {
+            (self.plc.vertices[t[0] as usize][k]
+                + self.plc.vertices[t[1] as usize][k]
+                + self.plc.vertices[t[2] as usize][k])
+                / 3.0
+        });
+        d >= frac * self.h_at(cen).min(self.h_at(p))
+    }
+
     // ---------------- insertion with feature protection --------------------
 
     /// Inserts a surface/volume candidate unless it encroaches a feature
@@ -938,6 +1018,16 @@ impl<'a> Refiner<'a> {
     /// Checks the tet's four facets against the surface criteria, inserting at
     /// most one refinement point. Returns true if an insertion happened.
     fn process_facets(&mut self, slot: u32, tet: [usize; 4]) -> bool {
+        // Piercing tets first: a tet with carrier offsets of both signs crosses
+        // a face outright -- no facet criterion sees it (its dual does not
+        // cross), and every one that survives to extraction puts volume on the
+        // wrong side of an interface. In-loop repair converges through the
+        // normal requeue instead of a bounded end sweep.
+        if let Some((f, x)) = self.pierce_repair(tet) {
+            if self.insert_protected_with(x, Prov::Face(f), vec![f], true) {
+                return true;
+            }
+        }
         for i in 0..4 {
             let Some((f, x, r)) = self.facet_surface_ball(slot, i, tet) else {
                 self.n_ball_none += 1;
@@ -1019,10 +1109,11 @@ impl<'a> Refiner<'a> {
             }
             return false;
         }
-        // Interior points hugging the surface pierce the (coarser) wall
+        // Interior points hugging the surface pierce the (finer) wall
         // sampling: a tet of two wall points and one hugger connects the two
         // sides straight through the wall, a hole no facet criterion sees.
-        if self.bvh.nearest_dist(cc) < 0.3 * h {
+        // Clearance is measured against the SURFACE target size.
+        if !self.surface_clear(cc, 0.5) {
             return false;
         }
         self.insert_protected(cc, Prov::Interior, Vec::new())
@@ -1176,6 +1267,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         n_cross_found: std::cell::Cell::new(0),
         n_member_reject: std::cell::Cell::new(0),
         n_cc_none: std::cell::Cell::new(0),
+        n_side_pierce: std::cell::Cell::new(0),
     };
 
     // ---- protect 0-features: corners --------------------------------------
@@ -1356,8 +1448,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     ];
                     let h = r.h_at(p);
                     // Clearance from the surface: a seed within one local size
-                    // of the boundary makes tets the facet criteria then fight.
-                    if r.bvh.nearest_dist(p) < h {
+                    // of the boundary makes tets the facet criteria then fight;
+                    // measured against the surface target so a fine interface
+                    // under a coarse bulk keeps its exclusion band.
+                    if r.bvh.nearest_dist(p) < h || !r.surface_clear(p, 0.8) {
                         continue;
                     }
                     if r.domain.region_at(p) == 0 {
@@ -1649,10 +1743,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     }
                     let tgt: V3 = std::array::from_fn(|k| num[gi][k] / (3.0 * den[gi]));
                     // stay inside, out of protecting balls, clear of the
-                    // surface (a hugger pierces the coarser wall sampling)
+                    // surface (a hugger pierces the finer wall sampling)
                     if r.in_ball(tgt)
                         || r.domain.region_at(tgt) == 0
-                        || r.bvh.nearest_dist(tgt) < 0.3 * r.h_at(tgt)
+                        || !r.surface_clear(tgt, 0.5)
                     {
                         continue;
                     }
@@ -1686,7 +1780,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     }
                     if r.in_ball(mid)
                         || r.domain.region_at(mid) == 0
-                        || r.bvh.nearest_dist(mid) < 0.4 * h
+                        || !r.surface_clear(mid, 0.5)
                     {
                         continue;
                     }
@@ -1870,7 +1964,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
         let mut rvv: Vec<(u32, f64)> = rv.into_iter().collect();
         rvv.sort_unstable_by_key(|e| e.0);
-        eprintln!("CLASSIFY region volumes: {rvv:?}");
+        eprintln!(
+            "CLASSIFY region volumes: {rvv:?} (piercing side-fallbacks {})",
+            r.n_side_pierce.get()
+        );
     }
     rmlog::stage("refine.classify", t_class.elapsed().as_secs_f64());
     for (t, &reg) in all_tets.iter().zip(&region_of) {

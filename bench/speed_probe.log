@@ -1,0 +1,420 @@
+  spring ...  insert: 29307 bad cands
+  split: 27850 cands, 22524 faces tried, 18560 gate-fail, 884 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 614266, link 137047, valid 363245, quality 0, fold 604]
+opt pass 0: surf 830.5839ms, smooth 157.7171ms, flips 808.8184ms (entries 179.0987ms, 2-3 21.8747ms, eremove 44.3368ms, insert 563.509ms), ops 102695, dirty 64966
+  insert: 17468 bad cands
+  split: 16545 cands, 14195 faces tried, 12190 gate-fail, 430 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 304374, link 72823, valid 211553, quality 0, fold 519]
+opt pass 1: surf 611.8589ms, smooth 90.5417ms, flips 936.659ms (entries 122.6939ms, 2-3 242.2065ms, eremove 111.8267ms, insert 459.9322ms), ops 52942, dirty 45803
+  insert: 8837 bad cands
+  split: 8152 cands, 7267 faces tried, 6300 gate-fail, 208 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 134685, link 40282, valid 109427, quality 0, fold 418]
+opt pass 2: surf 551.7183ms, smooth 116.7474ms, flips 554.2843ms (entries 98.2874ms, 2-3 112.4707ms, eremove 138.6641ms, insert 204.8623ms), ops 33780, dirty 34199
+  insert: 3546 bad cands
+  split: 3230 cands, 2999 faces tried, 2602 gate-fail, 87 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 49083, link 18873, valid 46413, quality 0, fold 303]
+opt pass 3: surf 343.5015ms, smooth 77.3463ms, flips 527.014ms (entries 95.1232ms, 2-3 196.6118ms, eremove 124.8725ms, insert 110.4068ms), ops 22184, dirty 23166
+  insert: 1141 bad cands
+  split: 1006 cands, 1113 faces tried, 980 gate-fail, 30 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 14533, link 7383, valid 15881, quality 0, fold 99]
+opt pass 4: surf 332.3363ms, smooth 60.2035ms, flips 113.6558ms (entries 61.1778ms, 2-3 9.6852ms, eremove 16.4331ms, insert 26.36ms), ops 14011, dirty 14838
+  insert: 390 bad cands
+  split: 350 cands, 543 faces tried, 496 gate-fail, 8 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 4043, link 2493, valid 5246, quality 0, fold 48]
+opt pass 5: surf 277.1336ms, smooth 90.0391ms, flips 114.4577ms (entries 73.0465ms, 2-3 8.8141ms, eremove 16.5192ms, insert 16.0782ms), ops 9049, dirty 10068
+  insert: 154 bad cands
+  split: 152 cands, 308 faces tried, 296 gate-fail, 7 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 1474, link 1063, valid 2146, quality 0, fold 8]
+opt pass 6: surf 224.5774ms, smooth 61.0761ms, flips 103.1964ms (entries 64.7879ms, 2-3 10.5848ms, eremove 16.7225ms, insert 11.1014ms), ops 5754, dirty 7050
+  insert: 72 bad cands
+  split: 69 cands, 217 faces tried, 217 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 577, link 558, valid 931, quality 0, fold 1]
+opt pass 7: surf 190.1647ms, smooth 45.8763ms, flips 88.5274ms (entries 52.4495ms, 2-3 7.9506ms, eremove 14.2654ms, insert 13.8622ms), ops 3772, dirty 5129
+  insert: 46 bad cands
+  split: 45 cands, 140 faces tried, 140 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 389, link 357, valid 559, quality 0, fold 0]
+opt pass 8: surf 110.9063ms, smooth 48.9949ms, flips 59.0252ms (entries 38.3121ms, 2-3 4.8956ms, eremove 8.588ms, insert 7.2297ms), ops 2573, dirty 3588
+  insert: 28 bad cands
+  split: 28 cands, 76 faces tried, 75 gate-fail, 1 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 251, link 226, valid 480, quality 0, fold 0]
+opt pass 9: surf 107.9981ms, smooth 34.003ms, flips 46.1018ms (entries 28.5598ms, 2-3 4.4996ms, eremove 6.0127ms, insert 7.0304ms), ops 1684, dirty 2598
+  insert: 19 bad cands
+  split: 19 cands, 53 faces tried, 53 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 182, link 161, valid 362, quality 0, fold 0]
+opt pass 10: surf 82.0007ms, smooth 27.6994ms, flips 35.2162ms (entries 20.6496ms, 2-3 3.8115ms, eremove 5.2248ms, insert 5.5306ms), ops 1222, dirty 1928
+  insert: 7 bad cands
+  split: 7 cands, 15 faces tried, 15 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 84, link 66, valid 252, quality 0, fold 0]
+opt pass 11: surf 59.3303ms, smooth 20.7067ms, flips 37.8618ms (entries 19.1725ms, 2-3 3.8383ms, eremove 5.3766ms, insert 9.4746ms), ops 842, dirty 1280
+  insert: 9 bad cands
+  split: 9 cands, 36 faces tried, 36 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 87, link 88, valid 147, quality 0, fold 0]
+opt pass 12: surf 41.5995ms, smooth 11.1078ms, flips 21.1519ms (entries 10.4054ms, 2-3 3.1255ms, eremove 2.6825ms, insert 4.9387ms), ops 576, dirty 896
+  insert: 3 bad cands
+  split: 3 cands, 7 faces tried, 7 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 49, link 36, valid 119, quality 0, fold 0]
+opt pass 13: surf 34.6404ms, smooth 14.884ms, flips 26.0425ms (entries 11.4428ms, 2-3 2.5219ms, eremove 3.1897ms, insert 8.8887ms), ops 369, dirty 535
+  insert: 3 bad cands
+  split: 3 cands, 7 faces tried, 7 gate-fail, 0 ok
+  max edge 0.864559 in tet [11258, 11480, 6629, 16263]
+  collapse rejects [surface 41, link 36, valid 76, quality 0, fold 0]
+opt pass 14: surf 21.8739ms, smooth 7.8467ms, flips 15.2868ms (entries 7.6967ms, 2-3 1.6384ms, eremove 1.6781ms, insert 4.274ms), ops 243, dirty 344
+ 209408 ms [ok]
+TUBE spring: wt False, nm 182, sliver 112, dih 0.35, 209408ms
+  serpentine ...  insert: 133689 bad cands
+  split: 128362 cands, 81805 faces tried, 69231 gate-fail, 3909 ok
+  max edge 0.238980 in tet [2551, 83899, 3947, 6557]
+  collapse rejects [surface 3073894, link 443074, valid 1278179, quality 0, fold 1076]
+opt pass 0: surf 978.8179ms, smooth 107.1165ms, flips 1.9326422s (entries 251.3429ms, 2-3 30.7187ms, eremove 53.9496ms, insert 1.5966313s), ops 140975, dirty 86217
+  insert: 112213 bad cands
+  split: 108545 cands, 73059 faces tried, 64281 gate-fail, 2549 ok
+  max edge 0.194996 in tet [2717, 6937, 70106, 6569]
+  collapse rejects [surface 2152495, link 317507, valid 1039962, quality 0, fold 1357]
+opt pass 1: surf 963.1555ms, smooth 108.9781ms, flips 1.6222s (entries 171.0656ms, 2-3 29.3281ms, eremove 46.1433ms, insert 1.3756633s), ops 95695, dirty 69306
+  insert: 92408 bad cands
+  split: 89075 cands, 61520 faces tried, 54957 gate-fail, 1811 ok
+  max edge 0.194977 in tet [58838, 66357, 17317, 26541]
+  collapse rejects [surface 1578978, link 264325, valid 861939, quality 0, fold 1170]
+opt pass 2: surf 775.9396ms, smooth 52.8856ms, flips 1.4217004s (entries 153.6732ms, 2-3 17.7844ms, eremove 37.5428ms, insert 1.2127007s), ops 70816, dirty 57674
+  insert: 72544 bad cands
+  split: 69262 cands, 48874 faces tried, 43411 gate-fail, 1333 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 1117987, link 211001, valid 699029, quality 0, fold 1263]
+opt pass 3: surf 681.4595ms, smooth 68.4933ms, flips 1.1542834s (entries 129.4906ms, 2-3 16.3779ms, eremove 25.8182ms, insert 982.5973ms), ops 56706, dirty 48389
+  insert: 52683 bad cands
+  split: 49549 cands, 35753 faces tried, 31474 gate-fail, 982 ok
+  max edge 0.194997 in tet [3957, 49042, 64707, 58668]
+  collapse rejects [surface 741169, link 161249, valid 525342, quality 0, fold 1329]
+opt pass 4: surf 565.02ms, smooth 59.1909ms, flips 1.1294s (entries 130.5292ms, 2-3 170.5864ms, eremove 75.4376ms, insert 752.8471ms), ops 46401, dirty 39540
+  insert: 34227 bad cands
+  split: 31514 cands, 23081 faces tried, 20128 gate-fail, 643 ok
+  max edge 0.194982 in tet [76283, 75245, 73121, 73457]
+  collapse rejects [surface 440220, link 112369, valid 356057, quality 0, fold 1110]
+opt pass 5: surf 372.27ms, smooth 59.3642ms, flips 590.229ms (entries 76.4719ms, 2-3 9.424ms, eremove 16.7104ms, insert 487.6229ms), ops 37206, dirty 30662
+  insert: 19140 bad cands
+  split: 17351 cands, 12859 faces tried, 11110 gate-fail, 389 ok
+  max edge 0.194976 in tet [65429, 80976, 27783, 60044]
+  collapse rejects [surface 231525, link 71002, valid 209291, quality 0, fold 831]
+opt pass 6: surf 329.7513ms, smooth 31.2845ms, flips 350.4609ms (entries 51.7382ms, 2-3 7.7845ms, eremove 10.3902ms, insert 280.5488ms), ops 27720, dirty 21807
+  insert: 9242 bad cands
+  split: 8162 cands, 6109 faces tried, 5308 gate-fail, 187 ok
+  max edge 0.194998 in tet [54945, 6386, 75417, 31812]
+  collapse rejects [surface 105172, link 39246, valid 107000, quality 0, fold 484]
+opt pass 7: surf 168.8938ms, smooth 35.3778ms, flips 180.4835ms (entries 42.2478ms, 2-3 5.707ms, eremove 9.701ms, insert 122.8279ms), ops 18907, dirty 14149
+  insert: 4043 bad cands
+  split: 3509 cands, 2653 faces tried, 2306 gate-fail, 84 ok
+  max edge 0.194984 in tet [77224, 62754, 93235, 64671]
+  collapse rejects [surface 41807, link 18610, valid 46126, quality 0, fold 247]
+opt pass 8: surf 114.0446ms, smooth 27.2071ms, flips 101.078ms (entries 23.6559ms, 2-3 4.9259ms, eremove 5.5655ms, insert 66.9309ms), ops 11663, dirty 8613
+  insert: 1544 bad cands
+  split: 1325 cands, 1017 faces tried, 863 gate-fail, 39 ok
+  max edge 0.194944 in tet [17923, 38594, 21801, 105519]
+  collapse rejects [surface 15254, link 8471, valid 18664, quality 0, fold 119]
+opt pass 9: surf 84.3757ms, smooth 22.0893ms, flips 55.094ms (entries 19.8755ms, 2-3 3.3498ms, eremove 5.1925ms, insert 26.6767ms), ops 7120, dirty 5402
+  insert: 532 bad cands
+  split: 457 cands, 349 faces tried, 293 gate-fail, 16 ok
+  max edge 0.194997 in tet [63043, 57200, 28284, 75142]
+  collapse rejects [surface 4859, link 3584, valid 6578, quality 0, fold 62]
+opt pass 10: surf 57.3233ms, smooth 16.1521ms, flips 34.6102ms (entries 15.7157ms, 2-3 2.7612ms, eremove 3.7959ms, insert 12.3376ms), ops 4536, dirty 3630
+  insert: 214 bad cands
+  split: 198 cands, 144 faces tried, 124 gate-fail, 11 ok
+  max edge 0.194989 in tet [102879, 105534, 26729, 104630]
+  collapse rejects [surface 1805, link 1384, valid 2519, quality 0, fold 6]
+opt pass 11: surf 39.7699ms, smooth 14.812ms, flips 24.9823ms (entries 12.2442ms, 2-3 2.6763ms, eremove 3.3914ms, insert 6.6707ms), ops 3018, dirty 2643
+  insert: 85 bad cands
+  split: 82 cands, 58 faces tried, 53 gate-fail, 1 ok
+  max edge 0.194943 in tet [105399, 97360, 102250, 75922]
+  collapse rejects [surface 719, link 524, valid 1080, quality 0, fold 0]
+opt pass 12: surf 33.8134ms, smooth 12.3922ms, flips 18.0499ms (entries 8.916ms, 2-3 2.6314ms, eremove 2.9443ms, insert 3.5585ms), ops 2119, dirty 2084
+  insert: 50 bad cands
+  split: 49 cands, 41 faces tried, 37 gate-fail, 4 ok
+  max edge 0.194963 in tet [16188, 43858, 105374, 64567]
+  collapse rejects [surface 380, link 289, valid 580, quality 0, fold 1]
+opt pass 13: surf 27.6449ms, smooth 10.1729ms, flips 15.6037ms (entries 8.0126ms, 2-3 1.9739ms, eremove 2.1483ms, insert 3.4692ms), ops 1613, dirty 1754
+  insert: 23 bad cands
+  split: 23 cands, 20 faces tried, 16 gate-fail, 4 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 272, link 190, valid 401, quality 0, fold 0]
+opt pass 14: surf 23.7304ms, smooth 7.936ms, flips 14.6047ms (entries 7.4647ms, 2-3 1.7036ms, eremove 1.8403ms, insert 3.5968ms), ops 1215, dirty 1467
+  insert: 12 bad cands
+  split: 12 cands, 12 faces tried, 11 gate-fail, 1 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 207, link 131, valid 283, quality 0, fold 0]
+opt pass 15: surf 24.032ms, smooth 6.6643ms, flips 11.8131ms (entries 6.3828ms, 2-3 1.4641ms, eremove 1.4775ms, insert 2.4888ms), ops 908, dirty 1190
+  insert: 8 bad cands
+  split: 8 cands, 10 faces tried, 10 gate-fail, 0 ok
+  max edge 0.194921 in tet [105060, 39072, 96487, 100802]
+  collapse rejects [surface 159, link 92, valid 252, quality 0, fold 0]
+opt pass 16: surf 18.8459ms, smooth 6.6155ms, flips 11.5096ms (entries 5.8533ms, 2-3 1.4517ms, eremove 1.4328ms, insert 2.7722ms), ops 690, dirty 1002
+  insert: 8 bad cands
+  split: 8 cands, 8 faces tried, 7 gate-fail, 1 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 159, link 86, valid 217, quality 0, fold 0]
+opt pass 17: surf 16.777ms, smooth 5.3905ms, flips 9.9209ms (entries 4.7232ms, 2-3 1.3361ms, eremove 1.2651ms, insert 2.5968ms), ops 555, dirty 772
+  insert: 8 bad cands
+  split: 8 cands, 10 faces tried, 10 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 131, link 90, valid 175, quality 0, fold 0]
+opt pass 18: surf 13.7202ms, smooth 4.426ms, flips 11.0268ms (entries 4.5016ms, 2-3 1.132ms, eremove 1.5998ms, insert 3.7938ms), ops 459, dirty 700
+  insert: 5 bad cands
+  split: 5 cands, 7 faces tried, 7 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 126, link 90, valid 165, quality 0, fold 0]
+opt pass 19: surf 16.6957ms, smooth 4.9185ms, flips 9.7044ms (entries 3.9864ms, 2-3 1.0917ms, eremove 1.2144ms, insert 3.4122ms), ops 386, dirty 581
+  insert: 4 bad cands
+  split: 4 cands, 6 faces tried, 6 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 97, link 47, valid 158, quality 0, fold 0]
+opt pass 20: surf 12.6681ms, smooth 3.9834ms, flips 7.9497ms (entries 3.5412ms, 2-3 1.1035ms, eremove 1.2325ms, insert 2.0731ms), ops 333, dirty 499
+  insert: 4 bad cands
+  split: 4 cands, 6 faces tried, 6 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 74, link 24, valid 138, quality 0, fold 0]
+opt pass 21: surf 9.7835ms, smooth 2.4342ms, flips 6.684ms (entries 2.5166ms, 2-3 972.6µs, eremove 857.5µs, insert 2.3376ms), ops 248, dirty 356
+  insert: 4 bad cands
+  split: 4 cands, 6 faces tried, 6 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 75, link 42, valid 138, quality 0, fold 0]
+opt pass 22: surf 7.8154ms, smooth 2.6797ms, flips 6.2774ms (entries 2.3476ms, 2-3 866.5µs, eremove 691.9µs, insert 2.3717ms), ops 189, dirty 254
+  insert: 1 bad cands
+  split: 1 cands, 0 faces tried, 0 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 39, link 14, valid 60, quality 0, fold 0]
+opt pass 23: surf 7.0136ms, smooth 2.4903ms, flips 4.9997ms (entries 2.1989ms, 2-3 823µs, eremove 673.9µs, insert 1.304ms), ops 148, dirty 196
+  insert: 1 bad cands
+  split: 1 cands, 0 faces tried, 0 gate-fail, 0 ok
+  max edge 0.194895 in tet [2717, 6939, 6569, 77844]
+  collapse rejects [surface 57, link 18, valid 89, quality 0, fold 0]
+opt pass 24: surf 6.1417ms, smooth 2.0745ms, flips 4.3132ms (entries 1.5515ms, 2-3 557.8µs, eremove 653.5µs, insert 1.5505ms), ops 84, dirty 126
+ 222113 ms [ok]
+TUBE serpentine: wt False, nm 100, sliver 4, dih 6.12, 222113ms
+  rf_solenoid ...  insert: 53 bad cands
+  split: 49 cands, 18 faces tried, 14 gate-fail, 0 ok
+  max edge 0.002991 in tet [111, 33, 32, 9612]
+  collapse rejects [surface 2571, link 6323, valid 181753, quality 216, fold 0]
+opt pass 0: surf 212.687ms, smooth 156.3911ms, flips 211.1515ms (entries 144.3044ms, 2-3 21.4886ms, eremove 35.5063ms, insert 9.8524ms), ops 61342, dirty 52374
+  insert: 3 bad cands
+  split: 2 cands, 1 faces tried, 1 gate-fail, 0 ok
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 606, link 349, valid 74534, quality 49, fold 0]
+opt pass 1: surf 198.0375ms, smooth 122.6315ms, flips 167.2516ms (entries 116.7145ms, 2-3 14.431ms, eremove 29.6016ms, insert 6.5046ms), ops 28025, dirty 38885
+  insert: 1 bad cands
+  split: 1 cands, 0 faces tried, 0 gate-fail, 0 ok
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 402, link 45, valid 53367, quality 0, fold 0]
+opt pass 2: surf 186.8681ms, smooth 104.5995ms, flips 155.0339ms (entries 109.5505ms, 2-3 14.0622ms, eremove 26.2058ms, insert 5.2154ms), ops 16630, dirty 27384
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 287, link 23, valid 42919, quality 0, fold 0]
+opt pass 3: surf 183.1139ms, smooth 99.6702ms, flips 152.3195ms (entries 109.3407ms, 2-3 13.1884ms, eremove 24.0319ms, insert 5.7587ms), ops 10517, dirty 17993
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 248, link 24, valid 33228, quality 0, fold 3]
+opt pass 4: surf 169.587ms, smooth 88.0601ms, flips 149.4648ms (entries 106.7948ms, 2-3 13.2821ms, eremove 23.0462ms, insert 6.342ms), ops 6541, dirty 11045
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 154, link 22, valid 24679, quality 0, fold 0]
+opt pass 5: surf 146.9629ms, smooth 77.1985ms, flips 134.1079ms (entries 96.2838ms, 2-3 12.2037ms, eremove 21.0597ms, insert 4.5608ms), ops 4094, dirty 6570
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 116, link 26, valid 17505, quality 0, fold 0]
+opt pass 6: surf 123.399ms, smooth 59.9922ms, flips 106.5245ms (entries 74.7043ms, 2-3 11.0157ms, eremove 15.2152ms, insert 5.5896ms), ops 2282, dirty 3748
+  max edge 0.002979 in tet [59, 54, 1575, 40842]
+  collapse rejects [surface 92, link 0, valid 11279, quality 0, fold 0]
+opt pass 7: surf 84.1769ms, smooth 43.0661ms, flips 74.4261ms (entries 52.4935ms, 2-3 6.8569ms, eremove 11.2096ms, insert 3.8664ms), ops 1261, dirty 1970
+ 73284 ms [ok]
+TUBE rf_solenoid: wt True, nm 0, sliver 0, dih 19.02, 73284ms
+  insert: 82622 bad cands
+  split: 80117 cands, 38030 faces tried, 33830 gate-fail, 2234 ok
+  max edge 0.005316 in tet [16815, 19442, 12469, 23669]
+  collapse rejects [surface 2124285, link 190841, valid 611320, quality 0, fold 179]
+opt pass 0: surf 237.6097ms, smooth 26.0029ms, flips 730.8053ms (entries 93.8994ms, 2-3 13.0787ms, eremove 28.0339ms, insert 595.7935ms), ops 48883, dirty 33840
+  insert: 83293 bad cands
+  split: 81209 cands, 40338 faces tried, 36718 gate-fail, 1502 ok
+  max edge 0.005316 in tet [16815, 19442, 12469, 23669]
+  collapse rejects [surface 1787412, link 174683, valid 584041, quality 5, fold 314]
+opt pass 1: surf 270.1392ms, smooth 22.4298ms, flips 713.7048ms (entries 87.3373ms, 2-3 12.3854ms, eremove 25.0101ms, insert 588.9721ms), ops 39532, dirty 33293
+  insert: 79989 bad cands
+  split: 78166 cands, 39685 faces tried, 36763 gate-fail, 1313 ok
+  max edge 0.005316 in tet [24326, 16815, 19442, 23669]
+  collapse rejects [surface 1576514, link 170362, valid 565325, quality 2, fold 323]
+opt pass 2: surf 271.8961ms, smooth 24.9619ms, flips 642.732ms (entries 74.8201ms, 2-3 11.5734ms, eremove 21.6286ms, insert 534.71ms), ops 32366, dirty 30742
+  insert: 76376 bad cands
+  split: 74596 cands, 38452 faces tried, 35869 gate-fail, 1121 ok
+  max edge 0.005316 in tet [24326, 16815, 19442, 23669]
+  collapse rejects [surface 1386429, link 159475, valid 546546, quality 0, fold 316]
+opt pass 3: surf 227.247ms, smooth 20.4554ms, flips 597.2385ms (entries 68.9569ms, 2-3 10.6162ms, eremove 19.2313ms, insert 498.4343ms), ops 28098, dirty 28897
+  insert: 71724 bad cands
+  split: 69767 cands, 36493 faces tried, 34168 gate-fail, 976 ok
+  max edge 0.005316 in tet [24326, 16815, 19442, 23669]
+  collapse rejects [surface 1211951, link 150142, valid 519123, quality 0, fold 395]
+opt pass 4: surf 209.3395ms, smooth 19.5991ms, flips 567.44ms (entries 63.6139ms, 2-3 9.0341ms, eremove 17.978ms, insert 476.8142ms), ops 25478, dirty 27311
+  insert: 65768 bad cands
+  split: 63844 cands, 34089 faces tried, 31735 gate-fail, 912 ok
+  max edge 0.005316 in tet [24326, 16815, 19442, 23669]
+  collapse rejects [surface 1048016, link 139402, valid 488376, quality 1, fold 515]
+opt pass 5: surf 191.5244ms, smooth 19.3416ms, flips 1.5309817s (entries 114.739ms, 2-3 329.2215ms, eremove 196.063ms, insert 890.9584ms), ops 23632, dirty 25915
+  insert: 59862 bad cands
+  split: 57815 cands, 31405 faces tried, 29130 gate-fail, 859 ok
+  max edge 0.005316 in tet [24326, 16815, 19442, 23669]
+  collapse rejects [surface 895548, link 129678, valid 452292, quality 2, fold 549]
+opt pass 6: surf 349.7876ms, smooth 47.9507ms, flips 1.614511s (entries 101.9258ms, 2-3 283.8424ms, eremove 193.5072ms, insert 1.0352359s), ops 21970, dirty 24445
+  insert: 53755 bad cands
+  split: 51656 cands, 28420 faces tried, 26180 gate-fail, 783 ok
+  max edge 0.005274 in tet [12237, 15804, 12244, 21809]
+  collapse rejects [surface 754836, link 114005, valid 416456, quality 0, fold 582]
+opt pass 7: surf 309.9888ms, smooth 42.6336ms, flips 971.4885ms (entries 68.5236ms, 2-3 123.0757ms, eremove 137.8106ms, insert 642.0788ms), ops 20578, dirty 22888
+  insert: 47062 bad cands
+  split: 45094 cands, 25090 faces tried, 23026 gate-fail, 697 ok
+  max edge 0.005274 in tet [12237, 15804, 12244, 21809]
+  collapse rejects [surface 622226, link 98198, valid 372167, quality 0, fold 634]
+opt pass 8: surf 226.3084ms, smooth 28.2782ms, flips 1.0268198s (entries 74.2518ms, 2-3 154.8245ms, eremove 154.1436ms, insert 643.6003ms), ops 18929, dirty 21038
+  insert: 40165 bad cands
+  split: 38214 cands, 21576 faces tried, 19741 gate-fail, 563 ok
+  max edge 0.005274 in tet [12237, 15804, 12244, 21809]
+  collapse rejects [surface 503761, link 84410, valid 324545, quality 0, fold 580]
+opt pass 9: surf 308.3925ms, smooth 47.7498ms, flips 825.2044ms (entries 52.7338ms, 2-3 162.4206ms, eremove 88.1038ms, insert 521.9463ms), ops 17281, dirty 19044
+  insert: 33917 bad cands
+  split: 32162 cands, 18294 faces tried, 16675 gate-fail, 480 ok
+  max edge 0.005274 in tet [12237, 15804, 12244, 21809]
+  collapse rejects [surface 404682, link 69805, valid 280870, quality 0, fold 420]
+opt pass 10: surf 183.9242ms, smooth 24.9811ms, flips 907.969ms (entries 48.2986ms, 2-3 157.6735ms, eremove 118.6636ms, insert 583.3335ms), ops 15704, dirty 16908
+  insert: 28801 bad cands
+  split: 27165 cands, 15451 faces tried, 14151 gate-fail, 426 ok
+  max edge 0.005274 in tet [12237, 15804, 12244, 21809]
+  collapse rejects [surface 326215, link 58474, valid 239599, quality 1, fold 417]
+opt pass 11: surf 306.6396ms, smooth 26.4899ms, flips 582.434ms (entries 40.6915ms, 2-3 125.2979ms, eremove 117.9653ms, insert 298.4798ms), ops 13718, dirty 14858
+  insert: 23762 bad cands
+  split: 22326 cands, 12808 faces tried, 11599 gate-fail, 352 ok
+  max edge 0.005274 in tet [15804, 3137, 12244, 12237]
+  collapse rejects [surface 258833, link 48455, valid 201352, quality 4, fold 381]
+opt pass 12: surf 113.4192ms, smooth 21.8711ms, flips 559.8364ms (entries 36.5759ms, 2-3 155.4916ms, eremove 55.0207ms, insert 312.7482ms), ops 12269, dirty 13112
+  insert: 19111 bad cands
+  split: 17993 cands, 10460 faces tried, 9499 gate-fail, 312 ok
+  max edge 0.005274 in tet [21809, 12244, 15804, 12237]
+  collapse rejects [surface 203486, link 40136, valid 165107, quality 0, fold 383]
+opt pass 13: surf 131.1064ms, smooth 24.6146ms, flips 499.1718ms (entries 30.8502ms, 2-3 150.5192ms, eremove 61.2355ms, insert 256.567ms), ops 10606, dirty 11296
+  insert: 15044 bad cands
+  split: 13993 cands, 8266 faces tried, 7457 gate-fail, 241 ok
+  max edge 0.005274 in tet [21809, 12244, 15804, 12237]
+  collapse rejects [surface 155031, link 33746, valid 130691, quality 0, fold 378]
+opt pass 14: surf 97.3413ms, smooth 19.8806ms, flips 193.4718ms (entries 28.5952ms, 2-3 4.4461ms, eremove 7.2152ms, insert 153.2155ms), ops 9518, dirty 9782
+  insert: 11809 bad cands
+  split: 10978 cands, 6555 faces tried, 5945 gate-fail, 176 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 118534, link 27070, valid 102886, quality 0, fold 386]
+opt pass 15: surf 65.2227ms, smooth 15.0392ms, flips 364.9265ms (entries 24.2254ms, 2-3 123.1928ms, eremove 61.321ms, insert 156.1874ms), ops 8263, dirty 8431
+  insert: 8779 bad cands
+  split: 8146 cands, 4926 faces tried, 4429 gate-fail, 140 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 86717, link 21179, valid 78796, quality 0, fold 294]
+opt pass 16: surf 63.4172ms, smooth 18.9427ms, flips 298.8364ms (entries 21.1554ms, 2-3 90.8788ms, eremove 65.922ms, insert 120.8803ms), ops 7012, dirty 7116
+  insert: 6242 bad cands
+  split: 5728 cands, 3527 faces tried, 3150 gate-fail, 107 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 60352, link 15569, valid 57539, quality 0, fold 189]
+opt pass 17: surf 59.3127ms, smooth 13.0343ms, flips 310.9359ms (entries 18.5233ms, 2-3 136.4944ms, eremove 77.4821ms, insert 78.4362ms), ops 6311, dirty 6070
+  insert: 4430 bad cands
+  split: 4058 cands, 2572 faces tried, 2314 gate-fail, 83 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 42763, link 12188, valid 41282, quality 0, fold 133]
+opt pass 18: surf 53.7012ms, smooth 12.1119ms, flips 228.1667ms (entries 16.2962ms, 2-3 112.7964ms, eremove 54.4705ms, insert 44.6036ms), ops 5311, dirty 5110
+  insert: 2965 bad cands
+  split: 2706 cands, 1710 faces tried, 1527 gate-fail, 57 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 27526, link 8515, valid 27732, quality 0, fold 87]
+opt pass 19: surf 32.6989ms, smooth 11.1131ms, flips 273.9482ms (entries 14.1936ms, 2-3 138.2823ms, eremove 80.5663ms, insert 40.9061ms), ops 4464, dirty 4328
+  insert: 1994 bad cands
+  split: 1807 cands, 1191 faces tried, 1063 gate-fail, 43 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 18781, link 6141, valid 19057, quality 0, fold 97]
+opt pass 20: surf 38.2001ms, smooth 10.4103ms, flips 252.4644ms (entries 17.9592ms, 2-3 151.0905ms, eremove 57.5462ms, insert 25.8685ms), ops 3621, dirty 3646
+  insert: 1263 bad cands
+  split: 1148 cands, 782 faces tried, 686 gate-fail, 36 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 11479, link 4477, valid 11620, quality 0, fold 73]
+opt pass 21: surf 38.8184ms, smooth 9.8979ms, flips 283.814ms (entries 14.5938ms, 2-3 156.1109ms, eremove 88.4876ms, insert 24.6218ms), ops 3141, dirty 3181
+  insert: 657 bad cands
+  split: 590 cands, 410 faces tried, 358 gate-fail, 18 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 6215, link 3034, valid 6601, quality 0, fold 48]
+opt pass 22: surf 22.8596ms, smooth 11.2704ms, flips 223.1388ms (entries 11.0416ms, 2-3 134.8505ms, eremove 68.0449ms, insert 9.2019ms), ops 2719, dirty 2787
+  insert: 386 bad cands
+  split: 354 cands, 246 faces tried, 203 gate-fail, 18 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 3292, link 1759, valid 3816, quality 0, fold 24]
+opt pass 23: surf 29.6205ms, smooth 9.2331ms, flips 257.931ms (entries 20.5984ms, 2-3 133.2612ms, eremove 98.0614ms, insert 6.0101ms), ops 2275, dirty 2404
+  insert: 227 bad cands
+  split: 207 cands, 143 faces tried, 122 gate-fail, 11 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 1657, link 949, valid 2112, quality 0, fold 4]
+opt pass 24: surf 26.1139ms, smooth 12.4925ms, flips 153.8959ms (entries 9.5183ms, 2-3 66.8985ms, eremove 73.0835ms, insert 4.3957ms), ops 1980, dirty 2160
+  insert: 124 bad cands
+  split: 114 cands, 69 faces tried, 57 gate-fail, 10 ok
+  max edge 0.005125 in tet [20415, 30662, 11335, 5500]
+  collapse rejects [surface 843, link 534, valid 1103, quality 0, fold 6]
+opt pass 25: surf 17.591ms, smooth 9.7118ms, flips 169.119ms (entries 9.7175ms, 2-3 95.4188ms, eremove 60.806ms, insert 3.1768ms), ops 1662, dirty 1999
+  insert: 74 bad cands
+  split: 72 cands, 48 faces tried, 39 gate-fail, 6 ok
+  max edge 0.005125 in tet [11335, 5500, 3308, 30662]
+  collapse rejects [surface 510, link 328, valid 637, quality 0, fold 4]
+opt pass 26: surf 19.6489ms, smooth 8.342ms, flips 214.2817ms (entries 13.9715ms, 2-3 100.9848ms, eremove 97.0341ms, insert 2.2916ms), ops 1334, dirty 1682
+  insert: 45 bad cands
+  split: 38 cands, 28 faces tried, 24 gate-fail, 3 ok
+  max edge 0.005125 in tet [11335, 5500, 3308, 30662]
+  collapse rejects [surface 271, link 201, valid 366, quality 0, fold 5]
+opt pass 27: surf 18.9887ms, smooth 7.9067ms, flips 160.3018ms (entries 18.4054ms, 2-3 82.5562ms, eremove 57.5333ms, insert 1.807ms), ops 1118, dirty 1463
+  insert: 19 bad cands
+  split: 16 cands, 14 faces tried, 9 gate-fail, 1 ok
+  max edge 0.005125 in tet [41481, 11335, 5500, 3308]
+  collapse rejects [surface 107, link 60, valid 173, quality 0, fold 0]
+opt pass 28: surf 22.0037ms, smooth 7.3574ms, flips 169.2798ms (entries 10.2592ms, 2-3 107.3501ms, eremove 50.2731ms, insert 1.3975ms), ops 869, dirty 1179
+  insert: 10 bad cands
+  split: 10 cands, 9 faces tried, 9 gate-fail, 0 ok
+  max edge 0.004587 in tet [41481, 11335, 5500, 3308]
+  collapse rejects [surface 68, link 45, valid 130, quality 0, fold 0]
+opt pass 29: surf 18.9098ms, smooth 6.7671ms, flips 171.366ms (entries 18.5807ms, 2-3 96.2938ms, eremove 54.89ms, insert 1.6016ms), ops 742, dirty 1019
+  insert: 4 bad cands
+  split: 4 cands, 5 faces tried, 5 gate-fail, 0 ok
+  max edge 0.004199 in tet [58818, 2768, 56878, 11615]
+  collapse rejects [surface 46, link 2, valid 119, quality 0, fold 0]
+opt pass 30: surf 17.753ms, smooth 6.8459ms, flips 148.7745ms (entries 7.554ms, 2-3 79.6348ms, eremove 60.2831ms, insert 1.3027ms), ops 680, dirty 922
+  insert: 3 bad cands
+  split: 3 cands, 3 faces tried, 3 gate-fail, 0 ok
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 16, link 0, valid 58, quality 0, fold 0]
+opt pass 31: surf 21.9786ms, smooth 5.9697ms, flips 46.4284ms (entries 6.4709ms, 2-3 35.6993ms, eremove 3.0869ms, insert 1.1714ms), ops 569, dirty 834
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 11, link 0, valid 35, quality 0, fold 0]
+opt pass 32: surf 10.6039ms, smooth 6.3131ms, flips 9.658ms (entries 5.8296ms, 2-3 1.4419ms, eremove 1.5928ms, insert 793.9µs), ops 480, dirty 735
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 13, link 0, valid 35, quality 0, fold 0]
+opt pass 33: surf 8.3936ms, smooth 4.5739ms, flips 68.0801ms (entries 6.5686ms, 2-3 24.2351ms, eremove 36.0546ms, insert 1.2219ms), ops 330, dirty 538
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 9, link 0, valid 37, quality 0, fold 0]
+opt pass 34: surf 8.1096ms, smooth 11.511ms, flips 133.7853ms (entries 4.78ms, 2-3 57.3956ms, eremove 70.2761ms, insert 1.3337ms), ops 303, dirty 487
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 9, link 0, valid 25, quality 0, fold 0]
+opt pass 35: surf 7.6197ms, smooth 6.68ms, flips 60.9979ms (entries 4.5096ms, 2-3 29.2557ms, eremove 26.2405ms, insert 992.2µs), ops 220, dirty 368
+  max edge 0.004199 in tet [23707, 23706, 22482, 22480]
+  collapse rejects [surface 6, link 1, valid 9, quality 0, fold 0]
+opt pass 36: surf 6.3306ms, smooth 3.5497ms, flips 54.5377ms (entries 3.9038ms, 2-3 14.0766ms, eremove 35.4341ms, insert 1.1233ms), ops 150, dirty 261
+COAX subset: 117.1s
+  mesh.total: 117.0s
+  optimize.total: 103.8s
+  optimize.collapse: 48.9s
+  optimize.coarsen: 25.6s
+  refine.total: 13.3s
+  refine.loop: 9.2s
+  optimize.flips: 8.4s
+  optimize.sliver: 8.0s

@@ -1,77 +1,153 @@
-//! The tube carrier's centerline: a polyline with a midpoint-prune
-//! accelerator for closest-point queries. The projection oracle of a
-//! `SurfaceKind::Tube` runs millions of times per mesh (sphere tracing,
-//! POCS, wall predicates); a plain scan of exact segment projections made
-//! the coil geometries 10x slower than their discrete-carrier predecessor.
-//! A cheap flat pass over precomputed segment midpoints bounds the search,
-//! and the exact projection runs only for the handful of segments that can
-//! still beat the bound -- no spatial index, no far-query pathology.
+//! The tube carrier's centerline: a polyline with an AABB-tree accelerator
+//! for closest-point queries (the same shape as
+//! [`crate::discrete::DiscreteSurface`]'s triangle tree). The projection
+//! oracle of a `SurfaceKind::Tube` runs millions of times per mesh (sphere
+//! tracing, POCS, wall predicates); a plain linear scan over a helix path
+//! made the coil geometries 10x slower than their discrete-carrier
+//! predecessor, and flat prune passes only doubled the scan.
 
 use crate::vec3::{dist, dot, sub, V3};
 
-/// A polyline sweep centerline with midpoint-prune closest queries.
+/// A polyline sweep centerline with an AABB segment tree for closest queries.
 #[derive(Debug)]
 pub struct TubePath {
     /// The ordered path nodes.
     pub pts: Vec<V3>,
-    /// Segment midpoints (prune pass; cache-friendly flat scan).
-    mids: Vec<V3>,
-    /// Segment half-lengths (the midpoint bound's slack).
-    half: Vec<f64>,
+    /// Flat AABB tree (node = (lo, hi, left, right | leaf segment range)).
+    nodes: Vec<Node>,
+    /// Segment order for leaf ranges.
+    order: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    lo: V3,
+    hi: V3,
+    /// Child indices, or `(start, !count)` leaf encoding when `right < 0`.
+    left: i32,
+    right: i32,
+}
+
+fn d2(a: V3, b: V3) -> f64 {
+    let d = sub(a, b);
+    dot(d, d)
+}
+
+fn box_d2(lo: V3, hi: V3, p: V3) -> f64 {
+    let mut s = 0.0;
+    for k in 0..3 {
+        let d = (lo[k] - p[k]).max(0.0).max(p[k] - hi[k]);
+        s += d * d;
+    }
+    s
+}
+
+/// Closest point on segment `a -> b` to `p`.
+fn closest_on_seg(p: V3, a: V3, b: V3) -> V3 {
+    let ab = sub(b, a);
+    let len2 = dot(ab, ab);
+    let t = if len2 > 0.0 {
+        (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    std::array::from_fn(|k| a[k] + t * ab[k])
 }
 
 impl TubePath {
-    /// Builds the midpoint prune arrays. `pts` needs at least 2 nodes.
+    /// Builds the segment tree. `pts` needs at least 2 nodes.
     pub fn new(pts: Vec<V3>) -> TubePath {
         assert!(pts.len() >= 2, "tube path needs at least 2 nodes");
+        let n_seg = pts.len() - 1;
         let mids: Vec<V3> = pts
             .windows(2)
             .map(|w| std::array::from_fn(|k| 0.5 * (w[0][k] + w[1][k])))
             .collect();
-        let half: Vec<f64> = pts.windows(2).map(|w| 0.5 * dist(w[0], w[1])).collect();
-        TubePath { pts, mids, half }
+        let mut order: Vec<u32> = (0..n_seg as u32).collect();
+        let mut nodes = Vec::new();
+        build(&pts, &mids, &mut order, 0, n_seg, &mut nodes);
+        TubePath { pts, nodes, order }
     }
 
-    /// Closest point on the polyline to `p` (exact; the grid only prunes).
+    /// Closest point on the polyline to `p` (exact; the tree only prunes).
     pub fn closest(&self, p: V3) -> V3 {
-        let seg = |i: usize| -> (V3, f64) {
-            let (a, b) = (self.pts[i], self.pts[i + 1]);
-            let ab = sub(b, a);
-            let len2 = dot(ab, ab);
-            let t = if len2 > 0.0 {
-                (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let q: V3 = std::array::from_fn(|k| a[k] + t * ab[k]);
-            let d = sub(p, q);
-            (q, dot(d, d))
-        };
-        // Pass 1: cheap midpoint distances give an achievable upper bound
-        // (midpoint IS a segment point). Pass 2: the exact test runs only for
-        // segments whose midpoint could still beat it (d_mid - half < bound).
-        // The oracle runs millions of times per mesh; this keeps the exact
-        // evaluations to a handful without any spatial-index pathology.
-        let mut bound2 = f64::MAX;
-        for m in &self.mids {
-            let d = sub(p, *m);
-            bound2 = bound2.min(dot(d, d));
-        }
-        let bound = bound2.sqrt();
-        let mut best = (self.pts[0], f64::MAX);
-        for (i, (m, h)) in self.mids.iter().zip(&self.half).enumerate() {
-            let d = sub(p, *m);
-            let dm = dot(d, d).sqrt();
-            if dm - h > bound {
-                continue;
-            }
-            let c = seg(i);
-            if c.1 < best.1 {
-                best = c;
-            }
-        }
-        best.0
+        let mut best = (f64::INFINITY, self.pts[0]);
+        self.closest_rec(0, p, &mut best);
+        best.1
     }
+
+    fn closest_rec(&self, ni: usize, p: V3, best: &mut (f64, V3)) {
+        let n = self.nodes[ni];
+        if box_d2(n.lo, n.hi, p) >= best.0 {
+            return;
+        }
+        if n.right < 0 {
+            let (start, count) = (n.left as usize, (!n.right) as usize);
+            for &si in &self.order[start..start + count] {
+                let s = si as usize;
+                let q = closest_on_seg(p, self.pts[s], self.pts[s + 1]);
+                let dd = d2(p, q);
+                if dd < best.0 {
+                    *best = (dd, q);
+                }
+            }
+            return;
+        }
+        let (l, r) = (n.left as usize, n.right as usize);
+        let (dl, dr) = (
+            box_d2(self.nodes[l].lo, self.nodes[l].hi, p),
+            box_d2(self.nodes[r].lo, self.nodes[r].hi, p),
+        );
+        if dl <= dr {
+            self.closest_rec(l, p, best);
+            self.closest_rec(r, p, best);
+        } else {
+            self.closest_rec(r, p, best);
+            self.closest_rec(l, p, best);
+        }
+    }
+}
+
+fn build(
+    pts: &[V3],
+    mids: &[V3],
+    order: &mut [u32],
+    start: usize,
+    end: usize,
+    nodes: &mut Vec<Node>,
+) -> i32 {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for &si in &order[start..end] {
+        for &q in &[pts[si as usize], pts[si as usize + 1]] {
+            for k in 0..3 {
+                lo[k] = lo[k].min(q[k]);
+                hi[k] = hi[k].max(q[k]);
+            }
+        }
+    }
+    let idx = nodes.len() as i32;
+    nodes.push(Node { lo, hi, left: 0, right: 0 });
+    let count = end - start;
+    if count <= 8 {
+        nodes[idx as usize].left = start as i32;
+        nodes[idx as usize].right = !(count as i32);
+        return idx;
+    }
+    let axis = (0..3)
+        .max_by(|&a, &b| (hi[a] - lo[a]).partial_cmp(&(hi[b] - lo[b])).unwrap())
+        .unwrap();
+    order[start..end].sort_unstable_by(|&a, &b| {
+        mids[a as usize][axis]
+            .partial_cmp(&mids[b as usize][axis])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mid = start + count / 2;
+    let l = build(pts, mids, order, start, mid, nodes);
+    let r = build(pts, mids, order, mid, end, nodes);
+    nodes[idx as usize].left = l;
+    nodes[idx as usize].right = r;
+    idx
 }
 
 #[cfg(test)]
@@ -79,7 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grid_closest_matches_linear_scan() {
+    fn tree_closest_matches_linear_scan() {
         // helix-like path
         let pts: Vec<V3> = (0..=180)
             .map(|i| {
@@ -91,13 +167,9 @@ mod tests {
         let linear = |p: V3| -> V3 {
             let mut best = (pts[0], f64::MAX);
             for w in pts.windows(2) {
-                let ab = sub(w[1], w[0]);
-                let len2 = dot(ab, ab);
-                let t = (dot(sub(p, w[0]), ab) / len2).clamp(0.0, 1.0);
-                let q: V3 = std::array::from_fn(|k| w[0][k] + t * ab[k]);
-                let d = sub(p, q);
-                if dot(d, d) < best.1 {
-                    best = (q, dot(d, d));
+                let q = closest_on_seg(p, w[0], w[1]);
+                if d2(p, q) < best.1 {
+                    best = (q, d2(p, q));
                 }
             }
             best.0
@@ -112,7 +184,7 @@ mod tests {
         for _ in 0..500 {
             let p: V3 = [4.0 * frac() - 2.0, 4.0 * frac() - 2.0, 4.0 * frac()];
             let (a, b) = (tube.closest(p), linear(p));
-            assert!(dist(a, b) < 1e-9, "grid {a:?} vs linear {b:?} at {p:?}");
+            assert!(dist(a, b) < 1e-9, "tree {a:?} vs linear {b:?} at {p:?}");
         }
     }
 }

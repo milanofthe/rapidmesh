@@ -171,7 +171,7 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
     while t < 1.0 {
         guard += 1;
         if guard > 4096 {
-            CC_GUARD_TRIPS.with(|c| c.set(c.get() + 1));
+            CC_GUARD_TRIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             break;
         }
         // |offset| lower-bounds the true distance (the offset of a 1-Lipschitz
@@ -201,18 +201,17 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
         t = t2;
         s_prev = s2;
     }
-    CC_EVALS.with(|c| c.set(c.get() + evals));
+    CC_EVALS.fetch_add(evals, std::sync::atomic::Ordering::Relaxed);
     out
 }
 
-thread_local! {
-    /// Sphere-tracing telemetry (RAPIDMESH_REFINE_TRACE): total offset
-    /// evaluations and 4096-step-guard trips of [`carrier_crossings`]. A
-    /// guard trip means a segment grazed a carrier for its whole length
-    /// (offset ~ 0 everywhere, so the safe step degenerates to `min_step`).
-    static CC_EVALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static CC_GUARD_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
+/// Sphere-tracing telemetry (RAPIDMESH_REFINE_TRACE): total offset
+/// evaluations and 4096-step-guard trips of [`carrier_crossings`]. A guard
+/// trip means a segment grazed a carrier for its whole length (offset ~ 0
+/// everywhere, so the safe step degenerates to `min_step`). Atomics, not
+/// thread-locals: the wall stage evaluates across rayon workers.
+static CC_EVALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CC_GUARD_TRIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Parameter range of segment `a -> b` inside the (slightly inflated) ball
 /// `(c, r)`, or `None` when the segment misses it entirely.
@@ -300,10 +299,12 @@ struct Refiner<'a> {
     n_bad_size: u64,
     n_bad_shape: u64,
     n_bad_offface: u64,
-    n_cross_found: std::cell::Cell<u64>,
-    n_member_reject: std::cell::Cell<u64>,
-    n_cc_none: std::cell::Cell<u64>,
-    n_side_pierce: std::cell::Cell<u64>,
+    // Atomics, not Cells: the wall/depth stages share &Refiner across rayon
+    // workers (everything else in the struct is plain read-only data there).
+    n_cross_found: std::sync::atomic::AtomicU64,
+    n_member_reject: std::sync::atomic::AtomicU64,
+    n_cc_none: std::sync::atomic::AtomicU64,
+    n_side_pierce: std::sync::atomic::AtomicU64,
 }
 
 impl<'a> Refiner<'a> {
@@ -673,7 +674,7 @@ impl<'a> Refiner<'a> {
             None => (a, b),
         };
         for t in carrier_crossings(surf, a, b) {
-            self.n_cross_found.set(self.n_cross_found.get() + 1);
+            self.n_cross_found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let x0: V3 = std::array::from_fn(|k| a[k] + t * (b[k] - a[k]));
             if let Some((c, rmax)) = near {
                 if dist(x0, c) > rmax {
@@ -700,7 +701,7 @@ impl<'a> Refiner<'a> {
                     }
                 }
             }
-            self.n_member_reject.set(self.n_member_reject.get() + 1);
+            self.n_member_reject.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         None
     }
@@ -712,7 +713,7 @@ impl<'a> Refiner<'a> {
         let fv: [usize; 3] = std::array::from_fn(|k| tet[FACET_LOCAL[i][k]]);
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
         let Some((c1, r1)) = tet_circumcenter(p) else {
-            self.n_cc_none.set(self.n_cc_none.get() + 1);
+            self.n_cc_none.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return None;
         };
         // Dual endpoint on the other side: neighbour circumcenter, or an
@@ -867,7 +868,7 @@ impl<'a> Refiner<'a> {
                 }
                 (true, true) => {
                     // piercing: dominant side by centroid
-                    self.n_side_pierce.set(self.n_side_pierce.get() + 1);
+                    self.n_side_pierce.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if signed_offset(surf, cen) >= 0.0 { 1 } else { -1 }
                 }
             }
@@ -1419,10 +1420,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         n_bad_size: 0,
         n_bad_shape: 0,
         n_bad_offface: 0,
-        n_cross_found: std::cell::Cell::new(0),
-        n_member_reject: std::cell::Cell::new(0),
-        n_cc_none: std::cell::Cell::new(0),
-        n_side_pierce: std::cell::Cell::new(0),
+        n_cross_found: std::sync::atomic::AtomicU64::new(0),
+        n_member_reject: std::sync::atomic::AtomicU64::new(0),
+        n_cc_none: std::sync::atomic::AtomicU64::new(0),
+        n_side_pierce: std::sync::atomic::AtomicU64::new(0),
     };
 
     // ---- protect 0-features: corners --------------------------------------
@@ -2063,8 +2064,8 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             "REFINE facet_ins {} (size {} shape {} offface {}) cell_ins {} seg_split {} ins_rejected {} ball_none {} cross_found {} member_reject {} cc_none {} trace_evals {} guard_trips {}",
             r.n_facet_ins, r.n_bad_size, r.n_bad_shape, r.n_bad_offface,
             r.n_cell_ins, r.n_seg_split, r.n_ins_rejected, r.n_ball_none,
-            r.n_cross_found.get(), r.n_member_reject.get(), r.n_cc_none.get(),
-            CC_EVALS.with(|c| c.get()), CC_GUARD_TRIPS.with(|c| c.get())
+            r.n_cross_found.load(std::sync::atomic::Ordering::Relaxed), r.n_member_reject.load(std::sync::atomic::Ordering::Relaxed), r.n_cc_none.load(std::sync::atomic::Ordering::Relaxed),
+            CC_EVALS.load(std::sync::atomic::Ordering::Relaxed), CC_GUARD_TRIPS.load(std::sync::atomic::Ordering::Relaxed)
         );
     }
 
@@ -2137,13 +2138,27 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         })
     };
     // Non-wall internal facets, kept for the bridge-guard watershed below.
+    // The wall predicate (carrier oracles per facet) is read-only on the
+    // refiner, so it is evaluated in PARALLEL over the fixed facet list; the
+    // union-find replay below is sequential and order-identical.
     let t_walls = std::time::Instant::now();
     let mut nonwall: Vec<(u32, u32)> = Vec::new();
-    for (fkey, &(a, b)) in &owners {
-        if b == u32::MAX {
-            continue; // hull facet: always a component boundary
-        }
-        if r.facet_is_wall(&all_tets[a as usize], Some(&all_tets[b as usize]), *fkey) {
+    let internal: Vec<([usize; 3], u32, u32)> = owners
+        .iter()
+        .filter(|&(_, &(_, b))| b != u32::MAX)
+        .map(|(fkey, &(a, b))| (*fkey, a, b))
+        .collect();
+    let is_wall: Vec<bool> = {
+        use rayon::prelude::*;
+        internal
+            .par_iter()
+            .map(|&(fkey, a, b)| {
+                r.facet_is_wall(&all_tets[a as usize], Some(&all_tets[b as usize]), fkey)
+            })
+            .collect()
+    };
+    for (&(fkey, a, b), &wall) in internal.iter().zip(&is_wall) {
+        if wall {
             n_walls += 1;
             continue;
         }
@@ -2170,15 +2185,21 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
         })
     };
+    // Depth (surface distance) per tet in parallel -- pure BVH queries over
+    // the fixed tet list; the component fold below stays sequential.
+    let depths: Vec<f64> = {
+        use rayon::prelude::*;
+        all_tets
+            .par_iter()
+            .map(|t| r.bvh.nearest_dist(centroid_of(t)))
+            .collect()
+    };
     let mut comp_best: DMap<u32, (f64, u32)> = DMap::default();
-    let mut depths: Vec<f64> = Vec::with_capacity(all_tets.len());
-    for (ti, t) in all_tets.iter().enumerate() {
+    for (ti, d) in depths.iter().enumerate() {
         let root = find(&mut uf, ti as u32);
-        let d = r.bvh.nearest_dist(centroid_of(t));
-        depths.push(d);
         let e = comp_best.entry(root).or_insert((-1.0, 0));
-        if d > e.0 {
-            *e = (d, ti as u32);
+        if *d > e.0 {
+            *e = (*d, ti as u32);
         }
     }
     let mut comp_region: DMap<u32, u32> = DMap::default();
@@ -2373,7 +2394,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         rvv.sort_unstable_by_key(|e| e.0);
         eprintln!(
             "CLASSIFY region volumes: {rvv:?} (piercing side-fallbacks {})",
-            r.n_side_pierce.get()
+            r.n_side_pierce.load(std::sync::atomic::Ordering::Relaxed)
         );
     }
     rmlog::stage("refine.classify", t_class.elapsed().as_secs_f64());

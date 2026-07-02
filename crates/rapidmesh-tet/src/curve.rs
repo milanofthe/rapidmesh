@@ -21,7 +21,9 @@
 use rapidmesh_geom::vec3::{V3, dist};
 use crate::geomutil::circumradius;
 /// A general edge curve, parametrized by arc length `s in [0, length()]`.
-pub trait Curve {
+/// `Send + Sync` supertraits: curve evaluators are plain data, and the
+/// refiner is shared across rayon workers for its read-only stages.
+pub trait Curve: Send + Sync {
     /// Total arc length.
     fn length(&self) -> f64;
     /// Position at arc length `s` (clamped to `[0, length]`).

@@ -641,6 +641,27 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         edge_watch("smooth", mesh, &alive);
         volume_watch("smooth", mesh, &alive);
 
+        // --------------------------------------------- sliver smoothing
+        // Active worst-dihedral optimization on the vertices of sliver tets
+        // (Freitag / Ollivier-Gooch): pattern search maximizing the local MIN
+        // quality, with surface vertices sliding ON their carriers and feature
+        // vertices on the intersection of theirs. The ODT smoother above aims
+        // at Delaunay optimality and skips constrained vertices entirely --
+        // boundary slivers (the wedge along an intersection curve) are only
+        // reachable by this pass.
+        ops += sliver_pass(
+            mesh,
+            &g_incident,
+            &alive,
+            &mut tet_q,
+            &constrained_verts,
+            &complex_changed,
+            &edge_budget2,
+            &mut next_dirty,
+        );
+        edge_watch("sliver", mesh, &alive);
+        volume_watch("sliver", mesh, &alive);
+
         // --------------------------------------------- edge collapse
         // Before the flip owner maps are built: collapses rewrite tets in
         // place, and the entry lists must reflect the result.
@@ -2331,6 +2352,214 @@ impl SurfConstraint {
         let p = self.project(q);
         (0..3).map(|k| (p[k] - q[k]).powi(2)).sum()
     }
+}
+
+/// Active sliver smoothing: for every vertex of a sliver tet, pattern-search
+/// the position maximizing the MINIMUM quality over its incident tets --
+/// directly targeting the worst dihedral, where the ODT update (which aims at
+/// Delaunay optimality) plateaus. Interior vertices move freely; surface
+/// vertices slide on their carrier(s) (projected after every trial step), so
+/// boundary and feature slivers -- unreachable by every other operation -- are
+/// repaired without leaving the geometry.
+#[allow(clippy::too_many_arguments)]
+fn sliver_pass(
+    mesh: &mut TetMesh,
+    g_incident: &[Vec<u32>],
+    alive: &[bool],
+    tet_q: &mut [f64],
+    constrained_verts: &DSet<usize>,
+    complex_changed: &impl Fn(&[usize]) -> bool,
+    edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+    next_dirty: &mut DSet<usize>,
+) -> usize {
+    // Target band: tets below ~SLIVER_DEG + 10 deg get the active treatment.
+    let sliver_q = -((crate::constants::SLIVER_DEG + 10.0).to_radians().cos());
+    // Sliver tets and their vertices.
+    let mut sliver_verts: Vec<usize> = Vec::new();
+    for (ti, t) in mesh.tets.iter().enumerate() {
+        if !alive[ti] || !complex_changed(t) {
+            continue;
+        }
+        if tet_q[ti].is_nan() {
+            tet_q[ti] = quality(&mesh.points, *t);
+        }
+        if tet_q[ti] < sliver_q {
+            sliver_verts.extend_from_slice(t);
+        }
+    }
+    sliver_verts.sort_unstable();
+    sliver_verts.dedup();
+    if sliver_verts.is_empty() {
+        return 0;
+    }
+    // Carrier constraints per constrained sliver vertex, from its surface
+    // faces: one entry per distinct (plane patch | curved surface).
+    let sliver_set: DSet<usize> = sliver_verts.iter().copied().collect();
+    let mut vcons: DMap<usize, Vec<SurfConstraint>> = DMap::default();
+    for sf in &mesh.faces {
+        for &v in &sf.tri {
+            if !sliver_set.contains(&v) {
+                continue;
+            }
+            let entry = vcons.entry(v).or_default();
+            match mesh.surfaces[sf.surface as usize] {
+                SurfaceKind::Plane => {
+                    let (a, b, c) = (
+                        mesh.points[sf.tri[0]],
+                        mesh.points[sf.tri[1]],
+                        mesh.points[sf.tri[2]],
+                    );
+                    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let mut n = [
+                        u[1] * w[2] - u[2] * w[1],
+                        u[2] * w[0] - u[0] * w[2],
+                        u[0] * w[1] - u[1] * w[0],
+                    ];
+                    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    if l < f64::MIN_POSITIVE {
+                        continue;
+                    }
+                    for x in &mut n {
+                        *x /= l;
+                    }
+                    // one plane per patch: near-duplicates merge via normal + offset
+                    let dup = entry.iter().any(|cn| match cn {
+                        SurfConstraint::Plane { n: n2, p0 } => {
+                            (n[0] * n2[0] + n[1] * n2[1] + n[2] * n2[2]).abs() > 0.999
+                                && ((0..3).map(|k| n[k] * (a[k] - p0[k])).sum::<f64>()).abs()
+                                    < 1e-9 * l.max(1.0)
+                        }
+                        _ => false,
+                    });
+                    if !dup {
+                        entry.push(SurfConstraint::Plane { n, p0: a });
+                    }
+                }
+                ref kind => {
+                    let dup = entry.iter().any(|cn| {
+                        matches!(cn, SurfConstraint::Curved(k2)
+                            if std::mem::discriminant(k2) == std::mem::discriminant(kind))
+                    });
+                    if !dup {
+                        entry.push(SurfConstraint::Curved(kind.clone()));
+                    }
+                }
+            }
+        }
+    }
+    let mut ops = 0usize;
+    let mut inc: Vec<u32> = Vec::new();
+    for &v in &sliver_verts {
+        inc.clear();
+        inc.extend(g_incident[v].iter().copied().filter(|&ti| alive[ti as usize]));
+        if inc.is_empty() {
+            continue;
+        }
+        let empty: Vec<SurfConstraint> = Vec::new();
+        let cons: &[SurfConstraint] = if constrained_verts.contains(&v) {
+            match vcons.get(&v) {
+                Some(cs) if cs.len() <= 3 => cs.as_slice(),
+                _ => continue, // junction of many surfaces: pinned
+            }
+        } else {
+            empty.as_slice()
+        };
+        let old_pos = mesh.points[v];
+        // local scale
+        let mut lref2 = 0.0f64;
+        for &ti in &inc {
+            for &w in &mesh.tets[ti as usize] {
+                if w != v {
+                    let d2: f64 =
+                        (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
+                    lref2 = lref2.max(d2);
+                }
+            }
+        }
+        let lref = lref2.sqrt();
+        fn eval(mesh: &TetMesh, inc: &[u32]) -> f64 {
+            let mut q = f64::MAX;
+            for &ti in inc {
+                if !orient_positive(&mesh.points, mesh.tets[ti as usize]) {
+                    return f64::NEG_INFINITY;
+                }
+                q = q.min(quality(&mesh.points, mesh.tets[ti as usize]));
+            }
+            q
+        }
+        let base_q = eval(mesh, &inc);
+        if base_q >= sliver_q {
+            continue; // repaired by an earlier move this pass
+        }
+        // Pattern search: coordinate directions, shrinking rounds, trial
+        // positions projected onto the vertex's carrier intersection.
+        let mut best_q = base_q;
+        let mut best_pos = old_pos;
+        let mut step = 0.3 * lref;
+        let tol = 1e-9 * lref.max(1e-30);
+        for _round in 0..3 {
+            let mut improved = true;
+            while improved {
+                improved = false;
+                for dir in 0..6 {
+                    let (axis, sign) = (dir / 2, if dir % 2 == 0 { 1.0 } else { -1.0 });
+                    let mut cand = best_pos;
+                    cand[axis] += sign * step;
+                    let cand = if cons.is_empty() {
+                        cand
+                    } else {
+                        match project_onto_all(cons, cand, tol) {
+                            Some(qq) => qq,
+                            None => continue,
+                        }
+                    };
+                    // per-edge budget: no incident edge grows past its region
+                    // budget (unless it already was longer)
+                    let mut blocked = false;
+                    'edges: for &ti in &inc {
+                        let budget2 = edge_budget2(mesh.tet_regions[ti as usize]);
+                        for &w in &mesh.tets[ti as usize] {
+                            if w == v {
+                                continue;
+                            }
+                            let d_old: f64 = (0..3)
+                                .map(|k| (mesh.points[w][k] - old_pos[k]).powi(2))
+                                .sum();
+                            let d_new: f64 = (0..3)
+                                .map(|k| (mesh.points[w][k] - cand[k]).powi(2))
+                                .sum();
+                            if d_new > d_old.max(budget2) {
+                                blocked = true;
+                                break 'edges;
+                            }
+                        }
+                    }
+                    if blocked {
+                        continue;
+                    }
+                    mesh.points[v] = cand;
+                    let q = eval(mesh, &inc);
+                    mesh.points[v] = old_pos;
+                    if q > best_q + QUALITY_EPS {
+                        best_q = q;
+                        best_pos = cand;
+                        improved = true;
+                    }
+                }
+            }
+            step *= 0.35;
+        }
+        if best_q > base_q + QUALITY_EPS && best_pos != old_pos {
+            mesh.points[v] = best_pos;
+            ops += 1;
+            next_dirty.insert(v);
+            for &ti in &inc {
+                tet_q[ti as usize] = f64::NAN;
+            }
+        }
+    }
+    ops
 }
 
 /// Projects `q` onto the common intersection of all constraints by

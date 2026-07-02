@@ -104,6 +104,19 @@ impl Curve for PolylineCurve {
 /// gradient limit so adjacent elements differ by at most the ratio `1 + grad`.
 /// Points sit at equal increments of the cumulative density `integral 1/h`.
 pub fn distribute(curve: &dyn Curve, deflection: f64, maxh: f64, grad: f64) -> Vec<f64> {
+    distribute_floored(curve, deflection, maxh, grad, 0.0)
+}
+
+/// [`distribute`] with a hard size FLOOR: a curvature-radius spike (the sharp
+/// turn of an intersection curve, a micro-rim) may not drive the sampling below
+/// `minh` -- the local-feature-size clamp of the refinement path. `0` = off.
+pub fn distribute_floored(
+    curve: &dyn Curve,
+    deflection: f64,
+    maxh: f64,
+    grad: f64,
+    minh: f64,
+) -> Vec<f64> {
     let len = curve.length();
     if !(len > 0.0) || !(maxh > 0.0) {
         return vec![0.0];
@@ -116,7 +129,7 @@ pub fn distribute(curve: &dyn Curve, deflection: f64, maxh: f64, grad: f64) -> V
     for i in 0..=m {
         let s = (i as f64) * ds;
         let r = curve.radius_at(s);
-        h[i] = if r.is_finite() { (r * chord).min(maxh) } else { maxh }.max(1e-12);
+        h[i] = if r.is_finite() { (r * chord).min(maxh) } else { maxh }.max(minh).max(1e-12);
     }
     // Multiplicative gradient limit: h cannot grow faster than the ratio (1+grad)
     // per element of its own length. Over a sub-element sample step `ds`, that is

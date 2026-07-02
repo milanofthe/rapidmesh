@@ -28,7 +28,7 @@
 
 use crate::brep_mesh::edge_curve;
 use crate::conform::{MeshParams, SurfaceFace, TetMesh};
-use crate::curve::distribute;
+use crate::curve::distribute_floored;
 use crate::delaunay::DelaunayBuilder;
 use crate::domain::DomainTree;
 use crate::facetbvh::FacetBvh;
@@ -53,8 +53,10 @@ const FACET_SIZE: f64 = 1.0;
 /// `CELL_SIZE * h(cc)` (`r ~ 0.61 h` for a regular tet of edge `h`).
 const CELL_SIZE: f64 = 0.75;
 /// Segment-length floor as a fraction of the local size: a shorter segment is
-/// never split (the Ruppert small-angle ping-pong guard).
-const SEG_FLOOR: f64 = 0.02;
+/// never split, the encroachment is accepted instead (the Ruppert small-angle /
+/// tight-curve-turn ping-pong guard: adjacent segments of one sharply turning
+/// curve otherwise split each other down to nothing).
+const SEG_FLOOR: f64 = 0.25;
 /// Duplicate guard: candidates closer than this fraction of the local size to
 /// an existing vertex are dropped.
 const DUP_FRAC: f64 = 0.05;
@@ -204,6 +206,16 @@ struct Refiner<'a> {
     db: DelaunayBuilder,
     /// Provenance per public DT vertex.
     prov: Vec<Prov>,
+    /// Protecting-ball radius per vertex (0 = unprotected). Feature points
+    /// (corners, curve samples) carry a ball; no facet/cell candidate is
+    /// inserted inside it -- the Cheng-Dey-Ramos protection that keeps surface
+    /// and volume refinement from crowding the 0/1-features (the crowding is
+    /// what breeds the unremovable slivers along intersection curves). Balls
+    /// only ever SHRINK (when a nearer feature point appears), so protection
+    /// never blocks legitimate refinement of the features themselves.
+    ball: Vec<f64>,
+    /// Spatial hash of protected vertices (ball AABB cells -> vertex).
+    ball_grid: DMap<[i64; 3], Vec<usize>>,
     /// Faces incident to each vertex (restricted-facet candidates).
     vfaces: Vec<Vec<u32>>,
     /// Live feature segments, keyed by their (sorted) endpoint vertex pair.
@@ -224,6 +236,10 @@ struct Refiner<'a> {
     diag: f64,
     max_points: usize,
     radius_edge: f64,
+    /// Hard sizing floor: curvature-driven refinement (a curvature-radius spike
+    /// on an intersection curve, a micro-rim) may not push `h` below this --
+    /// the auto local-feature-size clamp. `min_h_surf` overrides when set.
+    h_floor: f64,
     /// Diagnostics (RAPIDMESH_REFINE_TRACE): why insertions happen / fail.
     n_facet_ins: u64,
     n_cell_ins: u64,
@@ -240,7 +256,7 @@ struct Refiner<'a> {
 
 impl<'a> Refiner<'a> {
     fn h_at(&self, p: V3) -> f64 {
-        self.domain.h_at(p).max(1e-12)
+        self.domain.h_at(p).max(self.h_floor)
     }
 
     fn pos(&self, v: usize) -> V3 {
@@ -340,6 +356,46 @@ impl<'a> Refiner<'a> {
             region = arrive;
         }
         Some(region)
+    }
+
+    // ---------------- protecting balls -------------------------------------
+
+    /// Grants vertex `v` a protecting ball of radius `r` (or shrinks it).
+    fn set_ball(&mut self, v: usize, r: f64) {
+        if v >= self.ball.len() || !(r > 0.0) {
+            return;
+        }
+        if self.ball[v] > 0.0 && self.ball[v] <= r {
+            return; // balls only shrink
+        }
+        self.ball[v] = r;
+        let p = self.pos(v);
+        let lo: [i64; 3] = std::array::from_fn(|k| ((p[k] - r) / self.seg_cell).floor() as i64);
+        let hi: [i64; 3] = std::array::from_fn(|k| ((p[k] + r) / self.seg_cell).floor() as i64);
+        for x in lo[0]..=hi[0] {
+            for y in lo[1]..=hi[1] {
+                for z in lo[2]..=hi[2] {
+                    let cell = self.ball_grid.entry([x, y, z]).or_default();
+                    if !cell.contains(&v) {
+                        cell.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// True if `p` lies inside some vertex's protecting ball.
+    fn in_ball(&self, p: V3) -> bool {
+        let cell: [i64; 3] = std::array::from_fn(|k| (p[k] / self.seg_cell).floor() as i64);
+        if let Some(vs) = self.ball_grid.get(&cell) {
+            for &v in vs {
+                let r = self.ball[v];
+                if r > 0.0 && dist(p, self.pos(v)) < r {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     // ---------------- feature segments ------------------------------------
@@ -442,8 +498,13 @@ impl<'a> Refiner<'a> {
         self.n_seg_split += 1;
         self.prov.push(Prov::Edge(seg.ei));
         self.vfaces.push(self.edge_faces(seg.ei));
+        self.ball.push(0.0);
         self.add_seg(Seg { ei: seg.ei, va: seg.va, vb: v, sa: seg.sa, sb: sm });
         self.add_seg(Seg { ei: seg.ei, va: v, vb: seg.vb, sa: sm, sb: seg.sb });
+        let rb = 0.6 * dist(self.pos(seg.va), p).min(dist(self.pos(seg.vb), p));
+        self.set_ball(v, rb);
+        self.set_ball(seg.va, rb.max(dist(self.pos(seg.va), p) * 0.6));
+        self.set_ball(seg.vb, rb.max(dist(self.pos(seg.vb), p) * 0.6));
         self.queue_created();
         Some(v)
     }
@@ -485,11 +546,20 @@ impl<'a> Refiner<'a> {
     /// First membership-valid crossing of the segment `a -> b` with face `f`'s
     /// carrier (sphere-traced, so double crossings through thin features are
     /// found), restricted to the trimmed face via nearest-PLC-facet ownership.
-    fn face_crossing(&self, f: u32, a: V3, b: V3) -> Option<V3> {
+    /// `near` localises the search: a crossing farther than `near.1` from
+    /// `near.0` belongs to another facet's dual (an unlocalised search lets a
+    /// facet on one side of a thin feature claim crossings on the FAR side,
+    /// whose huge surface balls then drive a refinement cascade).
+    fn face_crossing(&self, f: u32, a: V3, b: V3, near: Option<(V3, f64)>) -> Option<V3> {
         let surf = self.brep.surface(self.brep.faces[f as usize].surface);
         for t in carrier_crossings(surf, a, b) {
             self.n_cross_found.set(self.n_cross_found.get() + 1);
             let x0: V3 = std::array::from_fn(|k| a[k] + t * (b[k] - a[k]));
+            if let Some((c, rmax)) = near {
+                if dist(x0, c) > rmax {
+                    continue;
+                }
+            }
             // Pull exactly onto the carrier.
             let x = surf.eval_uv(surf.project_uv(x0));
             // Membership: the crossing must lie on THIS trimmed face.
@@ -544,8 +614,14 @@ impl<'a> Refiner<'a> {
         if cands.is_empty() {
             cands = self.faces_near_segment(c1, c2);
         }
+        // Locality bound: crossings farther from the facet than its own scale
+        // plus the local target size belong to other facets' duals.
+        let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
+        let fc: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
+        let rf = crate::geomutil::circumradius(a, b, c);
+        let near = Some((fc, 2.0 * rf.min(self.diag) + 2.0 * self.h_at(fc)));
         for f in cands {
-            if let Some(x) = self.face_crossing(f, c1, c2) {
+            if let Some(x) = self.face_crossing(f, c1, c2, near) {
                 let r = dist(x, self.pos(fv[0]));
                 return Some((f, x, r));
             }
@@ -570,6 +646,49 @@ impl<'a> Refiner<'a> {
         Some(std::array::from_fn(|k| fc[k] + n[k] * self.diag))
     }
 
+    /// Extraction-side wall test: does the Voronoi dual of the facet `fv`
+    /// between `t1` and (optional) `t2` cross a surface? Mirrors
+    /// [`Self::facet_surface_ball`] but works on vertex indices (the extraction
+    /// has no live slots). `None` neighbour = hull side (dual ray).
+    fn facet_is_wall(&self, t1: &[usize; 4], t2: Option<&[usize; 4]>, fv: [usize; 3]) -> bool {
+        let p1: [V3; 4] = std::array::from_fn(|k| self.pos(t1[k]));
+        let Some((c1, r1)) = tet_circumcenter(p1) else {
+            return false;
+        };
+        let (c2, r2) = match t2 {
+            Some(t) => {
+                let p2: [V3; 4] = std::array::from_fn(|k| self.pos(t[k]));
+                match tet_circumcenter(p2) {
+                    Some(x) => x,
+                    None => return false,
+                }
+            }
+            None => match self.hull_dual_end(c1, fv) {
+                Some(e) => (e, f64::INFINITY),
+                None => return false,
+            },
+        };
+        if r2.is_finite() && self.bvh.nearest_dist(self.pos(fv[0])) > r1.max(r2) {
+            return false;
+        }
+        let mut cands: Vec<u32> = Vec::new();
+        for &f in &self.vfaces[fv[0]] {
+            if self.vfaces[fv[1]].contains(&f) && self.vfaces[fv[2]].contains(&f) {
+                cands.push(f);
+            }
+        }
+        if cands.is_empty() {
+            cands = self.faces_near_segment(c1, c2);
+        }
+        let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
+        let fc: V3 = std::array::from_fn(|k| (a[k] + b[k] + c[k]) / 3.0);
+        let rf = crate::geomutil::circumradius(a, b, c);
+        let near = Some((fc, 2.0 * rf.min(self.diag) + 2.0 * self.h_at(fc)));
+        cands
+            .into_iter()
+            .any(|f| self.face_crossing(f, c1, c2, near).is_some())
+    }
+
     // ---------------- insertion with feature protection --------------------
 
     /// Inserts a surface/volume candidate unless it encroaches a feature
@@ -577,6 +696,12 @@ impl<'a> Refiner<'a> {
     /// Returns true if the triangulation changed.
     fn insert_protected(&mut self, p: V3, prov: Prov, faces: Vec<u32>) -> bool {
         if self.db.len() >= self.max_points {
+            return false;
+        }
+        // Inside a protecting ball: the candidate is simply dropped -- the
+        // feature is authoritative there, and splitting its segments instead
+        // would let surface/cell refinement grind the features ever finer.
+        if self.in_ball(p) {
             return false;
         }
         if let Some(key) = self.encroached_seg(p) {
@@ -587,6 +712,7 @@ impl<'a> Refiner<'a> {
         match self.db.insert_guarded(p, guard, |_| true) {
             Some(_) => {
                 self.prov.push(prov);
+                self.ball.push(0.0);
                 self.vfaces.push(faces);
                 self.queue_created();
                 match self.prov.last() {
@@ -790,6 +916,8 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         band,
         db: DelaunayBuilder::enclosing(lo, hi),
         prov: Vec::new(),
+        ball: Vec::new(),
+        ball_grid: DMap::default(),
         vfaces: Vec::new(),
         segs: DMap::default(),
         seg_grid: DMap::default(),
@@ -801,6 +929,14 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         diag,
         max_points: params.max_points,
         radius_edge: params.radius_edge_bound.max(1.0),
+        h_floor: {
+            let h_ref = if params.maxh.is_finite() {
+                params.maxh
+            } else {
+                diag / crate::constants::DEFAULT_SUBDIV
+            };
+            params.min_h_surf.max(h_ref / 8.0).max(1e-12)
+        },
         n_facet_ins: 0,
         n_cell_ins: 0,
         n_seg_split: 0,
@@ -819,6 +955,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     for v in &brep.vertices {
         let vid = r.db.insert(v.pos);
         r.prov.push(Prov::Corner);
+        r.ball.push(0.0);
         r.vfaces.push(Vec::new()); // filled from incident edges below
         corner_vid.push(vid);
     }
@@ -844,9 +981,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .iter()
             .map(|&p| r.h_at(p))
             .fold(f64::INFINITY, f64::min)
-            .min(params.edge_maxh_for(ei));
+            .min(params.edge_maxh_for(ei))
+            .max(r.h_floor);
         let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
-        let ss = distribute(&**curve, params.edge_tol_for(ei), cap, grad);
+        let ss = distribute_floored(&**curve, params.edge_tol_for(ei), cap, grad, r.h_floor);
         let fs = r.edge_faces(ei as u32);
         // Vertex ids along the edge WITH their arc params, in curve order (a
         // rejected near-duplicate sample drops its param too, so segments stay
@@ -857,6 +995,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let p = curve.point_at(s);
             if let Some(v) = r.db.try_insert(p) {
                 r.prov.push(Prov::Edge(ei as u32));
+                r.ball.push(0.0);
                 r.vfaces.push(fs.clone());
                 vids.push((v, s));
             }
@@ -865,6 +1004,9 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         for w in vids.windows(2) {
             if w[0].0 != w[1].0 {
                 r.add_seg(Seg { ei: ei as u32, va: w[0].0, vb: w[1].0, sa: w[0].1, sb: w[1].1 });
+                let d = 0.6 * dist(r.pos(w[0].0), r.pos(w[1].0));
+                r.set_ball(w[0].0, d);
+                r.set_ball(w[1].0, d);
             }
         }
     }
@@ -932,6 +1074,91 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         }
     }
 
+    // ---- seed the interior (graded grid, clear of the surface) -------------
+    // Cell refinement alone cannot populate the volume next to a CONVEX
+    // surface: the circumcenters of surface-hugging tets lie OUTSIDE the
+    // region, are rejected, and the flat tets between on-surface points stay
+    // Delaunay (their empty circumspheres bulge outward). Seeding the interior
+    // up front -- clear of the surface by the local size -- puts a point inside
+    // every such circumsphere, so the flat-surface-sliver class never forms.
+    let t_seed = std::time::Instant::now();
+    {
+        let step = {
+            let mut fin = f64::INFINITY;
+            for t in plc.triangles.iter().take(64) {
+                let c: V3 = std::array::from_fn(|k| {
+                    (plc.vertices[t[0] as usize][k]
+                        + plc.vertices[t[1] as usize][k]
+                        + plc.vertices[t[2] as usize][k])
+                        / 3.0
+                });
+                fin = fin.min(r.h_at(c));
+            }
+            (0.7 * fin.min(domain.finest().max(r.h_floor))).max(1e-9)
+        };
+        let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        let (nx, ny, nz) = (
+            ((span[0] / step).ceil() as i64).max(1),
+            ((span[1] / step).ceil() as i64).max(1),
+            ((span[2] / step).ceil() as i64).max(1),
+        );
+        let ncell = step.max(1e-9);
+        let ckey = |p: V3| -> [i64; 3] {
+            std::array::from_fn(|k| (p[k] / ncell).floor() as i64)
+        };
+        let mut grid: DMap<[i64; 3], Vec<V3>> = DMap::default();
+        for i in 1..nx {
+            for j in 1..ny {
+                for k in 1..nz {
+                    let p: V3 = [
+                        lo[0] + i as f64 * step,
+                        lo[1] + j as f64 * step,
+                        lo[2] + k as f64 * step,
+                    ];
+                    let h = r.h_at(p);
+                    // Clearance from the surface: a seed within one local size
+                    // of the boundary makes tets the facet criteria then fight.
+                    if r.bvh.nearest_dist(p) < h {
+                        continue;
+                    }
+                    if r.domain.region_at(p) == 0 {
+                        continue;
+                    }
+                    // Crowding: keep clear of already accepted seeds.
+                    let r2 = (0.7 * h) * (0.7 * h);
+                    let cc = ckey(p);
+                    let mut clear = true;
+                    'scan: for dx in -1..=1i64 {
+                        for dy in -1..=1i64 {
+                            for dz in -1..=1i64 {
+                                if let Some(v) = grid.get(&[cc[0] + dx, cc[1] + dy, cc[2] + dz]) {
+                                    for &q in v {
+                                        let d2: f64 =
+                                            (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
+                                        if d2 < r2 {
+                                            clear = false;
+                                            break 'scan;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !clear {
+                        continue;
+                    }
+                    if r.db.try_insert(p).is_some() {
+                        r.prov.push(Prov::Interior);
+                        r.ball.push(0.0);
+                        r.vfaces.push(Vec::new());
+                        grid.entry(cc).or_default().push(p);
+                    }
+                }
+            }
+        }
+    }
+    rmlog::stage("refine.seed", t_seed.elapsed().as_secs_f64());
+
     // ---- main refinement loop ----------------------------------------------
     // Two phases with a GLOBAL priority: every bad surface facet is refined
     // before any cell circumcenter is inserted. Interleaving them puts interior
@@ -976,6 +1203,121 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     }
     rmlog::stat("refine.points", r.db.len() as f64);
     rmlog::stage("refine.loop", t_refine.elapsed().as_secs_f64());
+
+    // ---- ODT (Lloyd) relaxation of the interior ---------------------------
+    // Delaunay refinement bounds radius-edge, not dihedral: the raw point set
+    // is sliver-heavy. Relaxing the INTERIOR points toward their ODT positions
+    // (surface + feature points frozen on their carriers) is what makes the
+    // volume near-isotropic -- the proven cvt.rs recipe, now running on the
+    // refinement's guaranteed-conforming point set. The DT is rebuilt per pass
+    // from a frozen base (surface points inserted once, interiors re-inserted).
+    let t_lloyd = std::time::Instant::now();
+    {
+        let n_all = r.db.len();
+        let fixed: Vec<V3> = (0..n_all)
+            .filter(|&v| !matches!(r.prov[v], Prov::Interior))
+            .map(|v| r.pos(v))
+            .collect();
+        let mut interior: Vec<V3> = (0..n_all)
+            .filter(|&v| matches!(r.prov[v], Prov::Interior))
+            .map(|v| r.pos(v))
+            .collect();
+        if !interior.is_empty() {
+            let mut base = DelaunayBuilder::enclosing(lo, hi);
+            let mut base_ok = 0usize;
+            for &p in &fixed {
+                if base.try_insert(p).is_some() {
+                    base_ok += 1;
+                }
+            }
+            let _ = base_ok;
+            for _pass in 0..6 {
+                let mut db = base.clone();
+                let mut idx: Vec<usize> = Vec::with_capacity(interior.len());
+                for (i, &p) in interior.iter().enumerate() {
+                    if db.try_insert(p).is_some() {
+                        idx.push(i);
+                    }
+                }
+                // ODT accumulation over all real tets.
+                let all: Vec<V3> = {
+                    let mut v = fixed.clone();
+                    v.extend_from_slice(&interior);
+                    v
+                };
+                // builder index -> position index: fixed first (insertion
+                // order), then the accepted interiors in `idx` order.
+                let mut b2p: Vec<usize> = Vec::with_capacity(db.len());
+                for i in 0..fixed.len() {
+                    b2p.push(i);
+                }
+                for &i in &idx {
+                    b2p.push(fixed.len() + i);
+                }
+                let mut num = vec![[0.0f64; 3]; all.len()];
+                let mut den = vec![0.0f64; all.len()];
+                for t in db.tets() {
+                    let pi: [usize; 4] = std::array::from_fn(|k| b2p[t[k]]);
+                    let p: [V3; 4] = std::array::from_fn(|k| all[pi[k]]);
+                    let e1 = sub(p[1], p[0]);
+                    let e2 = sub(p[2], p[0]);
+                    let e3 = sub(p[3], p[0]);
+                    let w = dot(e1, cross(e2, e3)).abs();
+                    let sum4: V3 =
+                        std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
+                    for &i in &pi {
+                        for k in 0..3 {
+                            num[i][k] += w * (sum4[k] - all[i][k]);
+                        }
+                        den[i] += w;
+                    }
+                }
+                let mut max_move = 0.0f64;
+                for (i, p) in interior.iter_mut().enumerate() {
+                    let gi = fixed.len() + i;
+                    if den[gi] <= 0.0 {
+                        continue;
+                    }
+                    let tgt: V3 = std::array::from_fn(|k| num[gi][k] / (3.0 * den[gi]));
+                    // stay inside, out of protecting balls, off the surface
+                    if r.in_ball(tgt) || r.domain.region_at(tgt) == 0 {
+                        continue;
+                    }
+                    max_move = max_move.max(dist(*p, tgt));
+                    *p = tgt;
+                }
+                if max_move < 0.02 * r.h_floor {
+                    break;
+                }
+            }
+            // Write the relaxed positions back into the refiner's DT by a
+            // final rebuild (the extraction below reads r.db).
+            let mut db = DelaunayBuilder::enclosing(lo, hi);
+            let mut prov2: Vec<Prov> = Vec::with_capacity(n_all);
+            let mut vfaces2: Vec<Vec<u32>> = Vec::with_capacity(n_all);
+            let mut fi = 0usize;
+            let mut ii = 0usize;
+            for v in 0..n_all {
+                if matches!(r.prov[v], Prov::Interior) {
+                    if db.try_insert(interior[ii]).is_some() {
+                        prov2.push(Prov::Interior);
+                        vfaces2.push(Vec::new());
+                    }
+                    ii += 1;
+                } else {
+                    if db.try_insert(fixed[fi]).is_some() {
+                        prov2.push(r.prov[v].clone());
+                        vfaces2.push(r.vfaces[v].clone());
+                    }
+                    fi += 1;
+                }
+            }
+            r.db = db;
+            r.prov = prov2;
+            r.vfaces = vfaces2;
+        }
+    }
+    rmlog::stage("refine.lloyd", t_lloyd.elapsed().as_secs_f64());
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         eprintln!(
             "REFINE facet_ins {} (size {} shape {} offface {}) cell_ins {} seg_split {} ins_rejected {} ball_none {} cross_found {} member_reject {} cc_none {}",
@@ -990,13 +1332,73 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let all_tets = r.db.tets();
     let mut tets: Vec<[usize; 4]> = Vec::new();
     let mut tet_regions: Vec<RegionTag> = Vec::new();
-    let mut region_of: Vec<u32> = Vec::with_capacity(all_tets.len());
-    for t in &all_tets {
-        let c: V3 = std::array::from_fn(|k| {
-            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
-        });
-        region_of.push(r.region_at_c(c));
+    // Region per tet by FLOOD FILL over non-wall facets: two tets sharing a
+    // facet whose Voronoi dual does NOT cross the surface belong to the same
+    // region by the restricted-Delaunay definition, so walls exist exactly at
+    // the surface. A per-tet point query instead wavers inside the sagitta
+    // band and wedges flat surface slivers between two boundary faces --
+    // unreachable for every optimizer operation. Each connected component is
+    // labelled ONCE, at its deepest tet (farthest from the surface), where the
+    // point query is unambiguous.
+    let t_class = std::time::Instant::now();
+    let mut owners: DMap<[usize; 3], (u32, u32)> = DMap::default();
+    for (ti, t) in all_tets.iter().enumerate() {
+        for fl in &FACET_LOCAL {
+            let mut f = [t[fl[0]], t[fl[1]], t[fl[2]]];
+            f.sort_unstable();
+            let e = owners.entry(f).or_insert((u32::MAX, u32::MAX));
+            if e.0 == u32::MAX {
+                e.0 = ti as u32;
+            } else {
+                e.1 = ti as u32;
+            }
+        }
     }
+    let mut uf: Vec<u32> = (0..all_tets.len() as u32).collect();
+    fn find(uf: &mut [u32], mut x: u32) -> u32 {
+        while uf[x as usize] != x {
+            uf[x as usize] = uf[uf[x as usize] as usize];
+            x = uf[x as usize];
+        }
+        x
+    }
+    for (fkey, &(a, b)) in &owners {
+        if b == u32::MAX {
+            continue; // hull facet: always a component boundary
+        }
+        if r.facet_is_wall(&all_tets[a as usize], Some(&all_tets[b as usize]), *fkey) {
+            continue;
+        }
+        let (ra, rb) = (find(&mut uf, a), find(&mut uf, b));
+        if ra != rb {
+            uf[ra.max(rb) as usize] = ra.min(rb);
+        }
+    }
+    // Deepest tet per component -> one unambiguous label.
+    let centroid_of = |t: &[usize; 4]| -> V3 {
+        std::array::from_fn(|k| {
+            0.25 * (points[t[0]][k] + points[t[1]][k] + points[t[2]][k] + points[t[3]][k])
+        })
+    };
+    let mut comp_best: DMap<u32, (f64, u32)> = DMap::default();
+    for (ti, t) in all_tets.iter().enumerate() {
+        let root = find(&mut uf, ti as u32);
+        let d = r.bvh.nearest_dist(centroid_of(t));
+        let e = comp_best.entry(root).or_insert((-1.0, 0));
+        if d > e.0 {
+            *e = (d, ti as u32);
+        }
+    }
+    let mut comp_region: DMap<u32, u32> = DMap::default();
+    for (&root, &(_, ti)) in &comp_best {
+        comp_region.insert(root, r.region_at_c(centroid_of(&all_tets[ti as usize])));
+    }
+    let mut region_of: Vec<u32> = Vec::with_capacity(all_tets.len());
+    for ti in 0..all_tets.len() as u32 {
+        let root = find(&mut uf, ti);
+        region_of.push(*comp_region.get(&root).unwrap_or(&0));
+    }
+    rmlog::stage("refine.classify", t_class.elapsed().as_secs_f64());
     for (t, &reg) in all_tets.iter().zip(&region_of) {
         if reg != 0 {
             tets.push(*t);

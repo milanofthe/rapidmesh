@@ -2335,6 +2335,13 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
     match kind {
         SurfaceKind::Plane => p,
         SurfaceKind::Discrete(d) => d.closest(p).0,
+        SurfaceKind::Tube { path, radius } => {
+            let s = rapidmesh_brep::Surface::from_kind(
+                &SurfaceKind::Tube { path: path.clone(), radius: *radius },
+                &[],
+            );
+            s.closest(p).0
+        }
         SurfaceKind::Sphere { center, radius } => {
             let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
             let l = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();

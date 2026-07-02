@@ -280,6 +280,8 @@ impl Chart {
             SurfaceKind::Extruded { .. } => return None,
             // Discrete patches have no parameter map -- no chart, ever.
             SurfaceKind::Discrete(_) => return None,
+            // Tubes project by closest-point, like Discrete: no chart.
+            SurfaceKind::Tube { .. } => return None,
             SurfaceKind::Sphere { center, radius } => {
                 let mut acc = [0.0; 3];
                 for &p in pts {

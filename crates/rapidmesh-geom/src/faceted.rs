@@ -89,6 +89,17 @@ pub enum SurfaceKind {
         /// Unit extrusion direction in 3D.
         axis: [f64; 3],
     },
+    /// A constant-radius tube around a polyline path (swept pipes, helical
+    /// coils): the surface is `dist(p, path) = radius`. The path is the
+    /// SMOOTH sweep centerline; the offset/projection oracle is analytic per
+    /// segment, so the carrier is smooth in the ways that matter (no facet
+    /// coplanarity, exact curvature `radius` for sizing).
+    Tube {
+        /// Sweep centerline (ordered, open or closed by repetition).
+        path: Arc<Vec<[f64; 3]>>,
+        /// Tube radius.
+        radius: f64,
+    },
 }
 
 /// A tessellated shape: triangles plus, per triangle, the analytic surface
@@ -246,6 +257,10 @@ impl Faceted {
                             axis: map_dir(*axis),
                         }
                     }
+                    SurfaceKind::Tube { path, radius } => SurfaceKind::Tube {
+                        path: Arc::new(path.iter().map(|&q| map(q)).collect()),
+                        radius: *radius,
+                    },
                     // The discrete carrier IS its point set: map the points,
                     // rebuild the accelerator (normals re-derive from winding).
                     SurfaceKind::Discrete(d) => SurfaceKind::Discrete(std::sync::Arc::new(
@@ -331,6 +346,9 @@ impl Faceted {
                     // vectors, so the analytic extrusion no longer holds; keep
                     // the facets but drop the back-reference.
                     SurfaceKind::Extruded { .. } => *kind = SurfaceKind::Plane,
+                    // uniform scale: the path scaled with the shape, only the
+                    // radius follows here
+                    SurfaceKind::Tube { radius, .. } => *radius *= s,
                 }
             }
         } else {

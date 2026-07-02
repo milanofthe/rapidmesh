@@ -10,7 +10,7 @@
 //! interface. The exact CSG stays a separate, untouched layer.
 
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::vec3::{V3, sub, scale, dot, cross, normalize as norm};
+use rapidmesh_geom::vec3::{V3, add, sub, scale, dot, cross, normalize as norm};
 use rapidmesh_geom::{NurbsSurface, SurfaceKind};
 use std::sync::Arc;
 
@@ -45,6 +45,11 @@ pub enum Surface {
     /// A discrete smooth patch of an imported soup, queried by closest-point
     /// projection (no parameter map -- use [`Surface::closest`]).
     Discrete(Arc<rapidmesh_geom::DiscreteSurface>),
+    /// Constant-radius tube about a polyline path (swept pipes, helix coils):
+    /// `dist(p, path) = radius`. Queried by closest-point projection like
+    /// [`Surface::Discrete`], but the oracle is analytic per segment -- smooth
+    /// where it matters and with exact curvature `radius` for sizing.
+    Tube { path: Arc<Vec<V3>>, radius: f64 },
 }
 
 impl Surface {
@@ -87,6 +92,9 @@ impl Surface {
                 profile: profile.clone(),
             },
             SurfaceKind::Discrete(d) => Surface::Discrete(d.clone()),
+            SurfaceKind::Tube { path, radius } => {
+                Surface::Tube { path: path.clone(), radius: *radius }
+            }
         }
     }
 
@@ -97,6 +105,17 @@ impl Surface {
     pub fn closest(&self, p: V3) -> (V3, V3) {
         match self {
             Surface::Discrete(d) => d.closest(p),
+            Surface::Tube { path, radius } => {
+                let q = closest_on_polyline(path, p);
+                let d: V3 = sub(p, q);
+                let l = dot(d, d).sqrt();
+                let n: V3 = if l > 1e-12 {
+                    scale(d, 1.0 / l)
+                } else {
+                    [0.0, 0.0, 1.0] // p ON the axis: any radial direction
+                };
+                (add(q, scale(n, *radius)), n)
+            }
             _ => {
                 let uv = self.project_uv(p);
                 (self.eval_uv(uv), self.normal(uv))
@@ -139,6 +158,7 @@ impl Surface {
             // no parameter map: the (u,v) API is chart territory, and discrete
             // patches never chart -- callers on the meshing path use `closest`
             Surface::Discrete(_) => [p[0], p[1], 0.0],
+            Surface::Tube { .. } => [p[0], p[1], 0.0],
         }
     }
 
@@ -180,6 +200,7 @@ impl Surface {
             }
             Surface::Nurbs(s) => nurbs_footpoint(s, p),
             Surface::Discrete(_) => [p[0], p[1]],
+            Surface::Tube { .. } => [p[0], p[1]],
         }
     }
 
@@ -218,6 +239,7 @@ impl Surface {
                 norm(cross(su, sv))
             }
             Surface::Discrete(_) => [0.0, 0.0, 1.0],
+            Surface::Tube { .. } => [0.0, 0.0, 1.0],
         }
     }
 
@@ -240,6 +262,7 @@ impl Surface {
             }
             Surface::Nurbs(_) => f64::INFINITY, // analytic curvature lands later
             Surface::Discrete(_) => f64::INFINITY, // discrete curvature lands later
+            Surface::Tube { radius, .. } => *radius,
         }
     }
 
@@ -327,6 +350,32 @@ fn nurbs_footpoint(surf: &NurbsSurface, p: V3) -> P2 {
         }
     }
     buv
+}
+
+
+/// Closest point on an open polyline to `p` (linear scan over the segments;
+/// sweep paths are a few hundred segments at most).
+fn closest_on_polyline(path: &[V3], p: V3) -> V3 {
+    let mut best = path[0];
+    let mut best_d2 = f64::MAX;
+    for w in path.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let ab = sub(b, a);
+        let len2 = dot(ab, ab);
+        let t = if len2 > 0.0 {
+            (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let q: V3 = std::array::from_fn(|k| a[k] + t * ab[k]);
+        let d = sub(p, q);
+        let d2 = dot(d, d);
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = q;
+        }
+    }
+    best
 }
 
 #[cfg(test)]

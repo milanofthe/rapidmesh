@@ -72,6 +72,13 @@ pub fn closest_on_plane(p: V3, origin: V3, normal: V3) -> V3 {
 pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
     match *kind {
         SurfaceKind::Discrete(ref d) => return d.closest(p).0,
+        SurfaceKind::Tube { ref path, radius } => {
+            let s = rapidmesh_brep::Surface::from_kind(
+                &SurfaceKind::Tube { path: path.clone(), radius },
+                &[],
+            );
+            return s.closest(p).0;
+        }
         SurfaceKind::Plane => p,
         SurfaceKind::Sphere { center, radius } => {
             let r = sub(p, center);
@@ -138,6 +145,8 @@ pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
         // discrete curvature (normal spread over the footpoint's neighbourhood)
         // lands with the sizing work; INFINITY = no curvature refinement yet
         SurfaceKind::Discrete(_) => return f64::INFINITY,
+        // the tube's tightest principal curvature is its own radius
+        SurfaceKind::Tube { radius, .. } => return radius,
         SurfaceKind::Plane => f64::INFINITY,
         SurfaceKind::Sphere { radius, .. } => radius,
         SurfaceKind::Cylinder { radius, .. } => radius,

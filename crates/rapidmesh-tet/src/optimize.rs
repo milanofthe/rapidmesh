@@ -658,6 +658,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &constrained_verts,
             &complex_changed,
             &edge_budget2,
+            &face_budget2,
             &mut next_dirty,
         );
         edge_watch("sliver", mesh, &alive);
@@ -2371,6 +2372,7 @@ fn sliver_pass(
     constrained_verts: &DSet<usize>,
     complex_changed: &impl Fn(&[usize]) -> bool,
     edge_budget2: &impl Fn(rapidmesh_geom::RegionTag) -> f64,
+    face_budget2: &impl Fn(rapidmesh_geom::FaceTag, u32) -> f64,
     next_dirty: &mut DSet<usize>,
 ) -> usize {
     // Target band: tets below ~SLIVER_DEG + 10 deg get the active treatment.
@@ -2397,11 +2399,18 @@ fn sliver_pass(
     // faces: one entry per distinct (plane patch | curved surface).
     let sliver_set: DSet<usize> = sliver_verts.iter().copied().collect();
     let mut vcons: DMap<usize, Vec<SurfConstraint>> = DMap::default();
+    // Tightest per-face budget among a vertex's surface faces: a constrained
+    // vertex's move may not stretch its surface edges past `surface_maxh`
+    // (the region budget alone launders a fine bore edge to the bulk target).
+    let mut vbudget2: DMap<usize, f64> = DMap::default();
     for sf in &mesh.faces {
         for &v in &sf.tri {
             if !sliver_set.contains(&v) {
                 continue;
             }
+            let fb = face_budget2(sf.face_tag, sf.surface);
+            let e = vbudget2.entry(v).or_insert(f64::INFINITY);
+            *e = e.min(fb);
             let entry = vcons.entry(v).or_default();
             match mesh.surfaces[sf.surface as usize] {
                 SurfaceKind::Plane => {
@@ -2516,10 +2525,12 @@ fn sliver_pass(
                         }
                     };
                     // per-edge budget: no incident edge grows past its region
-                    // budget (unless it already was longer)
+                    // budget, tightened by the vertex's per-face budget
+                    // (unless it already was longer)
+                    let vb2 = vbudget2.get(&v).copied().unwrap_or(f64::INFINITY);
                     let mut blocked = false;
                     'edges: for &ti in &inc {
-                        let budget2 = edge_budget2(mesh.tet_regions[ti as usize]);
+                        let budget2 = edge_budget2(mesh.tet_regions[ti as usize]).min(vb2);
                         for &w in &mesh.tets[ti as usize] {
                             if w == v {
                                 continue;

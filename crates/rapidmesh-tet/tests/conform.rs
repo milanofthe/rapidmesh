@@ -138,8 +138,12 @@ fn air_dielectric_pec_scene_meshes_exactly() {
 
     // Float-distributed boundary -> volume exact to float, gated 1e-9 relative.
     let close = |have: BigRational, want: BigRational| {
+        let hf = num_traits::ToPrimitive::to_f64(&have).unwrap_or(f64::NAN);
         let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
-        assert!(diff <= want * rat(1e-9), "region volume off by more than 1e-9 relative");
+        assert!(
+            diff <= want.clone() * rat(1e-9),
+            "region volume off by more than 1e-9 relative: have {hf} want {want}"
+        );
     };
     close(mesh_region_volume6(&mesh, air), rat(360.0));
     close(mesh_region_volume6(&mesh, diel), rat(24.0));

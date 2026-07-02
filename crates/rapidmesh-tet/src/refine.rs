@@ -152,11 +152,172 @@ fn signed_offset(surf: &Surface, p: V3) -> f64 {
 }
 
 /// ALL crossings of segment `a -> b` with a carrier, as parameters `t` in
-/// `(0, 1)`, by sphere tracing: the step never exceeds the current distance to
-/// the carrier, so a thin feature (a torus tube, a plate) crossed twice between
-/// two same-sign endpoints is not skipped -- the failure mode of plain
-/// endpoint-sign bisection. Each sign change is then bisected tight.
+/// `(0, 1)` ascending -- TRANSVERSAL crossings only (tangential grazes are
+/// skipped, matching the sphere-traced fallback's sign-change semantics).
+/// Closed-form carriers solve exactly: plane linear, sphere/cylinder
+/// quadratic, tube piecewise-quadratic candidates + sign reconstruction.
+/// Everything else (cone, torus, extruded, NURBS, discrete) sphere-traces.
+/// The analytic paths replaced ~90M oracle projections per coil mesh.
 fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
+    if !(dist(a, b) > 0.0) {
+        return SmallVec::new();
+    }
+    let d = sub(b, a);
+    match surf {
+        // Plane stays on the TRACER for now: the analytic root matches the
+        // traced crossing set exactly (verified via a diff harness on the
+        // exact-volume scenes) but shifts each t by ~1e-9 -- and the
+        // classification walks turned out to be knife-edge sensitive to
+        // that at coplanar sheet rims (air_dielectric volume bias 2e-4).
+        // Tracing a plane is cheap (linear field, a handful of O(1)
+        // projections); the expensive carriers below are analytic. The
+        // sensitivity itself is tracked as its own robustness issue.
+        Surface::Plane { .. } => trace_crossings(surf, a, b),
+        Surface::Sphere { center, radius, .. } => {
+            let w = sub(a, *center);
+            let mut out = SmallVec::new();
+            push_quad_roots_01(dot(d, d), dot(w, d), dot(w, w) - radius * radius, &mut out);
+            drop_endpoint_touch(surf, a, b, &mut out);
+            out
+        }
+        Surface::Cylinder { center, axis, radius, .. } => {
+            // Components orthogonal to the (unit) axis; the barrel is the
+            // zero set of |perp|^2 - r^2, quadratic along the segment.
+            let reject = |v: V3| -> V3 {
+                let s = dot(v, *axis);
+                std::array::from_fn(|k| v[k] - s * axis[k])
+            };
+            let (u0, u1) = (reject(sub(a, *center)), reject(d));
+            let mut out = SmallVec::new();
+            push_quad_roots_01(dot(u1, u1), dot(u0, u1), dot(u0, u0) - radius * radius, &mut out);
+            drop_endpoint_touch(surf, a, b, &mut out);
+            out
+        }
+        Surface::Tube { path, radius } => tube_crossings(path, *radius, a, b),
+        _ => trace_crossings(surf, a, b),
+    }
+}
+
+/// Absolute offset scale below which a segment endpoint counts as ON the
+/// carrier (see the plane arm's comment): a few ulps of the coordinate
+/// magnitude, the noise floor of the projected-offset arithmetic.
+fn endpoint_noise(a: V3, b: V3) -> f64 {
+    let coord = a
+        .iter()
+        .chain(b.iter())
+        .fold(0.0f64, |m, &v| m.max(v.abs()));
+    64.0 * f64::EPSILON * coord
+}
+
+/// Drops analytic roots that are an ENDPOINT TOUCH: the endpoint's projected
+/// offset is at float-noise scale (on the carrier by the tracer's
+/// arithmetic), so its adjacent root at t = O(eps) or 1 - O(eps) is the
+/// endpoint itself, which the traced semantics never reported as a crossing.
+/// Lazy: offsets are only evaluated when a root sits within 1e-9 of that
+/// endpoint.
+fn drop_endpoint_touch(surf: &Surface, a: V3, b: V3, out: &mut SmallVec<[f64; 4]>) {
+    // Same asymmetry as the plane arm: exact-zero start, noise-level end.
+    if out.first().is_some_and(|&t| t < 1e-9) && signed_offset(surf, a) == 0.0 {
+        out.remove(0);
+    }
+    if out.last().is_some_and(|&t| t > 1.0 - 1e-9)
+        && signed_offset(surf, b).abs() <= endpoint_noise(a, b)
+    {
+        out.pop();
+    }
+}
+
+/// Roots of `A t^2 + 2 B t + C = 0` inside the OPEN interval `(0, 1)`,
+/// pushed ascending. A tangent root (zero discriminant) is skipped: it is a
+/// graze, not a transversal crossing.
+fn push_quad_roots_01(aa: f64, bb: f64, cc: f64, out: &mut SmallVec<[f64; 4]>) {
+    if aa == 0.0 {
+        if bb != 0.0 {
+            let t = -cc / (2.0 * bb);
+            if t > 0.0 && t < 1.0 {
+                out.push(t);
+            }
+        }
+        return;
+    }
+    let disc = bb * bb - aa * cc;
+    if disc <= 0.0 {
+        return;
+    }
+    let s = disc.sqrt();
+    // Citardauq pairing avoids cancellation when |bb| ~ s.
+    let q = -(bb + bb.signum() * s);
+    let (t1, t2) = (q / aa, cc / q);
+    let (lo, hi) = (t1.min(t2), t1.max(t2));
+    if lo > 0.0 && lo < 1.0 {
+        out.push(lo);
+    }
+    if hi > 0.0 && hi < 1.0 && hi != lo {
+        out.push(hi);
+    }
+}
+
+/// Analytic tube crossings: every crossing's closest path point lies either
+/// in a segment interior (perpendicular-distance quadratic) or at a node
+/// (sphere quadratic), so the roots of those pieces over the nearby segments
+/// are a candidate superset. The true offset's SIGN pattern over the
+/// candidate partition then keeps exactly the transversal crossings --
+/// spurious candidates (roots of a piece that another piece undercuts) fall
+/// out because the sign does not flip there.
+fn tube_crossings(
+    path: &rapidmesh_geom::TubePath,
+    radius: f64,
+    a: V3,
+    b: V3,
+) -> SmallVec<[f64; 4]> {
+    let d = sub(b, a);
+    let mut cand: SmallVec<[f64; 4]> = SmallVec::new();
+    path.for_segments_near(a, b, radius, &mut |s| {
+        let (q0, q1) = (path.pts[s], path.pts[s + 1]);
+        let e = sub(q1, q0);
+        let ee = dot(e, e);
+        if ee > 0.0 {
+            let reject = |v: V3| -> V3 {
+                let t = dot(v, e) / ee;
+                std::array::from_fn(|k| v[k] - t * e[k])
+            };
+            let (u0, u1) = (reject(sub(a, q0)), reject(d));
+            push_quad_roots_01(dot(u1, u1), dot(u0, u1), dot(u0, u0) - radius * radius, &mut cand);
+        }
+        for q in [q0, q1] {
+            let w = sub(a, q);
+            push_quad_roots_01(dot(d, d), dot(w, d), dot(w, w) - radius * radius, &mut cand);
+        }
+    });
+    if cand.is_empty() {
+        return SmallVec::new();
+    }
+    cand.sort_unstable_by(|x, y| x.total_cmp(y));
+    cand.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+    let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
+    let f = |t: f64| -> f64 {
+        let p = at(t);
+        dist(p, path.closest(p)) - radius
+    };
+    let mut out = SmallVec::new();
+    let mut s_left = f(0.0);
+    for (i, &t) in cand.iter().enumerate() {
+        let t_right = if i + 1 < cand.len() { 0.5 * (t + cand[i + 1]) } else { 0.5 * (t + 1.0) };
+        let s_right = f(t_right);
+        if s_left != 0.0 && s_right != 0.0 && s_left.signum() != s_right.signum() {
+            out.push(t);
+        }
+        s_left = s_right;
+    }
+    out
+}
+
+/// Sphere-traced crossings (the generic fallback): the step never exceeds
+/// the current distance to the carrier, so a thin feature (a torus tube, a
+/// plate) crossed twice between two same-sign endpoints is not skipped --
+/// the failure mode of plain endpoint-sign bisection. Each sign change is
+/// then bisected tight.
+fn trace_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
     let len = dist(a, b);
     if !(len > 0.0) {
         return SmallVec::new();
@@ -2493,5 +2654,104 @@ mod oracle_tests {
         // line far away: no crossing
         let c = carrier_crossings(&surf, [-3.0, 0.0, 3.0], [3.0, 0.0, 3.0]);
         assert!(c.is_empty(), "far line must not cross, got {c:?}");
+    }
+
+    /// Dense sign-sampled reference crossings (10k samples + bisection):
+    /// slow but assumption-free, the ground truth for the analytic solvers.
+    fn reference_crossings(surf: &Surface, a: V3, b: V3) -> Vec<f64> {
+        let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
+        let n = 10_000;
+        let mut out = Vec::new();
+        let mut s_prev = signed_offset(surf, a);
+        for i in 1..=n {
+            let t2 = i as f64 / n as f64;
+            let s2 = signed_offset(surf, at(t2));
+            if s_prev != 0.0 && s2 != 0.0 && s_prev.signum() != s2.signum() {
+                let (mut lo, mut hi, lo_neg) = ((i - 1) as f64 / n as f64, t2, s_prev < 0.0);
+                for _ in 0..50 {
+                    let m = 0.5 * (lo + hi);
+                    if (signed_offset(surf, at(m)) < 0.0) == lo_neg {
+                        lo = m;
+                    } else {
+                        hi = m;
+                    }
+                }
+                out.push(0.5 * (lo + hi));
+            }
+            s_prev = s2;
+        }
+        out
+    }
+
+    fn xorshift(s: &mut u64) -> f64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        (*s >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// The analytic fast paths must reproduce the sign-sampled reference on
+    /// random segments: every reference crossing matched within 1e-6, no
+    /// unmatched analytic extras (mismatches closer than the sampler's
+    /// resolution would be double crossings inside one sample step, which
+    /// the reference cannot see -- excluded by the 1e-4 pair filter).
+    #[test]
+    fn analytic_crossings_match_reference() {
+        let mut surfs: Vec<Surface> = vec![
+            Surface::from_kind(
+                &SurfaceKind::Sphere { center: [0.1, -0.2, 0.3], radius: 0.9 },
+                &[],
+            ),
+            Surface::from_kind(
+                &SurfaceKind::Cylinder {
+                    center: [0.0, 0.1, 0.0],
+                    axis: [0.3, 0.2, 0.93],
+                    radius: 0.7,
+                },
+                &[],
+            ),
+            Surface::from_kind(
+                &SurfaceKind::Plane,
+                &[[0.0, 0.0, 0.2], [1.0, 0.0, 0.3], [1.0, 1.0, 0.5], [0.0, 1.0, 0.4]],
+            ),
+        ];
+        // helix tube (the coil carrier class)
+        let pts: Vec<V3> = (0..=140)
+            .map(|i| {
+                let t = i as f64 / 24.0 * std::f64::consts::TAU;
+                [0.8 * t.cos(), 0.8 * t.sin(), 0.35 * i as f64 / 24.0]
+            })
+            .collect();
+        surfs.push(Surface::Tube {
+            path: std::sync::Arc::new(rapidmesh_geom::TubePath::new(pts)),
+            radius: 0.15,
+        });
+        let mut seed = 987654321u64;
+        for (si, surf) in surfs.iter().enumerate() {
+            for case in 0..60 {
+                let mut r = || 5.0 * xorshift(&mut seed) - 2.5;
+                let (a, b): (V3, V3) = ([r(), r(), r()], [r(), r(), r()]);
+                let want = reference_crossings(surf, a, b);
+                let got = carrier_crossings(surf, a, b);
+                // Double crossings within one sampler step are invisible to
+                // the reference; skip cases with near-tangent pairs.
+                let tangent_pair = got.windows(2).any(|w| w[1] - w[0] < 1e-4)
+                    || want.windows(2).any(|w| w[1] - w[0] < 1e-4);
+                if tangent_pair {
+                    continue;
+                }
+                assert_eq!(
+                    got.len(),
+                    want.len(),
+                    "surf {si} case {case}: got {got:?} want {want:?} (a {a:?} b {b:?})"
+                );
+                for (g, w) in got.iter().zip(&want) {
+                    assert!(
+                        (g - w).abs() < 1e-6,
+                        "surf {si} case {case}: got {got:?} want {want:?}"
+                    );
+                }
+            }
+        }
     }
 }

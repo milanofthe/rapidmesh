@@ -8,7 +8,7 @@
 //! instead of creating near-twins.
 
 use crate::tri::Tri;
-use rapidmesh_exact::{orient2d, Axis, Point3, Sign};
+use rapidmesh_exact::{orient2d, Axis, Expansion, Point3, Sign};
 
 /// A flat face as oriented boundary loops in a common plane: one outer loop
 /// (CCW seen from the +normal side) and zero or more hole loops (CW). All
@@ -77,10 +77,13 @@ impl PlanarFacet {
     }
 
     /// A projection axis in which the outer loop has exactly nonzero area,
-    /// with its 2D orientation there. Tries the axis of the largest normal
-    /// component first (best-conditioned); the exactness comes from the
-    /// orient2d on the first three non-collinear outer vertices. Panics on a
-    /// fully degenerate (collinear) outer loop.
+    /// with the LOOP's 2D orientation there (exact shoelace sign). The sign
+    /// of a single vertex triple is NOT the loop orientation — on a
+    /// non-convex loop a triple at a reflex corner has the opposite sign,
+    /// and a caller trusting it walks every downstream containment test with
+    /// inverted in/out. Tries the axis of the largest normal component first
+    /// (best-conditioned). Panics on a fully degenerate (collinear) outer
+    /// loop.
     pub fn projection_axis(&self) -> (Axis, Sign) {
         let n = self.normal();
         let mut axes = [Axis::X, Axis::Y, Axis::Z];
@@ -91,22 +94,34 @@ impl PlanarFacet {
                 .expect("finite coordinates")
         });
         for axis in axes {
-            // Find any exactly non-collinear consecutive triple in projection.
-            let m = self.outer.len();
-            for i in 0..m {
-                let s = orient2d(
-                    &self.point(i),
-                    &self.point((i + 1) % m),
-                    &self.point((i + 2) % m),
-                    axis,
-                )
-                .expect("explicit points are always valid");
-                if s != Sign::Zero {
-                    return (axis, s);
-                }
+            let s = self.shoelace_sign(axis);
+            if s != Sign::Zero {
+                return (axis, s);
             }
         }
         panic!("degenerate (collinear) planar facet: {:?}", self.outer);
+    }
+
+    /// Exact sign of twice the outer loop's signed area in the `axis`
+    /// projection (expansion arithmetic; the (u, v) plane matches orient2d's
+    /// drop-axis convention).
+    fn shoelace_sign(&self, axis: Axis) -> Sign {
+        let uv = |p: [f64; 3]| match axis {
+            Axis::X => [p[1], p[2]],
+            Axis::Y => [p[2], p[0]],
+            Axis::Z => [p[0], p[1]],
+        };
+        let mut acc = Expansion::from_f64(0.0);
+        let m = self.outer.len();
+        for i in 0..m {
+            let a = uv(self.outer[i]);
+            let b = uv(self.outer[(i + 1) % m]);
+            let cross = Expansion::from_f64(a[0])
+                .mul(&Expansion::from_f64(b[1]))
+                .add(&Expansion::from_f64(b[0]).mul(&Expansion::from_f64(a[1])).neg());
+            acc = acc.add(&cross);
+        }
+        acc.sign()
     }
 
     /// True if the (hole-free) outer loop is convex in its projection: no turn
@@ -213,6 +228,29 @@ mod tests {
         let (axis, sign) = unit_square_z().projection_axis();
         assert_eq!(axis, Axis::Z);
         assert_eq!(sign, Sign::Positive);
+    }
+
+    #[test]
+    fn projection_orientation_is_loop_winding_not_first_triple() {
+        // CCW L-shape whose loop STARTS at its reflex corner: the first
+        // vertex triple turns clockwise (Negative), but the loop winding —
+        // what every containment test needs — is Positive. Regression for
+        // the non-convex prism caps (spiral arms) whose facets classified
+        // every interior point as outside.
+        let l = |x: f64, y: f64| [x, y, 4.0];
+        let f = PlanarFacet::new(vec![
+            l(2.0, 1.0),
+            l(1.0, 1.0), // reflex corner is at (1,1); triple around it is CW
+            l(1.0, 2.0),
+            l(0.0, 2.0),
+            l(0.0, 0.0),
+            l(2.0, 0.0),
+        ]);
+        let (axis, sign) = f.projection_axis();
+        assert_eq!(axis, Axis::Z);
+        assert_eq!(sign, Sign::Positive);
+        let (_, rsign) = f.reversed().projection_axis();
+        assert_eq!(rsign, Sign::Negative);
     }
 
     #[test]

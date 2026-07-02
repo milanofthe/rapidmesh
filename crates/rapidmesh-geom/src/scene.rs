@@ -664,13 +664,15 @@ fn repair_t_junctions(
             if tlist.iter().any(|&ti| consumed.contains(&ti)) {
                 continue; // a child carries this edge into the next round
             }
+            // An edge may cap ONLY slivers: a degenerate flap on a tangent
+            // seam (two barrels touching along a line) whose base edge no
+            // real triangle holds — its side edges already belong to the
+            // real surface triangles on both sides (the flap made them
+            // non-manifold). Dropping every cap is then correct: the flap
+            // has no area, and the base chain conforms through the side
+            // edges' surviving triangles in later rounds, exactly like the
+            // single-cap case.
             let is_sliver = |ti: usize| vs.iter().any(|w| triangles[ti].contains(w));
-            if tlist.iter().any(|&ti| is_sliver(ti)) {
-                assert!(
-                    tlist.iter().any(|&ti| !is_sliver(ti)),
-                    "edge {e:?} caps only slivers; no triangle reproduces its base edges",
-                );
-            }
             for &ti in tlist {
                 consumed.insert(ti);
                 if is_sliver(ti) {

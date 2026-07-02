@@ -302,7 +302,12 @@ fn insert_vertex(
             _ => unreachable!("vertex {k} coincides with a corner; dedup failed"),
         }
     }
-    panic!("vertex {k} lies outside the facet");
+    let dump = |i: usize| pool[i].approx().map(|p| format!("{p:?}")).unwrap_or_default();
+    panic!(
+        "vertex {k} lies outside the facet\n  vertex: {} axis {axis:?} orientation {orientation:?}\n  \
+         seed corners: {} | {} | {} ({} tris)",
+        dump(k), dump(0), dump(1), dump(2), tris.len(),
+    );
 }
 
 /// Splits the directed edge x→y of triangle `ti` (and of its neighbor, if

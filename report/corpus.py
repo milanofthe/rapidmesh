@@ -364,6 +364,7 @@ def bench(only=None) -> list[dict]:
         if only is not None and name not in only:
             continue
         rec = {"name": name, "category": cat, "kind": kind}
+        print(f"  {name} ...", end="", flush=True)
         t0 = time.time()
         try:
             m = make()
@@ -388,6 +389,9 @@ def bench(only=None) -> list[dict]:
                 )
         except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
             rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
+        state = rec.get("status")
+        extra = "" if state == "ok" else f"  {rec.get('error', '')}"
+        print(f" {rec['millis']} ms [{state}]{extra}", flush=True)
         rows.append(rec)
     return rows
 
@@ -405,6 +409,58 @@ if __name__ == "__main__":
     out = REPO / "report" / "validation" / "benchmark.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1))
+
+    # ---- date-versioned history: every run is preserved with its metadata, so
+    # the quality trajectory is checkable run over run (bench/history/).
+    import datetime
+    import subprocess as _sp
+
+    def _git(*args):
+        try:
+            return _sp.run(["git", *args], cwd=str(REPO), capture_output=True,
+                           text=True, timeout=10).stdout.strip()
+        except Exception:
+            return ""
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    sha = _git("rev-parse", "--short", "HEAD") or "nogit"
+    hist_dir = REPO / "bench" / "history"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "meta": {
+            "date": stamp,
+            "git_sha": sha,
+            "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+            "git_dirty": bool(_git("status", "--porcelain")),
+            "corpus_size": len(CORPUS),
+        },
+        "rows": rows,
+    }
+    hist_path = hist_dir / f"{stamp}_{sha}.json"
+    hist_path.write_text(json.dumps(doc, indent=1))
+
+    # trajectory check: headline deltas against the previous history entry
+    prev_files = sorted(hist_dir.glob("*.json"))
+    prev_files = [f for f in prev_files if f != hist_path]
+    if prev_files:
+        prev = json.loads(prev_files[-1].read_text())
+        pr = prev.get("rows", [])
+
+        def _headline(rs):
+            ok = [r for r in rs if r.get("status") == "ok"]
+            vol = [r for r in ok if r.get("kind") == "vol"]
+            return {
+                "ok": len(ok),
+                "watertight": sum(1 for r in vol if r.get("watertight", False)),
+                "sliver_free": sum(1 for r in vol if r.get("n_slivers", 1) == 0),
+                "straddler_free": sum(1 for r in vol if r.get("n_straddlers", 1) == 0),
+            }
+
+        a, b = _headline(pr), _headline(rows)
+        print(f"\ntrajectory vs {prev['meta']['date']} ({prev['meta']['git_sha']}):")
+        for k in a:
+            d = b[k] - a[k]
+            print(f"  {k:<15} {a[k]:>4} -> {b[k]:>4}  ({d:+d})")
 
     ok = [r for r in rows if r["status"] == "ok"]
     vol = [r for r in ok if r["kind"] == "vol"]

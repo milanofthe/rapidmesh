@@ -278,6 +278,8 @@ impl Chart {
             SurfaceKind::Plane => return None,
             // Extruded profiles use `ExtrudedChart` (see `build_chart`).
             SurfaceKind::Extruded { .. } => return None,
+            // Discrete patches have no parameter map -- no chart, ever.
+            SurfaceKind::Discrete(_) => return None,
             SurfaceKind::Sphere { center, radius } => {
                 let mut acc = [0.0; 3];
                 for &p in pts {

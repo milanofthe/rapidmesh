@@ -42,6 +42,9 @@ pub enum Surface {
     Extruded { base: V3, u: V3, v: V3, axis: V3, profile: Arc<NurbsCurve> },
     /// A trimmed NURBS surface, mapped by its own `(u, v)`.
     Nurbs(Arc<NurbsSurface>),
+    /// A discrete smooth patch of an imported soup, queried by closest-point
+    /// projection (no parameter map -- use [`Surface::closest`]).
+    Discrete(Arc<rapidmesh_geom::DiscreteSurface>),
 }
 
 impl Surface {
@@ -83,6 +86,21 @@ impl Surface {
                 axis: norm(*axis),
                 profile: profile.clone(),
             },
+            SurfaceKind::Discrete(d) => Surface::Discrete(d.clone()),
+        }
+    }
+
+    /// Closest point on the surface and the outward normal there -- the
+    /// canonical projection API of the meshing path (`signed_offset`, POCS,
+    /// crossing pulls). Analytic kinds route through their parameter maps; a
+    /// discrete patch projects directly, having no parameter map at all.
+    pub fn closest(&self, p: V3) -> (V3, V3) {
+        match self {
+            Surface::Discrete(d) => d.closest(p),
+            _ => {
+                let uv = self.project_uv(p);
+                (self.eval_uv(uv), self.normal(uv))
+            }
         }
     }
 
@@ -118,6 +136,9 @@ impl Surface {
                 add3(add3(*base, scale(*axis, p[1])), add3(scale(*u, c[0]), scale(*v, c[1])))
             }
             Surface::Nurbs(s) => s.eval(p[0], p[1]),
+            // no parameter map: the (u,v) API is chart territory, and discrete
+            // patches never chart -- callers on the meshing path use `closest`
+            Surface::Discrete(_) => [p[0], p[1], 0.0],
         }
     }
 
@@ -158,6 +179,7 @@ impl Surface {
                 [profile_footpoint(profile, [dot(rel, *u), dot(rel, *v)]), dot(rel, *axis)]
             }
             Surface::Nurbs(s) => nurbs_footpoint(s, p),
+            Surface::Discrete(_) => [p[0], p[1]],
         }
     }
 
@@ -195,6 +217,7 @@ impl Surface {
                 let sv = sub(s.eval(p[0], p[1] + dv), s.eval(p[0], p[1] - dv));
                 norm(cross(su, sv))
             }
+            Surface::Discrete(_) => [0.0, 0.0, 1.0],
         }
     }
 
@@ -216,6 +239,7 @@ impl Surface {
                 }
             }
             Surface::Nurbs(_) => f64::INFINITY, // analytic curvature lands later
+            Surface::Discrete(_) => f64::INFINITY, // discrete curvature lands later
         }
     }
 

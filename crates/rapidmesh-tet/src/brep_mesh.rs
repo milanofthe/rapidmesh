@@ -382,10 +382,8 @@ impl Curve for EllipseCurve {
 /// The caller guards against divergence.
 fn pocs(sa: &Surface, sb: &Surface, mut p: V3, tol: f64) -> V3 {
     for _ in 0..32 {
-        let ua = sa.project_uv(p);
-        let ub = sb.project_uv(p);
-        let (fa, na) = (sa.eval_uv(ua), sa.normal(ua));
-        let (fb, nb) = (sb.eval_uv(ub), sb.normal(ub));
+        let (fa, na) = sa.closest(p);
+        let (fb, nb) = sb.closest(p);
         let c = dot(na, nb);
         let det = 1.0 - c * c;
         let (ra, rb) = (dot(sub(fa, p), na), dot(sub(fb, p), nb));
@@ -394,7 +392,7 @@ fn pocs(sa: &Surface, sb: &Surface, mut p: V3, tol: f64) -> V3 {
             let beta = (rb - c * ra) / det;
             std::array::from_fn(|k| p[k] + alpha * na[k] + beta * nb[k])
         } else {
-            sb.eval_uv(sb.project_uv(fa))
+            sb.closest(fa).0
         };
         let moved = dist3(p, q);
         p = q;

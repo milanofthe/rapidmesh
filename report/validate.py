@@ -146,6 +146,11 @@ CASES = [
     ("nested_spheres", "Boolean", "vol", 0.16,
         lambda g, h: (g.sphere(1.0),
                       g.sphere(0.55))),
+    # Flush (coplanar-coincident) regions -- the issue-#1 T-junction class: two
+    # face-adjacent boxes sharing a PARTIAL face, at mm scale (scale-sensitive).
+    ("flush_tee", "Boolean", "vol", 1.0e-3,
+        lambda g, h: (g.box(10e-3, 4e-3, 2e-3),
+                      g.box(4e-3, 4e-3, 2e-3, position=(3e-3, 4e-3, 0)))),
 ]
 
 DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)

@@ -36,23 +36,44 @@ fn plc_region_volume6(plc: &TaggedPlc, r: RegionTag) -> BigRational {
     acc
 }
 
-/// Exact 6x total volume of all tets in one region.
+/// 6x total volume of all tets in one region, f64 with Kahan summation,
+/// returned as a rational for the existing comparisons.
+///
+/// SEMANTICS (refinement-core): mesh points are free f64 (projected
+/// circumcenters, curve samples), so region volumes are float-accurate with a
+/// relative gate, not bit-exact rationals -- summing BigRational determinants
+/// of arbitrary f64 coordinates grows the fractions without bound and made
+/// this helper the slowest thing in the suite (minutes per call). The old
+/// bit-exact contract belonged to the frozen-surface era's pinned points.
 fn mesh_region_volume6(m: &TetMesh, r: RegionTag) -> BigRational {
-    let mut acc = BigRational::zero();
+    let (mut acc, mut comp) = (0.0f64, 0.0f64);
     for (t, &tr) in m.tets.iter().zip(&m.tet_regions) {
         if tr != r {
             continue;
         }
-        let p: Vec<[BigRational; 3]> = t.iter().map(|&i| m.points[i].map(rat)).collect();
-        let rrow: Vec<[BigRational; 3]> = (0..3)
-            .map(|k| std::array::from_fn(|j| &p[k][j] - &p[3][j]))
-            .collect();
-        let det = &rrow[0][0] * (&rrow[1][1] * &rrow[2][2] - &rrow[1][2] * &rrow[2][1])
-            - &rrow[0][1] * (&rrow[1][0] * &rrow[2][2] - &rrow[1][2] * &rrow[2][0])
-            + &rrow[0][2] * (&rrow[1][0] * &rrow[2][1] - &rrow[1][1] * &rrow[2][0]);
-        acc += det;
+        let p: Vec<[f64; 3]> = t.iter().map(|&i| m.points[i]).collect();
+        let row = |k: usize| -> [f64; 3] { std::array::from_fn(|j| p[k][j] - p[3][j]) };
+        let (a, b, c) = (row(0), row(1), row(2));
+        let det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        // Kahan: the sum of thousands of near-cancelling determinants must not
+        // drift past the 1e-9 relative gates.
+        let y = det - comp;
+        let s = acc + y;
+        comp = (s - acc) - y;
+        acc = s;
     }
-    acc
+    rat(acc)
+}
+
+/// Region volume within 1e-9 relative of the target (the refinement-core
+/// volume contract; see `mesh_region_volume6`).
+fn assert_close6(have: BigRational, want: BigRational) {
+    let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
+    assert!(
+        diff <= want.clone() * rat(1e-9),
+        "region volume off by more than 1e-9 relative (want {want})"
+    );
 }
 
 /// Structural gates: conformity of constraint faces, tet-face matching of
@@ -229,7 +250,7 @@ fn sized_box_respects_maxh_and_quality() {
     eprintln!("sized box quality: {before:?} -> {q:?} ({ops} ops)");
     // Volume stays exact under interior refinement and optimization;
     // structure intact.
-    assert_eq!(mesh_region_volume6(&mesh, r), rat(36.0));
+    assert_close6(mesh_region_volume6(&mesh, r), rat(36.0));
     check_structure(&mesh);
     assert!(
         q.max_edge <= 1.5 * params.maxh,
@@ -295,8 +316,8 @@ fn sized_em_scene_stays_exact_and_conforming() {
     );
     let q = quality_stats(&mesh);
     eprintln!("sized EM scene quality: {before:?} -> {q:?} ({ops} ops)");
-    assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
-    assert_eq!(mesh_region_volume6(&mesh, diel), rat(24.0));
+    assert_close6(mesh_region_volume6(&mesh, air), rat(360.0));
+    assert_close6(mesh_region_volume6(&mesh, diel), rat(24.0));
     check_structure(&mesh);
     // Sizing is a target (like gmsh's mesh size), not a hard bound; allow
     // slack for corner configurations.
@@ -351,8 +372,8 @@ fn per_region_sizing_creates_density_transition() {
             ..OptimizeParams::default()
         },
     );
-    assert_eq!(mesh_region_volume6(&mesh, air), rat(360.0));
-    assert_eq!(mesh_region_volume6(&mesh, diel), rat(24.0));
+    assert_close6(mesh_region_volume6(&mesh, air), rat(360.0));
+    assert_close6(mesh_region_volume6(&mesh, diel), rat(24.0));
     check_structure(&mesh);
     // Per-region max edge respects each region's target (with slack).
     let max_edge_in = |r: RegionTag| -> f64 {
@@ -388,7 +409,7 @@ fn single_box_meshes_exactly() {
     let r = scene.add_solid(solid_box([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]));
     let plc = scene.assemble();
     let mesh = mesh_plc(&plc);
-    assert_eq!(mesh_region_volume6(&mesh, r), rat(36.0));
+    assert_close6(mesh_region_volume6(&mesh, r), rat(36.0));
     check_structure(&mesh);
     assert!(mesh.tets.iter().all(|t| t.iter().all(|&v| v < mesh.points.len())));
 }
@@ -565,7 +586,7 @@ fn size_points_refine_locally() {
         ..MeshParams::default()
     };
     let mesh = mesh_plc_with(&plc_of(&scene), &params);
-    assert_eq!(mesh_region_volume6(&mesh, r), rat(384.0));
+    assert_close6(mesh_region_volume6(&mesh, r), rat(384.0));
     // Edges fully inside a ball around the source obey the graded target;
     // edges far away stay coarse.
     let mut near_lmax = 0.0f64;

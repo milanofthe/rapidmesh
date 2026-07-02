@@ -2258,6 +2258,7 @@ fn dominant_axis(n: [f64; 3]) -> Axis {
 fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
     match kind {
         SurfaceKind::Plane => p,
+        SurfaceKind::Discrete(d) => d.closest(p).0,
         SurfaceKind::Sphere { center, radius } => {
             let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
             let l = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
@@ -2510,8 +2511,14 @@ fn sliver_pass(
         let tol = 1e-9 * lref.max(1e-30);
         for _round in 0..3 {
             let mut improved = true;
-            while improved {
+            // Hard iteration cap: an uncapped while-improved accepts epsilon
+            // gains forever on degenerate configurations (the pass then never
+            // returns); 12 accepted steps per round is plenty for a pattern
+            // search whose step also shrinks per round.
+            let mut iters = 0;
+            while improved && iters < 12 {
                 improved = false;
+                iters += 1;
                 for dir in 0..6 {
                     let (axis, sign) = (dir / 2, if dir % 2 == 0 { 1.0 } else { -1.0 });
                     let mut cand = best_pos;

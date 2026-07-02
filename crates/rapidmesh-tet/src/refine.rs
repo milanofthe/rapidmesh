@@ -146,9 +146,8 @@ fn tri_min_angle(a: V3, b: V3, c: V3) -> f64 {
 /// `normal`; the sign flips exactly at the surface, and near the surface the
 /// magnitude approximates the Euclidean distance (the sphere-tracing bound).
 fn signed_offset(surf: &Surface, p: V3) -> f64 {
-    let uv = surf.project_uv(p);
-    let foot = surf.eval_uv(uv);
-    dot(sub(p, foot), surf.normal(uv))
+    let (foot, n) = surf.closest(p);
+    dot(sub(p, foot), n)
 }
 
 /// ALL crossings of segment `a -> b` with a carrier, as parameters `t` in
@@ -600,7 +599,7 @@ impl<'a> Refiner<'a> {
                 }
             }
             // Pull exactly onto the carrier.
-            let x = surf.eval_uv(surf.project_uv(x0));
+            let x = surf.closest(x0).0;
             // Membership: the crossing must lie on THIS trimmed face -- or,
             // near a feature edge, on the NEIGHBOUR face's carrier too (the
             // nearest-facet test attributes an on-edge crossing to whichever
@@ -830,7 +829,7 @@ impl<'a> Refiner<'a> {
                             qb = m;
                         }
                     }
-                    let x = surf.eval_uv(surf.project_uv(mid3(qa, qb)));
+                    let x = surf.closest(mid3(qa, qb)).0;
                     if let Some((fi, d)) = self.bvh.nearest_index(x) {
                         if self.facet_face[fi] == f && d <= self.h_at(x) {
                             return Some((f, x));
@@ -1264,7 +1263,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
         for &ci in &chosen {
-            let p = surf.eval_uv(surf.project_uv(cents[ci]));
+            let p = surf.closest(cents[ci]).0;
             r.insert_protected(p, Prov::Face(fid as u32), vec![fid as u32]);
         }
     }

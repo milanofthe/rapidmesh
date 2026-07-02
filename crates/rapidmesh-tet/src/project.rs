@@ -71,6 +71,7 @@ pub fn closest_on_plane(p: V3, origin: V3, normal: V3) -> V3 {
 /// well-defined arbitrary perpendicular direction.
 pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
     match *kind {
+        SurfaceKind::Discrete(ref d) => return d.closest(p).0,
         SurfaceKind::Plane => p,
         SurfaceKind::Sphere { center, radius } => {
             let r = sub(p, center);
@@ -134,6 +135,9 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
 /// is flat (infinite radius).
 pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
     match *kind {
+        // discrete curvature (normal spread over the footpoint's neighbourhood)
+        // lands with the sizing work; INFINITY = no curvature refinement yet
+        SurfaceKind::Discrete(_) => return f64::INFINITY,
         SurfaceKind::Plane => f64::INFINITY,
         SurfaceKind::Sphere { radius, .. } => radius,
         SurfaceKind::Cylinder { radius, .. } => radius,

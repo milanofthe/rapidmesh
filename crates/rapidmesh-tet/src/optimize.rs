@@ -336,6 +336,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     // stage.
     let mut cscratch = CollapseScratch::default();
     let mut n_sfaces: Vec<u32> = Vec::new();
+    // Vertices already nudged by the perturbation stage (once per call).
+    let mut perturbed: DSet<usize> = DSet::default();
     // Persistent working state (the refinement queue's medicine applied to
     // the optimizer): tet slots are append-only with an alive mask and ONE
     // final compaction, so the vertex->tet incidence, the per-tet quality
@@ -376,7 +378,19 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         }
         (cf, ce, cv)
     };
-    for _pass in 0..params.passes {
+    // ENDGAME (WP3): after the main passes converge, a short second phase
+    // runs the degeneracy perturbation plus the COMBINATORIAL stages only.
+    // The positional optimizers (smooth / sliver pattern search) are the
+    // perturber's antagonists -- a shell's coplanar configuration IS their
+    // local energy optimum, so any nudge made mid-loop was smoothed straight
+    // back (measured: 16k nudges, zero effect on the census). CGAL orders
+    // its perturber/exuder after the optimizers for the same reason.
+    const ENDGAME_PASSES: usize = 6;
+    let mut endgame = false;
+    let mut pass_budget = params.passes;
+    let mut _pass = 0usize;
+    while _pass < pass_budget {
+        _pass += 1;
         let mut ops = 0usize;
         let t0 = std::time::Instant::now();
 
@@ -462,8 +476,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         let mut next_dirty: DSet<usize> = DSet::default();
 
         // Surface improvement first: boundary slivers cannot be fixed by
-        // interior-only operations.
-        ops += surface_pass(
+        // interior-only operations. Skipped in the ENDGAME (positional
+        // stages undo the perturber, see above).
+        ops += if endgame { 0 } else { surface_pass(
             mesh,
             &mut g_incident,
             &alive,
@@ -477,7 +492,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &edge_budget2,
             &face_budget2,
             &mut next_dirty,
-        );
+        ) };
         let t_surf = t0.elapsed();
         acc_surf += t_surf;
         edge_watch("surf", mesh, &alive);
@@ -499,12 +514,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
             tet_q[ti]
         }
-        let smooth_verts: Vec<usize> = match &active_verts {
-            None => (0..mesh.points.len()).collect(),
-            Some(av) => {
-                let mut sv: Vec<usize> = av.iter().copied().collect();
-                sv.sort_unstable();
-                sv
+        let smooth_verts: Vec<usize> = if endgame {
+            Vec::new() // ENDGAME: no positional smoothing (see above)
+        } else {
+            match &active_verts {
+                None => (0..mesh.points.len()).collect(),
+                Some(av) => {
+                    let mut sv: Vec<usize> = av.iter().copied().collect();
+                    sv.sort_unstable();
+                    sv
+                }
             }
         };
         let mut nbrs: Vec<usize> = Vec::new();
@@ -669,7 +688,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // at Delaunay optimality and skips constrained vertices entirely --
         // boundary slivers (the wedge along an intersection curve) are only
         // reachable by this pass.
-        ops += sliver_pass(
+        ops += if endgame { 0 } else { sliver_pass(
             mesh,
             &g_incident,
             &alive,
@@ -679,11 +698,29 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             &edge_budget2,
             &face_budget2,
             &mut next_dirty,
-        );
+        ) };
         acc_sliver += lap();
         edge_watch("sliver", mesh, &alive);
         manifold_watch("sliver", mesh, &alive);
         volume_watch("sliver", mesh, &alive);
+
+        // ------------------------------------------- degeneracy perturbation
+        let perturb_ops = if !endgame { 0 } else { perturb_pass(
+            mesh,
+            &g_incident,
+            &alive,
+            &mut tet_q,
+            &constrained_verts,
+            &complex_changed,
+            &mut perturbed,
+            &mut next_dirty,
+        ) };
+        if trace && perturb_ops > 0 {
+            eprintln!("  perturb: {perturb_ops} nudges");
+        }
+        ops += perturb_ops;
+        acc_sliver += lap();
+        volume_watch("perturb", mesh, &alive);
 
         // --------------------------------------------- edge collapse
         // Before the flip owner maps are built: collapses rewrite tets in
@@ -1677,35 +1714,171 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         volume_watch("apply", mesh, &alive);
         manifold_watch("apply", mesh, &alive);
         total_ops += ops;
-        if ops == 0 {
-            break;
+        // Convergence: instead of stopping outright, the FIRST convergence
+        // (no ops, or sliver-count stall) hands over to the ENDGAME phase
+        // (perturber + combinatorial stages, no positional smoothing); the
+        // second convergence ends the loop.
+        let mut converged = ops == 0;
+        if !converged {
+            // Stop once the sliver count stops improving (the rest is churn).
+            let slivers = mesh
+                .tets
+                .iter()
+                .enumerate()
+                .filter(|(ti, _)| alive[*ti])
+                .filter(|(_, t)| {
+                    crate::diagnostics::tet_min_dihedral([
+                        mesh.points[t[0]],
+                        mesh.points[t[1]],
+                        mesh.points[t[2]],
+                        mesh.points[t[3]],
+                    ]) < crate::constants::SLIVER_DEG
+                })
+                .count();
+            if slivers < best_slivers {
+                best_slivers = slivers;
+                stall = 0;
+            } else {
+                stall += 1;
+                if stall >= STALL_LIMIT {
+                    converged = true;
+                }
+            }
         }
-        // Stop once the sliver count stops improving (the rest is churn).
-        let slivers = mesh
-            .tets
-            .iter()
-            .enumerate()
-            .filter(|(ti, _)| alive[*ti])
-            .filter(|(_, t)| {
-                crate::diagnostics::tet_min_dihedral([
-                    mesh.points[t[0]],
-                    mesh.points[t[1]],
-                    mesh.points[t[2]],
-                    mesh.points[t[3]],
-                ]) < crate::constants::SLIVER_DEG
-            })
-            .count();
-        if slivers < best_slivers {
-            best_slivers = slivers;
-            stall = 0;
-        } else {
-            stall += 1;
-            if stall >= STALL_LIMIT {
+        if converged || _pass == pass_budget {
+            if endgame {
                 break;
             }
+            endgame = true;
+            pass_budget = _pass + ENDGAME_PASSES;
+            dirty = None; // full rescan: the endgame sees every sliver once
+            stall = 0;
+            if trace {
+                eprintln!("  -> ENDGAME ({ENDGAME_PASSES} passes)");
+            }
+            continue;
         }
         dirty = Some(next_dirty);
     }
+    // Sliver OP census (RAPIDMESH_SLIVER_OPS): for every SURVIVING sliver
+    // tet, classify what blocks each repair operator -- the data that picks
+    // the missing end-stage operator (exudation vs. degenerate-flip surgery
+    // vs. collapse relaxation). Diagnostic only.
+    if std::env::var_os("RAPIDMESH_SLIVER_OPS").is_some() {
+        let sliver_q = -(crate::constants::SLIVER_DEG.to_radians().cos());
+        let mut owners_map: DMap<[usize; 3], [u32; 2]> = DMap::default();
+        for (ti, t) in mesh.tets.iter().enumerate() {
+            if !alive[ti] {
+                continue;
+            }
+            for i in 0..4 {
+                let f: [usize; 3] = std::array::from_fn(|k| t[(i + 1 + k) % 4]);
+                let e = owners_map.entry(sorted3(f)).or_insert([u32::MAX; 2]);
+                if e[0] == u32::MAX {
+                    e[0] = ti as u32;
+                } else {
+                    e[1] = ti as u32;
+                }
+            }
+        }
+        let mut cnt: std::collections::BTreeMap<&'static str, usize> = Default::default();
+        let mut n_sliv = 0usize;
+        for (ti, t) in mesh.tets.iter().enumerate() {
+            if !alive[ti] || quality(&mesh.points, *t) >= sliver_q {
+                continue;
+            }
+            n_sliv += 1;
+            let mut viable = false;
+            for i in 0..4 {
+                let f: [usize; 3] = std::array::from_fn(|k| t[(i + 1 + k) % 4]);
+                let key = sorted3(f);
+                if constrained_faces.contains(&key) {
+                    *cnt.entry("facet: constrained").or_insert(0) += 1;
+                    continue;
+                }
+                let o = owners_map[&key];
+                if o[1] == u32::MAX {
+                    *cnt.entry("facet: hull").or_insert(0) += 1;
+                    continue;
+                }
+                let (t1, t2) = (o[0] as usize, o[1] as usize);
+                if mesh.tet_regions[t1] != mesh.tet_regions[t2] {
+                    *cnt.entry("facet: region interface (unconstrained!)").or_insert(0) += 1;
+                    continue;
+                }
+                let other = if t1 == ti { t2 } else { t1 };
+                let d = *mesh.tets[ti].iter().find(|v| !key.contains(v)).unwrap();
+                let e = *mesh.tets[other].iter().find(|v| !key.contains(v)).unwrap();
+                if d == e {
+                    *cnt.entry("facet: same apex").or_insert(0) += 1;
+                    continue;
+                }
+                let side = |a: usize, b: usize| {
+                    Sign::of_f64(geometry_predicates::orient3d(
+                        mesh.points[a],
+                        mesh.points[b],
+                        mesh.points[d],
+                        mesh.points[e],
+                    ))
+                };
+                let (s0, s1, s2) = (side(f[0], f[1]), side(f[1], f[2]), side(f[2], f[0]));
+                if s0 == Sign::Zero || s1 == Sign::Zero || s2 == Sign::Zero {
+                    *cnt.entry("flip23: degenerate (orient zero)").or_insert(0) += 1;
+                    continue;
+                }
+                if s0 != s1 || s1 != s2 {
+                    *cnt.entry("flip23: d-e misses facet").or_insert(0) += 1;
+                    continue;
+                }
+                let mk = |a: usize, b: usize| -> Option<[usize; 4]> {
+                    let c1 = [a, b, d, e];
+                    if orient_positive(&mesh.points, c1) {
+                        return Some(c1);
+                    }
+                    let c2 = [b, a, d, e];
+                    orient_positive(&mesh.points, c2).then_some(c2)
+                };
+                let (n1, n2, n3) = (mk(f[0], f[1]), mk(f[1], f[2]), mk(f[2], f[0]));
+                let (Some(n1), Some(n2), Some(n3)) = (n1, n2, n3) else {
+                    *cnt.entry("flip23: new tet inverted").or_insert(0) += 1;
+                    continue;
+                };
+                let old_q = quality(&mesh.points, mesh.tets[t1])
+                    .min(quality(&mesh.points, mesh.tets[t2]));
+                let new_q = quality(&mesh.points, n1)
+                    .min(quality(&mesh.points, n2))
+                    .min(quality(&mesh.points, n3));
+                if new_q <= old_q + QUALITY_EPS {
+                    *cnt.entry("flip23: no quality gain").or_insert(0) += 1;
+                } else {
+                    *cnt.entry("flip23: VIABLE (missed?)").or_insert(0) += 1;
+                    viable = true;
+                }
+            }
+            let mut all_edges_constrained = true;
+            for a in 0..4 {
+                for b in (a + 1)..4 {
+                    let e = (t[a].min(t[b]), t[a].max(t[b]));
+                    if constrained_edges.contains(&e) {
+                        *cnt.entry("edge: constrained").or_insert(0) += 1;
+                    } else {
+                        all_edges_constrained = false;
+                    }
+                }
+            }
+            if all_edges_constrained {
+                *cnt.entry("TET: all 6 edges constrained").or_insert(0) += 1;
+            }
+            if viable {
+                *cnt.entry("TET: has viable flip").or_insert(0) += 1;
+            }
+        }
+        eprintln!("SLIVER OPS census ({n_sliv} surviving slivers):");
+        for (k, v) in &cnt {
+            eprintln!("  {k}: {v}");
+        }
+    }
+
     // The single final compaction.
     if alive.iter().any(|&a| !a) {
         let mut tets = Vec::with_capacity(mesh.tets.len());
@@ -1772,6 +1945,117 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     rmlog::stage("optimize.total", opt_t0.elapsed().as_secs_f64());
     rmlog::stat("optimize.ops", total_ops as f64);
     total_ops
+}
+
+/// PERTURBATION stage (WP3): a sliver whose five-point neighbourhood is
+/// exactly coplanar defeats every combinatorial operator -- orient == 0
+/// means no 2-3 flip is even DEFINED, and the edge-removal DP sees only
+/// zero-volume candidates (the pressure_vessel blocker census: 70% of
+/// facet checks die on "orient zero" / "d-e misses facet"). Nudge ONE
+/// movable (interior, unconstrained) vertex of such a tet by a small
+/// fraction of its shortest edge along the tet's dominant facet normal;
+/// star positivity is the only gate. Quality repair afterwards is exactly
+/// what the other stages are for -- they were blocked BY the degeneracy,
+/// not unable. Each vertex is perturbed at most once per optimize call
+/// (`perturbed`), so the stage cannot oscillate against the smoother.
+#[allow(clippy::too_many_arguments)]
+fn perturb_pass(
+    mesh: &mut TetMesh,
+    g_incident: &[Vec<u32>],
+    alive: &[bool],
+    tet_q: &mut [f64],
+    constrained_verts: &DSet<usize>,
+    complex_changed: &impl Fn(&[usize]) -> bool,
+    perturbed: &mut DSet<usize>,
+    next_dirty: &mut DSet<usize>,
+) -> usize {
+    let sliver_q = -(crate::constants::SLIVER_DEG.to_radians().cos());
+    let mut ops = 0usize;
+    for ti in 0..mesh.tets.len() {
+        if !alive[ti] || !complex_changed(&mesh.tets[ti]) {
+            continue;
+        }
+        if cached_q_free(&mesh.points, &mesh.tets, tet_q, ti) >= sliver_q {
+            continue;
+        }
+        let t = mesh.tets[ti];
+        // dominant facet normal (the flat tet's "up") and shortest edge
+        let mut best_n = [0.0f64; 3];
+        let mut best_a2 = 0.0f64;
+        let mut lmin = f64::MAX;
+        for i in 0..4 {
+            let f: [usize; 3] = std::array::from_fn(|k| t[(i + 1 + k) % 4]);
+            let n = face_normal_raw(&mesh.points, f);
+            let a2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+            if a2 > best_a2 {
+                best_a2 = a2;
+                best_n = n;
+            }
+        }
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                lmin = lmin.min(dist2_pts(mesh.points[t[a]], mesh.points[t[b]]).sqrt());
+            }
+        }
+        if !(best_a2 > 0.0) || !(lmin > 0.0) {
+            continue;
+        }
+        let scale = 1.0 / best_a2.sqrt();
+        let n: [f64; 3] = best_n.map(|v| v * scale);
+        let delta = 0.05 * lmin;
+        'verts: for &v in &t {
+            if v < mesh.plc_points || constrained_verts.contains(&v) || perturbed.contains(&v)
+            {
+                continue;
+            }
+            let p0 = mesh.points[v];
+            // Gate: every star tet that was positive BEFORE the nudge stays
+            // positive. Requiring positivity outright rejected every move
+            // inside sliver CLUSTERS (several zero-volume tets share the
+            // apex there -- the dominant configuration), which silently
+            // no-opped the whole stage.
+            let was_pos: Vec<bool> = g_incident[v]
+                .iter()
+                .map(|&x| alive[x as usize] && orient_positive(&mesh.points, mesh.tets[x as usize]))
+                .collect();
+            for dir in [1.0f64, -1.0] {
+                let cand: [f64; 3] = std::array::from_fn(|k| p0[k] + dir * delta * n[k]);
+                mesh.points[v] = cand;
+                let star_ok = g_incident[v]
+                    .iter()
+                    .zip(&was_pos)
+                    .all(|(&x, &wp)| {
+                        !wp || orient_positive(&mesh.points, mesh.tets[x as usize])
+                    });
+                if star_ok {
+                    for &x in &g_incident[v] {
+                        tet_q[x as usize] = f64::NAN;
+                    }
+                    for &x in g_incident[v].iter().filter(|&&x| alive[x as usize]) {
+                        for &w in &mesh.tets[x as usize] {
+                            next_dirty.insert(w);
+                        }
+                    }
+                    perturbed.insert(v);
+                    ops += 1;
+                    break 'verts;
+                }
+                mesh.points[v] = p0;
+            }
+        }
+    }
+    ops
+}
+
+/// Unnormalized facet normal (cross product of two edges).
+fn face_normal_raw(points: &[[f64; 3]], t: [usize; 3]) -> [f64; 3] {
+    let u: [f64; 3] = std::array::from_fn(|k| points[t[1]][k] - points[t[0]][k]);
+    let v: [f64; 3] = std::array::from_fn(|k| points[t[2]][k] - points[t[0]][k]);
+    [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
 }
 
 /// Edge collapse b -> a around a bad tet: removes STEINER vertex b by

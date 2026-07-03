@@ -377,91 +377,143 @@ def names() -> list[str]:
     return [e[0] for e in CORPUS]
 
 
-def bench(only=None, dump_meshes: bool = False) -> list[dict]:
+#: Curated quick tier: one or two representatives per geometry class plus the
+#: currently hot problem cases -- the OFFICIAL fast gate for mid-iteration
+#: checks (parallel: ~1-2 min). Full runs remain the only history-writing
+#: benchmark truth.
+QUICK = [
+    "box", "sphere", "cylinder", "torus", "cone", "via", "orbs", "capsule",
+    "mold_block", "pipe_junction", "tube", "cross_cyl", "cyl_coarse_interior",
+    "nested_shells", "stacked_two_region", "microstrip", "rp_sym_inductor_fem",
+    "spring", "rf_solenoid", "diff_cyl_box",
+]
+
+
+def _bench_entry(name: str, cat: str, kind: str, make, dump_meshes: bool) -> dict:
+    """Meshes ONE corpus entry and returns its record (see ``bench``)."""
+    import json as _json
+
+    rec = {"name": name, "category": cat, "kind": kind}
+    t0 = time.time()
+    try:
+        m = make()
+        s = m.stats
+        rec.update(
+            status="ok",
+            n_elems=int(s["n_faces"]) if kind == "surf" else int(s["n_tets"]),
+            n_points=int(s["n_points"]),
+            min_dihedral=None if kind == "surf" else round(float(s["min_dihedral_deg"]), 2),
+            millis=int((time.time() - t0) * 1000),
+        )
+        # Located diagnostics (volume meshes): the conformity/quality map.
+        diag = None
+        if kind == "vol":
+            d = m.diagnostics
+            diag = d
+            rec.update(
+                watertight=bool(d["watertight"]),
+                n_slivers=int(d["n_slivers"]),
+                n_straddlers=int(d["n_straddlers"]),
+                n_nonmanifold=int(d["n_nonmanifold_edges"]),
+                max_surf_dev=round(float(d["max_surface_deviation"]), 6),
+                n_defects=len(d["defects"]),
+            )
+        if dump_meshes:
+            from report import render_gallery as _RG
+
+            _RG.MESHES.mkdir(parents=True, exist_ok=True)
+            vd = (
+                V._surface_viewer_dict(m, name)
+                if kind == "surf"
+                else m.to_viewer_dict(name)
+            )
+            (_RG.MESHES / f"gal_{name}.json").write_text(_json.dumps(vd))
+            meta = {
+                "kind": kind,
+                "n": rec["n_elems"],
+                "wall": rec["millis"] / 1000.0,
+                "timings": dict(getattr(m, "timings", None) or {}) or None,
+                "diag": None
+                if diag is None
+                else {
+                    **{
+                        k: diag[k]
+                        for k in (
+                            "watertight",
+                            "min_dihedral_deg",
+                            "n_slivers",
+                            "n_straddlers",
+                            "n_nonmanifold_edges",
+                            "max_surface_deviation",
+                        )
+                    },
+                    # the annotator's legend only needs the defect KINDS
+                    "defects": [
+                        {"kind": k}
+                        for k in sorted({d["kind"] for d in diag["defects"]})
+                    ],
+                },
+            }
+            (_RG.MESHES / f"gal_{name}.meta.json").write_text(_json.dumps(meta))
+    except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
+        rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
+    return rec
+
+
+def _bench_worker(args: tuple[str, bool]) -> dict:
+    """Pool entry point (spawn-safe): meshes one entry by NAME."""
+    name, dump_meshes = args
+    for n, cat, kind, make in CORPUS:
+        if n == name:
+            return _bench_entry(n, cat, kind, make, dump_meshes)
+    return {"name": name, "status": "FAIL", "error": "unknown corpus entry", "millis": 0}
+
+
+def _worker_init():
+    # Each worker gets a slice of the machine: the mesher's own rayon stages
+    # stay narrow so N workers x M rayon threads ~ core count.
+    import os
+
+    os.environ.setdefault("RAYON_NUM_THREADS", "2")
+
+
+def bench(only=None, dump_meshes: bool = False, jobs: int = 1) -> list[dict]:
     """Runs every geometry through the mesher, recording quality + timing.
     A geometry that panics (e.g. an assembly degeneracy) is recorded, not fatal,
-    so the benchmark always completes. Returns one record per geometry.
+    so the benchmark always completes. Returns one record per geometry, in
+    corpus order.
 
     ``dump_meshes`` writes each mesh's viewer JSON + a render-metadata sidecar
     (viewer/public/meshes/gal_<name>.json/.meta.json) so the gallery render can
-    REUSE the benchmark meshes instead of meshing everything a second time --
-    the re-mesh used to double the wall time of every corpus run.
+    REUSE the benchmark meshes instead of meshing everything a second time.
+
+    ``jobs > 1`` meshes the (independent) geometries in a process pool:
+    wall time ~ the slowest geometry instead of the sum. Timing columns are
+    then LOAD-NOISY -- quality gating only; official timing trajectories run
+    serial (``--jobs 1``).
     """
-    import json as _json
+    todo = [e for e in CORPUS if only is None or e[0] in only]
+    if jobs <= 1:
+        rows = []
+        for name, cat, kind, make in todo:
+            print(f"  {name} ...", end="", flush=True)
+            rec = _bench_entry(name, cat, kind, make, dump_meshes)
+            extra = "" if rec["status"] == "ok" else f"  {rec.get('error', '')}"
+            print(f" {rec['millis']} ms [{rec['status']}]{extra}", flush=True)
+            rows.append(rec)
+        return rows
+    import multiprocessing as mp
 
+    order = {e[0]: i for i, e in enumerate(todo)}
     rows: list[dict] = []
-    for name, cat, kind, make in CORPUS:
-        if only is not None and name not in only:
-            continue
-        rec = {"name": name, "category": cat, "kind": kind}
-        print(f"  {name} ...", end="", flush=True)
-        t0 = time.time()
-        try:
-            m = make()
-            s = m.stats
-            rec.update(
-                status="ok",
-                n_elems=int(s["n_faces"]) if kind == "surf" else int(s["n_tets"]),
-                n_points=int(s["n_points"]),
-                min_dihedral=None if kind == "surf" else round(float(s["min_dihedral_deg"]), 2),
-                millis=int((time.time() - t0) * 1000),
-            )
-            # Located diagnostics (volume meshes): the conformity/quality map.
-            diag = None
-            if kind == "vol":
-                d = m.diagnostics
-                diag = d
-                rec.update(
-                    watertight=bool(d["watertight"]),
-                    n_slivers=int(d["n_slivers"]),
-                    n_straddlers=int(d["n_straddlers"]),
-                    n_nonmanifold=int(d["n_nonmanifold_edges"]),
-                    max_surf_dev=round(float(d["max_surface_deviation"]), 6),
-                    n_defects=len(d["defects"]),
-                )
-            if dump_meshes:
-                from report import render_gallery as _RG
-
-                _RG.MESHES.mkdir(parents=True, exist_ok=True)
-                vd = (
-                    V._surface_viewer_dict(m, name)
-                    if kind == "surf"
-                    else m.to_viewer_dict(name)
-                )
-                (_RG.MESHES / f"gal_{name}.json").write_text(_json.dumps(vd))
-                meta = {
-                    "kind": kind,
-                    "n": rec["n_elems"],
-                    "wall": rec["millis"] / 1000.0,
-                    "timings": dict(getattr(m, "timings", None) or {}) or None,
-                    "diag": None
-                    if diag is None
-                    else {
-                        **{
-                            k: diag[k]
-                            for k in (
-                                "watertight",
-                                "min_dihedral_deg",
-                                "n_slivers",
-                                "n_straddlers",
-                                "n_nonmanifold_edges",
-                                "max_surface_deviation",
-                            )
-                        },
-                        # the annotator's legend only needs the defect KINDS
-                        "defects": [
-                            {"kind": k}
-                            for k in sorted({d["kind"] for d in diag["defects"]})
-                        ],
-                    },
-                }
-                (_RG.MESHES / f"gal_{name}.meta.json").write_text(_json.dumps(meta))
-        except BaseException as e:  # noqa: BLE001 - a panic must not abort the bench
-            rec.update(status="FAIL", error=f"{type(e).__name__}: {str(e)[:80]}", millis=int((time.time() - t0) * 1000))
-        state = rec.get("status")
-        extra = "" if state == "ok" else f"  {rec.get('error', '')}"
-        print(f" {rec['millis']} ms [{state}]{extra}", flush=True)
-        rows.append(rec)
+    with mp.get_context("spawn").Pool(jobs, initializer=_worker_init) as pool:
+        for rec in pool.imap_unordered(
+            _bench_worker, [(e[0], dump_meshes) for e in todo]
+        ):
+            extra = "" if rec["status"] == "ok" else f"  {rec.get('error', '')}"
+            print(f"  {rec['name']} ... {rec['millis']} ms [{rec['status']}]{extra}", flush=True)
+            rows.append(rec)
+    rows.sort(key=lambda r: order[r["name"]])
     return rows
 
 
@@ -471,10 +523,16 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-render", action="store_true", help="skip the gallery render (metrics only)")
+    ap.add_argument("--jobs", type=int, default=6,
+                    help="parallel mesh workers (1 = serial; timing columns are load-noisy when > 1)")
+    ap.add_argument("--quick", action="store_true",
+                    help="curated quick tier (QUICK list) for mid-iteration checks; no history entry")
     args = ap.parse_args()
 
-    print(f"corpus: {len(CORPUS)} geometries")
-    rows = bench(dump_meshes=not args.no_render)
+    only = set(QUICK) if args.quick else None
+    label = f"{len(only)} quick" if only else str(len(CORPUS))
+    print(f"corpus: {label} geometries, jobs={args.jobs}")
+    rows = bench(only=only, dump_meshes=not args.no_render, jobs=args.jobs)
     out = REPO / "report" / "validation" / "benchmark.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1))
@@ -491,25 +549,30 @@ if __name__ == "__main__":
         except Exception:
             return ""
 
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    sha = _git("rev-parse", "--short", "HEAD") or "nogit"
+    # Quick-tier runs are a fast gate, not the benchmark truth: no history
+    # entry, no trajectory (comparing a subset against full runs would lie).
     hist_dir = REPO / "bench" / "history"
-    hist_dir.mkdir(parents=True, exist_ok=True)
-    doc = {
-        "meta": {
-            "date": stamp,
-            "git_sha": sha,
-            "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-            "git_dirty": bool(_git("status", "--porcelain")),
-            "corpus_size": len(CORPUS),
-        },
-        "rows": rows,
-    }
-    hist_path = hist_dir / f"{stamp}_{sha}.json"
-    hist_path.write_text(json.dumps(doc, indent=1))
+    hist_path = None
+    if not args.quick:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+        sha = _git("rev-parse", "--short", "HEAD") or "nogit"
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        doc = {
+            "meta": {
+                "date": stamp,
+                "git_sha": sha,
+                "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                "git_dirty": bool(_git("status", "--porcelain")),
+                "corpus_size": len(CORPUS),
+                "jobs": args.jobs,
+            },
+            "rows": rows,
+        }
+        hist_path = hist_dir / f"{stamp}_{sha}.json"
+        hist_path.write_text(json.dumps(doc, indent=1))
 
     # trajectory check: headline deltas against the previous history entry
-    prev_files = sorted(hist_dir.glob("*.json"))
+    prev_files = sorted(hist_dir.glob("*.json")) if hist_path else []
     prev_files = [f for f in prev_files if f != hist_path]
     if prev_files:
         prev = json.loads(prev_files[-1].read_text())

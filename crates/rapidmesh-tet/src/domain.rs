@@ -207,9 +207,26 @@ impl DomainTree {
             // `maxh` (no-op) unless a global surface cap is set, so this keeps the
             // global `g.surf().maxh` consistent with the per-entity override: both
             // now refine the volume field behind the surface, not just the tiling.
+            //
+            // DISCRETE carriers: the estimated (tessellation-derived) curvature
+            // may undercut the user's local target by at most 4x. The resolution
+            // floor inside the estimate is not enough on its own -- scans are
+            // tessellated far finer than any useful FEM resolution, so the
+            // estimate otherwise overrides `maxh` unboundedly (measured on
+            // cheburashka: h/7, ~1M tets, a 997k-candidate collapse pass).
+            // Analytic curvature is exact and keeps its full authority.
+            let ct = {
+                let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
+                let ct = curvature_target(i);
+                if matches!(kind, rapidmesh_geom::SurfaceKind::Discrete(_)) {
+                    ct.max(base * 0.25)
+                } else {
+                    ct
+                }
+            };
             base.min(facet_surf.get(i).copied().unwrap_or(f64::INFINITY))
                 .min(params.surf_cap())
-                .min(curvature_target(i))
+                .min(ct)
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles

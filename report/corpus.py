@@ -414,6 +414,7 @@ def _bench_entry(name: str, cat: str, kind: str, make, dump_meshes: bool) -> dic
                 watertight=bool(d["watertight"]),
                 n_slivers=int(d["n_slivers"]),
                 n_straddlers=int(d["n_straddlers"]),
+                n_bridge_faces=int(d.get("n_bridge_faces", 0)),
                 n_nonmanifold=int(d["n_nonmanifold_edges"]),
                 max_surf_dev=round(float(d["max_surface_deviation"]), 6),
                 n_defects=len(d["defects"]),
@@ -443,9 +444,11 @@ def _bench_entry(name: str, cat: str, kind: str, make, dump_meshes: bool) -> dic
                             "min_dihedral_deg",
                             "n_slivers",
                             "n_straddlers",
+                            "n_bridge_faces",
                             "n_nonmanifold_edges",
                             "max_surface_deviation",
                         )
+                        if k in diag
                     },
                     # the annotator's legend only needs the defect KINDS
                     "defects": [
@@ -486,8 +489,9 @@ def bench(only=None, dump_meshes: bool = False, jobs: int = 1) -> list[dict]:
     corpus order.
 
     ``dump_meshes`` writes each mesh's viewer JSON + a render-metadata sidecar
-    (viewer/public/meshes/gal_<name>.json/.meta.json) so the gallery render can
-    REUSE the benchmark meshes instead of meshing everything a second time.
+    (report/validation/meshes/gal_<name>.json/.meta.json, ``render_gallery.MESHES``)
+    so the gallery render can REUSE the benchmark meshes instead of meshing
+    everything a second time.
 
     ``jobs > 1`` meshes the (independent) geometries in a process pool:
     wall time ~ the slowest geometry instead of the sum. Timing columns are
@@ -653,6 +657,7 @@ if __name__ == "__main__":
         print("\nrendering gallery (corpus)...")
         from report import render_gallery
         render_gallery.render_corpus(
-            prebuilt={r["name"] for r in rows if r["status"] == "ok"}
+            prebuilt={r["name"] for r in rows if r["status"] == "ok"},
+            only=only,  # quick/sub runs refresh ONLY their subset's images
         )
         print(f"-> {REPO / 'report' / 'figures' / 'gallery' / 'corpus'}")

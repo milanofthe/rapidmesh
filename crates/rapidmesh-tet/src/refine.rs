@@ -219,8 +219,80 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             out
         }
         Surface::Tube { path, radius } => tube_crossings(path, *radius, a, b),
+        Surface::Discrete(d) => {
+            // CLOSED patches only: an open patch (a smooth region ending at
+            // crease edges) has a rim, and the refinement's restricted-
+            // Delaunay sampling relies on the offset FIELD near that rim --
+            // pure facet intersections under-sample the crease bands
+            // (measured on fandisk: maxDev 0.05 -> 0.60, 752 slivers). A
+            // closed patch has no rim; there facet hits and field crossings
+            // agree, and the analytic arm is ~6-8x faster end to end.
+            // RAPIDMESH_TRACE_DISCRETE=1 falls back to the tracer (A/B).
+            static ANALYTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if d.is_closed()
+                && *ANALYTIC
+                    .get_or_init(|| std::env::var_os("RAPIDMESH_TRACE_DISCRETE").is_none())
+            {
+                discrete_crossings(d, surf, a, b)
+            } else {
+                trace_crossings(surf, a, b)
+            }
+        }
         _ => trace_crossings(surf, a, b),
     }
+}
+
+/// Analytic discrete-patch crossings: Moeller-Trumbore candidates from ONE
+/// segment walk of the patch BVH (no oracle projections), then the tube
+/// arm's sign reconstruction over the candidate partition -- transversal
+/// crossings stay, edge grazes and shared-edge double counts fall out
+/// because the offset sign does not flip there. Replaces sphere tracing
+/// (dozens of `closest` queries + bisection per segment) on the import
+/// path's dominant carrier; the no-candidate common case costs no `closest`
+/// query at all.
+fn discrete_crossings(
+    dsc: &rapidmesh_geom::DiscreteSurface,
+    surf: &Surface,
+    a: V3,
+    b: V3,
+) -> SmallVec<[f64; 4]> {
+    thread_local! {
+        static CAND: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    CAND.with(|c| {
+        let mut cand = c.borrow_mut();
+        cand.clear();
+        dsc.segment_hits(a, b, &mut cand);
+        if cand.is_empty() {
+            return SmallVec::new();
+        }
+        cand.sort_unstable_by(|x, y| x.total_cmp(y));
+        cand.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
+        let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
+        let f = |t: f64| -> f64 { signed_offset(surf, at(t)) };
+        // Sign probes sit a hair NEXT TO each candidate, not at the far
+        // partition midpoints: a discrete patch is an OPEN surface (it ends
+        // at crease edges), and beyond its shadow `closest` projects onto
+        // the rim, where the offset sign is meaningless -- midpoint probing
+        // there dropped real crossings wholesale (fandisk maxDev 0.60, 752
+        // slivers). Near the pierce point the foot lies inside the pierced
+        // triangle and the sign is sound -- the tracer's dense samples had
+        // exactly that property. delta clamps to half the gap toward the
+        // neighboring candidate/endpoint.
+        const DELTA: f64 = 1e-5;
+        let mut out = SmallVec::new();
+        for (i, &t) in cand.iter().enumerate() {
+            let lo = if i > 0 { 0.5 * (cand[i - 1] + t) } else { 0.0 };
+            let hi = if i + 1 < cand.len() { 0.5 * (t + cand[i + 1]) } else { 1.0 };
+            let s_before = f((t - DELTA).max(lo));
+            let s_after = f((t + DELTA).min(hi));
+            if s_before != 0.0 && s_after != 0.0 && s_before.signum() != s_after.signum() {
+                out.push(t);
+            }
+        }
+        drop_endpoint_touch(surf, a, b, &mut out);
+        out
+    })
 }
 
 /// Absolute offset scale below which a segment endpoint counts as ON the

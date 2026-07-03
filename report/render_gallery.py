@@ -45,6 +45,7 @@ DEFECT_LEGEND = [
     ("sliver", (255, 191, 0)),            # amber
     ("straddler", (255, 26, 204)),        # magenta
     ("nonmanifold_edge", (255, 26, 26)),  # red
+    ("bridge_face", (0, 230, 255)),       # cyan: lid/bridge over a cavity opening
 ]
 
 
@@ -201,34 +202,52 @@ def _jobs_for(name: str, kind: str, mp: Path, out_normal: Path, out_debug: Path)
     return normal, debug
 
 
-def render_corpus(prebuilt: set[str] | None = None) -> None:
+def render_corpus(prebuilt: set[str] | None = None, only: set[str] | None = None) -> None:
     """Renders every geometry in the unified corpus with the NEW constrained
     per-region mesher into TWO directories: `corpus/` (normal view) and
     `corpus_debug/` (diagnostic view), via a PERSISTENT headless WebGPU
     rasterizer (the exact viewer pipeline, no browser). Each geometry's two PNGs
     are produced -- and the debug view annotated with metrics + meshing-time
-    breakdown -- the moment its mesh is ready. Both dirs are cleared first.
+    breakdown -- the moment its mesh is ready.
 
     ``prebuilt`` names geometries whose viewer JSON + ``.meta.json`` sidecar
     were just written by ``corpus.bench(dump_meshes=True)``: those render from
     the benchmark meshes directly instead of meshing a second time (the
-    re-mesh used to double every corpus run). Standalone runs (no ``prebuilt``)
-    keep meshing everything themselves."""
+    re-mesh used to double every corpus run). A benched-but-FAILED geometry
+    (attempted, so absent from ``prebuilt``) is SKIPPED, not re-meshed: it
+    would only burn the same wall time to fail identically. Standalone runs
+    (no ``prebuilt``) keep meshing everything themselves.
+
+    ``only`` restricts the render to a bench subset (``--quick`` / ``--sub``):
+    only those geometries are rendered and only THEIR PNGs are refreshed --
+    everything else keeps its image from the last full run instead of being
+    re-meshed (which made a 2-minute quick bench pay for a full-corpus mesh in
+    the render phase). ``only=None`` (a full run) clears both dirs first, so
+    renamed/removed geometries leave no orphan images."""
     out = GAL / "corpus"
     dbg = GAL / "corpus_debug"
+    todo = [e for e in C.CORPUS if only is None or e[0] in only]
+    todo_names = {e[0] for e in todo}
     for d in (out, dbg):
         if d.exists():
             for old in d.glob("*.png"):
-                old.unlink()
+                if only is None or old.stem in todo_names:
+                    old.unlink()
         d.mkdir(parents=True, exist_ok=True)
     MESHES.mkdir(parents=True, exist_ok=True)
     ras = _Rasterizer()
     try:
-        for name, _cat, kind, make in C.CORPUS:
+        for name, _cat, kind, make in todo:
             try:
                 mp = MESHES / f"gal_{name}.json"
                 meta_p = MESHES / f"gal_{name}.meta.json"
-                if prebuilt is not None and name in prebuilt and mp.exists() and meta_p.exists():
+                if prebuilt is not None and name not in prebuilt:
+                    # benched and FAILED: no mesh to render, and re-meshing
+                    # would fail the same way after the same wall time.
+                    print(f"  {name}: skipped (bench FAILED)")
+                    continue
+                reused = prebuilt is not None and mp.exists() and meta_p.exists()
+                if reused:
                     meta = json.loads(meta_p.read_text())
                     n, diag = meta["n"], meta["diag"]
                     wall, timings = meta["wall"], meta["timings"]
@@ -247,7 +266,10 @@ def render_corpus(prebuilt: set[str] | None = None) -> None:
                 ras.render(normal)
                 if ras.render(debug) and (dbg / f"{name}.png").exists():
                     _annotate(dbg / f"{name}.png", name, kind, n, diag, wall, timings)
-                print(f"  {name}: {n} elems, {wall:.1f}s")
+                # in the reuse path ``wall`` is the BENCH meshing time (from the
+                # sidecar) -- say so, or the log reads like a full re-mesh.
+                src = " (bench mesh reused)" if reused else ""
+                print(f"  {name}: {n} elems, {wall:.1f}s{src}")
             except BaseException as e:  # a mesher gap / panic must not stop the gallery
                 print(f"  {name}: FAILED ({type(e).__name__}: {str(e)[:70]})")
     finally:

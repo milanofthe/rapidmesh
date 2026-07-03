@@ -24,6 +24,7 @@ const DEFECT_COLORS: Record<string, RGB> = {
   sliver: [1.0, 0.749, 0.0],
   straddler: [1.0, 0.102, 0.8],
   nonmanifold_edge: [1.0, 0.102, 0.102],
+  bridge_face: [0.0, 0.902, 1.0],
 };
 
 function hex(s: string): RGB {

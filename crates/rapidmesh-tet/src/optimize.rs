@@ -430,6 +430,14 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         _pass += 1;
         let mut ops = 0usize;
         let t0 = std::time::Instant::now();
+        // Live stage marker (RAPIDMESH_OPT_TRACE): printed BEFORE each stage,
+        // so a stage that hangs or runs away is identified without waiting
+        // for the end-of-pass summary line.
+        let stage_mark = |s: &str| {
+            if trace {
+                eprintln!("  [pass {_pass}] -> {s}");
+            }
+        };
 
         // Dilation via the persistent incidence: tets touching a dirty
         // vertex, their vertices ("active"), and those vertices' tets.
@@ -515,6 +523,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // Surface improvement first: boundary slivers cannot be fixed by
         // interior-only operations. Skipped in the ENDGAME (positional
         // stages undo the perturber, see above).
+        stage_mark("surf");
         ops += if endgame || exude_phase { 0 } else { surface_pass(
             mesh,
             &mut g_incident,
@@ -551,6 +560,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
             tet_q[ti]
         }
+        stage_mark("smooth");
         let smooth_verts: Vec<usize> = if endgame || exude_phase {
             Vec::new() // ENDGAME / exude phase: no positional smoothing (see above)
         } else {
@@ -725,6 +735,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // at Delaunay optimality and skips constrained vertices entirely --
         // boundary slivers (the wedge along an intersection curve) are only
         // reachable by this pass.
+        stage_mark("sliver");
         ops += if endgame || exude_phase { 0 } else { sliver_pass(
             mesh,
             &g_incident,
@@ -803,6 +814,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 n_sfaces[v] += 1;
             }
         }
+        stage_mark("collapse");
         if !exude_phase {
             let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
             let mut bad: Vec<(f64, u32)> = Vec::new();
@@ -816,6 +828,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
             bad.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            if trace {
+                eprintln!("  [pass {_pass}] collapse candidates: {}", bad.len());
+            }
             for (_, ti) in bad {
                 let ti = ti as usize;
                 if !alive[ti] {
@@ -856,6 +871,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // first. The collapse runs in do-no-harm mode: a well-shaped but
         // too-small tet coarsens toward the target as long as the merge does
         // not lower the local minimum quality.
+        stage_mark("coarsen");
         if !exude_phase {
             let mut short: Vec<(f64, u32)> = Vec::new();
             for &ti in &map_tets {
@@ -911,6 +927,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         volume_watch("coarsen", mesh, &alive);
         let t2 = std::time::Instant::now();
 
+        stage_mark("flips");
         // ------------------------------------------------------ flips
         let mut added: Vec<([usize; 4], rapidmesh_geom::RegionTag)> = Vec::new();
         // Exudation weight lookup for the flip stages (vertices created by
@@ -1404,6 +1421,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // strict min-quality improvement. Faces whose neighbor died in an
         // earlier operation of this pass stay cavity boundary; their
         // replacements tile the same space behind the shared interface.
+        stage_mark("insert");
         if !exude_phase {
             // Face of positively oriented `t` opposite vertex slot `i`,
             // wound so the opposite vertex lies on its positive side.

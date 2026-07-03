@@ -897,6 +897,7 @@ impl PyMesh {
         d.set_item("watertight", dg.watertight)?;
         d.set_item("n_nonmanifold_edges", dg.n_nonmanifold_edges)?;
         d.set_item("n_straddlers", dg.n_straddlers)?;
+        d.set_item("n_bridge_faces", dg.n_bridge_faces)?;
         d.set_item("max_surface_deviation", dg.max_surface_deviation)?;
         let rv: Vec<Bound<'py, PyDict>> = dg
             .region_volumes
@@ -921,6 +922,7 @@ fn defect_kind_str(k: rapidmesh_tet::diagnostics::DefectKind) -> &'static str {
         Sliver => "sliver",
         NonManifoldEdge => "nonmanifold_edge",
         Straddler => "straddler",
+        BridgeFace => "bridge_face",
     }
 }
 

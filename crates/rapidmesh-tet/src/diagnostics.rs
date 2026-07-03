@@ -27,6 +27,12 @@ pub enum DefectKind {
     /// leaked into the boundary (the restricted Delaunay under-sampled the
     /// surface). `value` = the off-surface distance. The repair site for refinement.
     Straddler,
+    /// A boundary face whose vertices all sit ON surfaces but whose INTERIOR
+    /// spans far off every one of them: a lid/bridge over a cavity opening
+    /// (topologically watertight, geometrically false -- the mold_block
+    /// class the vertex-based straddler test is blind to). `value` = the
+    /// centroid's off-surface distance.
+    BridgeFace,
 }
 
 /// A defect with its 3D location and a severity `value` (units per [`DefectKind`]).
@@ -57,6 +63,9 @@ pub struct MeshDiagnostics {
     pub watertight: bool,
     pub n_nonmanifold_edges: usize,
     pub n_straddlers: usize,
+    /// Boundary faces bridging far off every analytic surface (see
+    /// [`DefectKind::BridgeFace`]).
+    pub n_bridge_faces: usize,
     /// Largest distance of a curved boundary face's centroid from its analytic
     /// surface (the chord sagitta -- the realised geometric accuracy vs `tol`).
     pub max_surface_deviation: f64,
@@ -293,6 +302,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     // (centroid off-surface) is the realised geometric accuracy.
     let mut max_dev = 0.0f64;
     let mut n_straddlers = 0usize;
+    let mut n_bridge_faces = 0usize;
     // The curved analytic surfaces, used as a best-fit basis. A boundary point is
     // measured against the surface it ACTUALLY lies on (the nearest one), not the
     // face's tagged surface: near an intersection ring a face is easily tagged with
@@ -320,7 +330,20 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         }
         // accuracy: chord sagitta = centroid distance to the nearest true surface
         // (a real bridge face -- flat over a concave crease -- still reports far off).
-        max_dev = max_dev.max(nearest_off(centroid(&v)));
+        let c_off = nearest_off(centroid(&v));
+        max_dev = max_dev.max(c_off);
+        // bridge face / lid: every VERTEX passes the straddler test (all on
+        // some surface), but the face INTERIOR spans far off everything --
+        // the cavity-lid class (mold_block), topologically watertight yet
+        // geometrically false. Same relative threshold as the straddler.
+        if longest > 0.0 && c_off > 0.25 * longest && vmax_off <= 0.25 * longest {
+            n_bridge_faces += 1;
+            defects.push(Defect {
+                kind: DefectKind::BridgeFace,
+                pos: centroid(&v),
+                value: c_off,
+            });
+        }
     }
 
     MeshDiagnostics {
@@ -335,6 +358,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         watertight: n_nonmanifold == 0,
         n_nonmanifold_edges: n_nonmanifold,
         n_straddlers,
+        n_bridge_faces,
         max_surface_deviation: max_dev,
         region_volumes: region_vol.into_iter().collect(),
         defects,

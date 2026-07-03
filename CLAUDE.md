@@ -11,6 +11,13 @@
 - **Jeder Bench-Lauf wird datumsversioniert archiviert**: `bench/history/<datum>_<sha>.json`
   (Quality, Defekte, Timing, git-Metadaten). Der Runner druckt die Trajektorie
   gegen den vorherigen Lauf — Regressionen müssen dort auffallen, nicht später.
+- **Laufzeit-Budget: keine Corpus-Geometrie über 5 Minuten** (User-Regel
+  2026-07-03). Eine Geometrie, die das Budget reißt, wird nicht aufgenommen
+  bzw. fliegt raus, bis ein Speed-Fix sie unter das Budget bringt — der Corpus
+  muss praktikabel bleiben, sonst wird er nicht gefahren.
+- Teil-Läufe: `--quick` (kuratiertes Gate) und `--sub <Kategorie>` (Subkorpus,
+  z. B. Import/Boolean/RF) — beide ohne History-Eintrag; die Wahrheit bleibt
+  der Volllauf.
 
 ## Renders
 

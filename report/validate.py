@@ -165,18 +165,18 @@ CASES = [
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "cow.obj")),
     ("homer", "Import", "vol", 0.040,
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "homer.obj")),
-    ("cheburashka", "Import", "vol", 0.051,
+    # cheburashka at diag/12: finer h feeds the collapse-throughput wall
+    # (task #28: ~1M candidates); 0.106 measures 345 s -- slowest but sound.
+    ("cheburashka", "Import", "vol", 0.106,
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "cheburashka.obj")),
-    ("armadillo", "Import", "vol", 11.5,
+    ("armadillo", "Import", "vol", 15.3,
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "armadillo.obj")),
-    ("lucy", "Import", "vol", 96.0,
-        lambda g, h: g.import_obj(REPO / "bench" / "models" / "lucy.obj")),
-    ("nefertiti", "Import", "vol", 33.0,
-        lambda g, h: g.import_obj(REPO / "bench" / "models" / "nefertiti.obj")),
-    ("bimba", "Import", "vol", 0.024,
-        lambda g, h: g.import_obj(REPO / "bench" / "models" / "bimba.obj")),
-    ("igea", "Import", "vol", 0.0078,
-        lambda g, h: g.import_obj(REPO / "bench" / "models" / "igea.obj")),
+    # The big scans (nefertiti, bimba, igea, lucy; fetched to bench/models)
+    # blow the 5-minute-per-geometry corpus budget (nefertiti: killed at
+    # 45 min even with the analytic crossing arm -- scan noise splits them
+    # into many OPEN crease patches, which stay on the tracer). They enter
+    # CASES once task #28 (rim-zone hybrid crossings / collapse throughput)
+    # brings them under budget.
 ]
 
 DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)

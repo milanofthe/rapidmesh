@@ -34,11 +34,17 @@ MODELS = [
 
 def main() -> None:
     out = Path(__file__).parent / "models"
+    hold = Path(__file__).parent / "models_hold"
     out.mkdir(exist_ok=True)
     for name in MODELS:
         dst = out / name
         if dst.exists():
             print(f"{name}: already present")
+            continue
+        if (hold / name).exists():
+            # parked there by hand (failed validate_closed: holes/duplicates;
+            # mesh-repair fodder) -- do not re-fetch into the active set
+            print(f"{name}: in models_hold (needs repair), skipping")
             continue
         url = f"{RAW}/{name}"
         print(f"{name}: fetching {url}")

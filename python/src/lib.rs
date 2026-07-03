@@ -5,12 +5,14 @@
 //! optimization) and hands the result back as numpy arrays.
 
 use numpy::{IntoPyArray, PyArray1, PyArray2};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
     cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
-    icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
-    solid_box, torus, wedge, facet_count, FaceTag, Scene,
+    icosphere, import_obj_creased, import_stl_creased, loft, mesh_solid, naca0012_profile, pipe,
+    sheet_disk, sheet_polygon, sheet_rect, solid_box, torus, validate_closed, wedge, facet_count,
+    FaceTag, Scene,
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
@@ -310,6 +312,35 @@ impl SceneBuilder {
         void: bool,
     ) -> u32 {
         self.put(mesh_solid(&verts, &tris), maxh, void)
+    }
+
+    /// Solid from an STL or OBJ file on the DISCRETE-envelope path: the soup
+    /// is split into smooth regions at crease edges (`crease_deg`), each
+    /// region becomes one `SurfaceKind::Discrete` carrier (closest-point
+    /// projection oracle), and the mesher REMESHES the envelope instead of
+    /// freezing the input facets (which is what `add_mesh` does). The file
+    /// must describe a closed, consistently oriented 2-manifold.
+    #[pyo3(signature = (path, crease_deg, maxh=None, void=false))]
+    fn add_import(
+        &mut self,
+        path: &str,
+        crease_deg: f64,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> PyResult<u32> {
+        let p = std::path::Path::new(path);
+        let is_stl = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("stl"));
+        let f = if is_stl {
+            import_stl_creased(p, crease_deg)
+        } else {
+            import_obj_creased(p, crease_deg)
+        }
+        .map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
+        validate_closed(&f).map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
+        Ok(self.put(f, maxh, void))
     }
 
     fn add_sheet_rect(&mut self, corner: [f64; 3], u: [f64; 3], v: [f64; 3], tag: u32) {

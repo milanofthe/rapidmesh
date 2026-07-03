@@ -385,7 +385,7 @@ QUICK = [
     "box", "sphere", "cylinder", "torus", "cone", "via", "orbs", "capsule",
     "mold_block", "pipe_junction", "tube", "cross_cyl", "cyl_coarse_interior",
     "nested_shells", "stacked_two_region", "microstrip", "rp_sym_inductor_fem",
-    "spring", "rf_solenoid", "diff_cyl_box",
+    "spring", "rf_solenoid", "diff_cyl_box", "fandisk", "spot",
 ]
 
 

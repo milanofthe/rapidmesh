@@ -179,6 +179,12 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
 /// Facet normals in the file are ignored; orientation comes from the vertex
 /// winding (the STL convention requires both to agree).
 pub fn import_stl(path: &Path) -> Result<Faceted, ImportError> {
+    import_stl_creased(path, CREASE_DEG)
+}
+
+/// [`import_stl`] with an explicit crease threshold (degrees) for the
+/// feature-edge detection that splits the soup into smooth Discrete regions.
+pub fn import_stl_creased(path: &Path, crease_deg: f64) -> Result<Faceted, ImportError> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?.read_to_end(&mut bytes)?;
     let tris = if stl_is_binary(&bytes) {
@@ -186,7 +192,7 @@ pub fn import_stl(path: &Path) -> Result<Faceted, ImportError> {
     } else {
         parse_stl_ascii(&bytes)?
     };
-    Ok(faceted_from_tris(tris))
+    Ok(faceted_from_tris_creased(tris, crease_deg))
 }
 
 /// Binary detection: the 80-byte header is free-form (may even start with
@@ -268,6 +274,12 @@ fn parse_stl_ascii(bytes: &[u8]) -> Result<Vec<Tri>, ImportError> {
 /// `f` indices may be 1-based or negative (relative), with optional
 /// `/texture/normal` suffixes.
 pub fn import_obj(path: &Path) -> Result<Faceted, ImportError> {
+    import_obj_creased(path, CREASE_DEG)
+}
+
+/// [`import_obj`] with an explicit crease threshold (degrees), see
+/// [`import_stl_creased`].
+pub fn import_obj_creased(path: &Path, crease_deg: f64) -> Result<Faceted, ImportError> {
     let text = std::fs::read_to_string(path)?;
     let mut verts: Vec<[f64; 3]> = Vec::new();
     let mut tris: Vec<Tri> = Vec::new();

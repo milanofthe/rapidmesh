@@ -1068,6 +1068,39 @@ class Geometry:
         )
         return self._solid(region)
 
+    def import_stl(
+        self,
+        path,
+        *,
+        crease_deg: float = 40.0,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from an STL file (binary or ASCII, auto-detected) on the
+        discrete-envelope path: the triangle soup is split into smooth
+        regions at crease edges (facet normals turning by more than
+        ``crease_deg`` across an edge mark a feature edge), each region
+        becomes one discrete surface carrier, and the mesher remeshes that
+        envelope -- unlike :meth:`mesh_solid`, which freezes the input
+        facets verbatim. The file must describe a closed, consistently
+        oriented 2-manifold (validated on import)."""
+        region = self._builder.add_import(str(path), crease_deg, maxh, void)
+        return self._solid(region)
+
+    def import_obj(
+        self,
+        path,
+        *,
+        crease_deg: float = 40.0,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from a Wavefront OBJ file (``v``/``f`` records; polygons
+        are fan-triangulated). Same discrete-envelope semantics as
+        :meth:`import_stl`."""
+        region = self._builder.add_import(str(path), crease_deg, maxh, void)
+        return self._solid(region)
+
     # ------------------------------------------------------------ sheets
 
     def xy_plate(

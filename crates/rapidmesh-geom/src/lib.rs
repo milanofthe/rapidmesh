@@ -22,7 +22,7 @@ pub mod vec3;
 pub use discrete::DiscreteSurface;
 pub use tube::TubePath;
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
-pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, ImportError};
+pub use import::{import_obj, import_obj_creased, import_stl, import_stl_creased, min_height_ratio, validate_closed, ImportError, CREASE_DEG};
 pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};

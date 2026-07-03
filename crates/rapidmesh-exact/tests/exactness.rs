@@ -732,3 +732,84 @@ fn insphere3d_with_lnc_matches_independent_rational() {
         assert_eq!(got, Some(want));
     }
 }
+
+// ------------------------------------------------- power_test3d (WP3 exude)
+
+/// Rational oracle for the weighted in-sphere: det4 of rows
+/// (p - e, |p - e|^2 - (wp - we)).
+fn power_affine_oracle(p: [[BigRational; 3]; 5], w: [BigRational; 5]) -> Sign {
+    let row = |i: usize| -> [Rat; 4] {
+        let d: [BigRational; 3] =
+            std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
+        let lift = d.iter().map(|v| v * v).fold(BigRational::zero(), |a, v| a + v)
+            - (w[i].clone() - w[4].clone());
+        [Rat(d[0].clone()), Rat(d[1].clone()), Rat(d[2].clone()), Rat(lift)]
+    };
+    let m: [[Rat; 4]; 4] = std::array::from_fn(row);
+    sign_of_rat(&det4(&m).0)
+}
+
+#[test]
+fn power_test3d_matches_rational_oracle_and_insphere_at_zero() {
+    use rapidmesh_exact::orient::power_test3d;
+    let mut rng = Rng::new(0xE1);
+    for i in 0..500 {
+        let p: [[f64; 3]; 5] = std::array::from_fn(|_| rng.point3(16));
+        // weights: zero on every third case (the insphere-equivalence class),
+        // small mixed-sign values otherwise (the exudation regime).
+        let w: [f64; 5] = if i % 3 == 0 {
+            [0.0; 5]
+        } else {
+            std::array::from_fn(|j| golden_t(i * 5 + j) * 0.01 - 0.005)
+        };
+        let got = power_test3d(
+            p[0], w[0], p[1], w[1], p[2], w[2], p[3], w[3], p[4], w[4],
+        );
+        let pr: [[BigRational; 3]; 5] =
+            std::array::from_fn(|j| std::array::from_fn(|k| rat(p[j][k])));
+        let wr: [BigRational; 5] = std::array::from_fn(|j| rat(w[j]));
+        assert_eq!(got, power_affine_oracle(pr, wr), "case {i}");
+        if i % 3 == 0 {
+            // all-zero weights: identical to the unweighted in-sphere
+            let e: [Point3; 5] = p.map(Point3::Explicit);
+            assert_eq!(
+                Some(got),
+                insphere3d(&e[0], &e[1], &e[2], &e[3], &e[4]),
+                "insphere equivalence, case {i}"
+            );
+        }
+    }
+}
+
+#[test]
+fn power_test3d_pumping_monotone() {
+    use rapidmesh_exact::orient::power_test3d;
+    // A regular tet with e outside its circumsphere: pumping we upward must
+    // switch the test from negative (regular) to positive (violates) exactly
+    // once -- the monotonicity the exudation weight search relies on.
+    // positively oriented (orient3d > 0), so insphere's sign convention
+    // applies unflipped
+    let (a, b, c, d) = (
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    let e = [1.2, 1.2, 1.2];
+    let mut prev = power_test3d(a, 0.0, b, 0.0, c, 0.0, d, 0.0, e, 0.0);
+    assert_eq!(prev, Sign::Negative, "far point starts regular");
+    let mut flips = 0;
+    for k in 1..=64 {
+        let we = k as f64 * 0.1;
+        let s = power_test3d(a, 0.0, b, 0.0, c, 0.0, d, 0.0, e, we);
+        if s != prev && prev == Sign::Negative {
+            flips += 1;
+        }
+        assert!(
+            !(prev == Sign::Positive && s == Sign::Negative),
+            "pumping must be monotone (we {we})"
+        );
+        prev = s;
+    }
+    assert_eq!(flips, 1, "exactly one regular->violating transition");
+}

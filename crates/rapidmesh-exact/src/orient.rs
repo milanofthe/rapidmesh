@@ -319,6 +319,53 @@ pub fn insphere3d(
     Some(det5(&rows).sign())
 }
 
+/// Exact weighted in-sphere (power / regularity) test over EXPLICIT points --
+/// the sliver-exudation predicate. Positive iff the weighted point `(e, we)`
+/// has NEGATIVE power distance to the orthosphere of the positively oriented
+/// weighted tet `(a, wa) .. (d, wd)`: `e` violates the tet's regularity, so a
+/// regular (weighted-Delaunay) flip removes the shared facet. With all
+/// weights zero this is exactly [`insphere3d`]'s convention.
+///
+/// Shewchuk difference form with the weight correction on the lift:
+/// `sign det4 of rows (p - e, |p - e|^2 - (wp - we))`. Staged: interval
+/// filter first, exact expansion arithmetic when indecisive. Points here are
+/// plain f64 (the exude pass runs on the EXTRACTED mesh), so no implicit
+/// machinery is involved.
+pub fn power_test3d(
+    a: [f64; 3],
+    wa: f64,
+    b: [f64; 3],
+    wb: f64,
+    c: [f64; 3],
+    wc: f64,
+    d: [f64; 3],
+    wd: f64,
+    e: [f64; 3],
+    we: f64,
+) -> Sign {
+    fn wrow<T: crate::ring::Ring>(p: [f64; 3], wp: f64, e: [f64; 3], we: f64) -> [T; 4] {
+        let d: [T; 3] = std::array::from_fn(|k| T::from_f64(p[k]).sub(&T::from_f64(e[k])));
+        let lift = d[0]
+            .mul(&d[0])
+            .add(&d[1].mul(&d[1]))
+            .add(&d[2].mul(&d[2]))
+            .sub(&T::from_f64(wp).sub(&T::from_f64(we)));
+        [d[0].clone(), d[1].clone(), d[2].clone(), lift]
+    }
+    let pts = [(a, wa), (b, wb), (c, wc), (d, wd)];
+    // Interval filter, exact expansion arithmetic when indecisive.
+    {
+        let rows: [[Interval; 4]; 4] =
+            std::array::from_fn(|i| wrow::<Interval>(pts[i].0, pts[i].1, e, we));
+        if let Some(sign) = det4(&rows).sign() {
+            return sign;
+        }
+    }
+    let rows: [[Expansion; 4]; 4] =
+        std::array::from_fn(|i| wrow::<Expansion>(pts[i].0, pts[i].1, e, we));
+    det4(&rows).sign()
+}
+
 /// Exact 2D orientation of three points in the axis-aligned projection that
 /// drops the given axis. Points may be implicit.
 ///

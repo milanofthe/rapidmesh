@@ -189,7 +189,7 @@ def _shape_cases():
 
     add("spiral_inductor", 0.05, _spiral, maxh=0.05)
     add("organic_blob", 0.08, _blob, maxh=0.08)
-    add("gear", 0.07, _gear, maxh=0.07)
+    add("gear_plate", 0.07, _gear, maxh=0.07)
     add("interdigital_comb", 0.06, _comb, maxh=0.06)
 
     # graded 2D: a fine source point with the field growing linearly outward.
@@ -460,13 +460,15 @@ def _bench_entry(name: str, cat: str, kind: str, make, dump_meshes: bool) -> dic
     return rec
 
 
-def _bench_worker(args: tuple[str, bool]) -> dict:
-    """Pool entry point (spawn-safe): meshes one entry by NAME."""
-    name, dump_meshes = args
-    for n, cat, kind, make in CORPUS:
-        if n == name:
-            return _bench_entry(n, cat, kind, make, dump_meshes)
-    return {"name": name, "status": "FAIL", "error": "unknown corpus entry", "millis": 0}
+def _bench_worker(args: tuple[int, bool]) -> dict:
+    """Pool entry point (spawn-safe): meshes one entry by CORPUS index (NOT
+    by name -- names are only unique per kind, and a name lookup silently
+    double-meshed one duplicate and skipped the other)."""
+    idx, dump_meshes = args
+    name, cat, kind, make = CORPUS[idx]
+    rec = _bench_entry(name, cat, kind, make, dump_meshes)
+    rec["_idx"] = idx
+    return rec
 
 
 def _worker_init():
@@ -504,16 +506,21 @@ def bench(only=None, dump_meshes: bool = False, jobs: int = 1) -> list[dict]:
         return rows
     import multiprocessing as mp
 
-    order = {e[0]: i for i, e in enumerate(todo)}
+    idx_of = {id(e): i for i, e in enumerate(CORPUS)}
+    todo_idx = [idx_of[id(e)] for e in todo]
+    order = {i: k for k, i in enumerate(todo_idx)}
     rows: list[dict] = []
     with mp.get_context("spawn").Pool(jobs, initializer=_worker_init) as pool:
-        for rec in pool.imap_unordered(
-            _bench_worker, [(e[0], dump_meshes) for e in todo]
-        ):
+        results = pool.imap_unordered(
+            _bench_worker, [(i, dump_meshes) for i in todo_idx]
+        )
+        for rec in results:
             extra = "" if rec["status"] == "ok" else f"  {rec.get('error', '')}"
             print(f"  {rec['name']} ... {rec['millis']} ms [{rec['status']}]{extra}", flush=True)
             rows.append(rec)
-    rows.sort(key=lambda r: order[r["name"]])
+    rows.sort(key=lambda r: r["_idx"])
+    for r in rows:
+        r.pop("_idx", None)
     return rows
 
 

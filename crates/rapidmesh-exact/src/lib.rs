@@ -50,7 +50,7 @@ pub mod ring;
 pub use expansion::Expansion;
 pub use interval::Interval;
 pub use order::{cmp_along, collinear, lex_cmp, strictly_between, within_closed};
-pub use orient::{incircle2d, insphere3d, orient2d, orient3d};
+pub use orient::{incircle2d, insphere3d, orient2d, orient3d, power_test3d};
 pub use point::Point3;
 pub use ring::Ring;
 

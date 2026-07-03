@@ -15,7 +15,7 @@
 //! when nothing improves.
 
 use crate::conform::TetMesh;
-use rapidmesh_exact::{collinear, orient2d, Axis, Point3, Sign};
+use rapidmesh_exact::{collinear, orient2d, power_test3d, Axis, Point3, Sign};
 use rapidmesh_brep::Surface;
 use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
@@ -30,6 +30,19 @@ use crate::constants::{
 type DState = BuildHasherDefault<rustc_hash::FxHasher>;
 type DMap<K, V> = HashMap<K, V, DState>;
 type DSet<T> = HashSet<T, DState>;
+
+/// Anti-degeneracy floor for exudation flips: every replacement tet's
+/// [`quality`] (-|cos| of the worst dihedral) must beat one degree,
+/// i.e. `-cos(1 deg)`. The power test is the decision maker; the floor
+/// refuses to manufacture near-zero-volume replacements, which downstream
+/// surgery cannot digest. The strictness is a measured manifold-vs-sliver
+/// trade (quick tier): no floor -> capsule slivers -175 and zero straddler
+/// geometries, but nm-edge crumbs on cone/tube and two watertightness
+/// flips; 0.1 deg -> an inferior midpoint on both axes; 1 deg -> best-ever
+/// watertight count (8 -> 5; capsule/cylinder/torus seal for the first
+/// time) at the cost of the capsule wedge flips (sliver win shrinks to a
+/// few dozen). Manifold wins: watertightness is the contract metric.
+const EXUDE_MIN_Q: f64 = -0.999_847_695_156_391_3;
 
 /// Radius-edge ratio (circumradius over shortest edge) of a tet on explicit
 /// coordinates; `MAX` for degenerate tets. (Tuning constants: crate::constants.)
@@ -338,6 +351,16 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     let mut n_sfaces: Vec<u32> = Vec::new();
     // Vertices already nudged by the perturbation stage (once per call).
     let mut perturbed: DSet<usize> = DSet::default();
+    // Exudation weights (Edelsbrunner-Guoy), zero outside the ENDGAME. The
+    // exude stage pumps interior vertices of surviving slivers; the flip
+    // stages then decide every weight-involved candidate by the exact power
+    // test (`power_test3d`) INSTEAD of the quality-gain gates -- in both
+    // directions, since mixing the quality gate back in would break the
+    // acyclicity of regular flipping (the termination argument once quality
+    // may drop). The weights are combinatorial only: no point ever moves,
+    // and they die with this call.
+    let mut weights: Vec<f64> = Vec::new();
+    let mut pumped: DSet<usize> = DSet::default();
     // Persistent working state (the refinement queue's medicine applied to
     // the optimizer): tet slots are append-only with an alive mask and ONE
     // final compaction, so the vertex->tet incidence, the per-tet quality
@@ -387,7 +410,21 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
     // its perturber/exuder after the optimizers for the same reason.
     const ENDGAME_PASSES: usize = 6;
     let mut endgame = false;
-    let mut pass_budget = params.passes;
+    // EXUDE PHASE (WP3): the very FIRST passes run Edelsbrunner-Guoy sliver
+    // exudation -- weight pumping plus power-gated flips ONLY. It must run
+    // here and not later: straight after extraction the mesh is still (up
+    // to f64 rounding of the sites) the Delaunay triangulation of its
+    // points, the home ground of regular flipping. Once the quality
+    // optimizer has smoothed/collapsed/flipped, "non-regular" holds almost
+    // everywhere and the power gate degenerates into plain Delaunay drift
+    // that shreds the quality structure (measured on capsule: slivers
+    // 539 -> 1619 with an ENDGAME exuder). The weights are zeroed when the
+    // phase converges, so the rest of the optimizer never sees them.
+    const EXUDE_PASSES: usize = 8;
+    let mut exude_phase = true;
+    // The exude phase must always hand over to the normal passes (its
+    // convergence branch re-budgets), so the initial budget covers it.
+    let mut pass_budget = params.passes.max(EXUDE_PASSES);
     let mut _pass = 0usize;
     while _pass < pass_budget {
         _pass += 1;
@@ -478,7 +515,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // Surface improvement first: boundary slivers cannot be fixed by
         // interior-only operations. Skipped in the ENDGAME (positional
         // stages undo the perturber, see above).
-        ops += if endgame { 0 } else { surface_pass(
+        ops += if endgame || exude_phase { 0 } else { surface_pass(
             mesh,
             &mut g_incident,
             &alive,
@@ -514,8 +551,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             }
             tet_q[ti]
         }
-        let smooth_verts: Vec<usize> = if endgame {
-            Vec::new() // ENDGAME: no positional smoothing (see above)
+        let smooth_verts: Vec<usize> = if endgame || exude_phase {
+            Vec::new() // ENDGAME / exude phase: no positional smoothing (see above)
         } else {
             match &active_verts {
                 None => (0..mesh.points.len()).collect(),
@@ -688,7 +725,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // at Delaunay optimality and skips constrained vertices entirely --
         // boundary slivers (the wedge along an intersection curve) are only
         // reachable by this pass.
-        ops += if endgame { 0 } else { sliver_pass(
+        ops += if endgame || exude_phase { 0 } else { sliver_pass(
             mesh,
             &g_incident,
             &alive,
@@ -705,7 +742,12 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         volume_watch("sliver", mesh, &alive);
 
         // ------------------------------------------- degeneracy perturbation
-        let perturb_ops = if !endgame { 0 } else { perturb_pass(
+        // Runs in the exude phase too (CGAL's order: perturb, then exude):
+        // exact coplanar tets have no meaningful power sphere, so regular
+        // flipping around them cycles; the nudge restores generic position
+        // first. No positional optimizer runs in either phase, so the nudges
+        // are not smoothed back.
+        let perturb_ops = if !(endgame || exude_phase) { 0 } else { perturb_pass(
             mesh,
             &g_incident,
             &alive,
@@ -721,6 +763,29 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         ops += perturb_ops;
         acc_sliver += lap();
         volume_watch("perturb", mesh, &alive);
+
+        // ------------------------------------------------ exudation pumping
+        let exude_ops = if !exude_phase {
+            0
+        } else {
+            weights.resize(mesh.points.len(), 0.0);
+            exude_pass(
+                mesh,
+                &g_incident,
+                &alive,
+                &mut tet_q,
+                &constrained_verts,
+                &complex_changed,
+                &mut weights,
+                &mut pumped,
+                &mut next_dirty,
+            )
+        };
+        if trace && exude_ops > 0 {
+            eprintln!("  exude: {exude_ops} pumped");
+        }
+        ops += exude_ops;
+        acc_sliver += lap();
 
         // --------------------------------------------- edge collapse
         // Before the flip owner maps are built: collapses rewrite tets in
@@ -738,7 +803,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 n_sfaces[v] += 1;
             }
         }
-        {
+        if !exude_phase {
             let insert_below = -(INSERT_BELOW_DEG.to_radians().cos());
             let mut bad: Vec<(f64, u32)> = Vec::new();
             for &ti in &map_tets {
@@ -791,7 +856,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // first. The collapse runs in do-no-harm mode: a well-shaped but
         // too-small tet coarsens toward the target as long as the merge does
         // not lower the local minimum quality.
-        {
+        if !exude_phase {
             let mut short: Vec<(f64, u32)> = Vec::new();
             for &ti in &map_tets {
                 if !alive[ti as usize] || !complex_changed(&mesh.tets[ti as usize]) {
@@ -848,6 +913,10 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
 
         // ------------------------------------------------------ flips
         let mut added: Vec<([usize; 4], rapidmesh_geom::RegionTag)> = Vec::new();
+        // Exudation weight lookup for the flip stages (vertices created by
+        // this pass's insert stage don't exist yet in `weights`; they are
+        // unpumped by definition).
+        let wt = |v: usize| weights.get(v).copied().unwrap_or(0.0);
 
         // Face map for 2-3 flips and edge map for 3-2 flips, over active
         // tets (complete owner lists for active candidates). Sorted entry
@@ -908,8 +977,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
             }
         }
-        // Per candidate: the three new tets + the two apexes, or None.
-        type Plan23 = ([usize; 4], [usize; 4], [usize; 4], usize, usize);
+        // Per candidate: the three new tets + the two apexes + the exudation
+        // flag, or None.
+        type Plan23 = ([usize; 4], [usize; 4], [usize; 4], usize, usize, bool);
         let plans23: Vec<Option<Plan23>> = groups23
             .par_iter()
             .map(|&(f, t1, t2)| -> Option<Plan23> {
@@ -927,10 +997,35 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 if d == e {
                     return None;
                 }
+                // EXUDATION: a candidate with a pumped weight among its five
+                // vertices is decided by the exact power test ALONE --
+                // non-regular fires the flip regardless of quality gain,
+                // regular blocks it even if quality would improve. The
+                // embedding gates below (facet pierce, positive orientation)
+                // stay untouched: they are the guarantee the direct-surgery
+                // experiments could not replace.
+                let exude = exude_phase && f.iter().chain([&d, &e]).any(|&v| wt(v) != 0.0);
                 // `quality` is `cached_q` without the memo -- same value, and the
                 // cache cannot be shared across threads.
                 let old_q = tet_q[t1].min(tet_q[t2]);
-                if old_q >= TARGET_Q {
+                if exude {
+                    let tt = mesh.tets[t1];
+                    if power_test3d(
+                        mesh.points[tt[0]],
+                        wt(tt[0]),
+                        mesh.points[tt[1]],
+                        wt(tt[1]),
+                        mesh.points[tt[2]],
+                        wt(tt[2]),
+                        mesh.points[tt[3]],
+                        wt(tt[3]),
+                        mesh.points[e],
+                        wt(e),
+                    ) != Sign::Positive
+                    {
+                        return None;
+                    }
+                } else if old_q >= TARGET_Q {
                     return None;
                 }
                 if dist2_pts(mesh.points[d], mesh.points[e])
@@ -960,19 +1055,30 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     }
                 };
                 let (n1, n2, n3) = (mk(f[0], f[1])?, mk(f[1], f[2])?, mk(f[2], f[0])?);
-                let (q1, q2, q3) = (
-                    quality_above(&mesh.points, n1, old_q)?,
-                    quality_above(&mesh.points, n2, old_q)?,
-                    quality_above(&mesh.points, n3, old_q)?,
-                );
-                if q1.min(q2).min(q3) <= old_q + QUALITY_EPS {
-                    return None;
+                if exude {
+                    // Power decides, but the flip must not MANUFACTURE
+                    // degeneracy: near-zero-volume replacements defeat the
+                    // downstream surgery (measured as nm-edge crumbs on
+                    // cone/tube with no floor at all).
+                    quality_above(&mesh.points, n1, EXUDE_MIN_Q)?;
+                    quality_above(&mesh.points, n2, EXUDE_MIN_Q)?;
+                    quality_above(&mesh.points, n3, EXUDE_MIN_Q)?;
+                } else {
+                    let (q1, q2, q3) = (
+                        quality_above(&mesh.points, n1, old_q)?,
+                        quality_above(&mesh.points, n2, old_q)?,
+                        quality_above(&mesh.points, n3, old_q)?,
+                    );
+                    if q1.min(q2).min(q3) <= old_q + QUALITY_EPS {
+                        return None;
+                    }
                 }
-                Some((n1, n2, n3, d, e))
+                Some((n1, n2, n3, d, e, exude))
             })
             .collect();
+        let mut n_exude23 = 0usize;
         for (&(f, t1, t2), plan) in groups23.iter().zip(&plans23) {
-            let Some((n1, n2, n3, d, e)) = *plan else { continue };
+            let Some((n1, n2, n3, d, e, exu)) = *plan else { continue };
             if !alive[t1] || !alive[t2] {
                 continue; // claimed by an earlier apply in this pass
             }
@@ -985,7 +1091,13 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             for v in f.iter().chain([d, e].iter()) {
                 next_dirty.insert(*v);
             }
+            if exu {
+                n_exude23 += 1;
+            }
             ops += 1;
+        }
+        if trace && n_exude23 > 0 {
+            eprintln!("  exude 2-3 flips: {n_exude23}");
         }
 
         let t_23 = t2.elapsed();
@@ -1009,6 +1121,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             d: usize,
             e: usize,
             region: rapidmesh_geom::RegionTag,
+            exude: bool,
         }
         let mut groups_er: Vec<((usize, usize), [usize; MAX_RING], usize)> = Vec::new();
         {
@@ -1055,7 +1168,21 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
                 q
             };
-            if old_q >= TARGET_Q {
+            // EXUDATION (see the 2-3 stage): with a pumped weight among the
+            // star's vertices, a RING-3 removal is decided by regularity --
+            // the edge goes iff some ring tet's power sphere is violated by
+            // the third ring vertex (checked after the ring walk below); the
+            // DP then needs embeddability only, not quality gain. k == 3
+            // ONLY: with a single alternative triangulation the power-gated
+            // move IS the regular 3-2 flip, so the flipping stays acyclic.
+            // Larger rings triangulate by max-min quality (Klincsek), which
+            // is NOT the regular side -- power-releasing those diverged
+            // (measured: per-pass exude removals GREW 758 -> 6082 over the
+            // phase instead of drying up, and watertightness broke).
+            let exude = exude_phase
+                && k == 3
+                && ts.iter().any(|&t| mesh.tets[t].iter().any(|&v| wt(v) != 0.0));
+            if !exude && old_q >= TARGET_Q {
                 return None;
             }
             let (d, e) = key;
@@ -1132,6 +1259,33 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
                 return None;
             }
+            // The exudation firing test: some ring tet non-regular against a
+            // ring-vertex witness outside it. Weight-involved candidates
+            // whose star IS regular are blocked outright (power decides in
+            // both directions, keeping the flipping acyclic).
+            if exude {
+                let fire = ts.iter().any(|&t| {
+                    let tt = mesh.tets[t];
+                    ring[..k].iter().any(|&wv| {
+                        !tt.contains(&wv)
+                            && power_test3d(
+                                mesh.points[tt[0]],
+                                wt(tt[0]),
+                                mesh.points[tt[1]],
+                                wt(tt[1]),
+                                mesh.points[tt[2]],
+                                wt(tt[2]),
+                                mesh.points[tt[3]],
+                                wt(tt[3]),
+                                mesh.points[wv],
+                                wt(wv),
+                            ) == Sign::Positive
+                    })
+                });
+                if !fire {
+                    return None;
+                }
+            }
             // Klincsek DP over the ring polygon: best[i][j] = max-min
             // quality of triangulating the sub-polygon ring[i..=j]. Each
             // triangle (p, q, r) in ring order spawns the tet pair
@@ -1141,6 +1295,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             // evaluation exit early.
             let star_lmax2 = lmax2_of(&mesh.points, &mesh.tets, ts)
                 .max(edge_budget2(mesh.tet_regions[ts[0]]));
+            // Exudation candidates need embeddability plus the
+            // anti-degeneracy floor (see the 2-3 stage), not quality gain.
+            let q_floor = if exude { EXUDE_MIN_Q } else { old_q };
             let pair_q = |i: usize, m: usize, j: usize| -> f64 {
                 let (p, q, r) = (ring[i], ring[m], ring[j]);
                 // Sizing invariant: new chords stay within the old star's
@@ -1157,8 +1314,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     return f64::MIN;
                 }
                 match (
-                    quality_above(&mesh.points, t1, old_q),
-                    quality_above(&mesh.points, t2, old_q),
+                    quality_above(&mesh.points, t1, q_floor),
+                    quality_above(&mesh.points, t2, q_floor),
                 ) {
                     (Some(q1), Some(q2)) => q1.min(q2),
                     _ => f64::MIN,
@@ -1182,7 +1339,11 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     cut[i][j] = bm;
                 }
             }
-            if best[0][k - 1] <= old_q + QUALITY_EPS {
+            if exude {
+                if best[0][k - 1] == f64::MIN {
+                    return None; // no embeddable ring triangulation
+                }
+            } else if best[0][k - 1] <= old_q + QUALITY_EPS {
                 return None;
             }
             let region = mesh.tet_regions[ts[0]];
@@ -1203,13 +1364,17 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 stack[sp + 1] = (m, j);
                 sp += 2;
             }
-            Some(PlanEr { ts: ts_arr, k, new_tets, ring, d, e, region })
+            Some(PlanEr { ts: ts_arr, k, new_tets, ring, d, e, region, exude })
             })
             .collect();
+        let mut n_exude_er = 0usize;
         for plan in &plans_er {
             let Some(p) = plan else { continue };
             if p.ts[..p.k].iter().any(|&t| !alive[t]) {
                 continue; // a ring tet was claimed by an earlier apply this pass
+            }
+            if p.exude {
+                n_exude_er += 1;
             }
             for tn in &p.new_tets {
                 added.push((*tn, p.region));
@@ -1221,6 +1386,10 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 next_dirty.insert(v);
             }
             ops += 1;
+        }
+
+        if trace && n_exude_er > 0 {
+            eprintln!("  exude edge removals: {n_exude_er}");
         }
 
         let t_eremove = t2.elapsed();
@@ -1235,7 +1404,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // strict min-quality improvement. Faces whose neighbor died in an
         // earlier operation of this pass stay cavity boundary; their
         // replacements tile the same space behind the shared interface.
-        {
+        if !exude_phase {
             // Face of positively oriented `t` opposite vertex slot `i`,
             // wound so the opposite vertex lies on its positive side.
             let opp_face = |t: [usize; 4], i: usize| -> [usize; 3] {
@@ -1714,6 +1883,25 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         volume_watch("apply", mesh, &alive);
         manifold_watch("apply", mesh, &alive);
         total_ops += ops;
+        // Exude phase: run to its own fixed point (or cap), then zero the
+        // weights and hand the regularized mesh to the normal optimizer with
+        // a fresh budget and a full rescan.
+        if exude_phase {
+            if ops > 0 && _pass < EXUDE_PASSES {
+                dirty = Some(next_dirty);
+                continue;
+            }
+            exude_phase = false;
+            weights.iter_mut().for_each(|w| *w = 0.0);
+            pass_budget = _pass + params.passes;
+            dirty = None;
+            stall = 0;
+            best_slivers = usize::MAX;
+            if trace {
+                eprintln!("  -> exude phase done ({_pass} passes)");
+            }
+            continue;
+        }
         // Convergence: instead of stopping outright, the FIRST convergence
         // (no ops, or sliver-count stall) hands over to the ENDGAME phase
         // (perturber + combinatorial stages, no positional smoothing); the
@@ -2097,6 +2285,79 @@ fn perturb_pass(
                 }
                 mesh.points[v] = p0;
             }
+        }
+    }
+    ops
+}
+
+/// Exudation pumping (Edelsbrunner-Guoy, ENDGAME only). Every movable
+/// (interior, unconstrained) vertex of a surviving sliver tet receives a
+/// weight, turning its neighborhood into a weighted (regular) triangulation
+/// question: the flip stages decide weight-involved candidates by the exact
+/// power test (`power_test3d`) instead of the quality-gain gates. A sliver
+/// whose circumsphere is barely pierced by a neighboring witness becomes
+/// non-regular under the pumped weight, and the regular flip removes it --
+/// with every embedding gate (facet pierce, positive orientation, ring
+/// rotation) fully intact. Termination shifts from quality monotonicity to
+/// the acyclicity of regular flipping under a FIXED weight vector, which is
+/// why each vertex is pumped at most once per optimize call (`pumped`) and
+/// the flip gates never mix quality back into a weighted decision.
+///
+/// Weight: (0.4 * nn)^2 with nn the shortest star edge at the vertex --
+/// Edelsbrunner's admissible-weight bound (the vertex stays non-redundant
+/// and the weighted triangulation stays close to the unweighted one).
+#[allow(clippy::too_many_arguments)]
+fn exude_pass(
+    mesh: &TetMesh,
+    g_incident: &[Vec<u32>],
+    alive: &[bool],
+    tet_q: &mut [f64],
+    constrained_verts: &DSet<usize>,
+    complex_changed: &impl Fn(&[usize]) -> bool,
+    weights: &mut [f64],
+    pumped: &mut DSet<usize>,
+    next_dirty: &mut DSet<usize>,
+) -> usize {
+    let sliver_q = -(crate::constants::SLIVER_DEG.to_radians().cos());
+    let mut ops = 0usize;
+    for ti in 0..mesh.tets.len() {
+        if !alive[ti] || !complex_changed(&mesh.tets[ti]) {
+            continue;
+        }
+        if cached_q_free(&mesh.points, &mesh.tets, tet_q, ti) >= sliver_q {
+            continue;
+        }
+        for &v in &mesh.tets[ti] {
+            if v < mesh.plc_points || constrained_verts.contains(&v) || pumped.contains(&v) {
+                continue;
+            }
+            pumped.insert(v);
+            // Shortest star edge at v (its nearest mesh neighbor).
+            let mut lmin2 = f64::MAX;
+            for &x in &g_incident[v] {
+                if !alive[x as usize] {
+                    continue;
+                }
+                for &u in &mesh.tets[x as usize] {
+                    if u != v {
+                        lmin2 = lmin2.min(dist2_pts(mesh.points[v], mesh.points[u]));
+                    }
+                }
+            }
+            if !(lmin2 > 0.0) || !lmin2.is_finite() {
+                continue;
+            }
+            weights[v] = 0.16 * lmin2; // (0.4 * nn)^2
+            // The weight changes flip decisions across v's whole star: mark
+            // it dirty so the next pass re-evaluates those candidates.
+            for &x in &g_incident[v] {
+                if alive[x as usize] {
+                    for &u in &mesh.tets[x as usize] {
+                        next_dirty.insert(u);
+                    }
+                }
+            }
+            ops += 1;
         }
     }
     ops

@@ -152,13 +152,31 @@ CASES = [
         lambda g, h: (g.box(10e-3, 4e-3, 2e-3),
                       g.box(4e-3, 4e-3, 2e-3, position=(3e-3, 4e-3, 0)))),
     # --- imported triangle soups (WP5 discrete-envelope path) ---------------
-    # fandisk: CAD-like, many crease edges -- exercises the feature-edge
-    # split; spot: one smooth organic region -- exercises the pure
-    # closest-point oracle. base_h ~ bbox_diag / 25.
+    # The SOTA-mesher reference set (alecjacobson/common-3d-test-models, via
+    # bench/fetch_models.py; only the validate_closed survivors). fandisk:
+    # CAD classic with creases -- exercises the feature-edge split; the rest
+    # are organic/scan models on the pure closest-point oracle. base_h ~
+    # bbox_diag / 25 (diag / 20 for the heavy scans, run-time budget).
     ("fandisk", "Import", "vol", 0.30,
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "fandisk.obj")),
     ("spot", "Import", "vol", 0.10,
         lambda g, h: g.import_obj(REPO / "bench" / "models" / "spot.obj")),
+    ("cow", "Import", "vol", 0.51,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "cow.obj")),
+    ("homer", "Import", "vol", 0.040,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "homer.obj")),
+    ("cheburashka", "Import", "vol", 0.051,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "cheburashka.obj")),
+    ("armadillo", "Import", "vol", 11.5,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "armadillo.obj")),
+    ("lucy", "Import", "vol", 96.0,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "lucy.obj")),
+    ("nefertiti", "Import", "vol", 33.0,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "nefertiti.obj")),
+    ("bimba", "Import", "vol", 0.024,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "bimba.obj")),
+    ("igea", "Import", "vol", 0.0078,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "igea.obj")),
 ]
 
 DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)

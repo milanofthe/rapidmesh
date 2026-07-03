@@ -534,10 +534,24 @@ if __name__ == "__main__":
                     help="parallel mesh workers (1 = serial; timing columns are load-noisy when > 1)")
     ap.add_argument("--quick", action="store_true",
                     help="curated quick tier (QUICK list) for mid-iteration checks; no history entry")
+    ap.add_argument("--sub", type=str, default=None, metavar="CATEGORY",
+                    help="run one sub-corpus (category filter, e.g. Import, Boolean, RF, "
+                         "Showcase, Primitive, 2D, Sizing); no history entry")
     args = ap.parse_args()
 
-    only = set(QUICK) if args.quick else None
-    label = f"{len(only)} quick" if only else str(len(CORPUS))
+    if args.quick and args.sub:
+        ap.error("--quick and --sub are mutually exclusive")
+    only = None
+    if args.quick:
+        only = set(QUICK)
+    elif args.sub:
+        cats = sorted({e[1] for e in CORPUS})
+        matches = [c for c in cats if c.lower() == args.sub.lower()]
+        if not matches:
+            ap.error(f"unknown sub-corpus {args.sub!r}; categories: {', '.join(cats)}")
+        only = {e[0] for e in CORPUS if e[1] == matches[0]}
+    label = (f"{len(only)} quick" if args.quick
+             else f"{len(only)} in sub-corpus {args.sub}" if only else str(len(CORPUS)))
     print(f"corpus: {label} geometries, jobs={args.jobs}")
     rows = bench(only=only, dump_meshes=not args.no_render, jobs=args.jobs)
     out = REPO / "report" / "validation" / "benchmark.json"
@@ -556,11 +570,12 @@ if __name__ == "__main__":
         except Exception:
             return ""
 
-    # Quick-tier runs are a fast gate, not the benchmark truth: no history
-    # entry, no trajectory (comparing a subset against full runs would lie).
+    # Quick-tier and sub-corpus runs are fast gates, not the benchmark truth:
+    # no history entry, no trajectory (comparing a subset against full runs
+    # would lie).
     hist_dir = REPO / "bench" / "history"
     hist_path = None
-    if not args.quick:
+    if not args.quick and not args.sub:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
         sha = _git("rev-parse", "--short", "HEAD") or "nogit"
         hist_dir.mkdir(parents=True, exist_ok=True)
@@ -608,6 +623,18 @@ if __name__ == "__main__":
     strad = [r for r in vol if r.get("n_straddlers", 0) > 0]
     sliv = [r for r in vol if r.get("n_slivers", 0) > 0]
     print(f"volume: {len(vol)} | not watertight: {len(leaky)} | with straddlers: {len(strad)} | with slivers: {len(sliv)}")
+    # sub-corpus aggregates: one line per category, so class-wide regressions
+    # (e.g. every Import model leaking) stand out without reading 100 rows
+    print(f"\n{'sub-corpus':<14}{'n':>4}{'ok':>4}{'wtr':>5}{'slivFree':>9}{'stradFree':>10}{'sum(s)':>8}")
+    for cat in sorted({r["category"] for r in rows}):
+        cs = [r for r in rows if r["category"] == cat]
+        cok = [r for r in cs if r["status"] == "ok"]
+        cvol = [r for r in cok if r["kind"] == "vol"]
+        print(f"{cat:<14}{len(cs):>4}{len(cok):>4}"
+              f"{sum(1 for r in cvol if r.get('watertight', True)):>5}"
+              f"{sum(1 for r in cvol if r.get('n_slivers', 0) == 0):>9}"
+              f"{sum(1 for r in cvol if r.get('n_straddlers', 0) == 0):>10}"
+              f"{sum(r['millis'] for r in cs) / 1000:>8.0f}")
     # the territory map: per-geometry headline
     print(f"\n{'geometry':<26}{'tets':>7}{'minDih':>8}{'sliv':>6}{'strad':>6}{'wtr':>5}{'maxDev':>9}{'ms':>7}")
     for r in sorted(vol, key=lambda x: (x.get("watertight", True), x.get("n_straddlers", 0) == 0, x.get("min_dihedral", 99))):

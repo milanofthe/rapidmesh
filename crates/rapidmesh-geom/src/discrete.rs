@@ -22,6 +22,12 @@ pub struct DiscreteSurface {
     pub tris: Vec<[u32; 3]>,
     /// Unit facet normals, parallel to `tris`.
     normals: Vec<V3>,
+    /// Per-facet curvature radius estimate, parallel to `tris` (INFINITY on
+    /// flats): the strongest bend over the facet's interior edges, radius =
+    /// centroid distance / normal turning angle (the osculating-circle chord
+    /// approximation). Feeds the same curvature-driven sizing as the
+    /// analytic carriers.
+    curv_r: Vec<f64>,
     /// Flat AABB tree (node = (lo, hi, left, right | leaf tri range)).
     nodes: Vec<Node>,
     /// Triangle order for leaf ranges.
@@ -114,25 +120,102 @@ impl DiscreteSurface {
                 })
             })
             .collect();
+        // Per-facet curvature: for every interior edge (two owners inside
+        // this smooth patch) the normals turn by theta over the centroid
+        // distance d -- osculating radius ~ d / theta. A facet's radius is
+        // its strongest bend; flats (and patch-boundary facets with no
+        // interior edge) stay INFINITY. Crease edges never enter: the
+        // importer splits patches there, so both owners are same-patch by
+        // construction.
+        let mut curv_r = vec![f64::INFINITY; tris.len()];
+        {
+            let mut by_edge: std::collections::HashMap<(u32, u32), [u32; 2]> =
+                std::collections::HashMap::new();
+            for (i, t) in tris.iter().enumerate() {
+                for e in 0..3 {
+                    let (a, b) = (t[e], t[(e + 1) % 3]);
+                    let key = (a.min(b), a.max(b));
+                    let s = by_edge.entry(key).or_insert([u32::MAX; 2]);
+                    if s[0] == u32::MAX {
+                        s[0] = i as u32;
+                    } else {
+                        s[1] = i as u32;
+                    }
+                }
+            }
+            for s in by_edge.values() {
+                if s[1] == u32::MAX {
+                    continue;
+                }
+                let (i, j) = (s[0] as usize, s[1] as usize);
+                let cosang = dot(normals[i], normals[j]).clamp(-1.0, 1.0);
+                let theta = cosang.acos();
+                if theta <= 1e-9 {
+                    continue;
+                }
+                let d = d2(centroids[i], centroids[j]).sqrt();
+                let r = d / theta;
+                curv_r[i] = curv_r[i].min(r);
+                curv_r[j] = curv_r[j].min(r);
+            }
+            // Resolution floor: curvature below the input tessellation's own
+            // edge length is not measurable -- it is normal NOISE of the
+            // piecewise-linear envelope, and refining past the input's
+            // information content buys no fidelity (measured unbounded:
+            // spot x39 tets, fandisk x14). Radii clamp to a multiple of the
+            // facet's longest edge (4 ~ the 1%-sagitta chord factor), so
+            // genuinely tight input features (finely tessellated fillets,
+            // ears) keep their refinement while flat-noise regions do not.
+            for (i, t) in tris.iter().enumerate() {
+                if !curv_r[i].is_finite() {
+                    continue;
+                }
+                let mut lmax2 = 0.0f64;
+                for e in 0..3 {
+                    lmax2 = lmax2.max(d2(
+                        points[t[e] as usize],
+                        points[t[(e + 1) % 3] as usize],
+                    ));
+                }
+                curv_r[i] = curv_r[i].max(4.0 * lmax2.sqrt());
+            }
+        }
         let mut order: Vec<u32> = (0..tris.len() as u32).collect();
         let mut nodes = Vec::new();
         if !tris.is_empty() {
             build(&points, &tris, &centroids, &mut order, 0, tris.len(), &mut nodes);
         }
-        DiscreteSurface { points, tris, normals, nodes, order }
+        DiscreteSurface { points, tris, normals, curv_r, nodes, order }
     }
 
     /// Closest point on the patch and the (facet) normal there.
     pub fn closest(&self, p: V3) -> (V3, V3) {
-        if self.nodes.is_empty() {
-            return (p, [0.0, 0.0, 1.0]);
-        }
-        let mut best = (f64::INFINITY, p, [0.0, 0.0, 1.0]);
-        self.closest_rec(0, p, &mut best);
-        (best.1, best.2)
+        let (q, n, _) = self.closest_facet(p);
+        (q, n)
     }
 
-    fn closest_rec(&self, ni: usize, p: V3, best: &mut (f64, V3, V3)) {
+    /// [`DiscreteSurface::closest`] plus the footpoint's facet index.
+    pub fn closest_facet(&self, p: V3) -> (V3, V3, usize) {
+        if self.nodes.is_empty() {
+            return (p, [0.0, 0.0, 1.0], 0);
+        }
+        let mut best = (f64::INFINITY, p, [0.0, 0.0, 1.0], 0usize);
+        self.closest_rec(0, p, &mut best);
+        (best.1, best.2, best.3)
+    }
+
+    /// Curvature radius estimate at the footpoint of `p` (INFINITY on
+    /// flats): the precomputed per-facet osculating radius, queried by the
+    /// closest facet. Conservative in the same sense as the analytic
+    /// carriers' curvature -- it feeds `h = r * sqrt(8 * tol)` sizing.
+    pub fn curvature_radius(&self, p: V3) -> f64 {
+        if self.curv_r.is_empty() {
+            return f64::INFINITY;
+        }
+        self.curv_r[self.closest_facet(p).2]
+    }
+
+    fn closest_rec(&self, ni: usize, p: V3, best: &mut (f64, V3, V3, usize)) {
         let n = self.nodes[ni];
         if box_d2(n.lo, n.hi, p) >= best.0 {
             return;
@@ -149,7 +232,7 @@ impl DiscreteSurface {
                 );
                 let dd = d2(p, q);
                 if dd < best.0 {
-                    *best = (dd, q, self.normals[ti as usize]);
+                    *best = (dd, q, self.normals[ti as usize], ti as usize);
                 }
             }
             return;

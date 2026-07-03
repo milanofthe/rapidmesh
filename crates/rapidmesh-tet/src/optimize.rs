@@ -3581,6 +3581,16 @@ fn surface_pass(
             if c == d {
                 continue;
             }
+            // The flipped-in diagonal must be NEW on the surface complex: if
+            // (c, d) already carries surface faces elsewhere, retiling onto
+            // it stacks a SECOND face pair on that edge -- incidence 4 (the
+            // barrel-seam leak) or, closed up by later surgery, a
+            // topologically watertight but geometrically false shell (the
+            // cavity-lid class). No legitimate flip targets an existing
+            // surface edge.
+            if constrained_edges.contains(&(c.min(d), c.max(d))) {
+                continue;
+            }
             // Sizing contract: the new diagonal must stay within the local
             // budget (or the old quad's own longest edge); the 2-2 flip was
             // the one topological operation without the edge gate.
@@ -3654,7 +3664,11 @@ fn surface_pass(
                 let m: [f64; 3] = std::array::from_fn(|k| {
                     0.5 * (mesh.points[c][k] + mesh.points[d][k])
                 });
-                let rr = {
+                let rr = if let SurfaceKind::Discrete(ref dsc) = kind {
+                    // Discrete has no UV chart (project_uv drops z), so the
+                    // curvature lookup takes the world point directly.
+                    dsc.curvature_radius(m)
+                } else {
                     let s = Surface::from_kind(&kind, &[]);
                     s.curvature_radius(s.project_uv(m))
                 };

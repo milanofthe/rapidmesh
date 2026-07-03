@@ -142,9 +142,8 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
 /// is flat (infinite radius).
 pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
     match *kind {
-        // discrete curvature (normal spread over the footpoint's neighbourhood)
-        // lands with the sizing work; INFINITY = no curvature refinement yet
-        SurfaceKind::Discrete(_) => return f64::INFINITY,
+        // precomputed per-facet osculating radius, queried by closest facet
+        SurfaceKind::Discrete(ref d) => return d.curvature_radius(p),
         // the tube's tightest principal curvature is its own radius
         SurfaceKind::Tube { radius, .. } => return radius,
         SurfaceKind::Plane => f64::INFINITY,

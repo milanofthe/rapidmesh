@@ -170,9 +170,34 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
         // classification walks turned out to be knife-edge sensitive to
         // that at coplanar sheet rims (air_dielectric volume bias 2e-4).
         // Tracing a plane is cheap (linear field, a handful of O(1)
-        // projections); the expensive carriers below are analytic. The
-        // sensitivity itself is tracked as its own robustness issue.
-        Surface::Plane { .. } => trace_crossings(surf, a, b),
+        // projections); the expensive carriers below are analytic.
+        // RAPIDMESH_ANALYTIC_PLANE=1 switches to the analytic root -- the
+        // sensitivity's diagnosis harness (and the switch to flip once the
+        // walks are robust to the ~1e-9 shift).
+        Surface::Plane { .. } => {
+            static ANALYTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*ANALYTIC
+                .get_or_init(|| std::env::var_os("RAPIDMESH_ANALYTIC_PLANE").is_some())
+            {
+                return trace_crossings(surf, a, b);
+            }
+            // Asymmetric endpoint semantics, matching the march's
+            // arithmetic: start sampled once (exact-0 drop), a crossing
+            // within float noise of the far end is dropped (the march's
+            // Zeno samples round to 0.0 there).
+            let (s0, s1) = (signed_offset(surf, a), signed_offset(surf, b));
+            let mut out = SmallVec::new();
+            if s0 != 0.0
+                && s1.abs() > endpoint_noise(a, b)
+                && s0.signum() != s1.signum()
+            {
+                let t = s0 / (s0 - s1);
+                if t > 0.0 && t < 1.0 {
+                    out.push(t);
+                }
+            }
+            out
+        }
         Surface::Sphere { center, radius, .. } => {
             let w = sub(a, *center);
             let mut out = SmallVec::new();
@@ -514,6 +539,9 @@ impl<'a> Refiner<'a> {
     /// them from the anchor back to `p`. `None` when the picture is ambiguous
     /// (grazing crossing, membership mismatch) -- the caller retries rotated.
     fn region_walk(&self, p: V3, d: V3) -> Option<u32> {
+        static WTRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let wtrace =
+            *WTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALK_TRACE").is_some());
         let ll = 6.0 * self.band;
         let mut q: V3 = std::array::from_fn(|k| p[k] + ll * d[k]);
         // extend until the anchor is out of the band (bounded tries)
@@ -539,9 +567,19 @@ impl<'a> Refiner<'a> {
                 // membership: nearest facet must belong to THIS face and be
                 // within its own band (else the crossing is off the trim).
                 if let Some((fi, dst)) = self.bvh.nearest_index(x) {
-                    if self.facet_face[fi] == f
-                        && dst <= self.facet_band[fi].max(1e-7 * self.diag)
-                    {
+                    let ok = self.facet_face[fi] == f
+                        && dst <= self.facet_band[fi].max(1e-7 * self.diag);
+                    if wtrace {
+                        eprintln!(
+                            "WCROSS p ({:.9},{:.9},{:.9}) d ({:.3},{:.3},{:.3}) f {f} fi {fi} own {} dst {dst:.3e} band {:.3e} tags {:?} {}",
+                            p[0], p[1], p[2], d[0], d[1], d[2],
+                            self.facet_face[fi],
+                            self.facet_band[fi].max(1e-7 * self.diag),
+                            self.plc.region_tags[fi],
+                            if ok { "OK" } else { "REJ" }
+                        );
+                    }
+                    if ok {
                         crossings.push((tm, fi));
                     }
                 }
@@ -568,9 +606,21 @@ impl<'a> Refiner<'a> {
             // Walking along dir_qp: s > 0 means we arrive on the FRONT side.
             let (depart, arrive) = if s > 0.0 { (bk.0, fr.0) } else { (fr.0, bk.0) };
             if depart != region {
+                if wtrace {
+                    eprintln!(
+                        "WMISMATCH p ({:.9},{:.9},{:.9}) d ({:.3},{:.3},{:.3}) fi {fi} depart {depart} != region {region}",
+                        p[0], p[1], p[2], d[0], d[1], d[2]
+                    );
+                }
                 return None; // inconsistent: a crossing was missed
             }
             region = arrive;
+        }
+        if wtrace {
+            eprintln!(
+                "WALK p ({:.9},{:.9},{:.9}) d ({:.3},{:.3},{:.3}) -> {region} ({} crossings)",
+                p[0], p[1], p[2], d[0], d[1], d[2], crossings.len()
+            );
         }
         Some(region)
     }
@@ -2129,7 +2179,15 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         // optimizer's job.
         let trace = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
         let t_post = std::time::Instant::now();
-        'cycles: for cycle in 0..4 {
+        // Snap reach as a fraction of local h. Conservative first (0.4 h:
+        // gentle pulls only); when a cycle can neither insert nor snap but
+        // piercers REMAIN, escalate once to 0.75 h -- a strongly pulled
+        // vertex costs local quality (the optimizer's job to smooth), while
+        // a surviving piercer costs CORRECTNESS: its centroid-side fallback
+        // misassigns real volume across the wall (the exact-volume bias this
+        // block exists to prevent).
+        let mut snap_cap = 0.4;
+        'cycles: for cycle in 0..6 {
             // (1) piercer insertion rounds until dry
             for _round in 0..8 {
                 let mut fixed_any = false;
@@ -2178,7 +2236,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 // face's plane (self-inflicted piercers at box corners).
                 match best {
                     Some((d, v))
-                        if d <= 0.4 * r.h_at(r.pos(v))
+                        if d <= snap_cap * r.h_at(r.pos(v))
                             && r.on_trimmed_face(f, surf.closest(r.pos(v)).0) =>
                     {
                         let x = surf.closest(r.pos(v)).0;
@@ -2209,9 +2267,15 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
             if trace {
-                eprintln!("POSTLLOYD cycle {cycle}: snapped {snapped} left {left}");
+                eprintln!(
+                    "POSTLLOYD cycle {cycle}: snapped {snapped} left {left} (cap {snap_cap})"
+                );
             }
             if snapped == 0 {
+                if left > 0 && snap_cap < 0.75 {
+                    snap_cap = 0.75;
+                    continue;
+                }
                 break 'cycles;
             }
             let mut cur: Vec<V3> = (0..r.db.len()).map(|v| r.pos(v)).collect();

@@ -437,15 +437,22 @@ def bench(only=None, dump_meshes: bool = False) -> list[dict]:
                     "diag": None
                     if diag is None
                     else {
-                        k: diag[k]
-                        for k in (
-                            "watertight",
-                            "min_dihedral_deg",
-                            "n_slivers",
-                            "n_straddlers",
-                            "n_nonmanifold_edges",
-                            "max_surface_deviation",
-                        )
+                        **{
+                            k: diag[k]
+                            for k in (
+                                "watertight",
+                                "min_dihedral_deg",
+                                "n_slivers",
+                                "n_straddlers",
+                                "n_nonmanifold_edges",
+                                "max_surface_deviation",
+                            )
+                        },
+                        # the annotator's legend only needs the defect KINDS
+                        "defects": [
+                            {"kind": k}
+                            for k in sorted({d["kind"] for d in diag["defects"]})
+                        ],
                     },
                 }
                 (_RG.MESHES / f"gal_{name}.meta.json").write_text(_json.dumps(meta))

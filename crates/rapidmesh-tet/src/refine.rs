@@ -1345,6 +1345,10 @@ impl<'a> Refiner<'a> {
         let mut prov2: Vec<Prov> = Vec::with_capacity(n_all + extra.len());
         let mut vfaces2: Vec<Vec<u32>> = Vec::with_capacity(n_all + extra.len());
         let mut ball2: Vec<f64> = Vec::with_capacity(n_all + extra.len());
+        // old -> new index (u32::MAX = swallowed duplicate): fixed-first
+        // insertion renumbers EVERY vertex, and the feature-segment store
+        // below is keyed by vertex index.
+        let mut old2new: Vec<u32> = vec![u32::MAX; n_all];
         for pass in 0..2 {
             for v in 0..n_all {
                 let is_interior = matches!(self.prov[v], Prov::Interior);
@@ -1352,6 +1356,7 @@ impl<'a> Refiner<'a> {
                     continue;
                 }
                 if db.try_insert(new_pos[v]).is_some() {
+                    old2new[v] = prov2.len() as u32;
                     prov2.push(self.prov[v].clone());
                     vfaces2.push(self.vfaces[v].clone());
                     ball2.push(if is_interior {
@@ -1379,6 +1384,25 @@ impl<'a> Refiner<'a> {
                 self.set_ball(v, r0);
             }
         }
+        // Remap the live feature segments onto the new numbering. This was
+        // MISSING: after any rebuild every seg key pointed at the old
+        // indices, and the next encroachment/ball query walked pos() with a
+        // stale (possibly out-of-range) vertex -- latent since the first
+        // rebuild_points, manifest once the piercer escalation made
+        // shrinking rebuilds common (pressure_vessel index panic). A
+        // swallowed endpoint (interior duplicates only; features insert
+        // first) drops its segment.
+        let old_segs = std::mem::take(&mut self.segs);
+        self.seg_grid.clear();
+        for (_, s) in old_segs {
+            let (na, nb) = (old2new[s.va], old2new[s.vb]);
+            if na == u32::MAX || nb == u32::MAX {
+                continue;
+            }
+            self.add_seg(Seg { va: na as usize, vb: nb as usize, ..s });
+        }
+        // Work-queue slots/tets reference the old builder: all invalid now.
+        self.queue.clear();
     }
 
     // ---------------- criteria ---------------------------------------------

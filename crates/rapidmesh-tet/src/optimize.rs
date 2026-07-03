@@ -1861,8 +1861,63 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     let e = (t[a].min(t[b]), t[a].max(t[b]));
                     if constrained_edges.contains(&e) {
                         *cnt.entry("edge: constrained").or_insert(0) += 1;
-                    } else {
-                        all_edges_constrained = false;
+                        continue;
+                    }
+                    all_edges_constrained = false;
+                    // ring size around the free edge (owners sharing both
+                    // endpoints), and for the simple ring-3 case the direct
+                    // 3-2 feasibility -- eremove's blocker signature.
+                    let ring: Vec<u32> = g_incident[t[a]]
+                        .iter()
+                        .copied()
+                        .filter(|&x| {
+                            alive[x as usize] && mesh.tets[x as usize].contains(&t[b])
+                        })
+                        .collect();
+                    match ring.len() {
+                        0..=2 => *cnt.entry("edge: ring<3 (boundary)").or_insert(0) += 1,
+                        3 => {
+                            // 3-2: the two new tets are (apex triangle, a) and
+                            // (apex triangle reversed, b).
+                            let mut apex: Vec<usize> = ring
+                                .iter()
+                                .flat_map(|&x| mesh.tets[x as usize])
+                                .filter(|&v| v != t[a] && v != t[b])
+                                .collect();
+                            apex.sort_unstable();
+                            apex.dedup();
+                            if apex.len() != 3 {
+                                *cnt.entry("edge: ring3 non-simple").or_insert(0) += 1;
+                                continue;
+                            }
+                            let mk = |x: usize| -> Option<[usize; 4]> {
+                                let c1 = [apex[0], apex[1], apex[2], x];
+                                if orient_positive(&mesh.points, c1) {
+                                    return Some(c1);
+                                }
+                                let c2 = [apex[0], apex[2], apex[1], x];
+                                orient_positive(&mesh.points, c2).then_some(c2)
+                            };
+                            let (Some(n1), Some(n2)) = (mk(t[a]), mk(t[b])) else {
+                                *cnt.entry("flip32: new tet inverted").or_insert(0) += 1;
+                                continue;
+                            };
+                            let old_q = ring
+                                .iter()
+                                .map(|&x| quality(&mesh.points, mesh.tets[x as usize]))
+                                .fold(f64::MAX, f64::min);
+                            let new_q = quality(&mesh.points, n1)
+                                .min(quality(&mesh.points, n2));
+                            if new_q > old_q + QUALITY_EPS {
+                                *cnt.entry("flip32: VIABLE (missed?)").or_insert(0) += 1;
+                            } else {
+                                *cnt.entry("flip32: no quality gain").or_insert(0) += 1;
+                            }
+                        }
+                        4..=MAX_RING => {
+                            *cnt.entry("edge: ring 4..=MAX (DP territory)").or_insert(0) += 1
+                        }
+                        _ => *cnt.entry("edge: ring > MAX_RING").or_insert(0) += 1,
                     }
                 }
             }

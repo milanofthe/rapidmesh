@@ -7,18 +7,22 @@
 //! mesher consumes it. Surface back-references exist so the order-2 snapping
 //! stage can project midside nodes onto the true surface.
 
-pub mod faceted;
+pub mod discrete;
+mod faceted;
 pub mod import;
 pub mod nurbs;
 pub mod nurbs_surface;
 pub mod plc;
 pub mod polygon;
 pub mod prim;
+pub mod tube;
 pub mod scene;
 pub mod vec3;
 
+pub use discrete::DiscreteSurface;
+pub use tube::TubePath;
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
-pub use import::{import_obj, import_stl, min_height_ratio, validate_closed, ImportError};
+pub use import::{import_obj, import_obj_creased, import_stl, import_stl_creased, min_height_ratio, validate_closed, ImportError, CREASE_DEG};
 pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
 pub use scene::Scene;
 pub use polygon::{polygon_orientation, triangulate_polygon};

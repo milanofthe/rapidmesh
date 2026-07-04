@@ -10,7 +10,7 @@
 //! interface. The exact CSG stays a separate, untouched layer.
 
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::vec3::{V3, sub, scale, dot, cross, normalize as norm};
+use rapidmesh_geom::vec3::{V3, add, sub, scale, dot, cross, normalize as norm};
 use rapidmesh_geom::{NurbsSurface, SurfaceKind};
 use std::sync::Arc;
 
@@ -42,6 +42,14 @@ pub enum Surface {
     Extruded { base: V3, u: V3, v: V3, axis: V3, profile: Arc<NurbsCurve> },
     /// A trimmed NURBS surface, mapped by its own `(u, v)`.
     Nurbs(Arc<NurbsSurface>),
+    /// A discrete smooth patch of an imported soup, queried by closest-point
+    /// projection (no parameter map -- use [`Surface::closest`]).
+    Discrete(Arc<rapidmesh_geom::DiscreteSurface>),
+    /// Constant-radius tube about a polyline path (swept pipes, helix coils):
+    /// `dist(p, path) = radius`. Queried by closest-point projection like
+    /// [`Surface::Discrete`], but the oracle is analytic per segment -- smooth
+    /// where it matters and with exact curvature `radius` for sizing.
+    Tube { path: Arc<rapidmesh_geom::TubePath>, radius: f64 },
 }
 
 impl Surface {
@@ -83,6 +91,35 @@ impl Surface {
                 axis: norm(*axis),
                 profile: profile.clone(),
             },
+            SurfaceKind::Discrete(d) => Surface::Discrete(d.clone()),
+            SurfaceKind::Tube { path, radius } => {
+                Surface::Tube { path: path.clone(), radius: *radius }
+            }
+        }
+    }
+
+    /// Closest point on the surface and the outward normal there -- the
+    /// canonical projection API of the meshing path (`signed_offset`, POCS,
+    /// crossing pulls). Analytic kinds route through their parameter maps; a
+    /// discrete patch projects directly, having no parameter map at all.
+    pub fn closest(&self, p: V3) -> (V3, V3) {
+        match self {
+            Surface::Discrete(d) => d.closest(p),
+            Surface::Tube { path, radius } => {
+                let q = path.closest(p);
+                let d: V3 = sub(p, q);
+                let l = dot(d, d).sqrt();
+                let n: V3 = if l > 1e-12 {
+                    scale(d, 1.0 / l)
+                } else {
+                    [0.0, 0.0, 1.0] // p ON the axis: any radial direction
+                };
+                (add(q, scale(n, *radius)), n)
+            }
+            _ => {
+                let uv = self.project_uv(p);
+                (self.eval_uv(uv), self.normal(uv))
+            }
         }
     }
 
@@ -118,6 +155,10 @@ impl Surface {
                 add3(add3(*base, scale(*axis, p[1])), add3(scale(*u, c[0]), scale(*v, c[1])))
             }
             Surface::Nurbs(s) => s.eval(p[0], p[1]),
+            // no parameter map: the (u,v) API is chart territory, and discrete
+            // patches never chart -- callers on the meshing path use `closest`
+            Surface::Discrete(_) => [p[0], p[1], 0.0],
+            Surface::Tube { .. } => [p[0], p[1], 0.0],
         }
     }
 
@@ -158,6 +199,8 @@ impl Surface {
                 [profile_footpoint(profile, [dot(rel, *u), dot(rel, *v)]), dot(rel, *axis)]
             }
             Surface::Nurbs(s) => nurbs_footpoint(s, p),
+            Surface::Discrete(_) => [p[0], p[1]],
+            Surface::Tube { .. } => [p[0], p[1]],
         }
     }
 
@@ -195,6 +238,8 @@ impl Surface {
                 let sv = sub(s.eval(p[0], p[1] + dv), s.eval(p[0], p[1] - dv));
                 norm(cross(su, sv))
             }
+            Surface::Discrete(_) => [0.0, 0.0, 1.0],
+            Surface::Tube { .. } => [0.0, 0.0, 1.0],
         }
     }
 
@@ -216,6 +261,8 @@ impl Surface {
                 }
             }
             Surface::Nurbs(_) => f64::INFINITY, // analytic curvature lands later
+            Surface::Discrete(_) => f64::INFINITY, // discrete curvature lands later
+            Surface::Tube { radius, .. } => *radius,
         }
     }
 
@@ -235,6 +282,18 @@ impl Surface {
     pub fn plane_frame(&self) -> Option<(V3, V3, V3, V3)> {
         match self {
             Surface::Plane { o, u, v, normal } => Some((*o, *u, *v, *normal)),
+            _ => None,
+        }
+    }
+
+    /// The surface's isolated SINGULAR point, if any (the cone apex): a point
+    /// where the tangent plane is undefined. Such a point can sit in a face's
+    /// interior with NO incident B-rep edge, so topology alone never protects
+    /// it -- restricted sampling then only approaches the tip, never hits it,
+    /// and the tip erodes. The mesher pins it as an explicit corner site.
+    pub fn singular_point(&self) -> Option<V3> {
+        match self {
+            Surface::Cone { apex, .. } => Some(*apex),
             _ => None,
         }
     }
@@ -304,6 +363,8 @@ fn nurbs_footpoint(surf: &NurbsSurface, p: V3) -> P2 {
     }
     buv
 }
+
+
 
 #[cfg(test)]
 mod tests {

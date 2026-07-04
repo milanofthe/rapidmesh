@@ -154,6 +154,45 @@ impl FacetBvh {
         }
     }
 
+    /// Index of the nearest facet and its distance (`None` if empty). The index
+    /// refers to the `build` input order -- the caller's facet table.
+    pub fn nearest_index(&self, p: V3) -> Option<(usize, f64)> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let mut best2 = f64::INFINITY;
+        let mut best = usize::MAX;
+        self.nearest_index_rec(0, p, &mut best2, &mut best);
+        (best != usize::MAX).then(|| (best, best2.sqrt()))
+    }
+
+    fn nearest_index_rec(&self, ni: usize, p: V3, best2: &mut f64, best: &mut usize) {
+        let n = &self.nodes[ni];
+        if box_dist2(n.lo, n.hi, p) >= *best2 {
+            return;
+        }
+        if n.count > 0 {
+            for &fi in &self.order[n.start as usize..(n.start + n.count) as usize] {
+                let d2 = point_tri_dist2(p, &self.tris[fi as usize]);
+                if d2 < *best2 {
+                    *best2 = d2;
+                    *best = fi as usize;
+                }
+            }
+            return;
+        }
+        let (l, r) = (n.left as usize, n.right as usize);
+        let dl = box_dist2(self.nodes[l].lo, self.nodes[l].hi, p);
+        let dr = box_dist2(self.nodes[r].lo, self.nodes[r].hi, p);
+        if dl <= dr {
+            self.nearest_index_rec(l, p, best2, best);
+            self.nearest_index_rec(r, p, best2, best);
+        } else {
+            self.nearest_index_rec(r, p, best2, best);
+            self.nearest_index_rec(l, p, best2, best);
+        }
+    }
+
     /// `min over facets ( target + grading * dist(p, facet) )`: the graded
     /// distance field that grows the sizing field from the fine wall targets.
     pub fn graded_min(&self, p: V3, grading: f64) -> f64 {

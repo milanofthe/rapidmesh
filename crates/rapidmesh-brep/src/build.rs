@@ -289,8 +289,37 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         } else {
             signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default()
         };
-        let kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
+        let mut kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
+        // A `Plane` kind whose facets are NOT coplanar is a faceted CURVED
+        // face without an analytic recovery -- loft mantles, swept tubes,
+        // helix coils all tag their whole side wall as one Plane surface. A
+        // plane fit through such a face is a garbage carrier (the refinement
+        // core projects and classifies against it, shredding the mesh into
+        // fragments). Carry it as a DISCRETE patch of its own facets instead:
+        // the same closest-point oracle that remeshes STL imports.
+        if matches!(kind, SurfaceKind::Plane) && !face_facets_coplanar(&faces[fid], plc, tol) {
+            let mut vmap: HashMap<usize, u32> = HashMap::default();
+            let mut dpoints: Vec<V3> = Vec::new();
+            let mut dtris: Vec<[u32; 3]> = Vec::new();
+            for &tfi in &faces[fid].facets {
+                let t = plc.triangles[tfi as usize];
+                let ids: [u32; 3] = std::array::from_fn(|k| {
+                    *vmap.entry(t[k] as usize).or_insert_with(|| {
+                        dpoints.push(plc.vertices[t[k] as usize]);
+                        (dpoints.len() - 1) as u32
+                    })
+                });
+                dtris.push(ids);
+            }
+            kind = SurfaceKind::Discrete(std::sync::Arc::new(
+                rapidmesh_geom::DiscreteSurface::new(dpoints, dtris),
+            ));
+        }
         let sid = SurfaceId(surfaces.len() as u32);
+        // One surface per face, in face order: `Curve::Intersection` (built in
+        // recover_curve, before this loop) references faces' surfaces by this
+        // identity, so it must hold.
+        debug_assert_eq!(sid.0 as usize, fid, "surface id must equal face id");
         surfaces.push(Surface::from_kind(&kind, &frame_pts));
         faces[fid].surface = sid;
         let surf = &surfaces[sid.0 as usize];
@@ -443,20 +472,42 @@ fn recover_curve(
         }
     }
 
-    let circ = rad
-        .iter()
-        .find_map(|f| {
-            let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
-            analytic_circle(chain, kind)
-        })
-        .or_else(|| {
-            let curved = rad.iter().any(|f| {
-                !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
-            });
-            curved.then(|| fit_circle(chain)).flatten()
-        });
+    // Exact circle from an adjacent analytic surface + the chain plane, VALIDATED
+    // against the chain: a non-planar intersection curve (cylinder∩cylinder) can
+    // otherwise masquerade as a circle -- its Newell normal aligns with the hole
+    // axis, so the perpendicularity gate alone passes, and the mesher would then
+    // distribute points on a wrong circle OFF the true carrier (the cross_cyl /
+    // drilled_block straddler-sliver mechanism).
+    let circ = rad.iter().find_map(|f| {
+        let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
+        analytic_circle(chain, kind).filter(|c| circle_fits_chain(chain, c))
+    });
     if let Some((center, axis, radius, x)) = circ {
         return Curve::Circle { center, axis, radius, x };
+    }
+
+    // Oblique plane section of a cylinder: an exact ELLIPSE (the axis-perpendicular
+    // case is the circle above). Derived from the cylinder's parameters and the
+    // EXACT facet plane of the adjacent planar face -- chain-independent, so the
+    // recovered ellipse lies exactly on both carriers (a fit to the faceted chain
+    // would sit a sagitta inside, the straddler-sliver mechanism).
+    let planes: Vec<(V3, V3)> = rad
+        .iter()
+        .filter(|f| {
+            matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+        })
+        .filter_map(|f| exact_face_plane(&faces[f.0 as usize], plc))
+        .collect();
+    for f in rad {
+        let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
+        if let SurfaceKind::Cylinder { center, axis, radius } = kind {
+            for &(po, pn) in &planes {
+                if let Some(e) = plane_cylinder_ellipse(chain, po, pn, *center, norm(*axis), *radius, tol)
+                {
+                    return e;
+                }
+            }
+        }
     }
 
     // On an extruded surface at constant height: the analytic profile curve.
@@ -487,7 +538,136 @@ fn recover_curve(
         }
     }
 
+    // Two distinct analytic carriers, no closed form matched: the edge is their
+    // intersection curve. The mesher densifies the chain and pulls every sample
+    // onto BOTH surfaces (alternating projection), so the edge follows the true
+    // curve instead of the coarse arrangement chain. Prefer two curved carriers,
+    // else curved + plane; two planes intersect in a line (handled above).
+    {
+        let mut carriers: Vec<(bool, u32, FaceId)> = rad
+            .iter()
+            .map(|&f| {
+                let sid = faces[f.0 as usize].plc_surface;
+                (matches!(plc.surfaces[sid as usize], SurfaceKind::Plane), sid, f)
+            })
+            .collect();
+        carriers.sort_unstable_by_key(|&(is_plane, sid, _)| (is_plane, sid));
+        carriers.dedup_by_key(|c| c.1);
+        if carriers.len() >= 2 && !carriers[0].0 {
+            // NB: Curve::Intersection stores brep SurfaceIds; from_plc assigns one
+            // surface per face IN FACE ORDER, so SurfaceId(fid) is that face's
+            // surface (asserted in from_plc).
+            return Curve::Intersection {
+                a: SurfaceId(carriers[0].2 .0),
+                b: SurfaceId(carriers[1].2 .0),
+            };
+        }
+    }
+
+    // Heuristic circle fit, LAST resort (after every exact/lazy-analytic form):
+    // a circular chain with no recoverable carrier pair (a smooth seam inside one
+    // surface). Loose by nature, so it must never shadow an exact recovery.
+    let curved = rad.iter().any(|f| {
+        !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+    });
+    if curved {
+        if let Some((center, axis, radius, x)) = fit_circle(chain) {
+            return Curve::Circle { center, axis, radius, x };
+        }
+    }
+
     Curve::Polyline
+}
+
+/// True if every chain point lies on the circle within 2% of its radius: accepts
+/// the chord-sagitta of a faceted carrier (an icosphere equator sits < 1% inside
+/// the analytic sphere), rejects a warped non-planar intersection curve (whose
+/// out-of-plane deviation scales with the OTHER surface's sagitta, e.g.
+/// r_small/(2 r_big) for cylinder∩cylinder).
+fn circle_fits_chain(chain: &[V3], c: &(V3, V3, f64, V3)) -> bool {
+    let (center, axis, radius, _) = *c;
+    let tol = 0.02 * radius;
+    chain.iter().all(|&p| {
+        let d = sub(p, center);
+        let z = dot(d, axis);
+        let rho = (dot(d, d) - z * z).max(0.0).sqrt();
+        z.abs() < tol && (rho - radius).abs() < tol
+    })
+}
+
+/// True if every facet vertex of the face lies on the plane of its FIRST
+/// facet (within `tol`): the gate that separates a real planar face from a
+/// faceted curved side wall mis-tagged as `Plane`.
+fn face_facets_coplanar(face: &Face, plc: &TaggedPlc, tol: f64) -> bool {
+    let Some((o, n)) = exact_face_plane(face, plc) else {
+        return true;
+    };
+    face.facets.iter().all(|&tfi| {
+        let t = plc.triangles[tfi as usize];
+        (0..3).all(|k| dot(sub(plc.vertices[t[k] as usize], o), n).abs() <= tol)
+    })
+}
+
+/// The EXACT carrier plane of a planar face `(origin, unit normal)`, from its
+/// first originating PLC facet (exact vertices, cross-product normal) -- not a
+/// Newell fit to float edge points.
+fn exact_face_plane(face: &Face, plc: &TaggedPlc) -> Option<(V3, V3)> {
+    let &tfi = face.facets.first()?;
+    let t = plc.triangles[tfi as usize];
+    let (a, b, c) = (
+        plc.vertices[t[0] as usize],
+        plc.vertices[t[1] as usize],
+        plc.vertices[t[2] as usize],
+    );
+    let n = cross(sub(b, a), sub(c, a));
+    if dot(n, n) < 1e-24 {
+        return None;
+    }
+    Some((a, norm(n)))
+}
+
+/// The exact ellipse of an oblique plane∩cylinder section, validated against the
+/// chain. Plane `(po, pn)`, cylinder `(center c, unit axis ca, radius r)`:
+/// the section is an ellipse with center on the cylinder axis, semi-minor `r`
+/// along `ca x pn`, semi-major `r/|ca·pn|` along the axis' in-plane projection.
+/// `None` when near-perpendicular (a circle, handled elsewhere), near-parallel
+/// (no bounded section), or when the chain does not lie on the ellipse.
+fn plane_cylinder_ellipse(
+    chain: &[V3],
+    po: V3,
+    pn: V3,
+    c: V3,
+    ca: V3,
+    r: f64,
+    _tol: f64,
+) -> Option<Curve> {
+    let cosphi = dot(ca, pn);
+    // Perpendicular cut (circle) or glancing cut (unbounded/degenerate): not ours.
+    if cosphi.abs() > 0.99 || cosphi.abs() < 1e-3 {
+        return None;
+    }
+    // Ellipse center: the cylinder axis pierced through the plane.
+    let t = dot(sub(po, c), pn) / cosphi;
+    let center = add(c, scale(ca, t));
+    let minor_dir = norm(cross(ca, pn));
+    let major_dir = norm(cross(pn, minor_dir));
+    let (a, b) = (r / cosphi.abs(), r);
+    // Validate the hypothesis against the chain, tolerating the faceted carrier:
+    // chain vertices on triangle-split diagonals of the prism sit up to the chord
+    // sagitta INSIDE the analytic cylinder (< 1% of r for a 24-gon), same margin
+    // as `circle_fits_chain`. The recovered ellipse itself is exact -- distributing
+    // on it pulls the edge ONTO the true carrier, better than the chain.
+    for &p in chain {
+        let d = sub(p, center);
+        if dot(d, pn).abs() > 0.02 * b {
+            return None;
+        }
+        let (x, y) = (dot(d, major_dir) / a, dot(d, minor_dir) / b);
+        if ((x * x + y * y).sqrt() - 1.0).abs() > 0.02 {
+            return None;
+        }
+    }
+    Some(Curve::Ellipse { center, major: major_dir, minor: minor_dir, a, b })
 }
 
 /// The chain's best-fit plane `(centroid, unit Newell normal)`; `None` if degenerate.

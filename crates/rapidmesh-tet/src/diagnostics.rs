@@ -27,6 +27,12 @@ pub enum DefectKind {
     /// leaked into the boundary (the restricted Delaunay under-sampled the
     /// surface). `value` = the off-surface distance. The repair site for refinement.
     Straddler,
+    /// A boundary face whose vertices all sit ON surfaces but whose INTERIOR
+    /// spans far off every one of them: a lid/bridge over a cavity opening
+    /// (topologically watertight, geometrically false -- the mold_block
+    /// class the vertex-based straddler test is blind to). `value` = the
+    /// centroid's off-surface distance.
+    BridgeFace,
 }
 
 /// A defect with its 3D location and a severity `value` (units per [`DefectKind`]).
@@ -57,6 +63,9 @@ pub struct MeshDiagnostics {
     pub watertight: bool,
     pub n_nonmanifold_edges: usize,
     pub n_straddlers: usize,
+    /// Boundary faces bridging far off every analytic surface (see
+    /// [`DefectKind::BridgeFace`]).
+    pub n_bridge_faces: usize,
     /// Largest distance of a curved boundary face's centroid from its analytic
     /// surface (the chord sagitta -- the realised geometric accuracy vs `tol`).
     pub max_surface_deviation: f64,
@@ -75,7 +84,7 @@ fn centroid(ps: &[V3]) -> V3 {
 }
 
 /// Smallest dihedral angle (degrees) of one tet, or `f64::MAX` if degenerate.
-pub(crate) fn tet_min_dihedral(p: [V3; 4]) -> f64 {
+pub fn tet_min_dihedral(p: [V3; 4]) -> f64 {
     let mut m = f64::MAX;
     for i in 0..4 {
         for j in i + 1..4 {
@@ -195,6 +204,62 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     }
     let mean_dih = if mesh.tets.is_empty() { 0.0 } else { sum_dih / mesh.tets.len() as f64 };
 
+    // Sliver census (RAPIDMESH_SLIVER_CENSUS): classify every sliver tet by
+    // its surface entanglement -- how many of its vertices sit on surface
+    // faces, whether all four share ONE analytic surface (the on-carrier
+    // chord/cap configuration no smoothing can lift), and how many of its
+    // facets are constrained. The histogram picks the repair strategy.
+    if std::env::var_os("RAPIDMESH_SLIVER_CENSUS").is_some() {
+        use std::collections::{HashMap, HashSet};
+        // vertex -> surfaces of its incident faces
+        let mut vsurf: HashMap<usize, Vec<u32>> = HashMap::new();
+        let mut ftris: HashSet<[usize; 3]> = HashSet::new();
+        for f in &mesh.faces {
+            for &v in &f.tri {
+                let e = vsurf.entry(v).or_default();
+                if !e.contains(&f.surface) {
+                    e.push(f.surface);
+                }
+            }
+            let mut k = f.tri;
+            k.sort_unstable();
+            ftris.insert(k);
+        }
+        let mut census: HashMap<(usize, bool, usize), usize> = HashMap::new();
+        for t in &mesh.tets {
+            let p = [pt(t[0]), pt(t[1]), pt(t[2]), pt(t[3])];
+            let md = tet_min_dihedral(p);
+            if !md.is_finite() || md >= SLIVER_DEG {
+                continue;
+            }
+            let on_surf = t.iter().filter(|v| vsurf.contains_key(v)).count();
+            // all four on ONE common surface?
+            let common = t
+                .iter()
+                .filter_map(|v| vsurf.get(v))
+                .fold(None::<Vec<u32>>, |acc, s| match acc {
+                    None => Some(s.clone()),
+                    Some(a) => Some(a.into_iter().filter(|x| s.contains(x)).collect()),
+                })
+                .is_some_and(|c| on_surf == 4 && !c.is_empty());
+            let mut cfaces = 0usize;
+            for i in 0..4 {
+                let mut f: [usize; 3] = [t[(i + 1) % 4], t[(i + 2) % 4], t[(i + 3) % 4]];
+                f.sort_unstable();
+                if ftris.contains(&f) {
+                    cfaces += 1;
+                }
+            }
+            *census.entry((on_surf, common, cfaces)).or_insert(0) += 1;
+        }
+        let mut rows: Vec<_> = census.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        eprintln!("SLIVER CENSUS (on_surf_verts, all4_one_surface, constrained_facets) -> count");
+        for ((os, com, cf), n) in rows.iter().take(12) {
+            eprintln!("  ({os}, {com}, {cf}) -> {n}");
+        }
+    }
+
     // ---- conformity: non-manifold surface edges, PER REGION (Diag5) -------
     // Each region's boundary (the faces that touch it) must be a closed 2-manifold:
     // every edge shared by exactly TWO of that region's faces. A triple curve --
@@ -237,6 +302,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     // (centroid off-surface) is the realised geometric accuracy.
     let mut max_dev = 0.0f64;
     let mut n_straddlers = 0usize;
+    let mut n_bridge_faces = 0usize;
     // The curved analytic surfaces, used as a best-fit basis. A boundary point is
     // measured against the surface it ACTUALLY lies on (the nearest one), not the
     // face's tagged surface: near an intersection ring a face is easily tagged with
@@ -264,7 +330,20 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         }
         // accuracy: chord sagitta = centroid distance to the nearest true surface
         // (a real bridge face -- flat over a concave crease -- still reports far off).
-        max_dev = max_dev.max(nearest_off(centroid(&v)));
+        let c_off = nearest_off(centroid(&v));
+        max_dev = max_dev.max(c_off);
+        // bridge face / lid: every VERTEX passes the straddler test (all on
+        // some surface), but the face INTERIOR spans far off everything --
+        // the cavity-lid class (mold_block), topologically watertight yet
+        // geometrically false. Same relative threshold as the straddler.
+        if longest > 0.0 && c_off > 0.25 * longest && vmax_off <= 0.25 * longest {
+            n_bridge_faces += 1;
+            defects.push(Defect {
+                kind: DefectKind::BridgeFace,
+                pos: centroid(&v),
+                value: c_off,
+            });
+        }
     }
 
     MeshDiagnostics {
@@ -279,6 +358,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         watertight: n_nonmanifold == 0,
         n_nonmanifold_edges: n_nonmanifold,
         n_straddlers,
+        n_bridge_faces,
         max_surface_deviation: max_dev,
         region_volumes: region_vol.into_iter().collect(),
         defects,

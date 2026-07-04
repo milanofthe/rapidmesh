@@ -67,6 +67,15 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
     use crate::math::{dot, normalize, scale, sub};
     match kind {
         SurfaceKind::Plane | SurfaceKind::Extruded { .. } => None,
+        // discrete patches: the facet normal at the footpoint (tessellation-
+        // faithful; no closed form exists by construction)
+        SurfaceKind::Discrete(d) => Some(d.closest(p).1),
+        // tube: radially outward from the closest path point
+        SurfaceKind::Tube { path, .. } => {
+            let q = path.closest(p);
+            let d = sub(p, q);
+            (dot(d, d) > 1e-24).then(|| normalize(d))
+        }
         SurfaceKind::Sphere { center, .. } => Some(normalize(sub(p, *center))),
         SurfaceKind::Cylinder { center, axis, .. } => {
             let a = normalize(*axis);

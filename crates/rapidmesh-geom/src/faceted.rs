@@ -25,10 +25,15 @@ pub struct FlatFacet {
 /// The analytic surface a facet was tessellated from. Flat facets need no
 /// snapping; curved kinds carry the data the order-2 midside snapping stage
 /// projects onto. Metadata only — exactness of the mesh never depends on it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum SurfaceKind {
     /// A flat face (the triangle itself is the exact surface).
     Plane,
+    /// A DISCRETE smooth patch of an imported triangle soup (an STL region
+    /// between crease edges): the carrier is the patch itself, queried by
+    /// closest-point projection, so the import is REMESHED against its own
+    /// envelope instead of frozen facet by facet.
+    Discrete(std::sync::Arc<crate::discrete::DiscreteSurface>),
     /// An infinite cylinder barrel.
     Cylinder {
         /// A point on the axis.
@@ -83,6 +88,17 @@ pub enum SurfaceKind {
         vdir: [f64; 3],
         /// Unit extrusion direction in 3D.
         axis: [f64; 3],
+    },
+    /// A constant-radius tube around a polyline path (swept pipes, helical
+    /// coils): the surface is `dist(p, path) = radius`. The path is the
+    /// SMOOTH sweep centerline; the offset/projection oracle is analytic per
+    /// segment, so the carrier is smooth in the ways that matter (no facet
+    /// coplanarity, exact curvature `radius` for sizing).
+    Tube {
+        /// Sweep centerline with its closest-point accelerator.
+        path: Arc<crate::tube::TubePath>,
+        /// Tube radius.
+        radius: f64,
     },
 }
 
@@ -241,6 +257,20 @@ impl Faceted {
                             axis: map_dir(*axis),
                         }
                     }
+                    SurfaceKind::Tube { path, radius } => SurfaceKind::Tube {
+                        path: Arc::new(crate::tube::TubePath::new(
+                            path.pts.iter().map(|&q| map(q)).collect(),
+                        )),
+                        radius: *radius,
+                    },
+                    // The discrete carrier IS its point set: map the points,
+                    // rebuild the accelerator (normals re-derive from winding).
+                    SurfaceKind::Discrete(d) => SurfaceKind::Discrete(std::sync::Arc::new(
+                        crate::discrete::DiscreteSurface::new(
+                            d.points.iter().map(|&q| map(q)).collect(),
+                            d.tris.clone(),
+                        ),
+                    )),
                 })
                 .collect(),
         }
@@ -300,6 +330,9 @@ impl Faceted {
             for kind in &mut out.surfaces {
                 match kind {
                     SurfaceKind::Plane => {}
+                    // discrete carriers scale with their (already transformed)
+                    // point set; nothing else to adjust
+                    SurfaceKind::Discrete(_) => {}
                     SurfaceKind::Cylinder { radius, .. } => *radius *= s,
                     SurfaceKind::Sphere { radius, .. } => *radius *= s,
                     SurfaceKind::Cone { .. } => {}
@@ -315,11 +348,16 @@ impl Faceted {
                     // vectors, so the analytic extrusion no longer holds; keep
                     // the facets but drop the back-reference.
                     SurfaceKind::Extruded { .. } => *kind = SurfaceKind::Plane,
+                    // uniform scale: the path scaled with the shape, only the
+                    // radius follows here
+                    SurfaceKind::Tube { radius, .. } => *radius *= s,
                 }
             }
         } else {
             for kind in &mut out.surfaces {
-                if !matches!(kind, SurfaceKind::Plane) {
+                // discrete carriers survive any linear map (the point set was
+                // transformed); analytic kinds lose their closed form
+                if !matches!(kind, SurfaceKind::Plane | SurfaceKind::Discrete(_)) {
                     *kind = SurfaceKind::Plane;
                 }
             }

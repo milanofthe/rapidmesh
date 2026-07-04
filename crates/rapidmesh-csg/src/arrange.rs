@@ -322,6 +322,22 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
     let mut points: Vec<Vec<Point3>> = vec![Vec::new(); tris.len()];
     let mut constraints: Vec<Vec<Constraint>> = vec![Vec::new(); tris.len()];
     let mut skipped = [0usize; 1];
+    let check = std::env::var_os("RAPIDMESH_ARRANGE_CHECK").is_some();
+    let validate = |branch: &str, fi: usize, fj: usize, p: &Point3| {
+        if !check {
+            return;
+        }
+        let facet = &tris[fi];
+        let (axis, orientation) = facet.projection_axis();
+        if !facet.contains_coplanar(p, axis, orientation) {
+            eprintln!(
+                "ARRANGE CHECK: {branch} point {:?} outside facet {fi} {:?} (pair {fi},{fj} other {:?})",
+                p.approx(),
+                facet.v,
+                tris[fj].v,
+            );
+        }
+    };
     for (i, j) in pairs {
         // Fast path for mesh-adjacent / disjoint pairs (see adjacency_skip):
         // the dominant candidate kind on clean closed surfaces, contributing
@@ -334,10 +350,16 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
         match tri_tri_intersection(&tris[i], &tris[j]) {
             TriTriIsect::Disjoint => {}
             TriTriIsect::Touching(p) => {
+                validate("touch", i, j, &p);
+                validate("touch", j, i, &p);
                 points[i].push(p.clone());
                 points[j].push(p);
             }
             TriTriIsect::Segment(a, b) => {
+                validate("seg-a", i, j, &a);
+                validate("seg-b", i, j, &b);
+                validate("seg-a", j, i, &a);
+                validate("seg-b", j, i, &b);
                 constraints[i].push(Constraint {
                     a: a.clone(),
                     b: b.clone(),
@@ -356,6 +378,8 @@ pub fn arrange(tris: &[Tri]) -> Arrangement {
                     for e in 0..3 {
                         let (u, v) = (other.v[e], other.v[(e + 1) % 3]);
                         if let Some((lo, hi)) = clip_coplanar_edge(facet, u, v) {
+                            validate("clip-lo", fi, fj, &lo);
+                            validate("clip-hi", fi, fj, &hi);
                             if lo.coincides(&hi) {
                                 points[fi].push(lo);
                             } else {

@@ -123,3 +123,49 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     }
     assert!(n_uv > 0, "mantle has parametric trim curves");
 }
+
+#[test]
+fn oblique_cylinder_cut_recovers_ellipse() {
+    // A tilted cylinder cut by an axis-aligned plane (the void box top at z=0):
+    // the rim is an oblique plane section -> an exact Ellipse (NOT a Polyline).
+    // axis (1,0,2)/sqrt(5): cos(phi) = 2/sqrt(5) ~ 0.894 -- oblique, not a circle.
+    let mut scene = Scene::new();
+    scene.add_solid(rapidmesh_geom::cylinder([0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5, 24));
+    scene.add_void(solid_box([-3.0, -3.0, 0.0], [3.0, 3.0, 3.0]));
+    let b = from_plc(&scene.assemble());
+    let (a, mi) = b
+        .edges
+        .iter()
+        .find_map(|e| match e.curve {
+            Curve::Ellipse { a, b, .. } => Some((a, b)),
+            _ => None,
+        })
+        .expect("oblique rim recovered as an Ellipse");
+    let cosphi = 2.0 / 5.0f64.sqrt();
+    assert!((mi - 0.5).abs() < 1e-9, "semi-minor {mi} ~ cylinder radius 0.5");
+    assert!((a - 0.5 / cosphi).abs() < 1e-9, "semi-major {a} ~ r/cos(phi)");
+}
+
+#[test]
+fn crossed_cylinders_recover_intersection_edges() {
+    // A cylinder drilled crosswise by a void cylinder: the hole rim on the barrel
+    // is a cylinder-cylinder intersection curve -- no closed form, so it must be
+    // recovered as Curve::Intersection (POCS-refined downstream), NOT a Polyline.
+    let mut scene = Scene::new();
+    scene.add_solid(rapidmesh_geom::cylinder([-2.0, 0.0, 0.0], [4.0, 0.0, 0.0], 0.8, 24));
+    scene.add_void(rapidmesh_geom::cylinder([0.0, -2.0, 0.0], [0.0, 4.0, 0.0], 0.4, 24));
+    let b = from_plc(&scene.assemble());
+    let n_isect = b
+        .edges
+        .iter()
+        .filter(|e| matches!(e.curve, Curve::Intersection { .. }))
+        .count();
+    assert!(n_isect >= 1, "cyl-cyl rim recovered as Intersection, got {n_isect}");
+    // and the two referenced surfaces really are the two cylinders
+    for e in &b.edges {
+        if let Curve::Intersection { a, b: sb } = e.curve {
+            assert!(matches!(b.surface(a), Surface::Cylinder { .. }));
+            assert!(matches!(b.surface(sb), Surface::Cylinder { .. }));
+        }
+    }
+}

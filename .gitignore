@@ -10,3 +10,4 @@ __pycache__/
 *.pdb
 python/python_src/rapidmesh/_native*
 python/examples/surface_out/
+bench/corpus_run.log

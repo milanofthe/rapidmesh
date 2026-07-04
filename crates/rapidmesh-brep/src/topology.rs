@@ -18,6 +18,7 @@ pub enum EdgeKind {
     Profile = 2,
     Intersection = 3,
     Polyline = 4,
+    Ellipse = 5,
 }
 
 /// One face of the boundary, with its sizing-relevant geometry and incidence.
@@ -295,6 +296,7 @@ pub fn extract_topology(plc: &TaggedPlc, brep: &Brep) -> Topology {
             Curve::Line { .. } => EdgeKind::Line,
             Curve::Circle { .. } => EdgeKind::Circle,
             Curve::Profile { .. } => EdgeKind::Profile,
+            Curve::Ellipse { .. } => EdgeKind::Ellipse,
             Curve::Intersection { .. } => EdgeKind::Intersection,
             Curve::Polyline => EdgeKind::Polyline,
         };

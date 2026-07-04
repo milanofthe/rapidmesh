@@ -1,8 +1,11 @@
 //! Surface mesh import: STL (binary and ASCII) and Wavefront OBJ.
 //!
-//! Imported shapes become [`Faceted`] solids whose facets ARE the exact
-//! geometry: every triangle is its own [`SurfaceKind::Plane`], so the mesher
-//! reproduces the input surface exactly (PLC semantics, no approximation).
+//! Imported facets are grouped into SMOOTH REGIONS at crease edges (facet
+//! normals turning by more than the crease threshold): each region becomes one
+//! [`SurfaceKind::Discrete`] carrier, so the mesher REMESHES the import against
+//! its own envelope -- creases survive as B-rep feature edges, smooth areas are
+//! free to resample. (One plane per facet, the old behaviour, froze the whole
+//! import: every input edge a protected feature, every input sliver permanent.)
 //! Exactly degenerate (collinear) facets are dropped on import; duplicated
 //! facets are rejected. [`validate_closed`] checks the watertight,
 //! consistently-oriented 2-manifold invariant that [`crate::Scene`] solids
@@ -44,16 +47,186 @@ impl From<std::io::Error> for ImportError {
     }
 }
 
+/// Default crease threshold (degrees): facet normals turning by more than this
+/// across a shared edge mark a feature edge; smoother turns stay inside one
+/// discrete region.
+pub const CREASE_DEG: f64 = 40.0;
+
 /// Builds a [`Faceted`] from raw triangles: drops exactly degenerate facets,
-/// gives every surviving facet its own plane surface.
+/// groups the rest into smooth regions at crease edges (`crease_deg`), and
+/// gives every region ONE [`SurfaceKind::Discrete`] carrier.
 fn faceted_from_tris(tris: Vec<Tri>) -> Faceted {
-    let mut f = Faceted::new();
-    for t in tris {
-        if collinear(&t.point(0), &t.point(1), &t.point(2)) == Some(true) {
-            continue;
+    faceted_from_tris_creased(tris, CREASE_DEG)
+}
+
+fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
+    let tris: Vec<Tri> = tris
+        .into_iter()
+        .filter(|t| collinear(&t.point(0), &t.point(1), &t.point(2)) != Some(true))
+        .collect();
+    let n = tris.len();
+
+    // Shared vertex indexing (exact bit match -- STL repeats vertices per facet).
+    let mut vid: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut points: Vec<[f64; 3]> = Vec::new();
+    let key = |p: [f64; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+    let mut conn: Vec<[u32; 3]> = Vec::with_capacity(n);
+    for t in &tris {
+        let idx: [u32; 3] = std::array::from_fn(|k| {
+            let p = t.v[k];
+            *vid.entry(key(p)).or_insert_with(|| {
+                points.push(p);
+                (points.len() - 1) as u32
+            })
+        });
+        conn.push(idx);
+    }
+
+    // Facet normals + edge adjacency.
+    let normal = |c: &[u32; 3]| -> [f64; 3] {
+        let (a, b, cc) = (
+            points[c[0] as usize],
+            points[c[1] as usize],
+            points[c[2] as usize],
+        );
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let w = [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]];
+        let mut nr = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let l = (nr[0] * nr[0] + nr[1] * nr[1] + nr[2] * nr[2]).sqrt();
+        if l > 0.0 {
+            for x in &mut nr {
+                *x /= l;
+            }
         }
-        let s = f.add_surface(SurfaceKind::Plane);
-        f.push_tri(t, s);
+        nr
+    };
+    let normals: Vec<[f64; 3]> = conn.iter().map(normal).collect();
+    let mut by_edge: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for (i, c) in conn.iter().enumerate() {
+        for e in 0..3 {
+            let (a, b) = (c[e], c[(e + 1) % 3]);
+            by_edge.entry((a.min(b), a.max(b))).or_default().push(i as u32);
+        }
+    }
+
+    // Union-find over facets: smooth (sub-crease) shared edges merge regions.
+    let cos_crease = crease_deg.to_radians().cos();
+    let mut rep: Vec<u32> = (0..n as u32).collect();
+    fn find(rep: &mut [u32], mut x: u32) -> u32 {
+        while rep[x as usize] != x {
+            rep[x as usize] = rep[rep[x as usize] as usize];
+            x = rep[x as usize];
+        }
+        x
+    }
+    let mut crease: Vec<((u32, u32), [u32; 2])> = Vec::new();
+    for (&(a, b), owners) in &by_edge {
+        if owners.len() != 2 {
+            continue; // boundary / non-manifold: always a region boundary
+        }
+        let (i, j) = (owners[0] as usize, owners[1] as usize);
+        let d = normals[i][0] * normals[j][0]
+            + normals[i][1] * normals[j][1]
+            + normals[i][2] * normals[j][2];
+        if d >= cos_crease {
+            let (ri, rj) = (find(&mut rep, i as u32), find(&mut rep, j as u32));
+            if ri != rj {
+                rep[ri.max(rj) as usize] = ri.min(rj);
+            }
+        } else {
+            crease.push(((a, b), [owners[0], owners[1]]));
+        }
+    }
+
+    // NOISE-ROBUST crease filtering: real features form long chains or
+    // closed loops (a CAD model's whole crease network is typically ONE
+    // connected component -- fandisk: 710 edges, 1 component), while scan
+    // noise shatters into short OPEN fragments (cow: 94 of 137 components
+    // have <= 3 edges; armadillo: 500 of 573). A raw dihedral threshold
+    // turns every fragment into a feature curve with protecting balls --
+    // measured at 4.8 HOURS on the 5.8k-facet cow. Open components shorter
+    // than `NOISE_CHAIN_MIN` edges are therefore treated as smooth; closed
+    // loops of any size stay (a tiny loop can be a genuine small feature).
+    const NOISE_CHAIN_MIN: usize = 8;
+    if !crease.is_empty() {
+        crease.sort_unstable(); // deterministic component ids
+        // Connected components of crease edges via shared vertices, plus
+        // per-vertex degree (open component <=> some vertex has degree 1).
+        let mut vfirst: HashMap<u32, u32> = HashMap::new();
+        let mut erep: Vec<u32> = (0..crease.len() as u32).collect();
+        let mut vdeg: HashMap<u32, u32> = HashMap::new();
+        for (ei, &((a, b), _)) in crease.iter().enumerate() {
+            for v in [a, b] {
+                *vdeg.entry(v).or_insert(0) += 1;
+                match vfirst.entry(v) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(ei as u32);
+                    }
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        let (ri, rj) = (find(&mut erep, ei as u32), find(&mut erep, *e.get()));
+                        if ri != rj {
+                            erep[ri.max(rj) as usize] = ri.min(rj);
+                        }
+                    }
+                }
+            }
+        }
+        let mut comp_size: HashMap<u32, usize> = HashMap::new();
+        let mut comp_open: HashMap<u32, bool> = HashMap::new();
+        for ei in 0..crease.len() as u32 {
+            let r = find(&mut erep, ei);
+            *comp_size.entry(r).or_insert(0) += 1;
+            let ((a, b), _) = crease[ei as usize];
+            if vdeg[&a] == 1 || vdeg[&b] == 1 {
+                comp_open.insert(r, true);
+            }
+        }
+        for ei in 0..crease.len() as u32 {
+            let r = find(&mut erep, ei);
+            if comp_size[&r] < NOISE_CHAIN_MIN && comp_open.get(&r).copied().unwrap_or(false) {
+                let [i, j] = crease[ei as usize].1;
+                let (ri, rj) = (find(&mut rep, i), find(&mut rep, j));
+                if ri != rj {
+                    rep[ri.max(rj) as usize] = ri.min(rj);
+                }
+            }
+        }
+    }
+
+    // One Discrete carrier per region (locally reindexed patch).
+    let mut region_facets: HashMap<u32, Vec<u32>> = HashMap::new();
+    for i in 0..n as u32 {
+        let r = find(&mut rep, i);
+        region_facets.entry(r).or_default().push(i);
+    }
+    let mut regions: Vec<Vec<u32>> = region_facets.into_values().collect();
+    regions.sort_by_key(|m| m[0]); // deterministic surface order
+
+    let mut f = Faceted::new();
+    for members in regions {
+        let mut l_vid: HashMap<u32, u32> = HashMap::new();
+        let mut l_pts: Vec<[f64; 3]> = Vec::new();
+        let mut l_tris: Vec<[u32; 3]> = Vec::new();
+        for &fi in &members {
+            let c = conn[fi as usize];
+            let lt: [u32; 3] = std::array::from_fn(|k| {
+                *l_vid.entry(c[k]).or_insert_with(|| {
+                    l_pts.push(points[c[k] as usize]);
+                    (l_pts.len() - 1) as u32
+                })
+            });
+            l_tris.push(lt);
+        }
+        let s = f.add_surface(SurfaceKind::Discrete(std::sync::Arc::new(
+            crate::discrete::DiscreteSurface::new(l_pts, l_tris),
+        )));
+        for &fi in &members {
+            f.push_tri(tris[fi as usize].clone(), s);
+        }
     }
     f
 }
@@ -64,6 +237,12 @@ fn faceted_from_tris(tris: Vec<Tri>) -> Faceted {
 /// Facet normals in the file are ignored; orientation comes from the vertex
 /// winding (the STL convention requires both to agree).
 pub fn import_stl(path: &Path) -> Result<Faceted, ImportError> {
+    import_stl_creased(path, CREASE_DEG)
+}
+
+/// [`import_stl`] with an explicit crease threshold (degrees) for the
+/// feature-edge detection that splits the soup into smooth Discrete regions.
+pub fn import_stl_creased(path: &Path, crease_deg: f64) -> Result<Faceted, ImportError> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?.read_to_end(&mut bytes)?;
     let tris = if stl_is_binary(&bytes) {
@@ -71,7 +250,7 @@ pub fn import_stl(path: &Path) -> Result<Faceted, ImportError> {
     } else {
         parse_stl_ascii(&bytes)?
     };
-    Ok(faceted_from_tris(tris))
+    Ok(faceted_from_tris_creased(tris, crease_deg))
 }
 
 /// Binary detection: the 80-byte header is free-form (may even start with
@@ -153,6 +332,12 @@ fn parse_stl_ascii(bytes: &[u8]) -> Result<Vec<Tri>, ImportError> {
 /// `f` indices may be 1-based or negative (relative), with optional
 /// `/texture/normal` suffixes.
 pub fn import_obj(path: &Path) -> Result<Faceted, ImportError> {
+    import_obj_creased(path, CREASE_DEG)
+}
+
+/// [`import_obj`] with an explicit crease threshold (degrees), see
+/// [`import_stl_creased`].
+pub fn import_obj_creased(path: &Path, crease_deg: f64) -> Result<Faceted, ImportError> {
     let text = std::fs::read_to_string(path)?;
     let mut verts: Vec<[f64; 3]> = Vec::new();
     let mut tris: Vec<Tri> = Vec::new();

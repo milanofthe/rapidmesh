@@ -422,13 +422,23 @@ fn tet_circumcenter(p: [[f64; 3]; 4]) -> Option<([f64; 3], f64)> {
     Some((c, r))
 }
 
-/// Meshes a tagged PLC into a conforming, region-tagged tet mesh without
-/// sizing or quality refinement. Background (region 0) tets are dropped.
+/// Meshes a tagged PLC into a conforming, region-tagged tet mesh with default
+/// sizing (an eighth of the bounding-box diagonal -- an UNBOUNDED size makes
+/// the duplicate guards of the refinement path meaningless) and no quality
+/// bound. Background (region 0) tets are dropped.
 pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in &plc.vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max).max(1e-12);
     mesh_plc_with(
         plc,
         &MeshParams {
-            maxh: f64::INFINITY,
+            maxh: diag / 8.0,
             radius_edge_bound: f64::INFINITY,
             max_points: usize::MAX,
             ..Default::default()
@@ -438,9 +448,11 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
 
 /// Meshes a tagged PLC into a conforming, region-tagged tet mesh, refined to
 /// the given sizing and quality targets (best effort under
-/// `params.max_points`). Delegates to the constrained per-region mesher.
+/// `params.max_points`). Delegates to the restricted-Delaunay refinement core
+/// (`docs/refinement-core.md`); the frozen-surface CVT path remains available
+/// as [`crate::cvt::mesh_cdt`] during the migration.
 pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
-    crate::cvt::mesh_cdt(plc, params)
+    crate::refine::mesh_refine(plc, params)
 }
 
 /// Quality summary of a tet mesh, with WHERE the worst element is and a

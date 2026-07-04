@@ -207,9 +207,26 @@ impl DomainTree {
             // `maxh` (no-op) unless a global surface cap is set, so this keeps the
             // global `g.surf().maxh` consistent with the per-entity override: both
             // now refine the volume field behind the surface, not just the tiling.
+            //
+            // DISCRETE carriers: the estimated (tessellation-derived) curvature
+            // may undercut the user's local target by at most 4x. The resolution
+            // floor inside the estimate is not enough on its own -- scans are
+            // tessellated far finer than any useful FEM resolution, so the
+            // estimate otherwise overrides `maxh` unboundedly (measured on
+            // cheburashka: h/7, ~1M tets, a 997k-candidate collapse pass).
+            // Analytic curvature is exact and keeps its full authority.
+            let ct = {
+                let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
+                let ct = curvature_target(i);
+                if matches!(kind, rapidmesh_geom::SurfaceKind::Discrete(_)) {
+                    ct.max(base * 0.25)
+                } else {
+                    ct
+                }
+            };
             base.min(facet_surf.get(i).copied().unwrap_or(f64::INFINITY))
                 .min(params.surf_cap())
-                .min(curvature_target(i))
+                .min(ct)
         };
         let facets: Vec<(Tri, f64)> = plc
             .triangles
@@ -253,8 +270,14 @@ impl DomainTree {
         //   - point sources: `size_points`.
         // Adding a feature kind is just another graded source in `h_of`.
         // `edge_cap()` is the global edge cap (`maxh_edge`); defaults to `maxh`.
+        // NB: pass the RESOLVED bulk size, not `params.edge_cap()` raw -- with
+        // `maxh = INFINITY` (per-dimension caps only) the raw cap is infinite,
+        // and the curvature baseline walk inside then never accumulates enough
+        // arc length: on a CLOSED rim loop (a cylinder rim, where every vertex
+        // has exactly two neighbours and no junction ever breaks the walk) it
+        // circles forever.
         let edge_segments: Vec<(Tri, f64)> =
-            edge_sizing_segments(plc, params.tol_edge, params.edge_cap());
+            edge_sizing_segments(plc, params.tol_edge, params.edge_cap().min(maxh));
         let edge_bvh = FacetBvh::build(&edge_segments);
 
         // Nearest-facet distance (for the uniform-leaf region cache).
@@ -492,6 +515,11 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
                 }
                 _ => break, // junction / open end
             };
+            // Full lap on a CLOSED loop: one circuit is the longest meaningful
+            // baseline; without this, an oversized `eps` walks forever.
+            if next == start {
+                break;
+            }
             acc += dist(plc.vertices[cur as usize], plc.vertices[next as usize]);
             prev = cur;
             cur = next;

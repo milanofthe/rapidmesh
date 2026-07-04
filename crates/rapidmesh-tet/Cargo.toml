@@ -12,6 +12,7 @@ rapidmesh-brep.workspace = true
 rayon.workspace = true
 geometry-predicates.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 rapidmesh-testutil.workspace = true

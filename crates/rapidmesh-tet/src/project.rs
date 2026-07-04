@@ -71,6 +71,14 @@ pub fn closest_on_plane(p: V3, origin: V3, normal: V3) -> V3 {
 /// well-defined arbitrary perpendicular direction.
 pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
     match *kind {
+        SurfaceKind::Discrete(ref d) => return d.closest(p).0,
+        SurfaceKind::Tube { ref path, radius } => {
+            let s = rapidmesh_brep::Surface::from_kind(
+                &SurfaceKind::Tube { path: path.clone(), radius },
+                &[],
+            );
+            return s.closest(p).0;
+        }
         SurfaceKind::Plane => p,
         SurfaceKind::Sphere { center, radius } => {
             let r = sub(p, center);
@@ -134,6 +142,10 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
 /// is flat (infinite radius).
 pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
     match *kind {
+        // precomputed per-facet osculating radius, queried by closest facet
+        SurfaceKind::Discrete(ref d) => return d.curvature_radius(p),
+        // the tube's tightest principal curvature is its own radius
+        SurfaceKind::Tube { radius, .. } => return radius,
         SurfaceKind::Plane => f64::INFINITY,
         SurfaceKind::Sphere { radius, .. } => radius,
         SurfaceKind::Cylinder { radius, .. } => radius,

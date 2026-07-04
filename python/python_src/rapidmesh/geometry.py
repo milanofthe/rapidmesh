@@ -1068,6 +1068,48 @@ class Geometry:
         )
         return self._solid(region)
 
+    def import_stl(
+        self,
+        path,
+        *,
+        crease_deg: float = 40.0,
+        up: str = "z",
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from an STL file (binary or ASCII, auto-detected) on the
+        discrete-envelope path: the triangle soup is split into smooth
+        regions at crease edges (facet normals turning by more than
+        ``crease_deg`` across an edge mark a feature edge), each region
+        becomes one discrete surface carrier, and the mesher remeshes that
+        envelope -- unlike :meth:`mesh_solid`, which freezes the input
+        facets verbatim. The file must describe a closed, consistently
+        oriented 2-manifold (validated on import). ``up`` names the file's
+        up axis; STL from CAD is conventionally z-up already, a ``"y"``-up
+        model is rotated upright into the project's z-up frame."""
+        region = self._builder.add_import(str(path), crease_deg, up, maxh, void)
+        return self._solid(region)
+
+    def import_obj(
+        self,
+        path,
+        *,
+        crease_deg: float = 40.0,
+        up: str = "z",
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Solid from a Wavefront OBJ file (``v``/``f`` records; polygons
+        are fan-triangulated). Same discrete-envelope semantics as
+        :meth:`import_stl`. ``up="y"`` rotates a y-up model (the common OBJ
+        convention) upright into the project's z-up frame -- but note the
+        mesher currently shows axis anisotropy (task #30: identical geometry
+        can mesh markedly worse after an exact 90-degree rotation), so the
+        default keeps the file's own frame and the gallery renders handle
+        the upright DISPLAY instead."""
+        region = self._builder.add_import(str(path), crease_deg, up, maxh, void)
+        return self._solid(region)
+
     # ------------------------------------------------------------ sheets
 
     def xy_plate(

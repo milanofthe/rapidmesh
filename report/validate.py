@@ -146,6 +146,39 @@ CASES = [
     ("nested_spheres", "Boolean", "vol", 0.16,
         lambda g, h: (g.sphere(1.0),
                       g.sphere(0.55))),
+    # Flush (coplanar-coincident) regions -- the issue-#1 T-junction class: two
+    # face-adjacent boxes sharing a PARTIAL face, at mm scale (scale-sensitive).
+    ("flush_tee", "Boolean", "vol", 1.0e-3,
+        lambda g, h: (g.box(10e-3, 4e-3, 2e-3),
+                      g.box(4e-3, 4e-3, 2e-3, position=(3e-3, 4e-3, 0)))),
+    # --- imported triangle soups (WP5 discrete-envelope path) ---------------
+    # The SOTA-mesher reference set (alecjacobson/common-3d-test-models, via
+    # bench/fetch_models.py; only the validate_closed survivors). fandisk:
+    # CAD classic with creases -- exercises the feature-edge split; the rest
+    # are organic/scan models on the pure closest-point oracle. base_h ~
+    # bbox_diag / 25 (diag / 20 for the heavy scans, run-time budget).
+    ("fandisk", "Import", "vol", 0.30,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "fandisk.obj")),
+    ("spot", "Import", "vol", 0.10,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "spot.obj")),
+    # cow is budget-gated on #28: its scan noise fragments it into 66 crease
+    # regions (843 crease edges at the 40-degree default) -- the feature-curve
+    # machinery then burns 4.8 HOURS on a 5.8k-facet model. Needs noise-robust
+    # crease detection (or a higher per-model crease_deg) before re-entry.
+    ("homer", "Import", "vol", 0.040,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "homer.obj")),
+    # cheburashka at diag/12: finer h feeds the collapse-throughput wall
+    # (task #28: ~1M candidates); 0.106 measures 345 s -- slowest but sound.
+    ("cheburashka", "Import", "vol", 0.106,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "cheburashka.obj")),
+    ("armadillo", "Import", "vol", 15.3,
+        lambda g, h: g.import_obj(REPO / "bench" / "models" / "armadillo.obj")),
+    # The big scans (nefertiti, bimba, igea, lucy; fetched to bench/models)
+    # blow the 5-minute-per-geometry corpus budget (nefertiti: killed at
+    # 45 min even with the analytic crossing arm -- scan noise splits them
+    # into many OPEN crease patches, which stay on the tracer). They enter
+    # CASES once task #28 (rim-zone hybrid crossings / collapse throughput)
+    # brings them under budget.
 ]
 
 DENSITY_FACTORS = [1.0, 0.62, 0.40]   # coarse / medium / fine (x base_h)

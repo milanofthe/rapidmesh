@@ -29,5 +29,17 @@ rapidmesh-topo = { path = "crates/rapidmesh-topo" }
 geometry-predicates = "0.3"
 rayon = "1"
 rustc-hash = "2"
+smallvec = { version = "1", features = ["union"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Numeric hot loops (quality kernels, projection oracles, predicates) gain
+# real throughput from cross-crate inlining; thin LTO + one codegen unit is
+# near fat-LTO speed at a fraction of the link time.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1

@@ -5,12 +5,14 @@
 //! optimization) and hands the result back as numpy arrays.
 
 use numpy::{IntoPyArray, PyArray1, PyArray2};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
     cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
-    icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
-    solid_box, torus, wedge, facet_count, FaceTag, Scene,
+    icosphere, import_obj_creased, import_stl_creased, loft, mesh_solid, naca0012_profile, pipe,
+    sheet_disk, sheet_polygon, sheet_rect, solid_box, torus, validate_closed, wedge, facet_count,
+    FaceTag, Scene,
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
@@ -310,6 +312,52 @@ impl SceneBuilder {
         void: bool,
     ) -> u32 {
         self.put(mesh_solid(&verts, &tris), maxh, void)
+    }
+
+    /// Solid from an STL or OBJ file on the DISCRETE-envelope path: the soup
+    /// is split into smooth regions at crease edges (`crease_deg`), each
+    /// region becomes one `SurfaceKind::Discrete` carrier (closest-point
+    /// projection oracle), and the mesher REMESHES the envelope instead of
+    /// freezing the input facets (which is what `add_mesh` does). The file
+    /// must describe a closed, consistently oriented 2-manifold. `up` names
+    /// the file's up axis ("y" or "z"): a y-up model (the de-facto OBJ
+    /// convention) is rotated +90 degrees about x into the project's z-up
+    /// frame (a proper rotation, so winding and validation are unaffected).
+    #[pyo3(signature = (path, crease_deg, up, maxh=None, void=false))]
+    fn add_import(
+        &mut self,
+        path: &str,
+        crease_deg: f64,
+        up: &str,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> PyResult<u32> {
+        let p = std::path::Path::new(path);
+        let is_stl = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("stl"));
+        let f = if is_stl {
+            import_stl_creased(p, crease_deg)
+        } else {
+            import_obj_creased(p, crease_deg)
+        }
+        .map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
+        let f = match up.to_ascii_lowercase().as_str() {
+            "z" => f,
+            // y-up -> z-up: rotate +90 deg about x, (x, y, z) -> (x, -z, y).
+            "y" => f.transformed(
+                [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+                [0.0; 3],
+            ),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "{path}: unknown up axis {other:?} (expected \"y\" or \"z\")"
+                )))
+            }
+        };
+        validate_closed(&f).map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
+        Ok(self.put(f, maxh, void))
     }
 
     fn add_sheet_rect(&mut self, corner: [f64; 3], u: [f64; 3], v: [f64; 3], tag: u32) {
@@ -866,6 +914,7 @@ impl PyMesh {
         d.set_item("watertight", dg.watertight)?;
         d.set_item("n_nonmanifold_edges", dg.n_nonmanifold_edges)?;
         d.set_item("n_straddlers", dg.n_straddlers)?;
+        d.set_item("n_bridge_faces", dg.n_bridge_faces)?;
         d.set_item("max_surface_deviation", dg.max_surface_deviation)?;
         let rv: Vec<Bound<'py, PyDict>> = dg
             .region_volumes
@@ -890,6 +939,7 @@ fn defect_kind_str(k: rapidmesh_tet::diagnostics::DefectKind) -> &'static str {
         Sliver => "sliver",
         NonManifoldEdge => "nonmanifold_edge",
         Straddler => "straddler",
+        BridgeFace => "bridge_face",
     }
 }
 
@@ -1264,7 +1314,7 @@ fn mesh_2d(
         .into_iter()
         .map(|(outer, holes, tag)| Region2D { outer, holes, tag })
         .collect();
-    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes };
+    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes, ..Default::default() };
     let inner = py.allow_threads(|| topo_mesh_2d(&regs, |_p| h, &opts));
     PyMesh2D { inner, millis: t0.elapsed().as_millis() as u64 }
 }

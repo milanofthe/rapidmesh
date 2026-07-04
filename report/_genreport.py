@@ -46,13 +46,14 @@ def scale_images(names: set[str] | None = None) -> None:
             im.save(out, optimize=True)
 
 # Category display order + headings.
-CAT_ORDER = ["2D", "Primitive", "Boolean", "Showcase", "RF"]
+CAT_ORDER = ["2D", "Primitive", "Boolean", "Import", "Showcase", "RF"]
 CAT_TITLE = {
     "2D": "2D plates (planar surface stage)",
     "Primitive": "Analytic primitives",
     "Boolean": "CSG booleans and multi-region assemblies",
     "Showcase": "Showcase models",
     "RF": "RF/EM structures",
+    "Import": "Imported reference models (discrete carriers)",
 }
 
 # The gallery shows a REPRESENTATIVE handful per family (two each); the full
@@ -65,6 +66,7 @@ GALLERY_PICK = {
     "Boolean": ["fused_unequal", "cross_cyl"],
     "Showcase": ["gear", "lattice_cube"],
     "RF": ["rf_solenoid", "rf_patch_antenna"],
+    "Import": ["fandisk", "spot"],
     "Sizing": ["blob_graded", "box_core_fine"],
     "Shape": ["spiral_inductor", "organic_blob"],
     "Graded": ["box_edge_fine", "sphere_patch_fine"],
@@ -125,10 +127,10 @@ def metrics(by_cat) -> str:
         vol = [r for r in rows if r["kind"] == "vol"]
         surf = [r for r in rows if r["kind"] == "surf"]
         if vol:
-            L.append(r"\begin{longtable}{@{}lrrrcrrrr@{}}")
+            L.append(r"\begin{longtable}{@{}lrrrcrrrrr@{}}")
             L.append(rf"\caption{{Volume meshes: {CAT_TITLE.get(cat, cat)}.}}\\")
             L.append(r"\toprule")
-            hdr = (r"geometry & points & tets & min-dih & wt & sliv & strad & "
+            hdr = (r"geometry & points & tets & min-dih & wt & sliv & strad & bridge & "
                    r"non-mf & surf-dev \\")
             L.append(hdr + r"\midrule\endfirsthead")
             L.append(r"\toprule " + hdr + r"\midrule\endhead\bottomrule\endfoot")
@@ -137,7 +139,7 @@ def metrics(by_cat) -> str:
                 L.append(
                     rf"\ttfamily {esc(r['name'])} & {r['n_points']} & {r['n_elems']} & "
                     rf"{r.get('min_dihedral', 0):.1f}\textdegree & {wt} & {r.get('n_slivers', 0)} & "
-                    rf"{r.get('n_straddlers', 0)} & {r.get('n_nonmanifold', 0)} & "
+                    rf"{r.get('n_straddlers', 0)} & {r.get('n_bridge_faces', 0)} & {r.get('n_nonmanifold', 0)} & "
                     rf"{r.get('max_surf_dev', 0):.2e} \\"
                 )
             L.append(r"\end{longtable}")

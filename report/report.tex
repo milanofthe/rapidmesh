@@ -1113,7 +1113,67 @@ worst cone dihedral (a local perturbation), and, for a boundary sliver whose
 vertices are all pinned, splits the offending surface face $1$--$3$ at a Steiner
 point \emph{on} the analytic carrier (so \cref{prop:watertight} is preserved).
 Each accepted operation strictly improves the local worst dihedral
-\cite{TournoisAlliez2009,AlliezCohenSteiner2005}.
+\cite{TournoisAlliez2009,AlliezCohenSteiner2005}. This
+monotone regime converges, but it converges \emph{into a wall}: the surviving
+sliver population sits in configurations every quality-monotone operator
+rejects. Lifting that residue is the job of a dedicated endgame
+(\cref{sec:endgame}) built on \emph{weighted} Delaunay machinery rather than on
+quality gates.
+
+\subsection{Carrier oracles and analytic crossing solvers}
+\label{sec:oracles}
+Everything the refinement loop asks of a curved carrier goes through a
+three-call oracle: the closest point $\Pi(\vv x)$ on the carrier, the
+\emph{signed offset}
+\begin{equation}
+\psi(\vv x)\;=\;\bigl\langle\, \vv x-\Pi(\vv x),\; \vv n(\Pi(\vv x))\,\bigr\rangle,
+\label{eq:signedoffset}
+\end{equation}
+whose sign flips exactly at the surface, and the \emph{crossing set}
+$X(\vv a,\vv b)\subset(0,1)$ of parameters where the segment $\vv a\to\vv b$
+crosses the carrier transversally. The generic crossing solver is a
+\emph{sphere trace}: because $|\psi|$ lower-bounds the true distance of a
+$1$-Lipschitz signed-distance-like field, marching with the step
+\begin{equation}
+\Delta t \;=\; \max\!\left(\frac{0.9\,\lvert\psi\rvert}{\lVert\vv b-\vv a\rVert},\;
+\Delta t_{\min}\right)
+\label{eq:spheretrace}
+\end{equation}
+cannot skip a crossing, and each bracketed sign change is bisected. That is
+robust but expensive --- each evaluation of \eqref{eq:signedoffset} is a
+projection --- so the frequent carriers get \emph{closed-form} solvers. For a
+plane through $\vv p_0$ with normal $\vv n$ the offset is linear in $t$ and the
+single root is
+\begin{equation}
+t \;=\; \frac{s_0}{s_0-s_1},\qquad
+s_i \;=\; \bigl\langle \vv x_i-\vv p_0,\,\vv n \bigr\rangle .
+\label{eq:planecross}
+\end{equation}
+For a sphere (centre $\vv c$, radius $r$) and a cylinder (axis-orthogonal
+components $\vv u_\perp$), the crossings are the roots in $(0,1)$ of
+\begin{equation}
+A\,t^{2}+2B\,t+C=0,\qquad
+\begin{aligned}
+A&=\langle\vv d,\vv d\rangle, & B&=\langle\vv w,\vv d\rangle, &
+C&=\langle\vv w,\vv w\rangle-r^{2},\\[-1pt]
+\vv d&=\vv b-\vv a, & \vv w&=\vv a-\vv c, &&
+\end{aligned}
+\label{eq:quadcross}
+\end{equation}
+evaluated in the cancellation-safe Citardauq pairing
+$t_{1}=q/A,\;t_{2}=C/q$ with $q=-(B+\operatorname{sign}(B)\sqrt{B^{2}-AC})$; a
+tangent root (zero discriminant) is a graze, not a crossing, and is skipped.
+Piecewise carriers (tube paths, and the discrete patches of
+\cref{sec:discrete}) generalise this to a \emph{candidate--verify} pattern:
+cheap per-piece candidate roots, then one pass of \eqref{eq:signedoffset} sign
+probes over the candidate partition keeps exactly the transversal subset.
+Endpoint semantics are asymmetric by construction: a segment starting exactly
+on the carrier ($\psi=0$) contributes no crossing at $t=0$, and a root within
+float noise ($64\,\varepsilon$ of the coordinate magnitude) of the far endpoint
+is dropped --- matching the traced semantics that the classification walks
+downstream are calibrated against. Replacing traces by
+\eqref{eq:planecross}--\eqref{eq:quadcross} removed $\sim$90M oracle
+projections from a single coil mesh.
 
 \begin{algorithm}[H]
 \caption{\textsc{MeshVolume}$(\mathcal{S},h)$}
@@ -1133,6 +1193,120 @@ seed interior sites on a graded lattice, clearance $\ge h$ from $\mathcal{S}$\;
 assign per-tet region tags; quality $+$ sliver post-pass (carrier-constrained)\;
 \Return tetrahedra, per-tet region, boundary faces ($=\mathcal{S}$)\;
 \end{algorithm}
+
+% ============================================================================
+\section{The quality endgame: perturbation and sliver exudation}
+\label{sec:endgame}
+% ============================================================================
+Delaunay refinement bounds the radius--edge ratio, and the quality-monotone
+cleanup of \cref{sec:volume} then drives the worst dihedral upward --- but both
+leave a residual population of \emph{slivers}: tetrahedra whose four vertices
+are nearly coplanar and nearly cocircular, so their volume and worst dihedral
+vanish while their radius--edge ratio stays unremarkable. A census of the
+survivors shows why the monotone regime cannot lift them: their faces fail the
+$2$--$3$ pierce condition (the opposing apexes' segment misses the shared
+face), their edge rings are near-degenerate for the removal DP, and every
+candidate replacement is no better than the incumbent, so each quality gate
+rejects the move. Two end-stage operators that do \emph{not} argue via local
+quality gain resolve this.
+
+\subsection{Degeneracy perturbation}
+Exactly coplanar vertex configurations (the on-carrier chords and caps of
+curved shells) make the combinatorial operators \emph{undefined}: an exactly
+zero orientation determinant means no $2$--$3$ flip exists and the ring DP sees
+only zero-volume candidates. The perturber nudges one movable (interior,
+unconstrained) vertex of such a tetrahedron by
+\begin{equation}
+\vv x' \;=\; \vv x \;\pm\; \delta\,\hat{\vv n}_{\max},\qquad
+\delta \;=\; 0.05\,\ell_{\min},
+\label{eq:perturb}
+\end{equation}
+along the dominant facet normal $\hat{\vv n}_{\max}$ of the flat tetrahedron,
+gated only on star validity (every incident tetrahedron that was positively
+oriented stays positively oriented). Crucially, the perturber must not run
+concurrently with the positional optimizers: a shell's coplanar configuration
+\emph{is} the smoother's local energy optimum, so any mid-loop nudge is
+smoothed straight back (measured: $16{,}000$ nudges with zero effect on the
+degeneracy census). It therefore runs only in phases from which smoothing is
+excluded.
+
+\subsection{Sliver exudation on weighted Delaunay triangulations}
+Exudation \cite{ChengDeyEdelsbrunner2000,EdelsbrunnerGuoy2002} assigns each
+vertex $\vv p$ a weight $w_p\ge 0$ and replaces the empty-circumsphere
+criterion by \emph{regularity} with respect to the power distance
+\begin{equation}
+\pi_{(\vv p,\,w_p)}(\vv x) \;=\; \lVert\vv x-\vv p\rVert^{2} \;-\; w_p .
+\label{eq:power}
+\end{equation}
+A tetrahedron $(\vv a,\vv b,\vv c,\vv d)$ with weights $(w_a,\dots,w_d)$ has a
+unique \emph{orthosphere} (the sphere with equal power to all four weighted
+vertices), and a facet shared with a witness vertex $(\vv e,w_e)$ is locally
+regular iff the witness has positive power to it. The exact predicate is the
+sign of a $4\times4$ determinant in Shewchuk difference form, with the weight
+correction entering only the lifted coordinate:
+\begin{equation}
+\operatorname{power}(\vv a,\dots,\vv e)
+=\operatorname{sign}\det
+\begin{pmatrix}
+\vv a-\vv e & \lVert\vv a-\vv e\rVert^{2}-(w_a-w_e)\\
+\vv b-\vv e & \lVert\vv b-\vv e\rVert^{2}-(w_b-w_e)\\
+\vv c-\vv e & \lVert\vv c-\vv e\rVert^{2}-(w_c-w_e)\\
+\vv d-\vv e & \lVert\vv d-\vv e\rVert^{2}-(w_d-w_e)
+\end{pmatrix},
+\label{eq:powertest}
+\end{equation}
+evaluated with an interval filter and exact expansion arithmetic as the final
+word; with all weights zero it degenerates to the classical
+\textsc{insphere}. \emph{Pumping} a sliver vertex's weight moves the
+orthospheres of its star until some facet turns non-regular, and the regular
+flip that restores regularity removes the sliver --- with the full embedding
+guarantees of a regular triangulation, which is exactly what direct
+(unguarded) combinatorial surgery cannot offer. Weights are capped by
+Edelsbrunner's admissibility bound
+\begin{equation}
+w_{\vv p}\;\le\;\bigl(0.4\, N(\vv p)\bigr)^{2},\qquad
+N(\vv p)=\text{distance to the nearest neighbour of }\vv p,
+\label{eq:weightcap}
+\end{equation}
+which keeps every vertex non-redundant and the weighted triangulation close to
+the unweighted one. Termination rests on the acyclicity of regular flipping
+under a \emph{fixed} weight vector (the lifted-volume argument), so each
+vertex is pumped at most once per optimization call and weighted candidates
+are decided by \eqref{eq:powertest} \emph{alone} --- in both directions;
+mixing quality gates back into a weighted decision forfeits the termination
+argument.
+
+\medskip\noindent
+Three properties of this machinery were established \emph{empirically} on the
+corpus and shape the implementation:
+\begin{enumerate}
+\item\textbf{Exudation needs a Delaunay substrate.} Run as a terminal phase
+      after the quality optimizer --- CGAL's ordering, whose optimizers
+      re-triangulate and therefore preserve Delaunayhood --- the power gate
+      degenerates into plain Delaunay drift on our non-Delaunay optimized
+      meshes: ``non-regular'' holds almost everywhere, and the resulting flips
+      shred the quality structure (capsule: $539\to1619$ slivers). The
+      exudation phase therefore runs \emph{first}, on the freshly extracted
+      triangulation, which is still (up to rounding) the Delaunay
+      triangulation of its points; its weights are zeroed before the ordinary
+      optimizer passes begin.
+\item\textbf{Only true regular flips are acyclic.} The $2$--$3$ flip and the
+      ring-$3$ edge removal each choose between exactly two configurations, so
+      the power-gated move \emph{is} the regular flip. Releasing the general
+      $k$-ring removal (whose Klincsek DP picks the max--min-quality
+      triangulation, not the regular one) by the same gate diverges: per-pass
+      removals \emph{grew} $758\to6082$ over the phase and watertightness
+      broke.
+\item\textbf{An anti-degeneracy floor is a manifold/sliver trade.} Power-gated
+      flips must not manufacture near-zero-volume replacements (downstream
+      surgery cannot digest them), so every replacement tetrahedron must beat
+      a one-degree worst dihedral. The floor's strictness was measured at
+      three settings; one degree maximises watertight count at the cost of the
+      deepest wedge repairs, and manifoldness is the contract metric.
+\end{enumerate}
+The phase plus the perturber lifted the corpus watertight count by ten
+geometries in a single run --- the largest single improvement in the project's
+history --- with the sliver census neutral elsewhere.
 
 % ============================================================================
 \section{The sizing field, end to end}
@@ -1310,6 +1484,117 @@ same region every pass, so the refinement never localises --- it ``refines
 everywhere'', the failure the squared-indicator marking exists to avoid.
 
 % ============================================================================
+\section{Discrete carriers: remeshing imported triangle soups}
+\label{sec:discrete}
+% ============================================================================
+STL and OBJ imports enter the pipeline as first-class \emph{discrete carriers}
+rather than as frozen facets. Freezing an imported soup facet by facet turns
+every input edge into a protected feature: the import is then pinned, its
+slivers are permanent, and no sizing decision can be revisited. The discrete
+carrier instead treats the soup as the \emph{envelope} of an unknown smooth
+surface: the mesher remeshes against it through the same three-call oracle as
+every analytic carrier (\cref{sec:oracles}), and the input tessellation
+survives only as geometry, never as combinatorics.
+
+\subsection{Crease segmentation and validation}
+On import, exactly degenerate facets are dropped, vertices are welded by exact
+bit-match, and facets are grouped into smooth regions by a union--find that
+merges across an edge shared by facets $i,j$ iff their unit normals satisfy
+\begin{equation}
+\langle \hat{\vv n}_i, \hat{\vv n}_j\rangle \;\ge\; \cos\theta_c,
+\qquad \theta_c = 40^\circ \text{ by default,}
+\label{eq:crease}
+\end{equation}
+so region boundaries are exactly the crease edges; each region becomes one
+carrier (an AABB-tree accelerated closest-point structure), and the crease
+curves feed the ordinary feature-edge machinery (protecting balls, curve
+distribution). A solid import must pass a watertightness check --- every edge
+shared by exactly two facets with opposite orientation --- before it is
+accepted; classics that fail (holes, duplicate facets) are parked for mesh
+repair rather than silently mis-meshed.
+
+\subsection{Curvature estimation and its two governors}
+The carrier estimates a per-facet curvature radius from the normal turn across
+each interior edge: for facets $i,j$ with centroid distance $d_{ij}$ and
+normal angle $\theta_{ij}$, the osculating-circle chord approximation gives
+\begin{equation}
+r_i \;=\; \min_{j\,\sim\,i}\; \frac{d_{ij}}{\theta_{ij}},
+\label{eq:discretecurv}
+\end{equation}
+which feeds the same sagitta-bounded sizing
+$h_{\mathrm{curv}} = r\sqrt{8\,\mathrm{tol}}$ as the analytic carriers. Unlike
+analytic curvature, \eqref{eq:discretecurv} is an \emph{estimate} on a noisy,
+often over-tessellated input, and unbounded it overrides the user's size
+target wholesale (measured: $\times39$ tetrahedra on one scan, $\times14$ on
+another). Two governors bound its authority. First, curvature below the input
+tessellation's own resolution is normal noise, not information:
+\begin{equation}
+r_i^{\mathrm{eff}} \;=\; \max\bigl(r_i,\; 4\,\ell_i^{\max}\bigr),
+\label{eq:tessfloor}
+\end{equation}
+with $\ell_i^{\max}$ the facet's longest edge. Second, the estimated curvature
+may undercut the local user target $h_{\mathrm{base}}$ by at most a fixed
+factor,
+\begin{equation}
+h \;=\; \max\bigl(h_{\mathrm{curv}},\; \tfrac{1}{4}\,h_{\mathrm{base}}\bigr),
+\label{eq:curvcap}
+\end{equation}
+while exact analytic curvature keeps its full authority. Both governors were
+sized on the corpus: without \eqref{eq:tessfloor} flat-noise regions refine to
+the input edge length; without \eqref{eq:curvcap} finely tessellated scans
+refine $\sim7\times$ below \code{maxh} and the volume explodes cubically.
+
+\subsection{Analytic crossings on closed patches}
+The crossing oracle on a discrete patch follows the candidate--verify pattern
+of \cref{sec:oracles}: one walk of the patch's AABB tree with segment-slab
+pruning collects M\"oller--Trumbore \cite{MollerTrumbore1997} candidates ---
+for triangle $(\vv p_0,\vv p_1,\vv p_2)$ and segment direction
+$\vv d=\vv b-\vv a$,
+\begin{equation}
+\begin{pmatrix} t\\ u\\ v \end{pmatrix}
+=\frac{1}{\langle \vv e_1,\ \vv d\times\vv e_2\rangle}
+\begin{pmatrix}
+\langle \vv e_2,\ (\vv a-\vv p_0)\times\vv e_1\rangle\\
+\langle \vv a-\vv p_0,\ \vv d\times\vv e_2\rangle\\
+\langle \vv d,\ (\vv a-\vv p_0)\times\vv e_1\rangle
+\end{pmatrix},
+\qquad \vv e_k=\vv p_k-\vv p_0,
+\label{eq:mollertrumbore}
+\end{equation}
+kept for $t\in(0,1)$, $u,v\ge0$, $u+v\le1$ --- and sign probes of
+\eqref{eq:signedoffset} at $t\pm\delta$ decide transversality, so edge grazes
+and the double counts of shared-edge hits fall out (the offset sign does not
+flip there). The probes must sit \emph{next to} the candidates, not at far
+partition midpoints: an open patch's offset field beyond its rim projects onto
+the rim and is not sign-faithful, and midpoint probing there dropped real
+crossings wholesale. For the same reason the analytic arm is gated to
+\emph{closed} patches (no rim edge): there facet hits and field crossings
+agree, the no-candidate common case costs no projection at all, and
+end-to-end meshing of a closed scan accelerated $\sim8\times$; open
+(crease-bounded) patches remain on the sphere trace
+\eqref{eq:spheretrace}, whose dense samples are rim-safe.
+
+\subsection{Bridge faces: a fourth defect class}
+Imported and boolean geometry exposed a defect the vertex-based straddler test
+is blind to: a boundary face whose vertices all sit on surfaces while its
+\emph{interior} spans a cavity opening --- a lid, topologically watertight yet
+geometrically false. The detector classifies a face with longest edge
+$\ell$, vertex off-surface distances $\{o_k\}$ and centroid off-surface
+distance $o_c$ as a \emph{bridge face} iff
+\begin{equation}
+o_c \;>\; \tfrac{1}{4}\,\ell
+\qquad\text{and}\qquad
+\max_k o_k \;\le\; \tfrac{1}{4}\,\ell ,
+\label{eq:bridge}
+\end{equation}
+i.e.\ every vertex passes the straddler test but the face interior does not.
+Bridge faces are counted, located, and rendered as a separate marker class in
+the debug gallery; on first measurement the class concentrated on one mold
+geometry (131 faces over its cavity openings) with a long tail across organic
+imports --- previously invisible under every existing metric except a raised
+maximum surface deviation.
+
+% ============================================================================
 \section{FEM and MoM export}
 \label{sec:export}
 % ============================================================================
@@ -1348,42 +1633,61 @@ without touching the rest.
 \section{Validation}
 \label{sec:validation}
 % ============================================================================
-The algorithm is validated on a from-scratch corpus of ninety-five geometries
-generated directly through the geometry API (no pre-baked tessellations), spanning
-nine families: \emph{2D plates} (the planar surface stage in isolation),
-\emph{analytic primitives}, \emph{CSG booleans} and multi-region assemblies,
-hierarchical \emph{sizing} and \emph{gradation} cases, parametric \emph{shape}
-sweeps, \emph{showcase} models, \emph{RF/EM} structures, and \emph{passives}
-(method-of-moments spiral inductors and transformers, meshed as surfaces). Each geometry is
-meshed at its default density and rendered headlessly by the project's WebGPU
-rasterizer --- which runs the \emph{same} scene pipeline as the live viewer, with
-no browser --- into a \textsc{normal} view (region-coloured, volumes clipped to
-expose the interior) and a \textsc{debug} view that overlays the located defect
-markers and the per-stage meshing time. The full per-geometry metric set (point
-and element counts, minimum dihedral angle, watertightness, sliver / straddler /
-non-manifold-edge counts, maximum surface deviation) is tabulated per family in
-the longtables below, and every mesh is shown in the gallery at the end of this
-section.
+The algorithm is validated on a from-scratch corpus of $102$ geometries
+spanning ten families: \emph{2D plates} (the planar surface stage in
+isolation), \emph{analytic primitives}, \emph{CSG booleans} and multi-region
+assemblies, hierarchical \emph{sizing} and \emph{gradation} cases, parametric
+\emph{shape} sweeps, \emph{showcase} models, \emph{RF/EM} structures,
+\emph{passives} (method-of-moments spiral inductors and transformers, meshed
+as surfaces), and --- new --- \emph{imports}: the standard surface-mesh
+reference models the field benchmarks against (fandisk, spot, homer,
+cheburashka, armadillo, \dots), fetched as OBJ, validated watertight, and
+remeshed through the discrete-carrier path of \cref{sec:discrete}. Each
+geometry is meshed at its default density and rendered headlessly by the
+project's WebGPU rasterizer --- which runs the \emph{same} scene pipeline as
+the live viewer, with no browser --- into a \textsc{normal} view
+(region-coloured, volumes clipped to expose the interior) and a \textsc{debug}
+view that overlays the located defect markers (sliver, straddler,
+non-manifold edge, and the bridge faces of \eqref{eq:bridge}) and the
+per-stage meshing time. The full per-geometry metric set (point and element
+counts, minimum dihedral angle, watertightness, sliver / straddler / bridge /
+non-manifold-edge counts, maximum surface deviation) is tabulated per family
+in the longtables below, and every mesh is shown in the gallery at the end of
+this section.
 
 \medskip\noindent
-\textbf{Summary.} 93 of 95 geometries mesh (two RF/passives assemblies are
-degenerate inputs). Of the 72 volume meshes, 48 are watertight and 40 are free of
-slivers and straddlers; the analytic-primitive and box-derived (sizing, gradation)
-families are watertight and sliver-free at the expected isotropic quality (minimum
-dihedral typically $12$--$20^\circ$). On the harder
-curved-boolean, showcase and RF families watertightness is \emph{partial}: the
-residual failures concentrate on \emph{curved material interfaces} --- where a
-chosen curved-facet triangulation is not force-recovered (\cref{sec:volume}) ---
-and on dense multi-region assemblies, with a few revolution apices and thin tubes
-retaining slivers the cleanup pass does not fully clear. These are the standing
-open items the corpus exists to track. Conformity on planar and single-curved
-geometry is exact by \cref{prop:watertight} and independent of density: the
-boundary-constrained, per-region tetrahedralization (\cref{alg:region}) makes the
-frozen surface a hard constraint and discards every straddling tetrahedron, so a
-region's boundary is exactly the prescribed subset of $\mathcal{S}$. The
-validation harness (\code{report/corpus.py}, \code{report/render\_gallery.py})
-re-runs the whole matrix and regenerates these tables and figures on demand, so
-the corpus is a standing regression gate.
+\textbf{Discipline.} Every run is date-versioned into \code{bench/history/}
+with its git metadata, and the runner prints the headline trajectory against
+the previous run, so regressions surface at the run that caused them. A hard
+per-geometry \emph{runtime budget of five minutes} keeps the corpus
+practicable; reference models that blow it (the $100$k-facet scan busts, and
+one scan whose noise fragments into $66$ crease regions) are parked, each with
+its measured cause, until the speed work brings them under budget.
+Sub-corpus runs (\code{-{}-sub} \emph{family}) and a curated quick tier
+(\code{-{}-quick}) serve as fast mid-iteration gates without writing history;
+the full run remains the single benchmark truth.
+
+\medskip\noindent
+\textbf{Summary.} $102$ of $102$ geometries mesh. Of the $81$ volume meshes,
+$72$ are watertight, $77$ are straddler-free and $57$ are sliver-free; the
+analytic-primitive, boolean and box-derived (sizing, gradation) families are
+watertight at the expected isotropic quality (minimum dihedral typically
+$12$--$25^\circ$), and the endgame of \cref{sec:endgame} lifted the
+watertight count by ten geometries in its first full run. The residual
+failures concentrate on \emph{curved material interfaces} --- where a chosen
+curved-facet triangulation is not force-recovered (\cref{sec:volume}) --- on
+dense multi-region assemblies, on the on-carrier sliver bands of thin curved
+shells (the pressure-vessel class), and on the cavity-lid bridge faces that
+\eqref{eq:bridge} now makes countable. These are the standing open items the
+corpus exists to track. Conformity on planar and single-curved geometry is
+exact by \cref{prop:watertight} and independent of density: the
+boundary-constrained, per-region tetrahedralization (\cref{alg:region}) makes
+the frozen surface a hard constraint and discards every straddling
+tetrahedron, so a region's boundary is exactly the prescribed subset of
+$\mathcal{S}$. The validation harness (\code{report/corpus.py},
+\code{report/render\_gallery.py}) re-runs the whole matrix and regenerates
+these tables and figures on demand, so the corpus is a standing regression
+gate.
 
 \input{generated/metrics.tex}
 

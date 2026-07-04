@@ -285,6 +285,18 @@ impl Surface {
             _ => None,
         }
     }
+
+    /// The surface's isolated SINGULAR point, if any (the cone apex): a point
+    /// where the tangent plane is undefined. Such a point can sit in a face's
+    /// interior with NO incident B-rep edge, so topology alone never protects
+    /// it -- restricted sampling then only approaches the tip, never hits it,
+    /// and the tip erodes. The mesher pins it as an explicit corner site.
+    pub fn singular_point(&self) -> Option<V3> {
+        match self {
+            Surface::Cone { apex, .. } => Some(*apex),
+            _ => None,
+        }
+    }
 }
 
 /// Fits an orthonormal plane frame to points: centroid origin, Newell normal, an

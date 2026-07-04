@@ -1754,6 +1754,33 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             }
         }
     }
+    // ---- protect 0-dimensional SURFACE singularities -----------------------
+    // A cone apex interior to a face has no incident B-rep edge, so it is not
+    // a topological vertex -- but restricted sampling can only approach a
+    // singular point, never hit it, and without a pinned site the tip is
+    // truncated (measured on the corpus cone: z_max 0.75 -> 0.71 after
+    // refinement, 0.62 after cleanup). Pin it as a protected corner and count
+    // it into `plc_points`, or the optimizer collapses the tip's sliver cone
+    // right through it. The duplicate guard makes this idempotent when
+    // several faces share one singular surface, and a no-op when the apex
+    // already IS a corner. Index stability across rebuilds holds because
+    // rebuilds re-insert non-interior points first, in order.
+    let mut n_singular = 0usize;
+    for fi in 0..brep.faces.len() {
+        let Some(p) = brep.surface(brep.faces[fi].surface).singular_point() else {
+            continue;
+        };
+        if !r.on_trimmed_face(fi as u32, p) {
+            continue;
+        }
+        if let Some(vid) = r.db.try_insert(p) {
+            r.prov.push(Prov::Corner);
+            r.ball.push(0.0);
+            r.vfaces.push(vec![fi as u32]);
+            debug_assert_eq!(vid + 1, r.prov.len());
+            n_singular += 1;
+        }
+    }
 
     // ---- protect 1-features: sample every edge curve ----------------------
     let t_feat = std::time::Instant::now();
@@ -2783,7 +2810,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         faces,
         surfaces: plc.surfaces.clone(),
         surface_owners: plc.surface_owners.clone(),
-        plc_points: brep.vertices.len(),
+        plc_points: brep.vertices.len() + n_singular,
         point_size,
     };
     rmlog::stat("refine.tets", mesh.tets.len() as f64);

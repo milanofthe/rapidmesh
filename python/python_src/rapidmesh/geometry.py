@@ -1073,6 +1073,7 @@ class Geometry:
         path,
         *,
         crease_deg: float = 40.0,
+        up: str = "z",
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
@@ -1083,8 +1084,10 @@ class Geometry:
         becomes one discrete surface carrier, and the mesher remeshes that
         envelope -- unlike :meth:`mesh_solid`, which freezes the input
         facets verbatim. The file must describe a closed, consistently
-        oriented 2-manifold (validated on import)."""
-        region = self._builder.add_import(str(path), crease_deg, maxh, void)
+        oriented 2-manifold (validated on import). ``up`` names the file's
+        up axis; STL from CAD is conventionally z-up already, a ``"y"``-up
+        model is rotated upright into the project's z-up frame."""
+        region = self._builder.add_import(str(path), crease_deg, up, maxh, void)
         return self._solid(region)
 
     def import_obj(
@@ -1092,13 +1095,16 @@ class Geometry:
         path,
         *,
         crease_deg: float = 40.0,
+        up: str = "y",
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Solid from a Wavefront OBJ file (``v``/``f`` records; polygons
         are fan-triangulated). Same discrete-envelope semantics as
-        :meth:`import_stl`."""
-        region = self._builder.add_import(str(path), crease_deg, maxh, void)
+        :meth:`import_stl` -- but OBJ is conventionally **y-up**, so the
+        default ``up="y"`` rotates the model upright into the project's
+        z-up frame; pass ``up="z"`` for files already authored z-up."""
+        region = self._builder.add_import(str(path), crease_deg, up, maxh, void)
         return self._solid(region)
 
     # ------------------------------------------------------------ sheets

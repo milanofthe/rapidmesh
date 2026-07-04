@@ -319,12 +319,16 @@ impl SceneBuilder {
     /// region becomes one `SurfaceKind::Discrete` carrier (closest-point
     /// projection oracle), and the mesher REMESHES the envelope instead of
     /// freezing the input facets (which is what `add_mesh` does). The file
-    /// must describe a closed, consistently oriented 2-manifold.
-    #[pyo3(signature = (path, crease_deg, maxh=None, void=false))]
+    /// must describe a closed, consistently oriented 2-manifold. `up` names
+    /// the file's up axis ("y" or "z"): a y-up model (the de-facto OBJ
+    /// convention) is rotated +90 degrees about x into the project's z-up
+    /// frame (a proper rotation, so winding and validation are unaffected).
+    #[pyo3(signature = (path, crease_deg, up, maxh=None, void=false))]
     fn add_import(
         &mut self,
         path: &str,
         crease_deg: f64,
+        up: &str,
         maxh: Option<f64>,
         void: bool,
     ) -> PyResult<u32> {
@@ -339,6 +343,19 @@ impl SceneBuilder {
             import_obj_creased(p, crease_deg)
         }
         .map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
+        let f = match up.to_ascii_lowercase().as_str() {
+            "z" => f,
+            // y-up -> z-up: rotate +90 deg about x, (x, y, z) -> (x, -z, y).
+            "y" => f.transformed(
+                [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+                [0.0; 3],
+            ),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "{path}: unknown up axis {other:?} (expected \"y\" or \"z\")"
+                )))
+            }
+        };
         validate_closed(&f).map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
         Ok(self.put(f, maxh, void))
     }

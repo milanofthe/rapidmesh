@@ -229,12 +229,22 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             // agree, and the analytic arm is ~6-8x faster end to end.
             // RAPIDMESH_TRACE_DISCRETE=1 falls back to the tracer (A/B).
             static ANALYTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if d.is_closed()
-                && *ANALYTIC
-                    .get_or_init(|| std::env::var_os("RAPIDMESH_TRACE_DISCRETE").is_none())
+            if !*ANALYTIC
+                .get_or_init(|| std::env::var_os("RAPIDMESH_TRACE_DISCRETE").is_none())
             {
+                return trace_crossings(surf, a, b);
+            }
+            if d.is_closed() {
+                // No rim: facet hits and field crossings agree exactly.
                 discrete_crossings(d, surf, a, b)
             } else {
+                // Open patches stay on the trace. A field-consistency hybrid
+                // (analytic + parity check, tracer fallback on rim-shadow
+                // segments) was measured and REVERTED: paired shadow
+                // crossings are parity-neutral and slip through (fandisk
+                // straddlers 0 -> 7), and the curvature sizing concentrates
+                // segments exactly in the rim zones, so the fallback ate the
+                // speedup (cheburashka 160 s -> 214 s). See task #28.
                 trace_crossings(surf, a, b)
             }
         }
@@ -271,14 +281,10 @@ fn discrete_crossings(
         let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + t * (b[k] - a[k])) };
         let f = |t: f64| -> f64 { signed_offset(surf, at(t)) };
         // Sign probes sit a hair NEXT TO each candidate, not at the far
-        // partition midpoints: a discrete patch is an OPEN surface (it ends
-        // at crease edges), and beyond its shadow `closest` projects onto
-        // the rim, where the offset sign is meaningless -- midpoint probing
-        // there dropped real crossings wholesale (fandisk maxDev 0.60, 752
-        // slivers). Near the pierce point the foot lies inside the pierced
-        // triangle and the sign is sound -- the tracer's dense samples had
-        // exactly that property. delta clamps to half the gap toward the
-        // neighboring candidate/endpoint.
+        // partition midpoints: near the pierce point the projection foot
+        // lies inside the pierced triangle and the offset sign is sound
+        // (the tracer's dense samples have exactly that property). delta
+        // clamps to half the gap toward the neighboring candidate/endpoint.
         const DELTA: f64 = 1e-5;
         let mut out = SmallVec::new();
         for (i, &t) in cand.iter().enumerate() {

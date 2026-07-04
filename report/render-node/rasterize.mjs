@@ -51,6 +51,21 @@ async function renderJob(job) {
   const w = job.width ?? 1500, h = job.height ?? 1230
   const t = ensureTargets(w, h)
   const j = JSON.parse(fs.readFileSync(job.mesh, 'utf8'))
+  // Display-only up-axis fix: a y-up model (the imported reference meshes)
+  // is rotated upright for the IMAGE only -- the mesh file keeps its
+  // authored frame (the mesher shows axis anisotropy, task #30, so the
+  // GEOMETRY is not rotated). (x, y, z) -> (x, -z, y), exact 90deg about x.
+  if (job.upAxis === 'y') {
+    for (const p of j.points) { const y = p[1]; p[1] = -p[2]; p[2] = y }
+    if (Array.isArray(j.defects)) {
+      for (const d of j.defects) {
+        for (const k of ['pos', 'a', 'b']) {
+          const v = d[k]
+          if (Array.isArray(v)) { const y = v[1]; v[1] = -v[2]; v[2] = y }
+        }
+      }
+    }
+  }
   const mesh = adaptMesh(j)
   buildScene(state, mesh, api, {
     clipAxis: job.clipAxis ?? 1, clipT: job.clip ?? null,

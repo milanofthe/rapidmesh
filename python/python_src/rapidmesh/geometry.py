@@ -1095,15 +1095,18 @@ class Geometry:
         path,
         *,
         crease_deg: float = 40.0,
-        up: str = "y",
+        up: str = "z",
         maxh: float | None = None,
         void: bool = False,
     ) -> Solid:
         """Solid from a Wavefront OBJ file (``v``/``f`` records; polygons
         are fan-triangulated). Same discrete-envelope semantics as
-        :meth:`import_stl` -- but OBJ is conventionally **y-up**, so the
-        default ``up="y"`` rotates the model upright into the project's
-        z-up frame; pass ``up="z"`` for files already authored z-up."""
+        :meth:`import_stl`. ``up="y"`` rotates a y-up model (the common OBJ
+        convention) upright into the project's z-up frame -- but note the
+        mesher currently shows axis anisotropy (task #30: identical geometry
+        can mesh markedly worse after an exact 90-degree rotation), so the
+        default keeps the file's own frame and the gallery renders handle
+        the upright DISPLAY instead."""
         region = self._builder.add_import(str(path), crease_deg, up, maxh, void)
         return self._solid(region)
 

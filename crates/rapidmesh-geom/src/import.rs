@@ -123,7 +123,8 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
         }
         x
     }
-    for owners in by_edge.values() {
+    let mut crease: Vec<((u32, u32), [u32; 2])> = Vec::new();
+    for (&(a, b), owners) in &by_edge {
         if owners.len() != 2 {
             continue; // boundary / non-manifold: always a region boundary
         }
@@ -135,6 +136,63 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
             let (ri, rj) = (find(&mut rep, i as u32), find(&mut rep, j as u32));
             if ri != rj {
                 rep[ri.max(rj) as usize] = ri.min(rj);
+            }
+        } else {
+            crease.push(((a, b), [owners[0], owners[1]]));
+        }
+    }
+
+    // NOISE-ROBUST crease filtering: real features form long chains or
+    // closed loops (a CAD model's whole crease network is typically ONE
+    // connected component -- fandisk: 710 edges, 1 component), while scan
+    // noise shatters into short OPEN fragments (cow: 94 of 137 components
+    // have <= 3 edges; armadillo: 500 of 573). A raw dihedral threshold
+    // turns every fragment into a feature curve with protecting balls --
+    // measured at 4.8 HOURS on the 5.8k-facet cow. Open components shorter
+    // than `NOISE_CHAIN_MIN` edges are therefore treated as smooth; closed
+    // loops of any size stay (a tiny loop can be a genuine small feature).
+    const NOISE_CHAIN_MIN: usize = 8;
+    if !crease.is_empty() {
+        crease.sort_unstable(); // deterministic component ids
+        // Connected components of crease edges via shared vertices, plus
+        // per-vertex degree (open component <=> some vertex has degree 1).
+        let mut vfirst: HashMap<u32, u32> = HashMap::new();
+        let mut erep: Vec<u32> = (0..crease.len() as u32).collect();
+        let mut vdeg: HashMap<u32, u32> = HashMap::new();
+        for (ei, &((a, b), _)) in crease.iter().enumerate() {
+            for v in [a, b] {
+                *vdeg.entry(v).or_insert(0) += 1;
+                match vfirst.entry(v) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(ei as u32);
+                    }
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        let (ri, rj) = (find(&mut erep, ei as u32), find(&mut erep, *e.get()));
+                        if ri != rj {
+                            erep[ri.max(rj) as usize] = ri.min(rj);
+                        }
+                    }
+                }
+            }
+        }
+        let mut comp_size: HashMap<u32, usize> = HashMap::new();
+        let mut comp_open: HashMap<u32, bool> = HashMap::new();
+        for ei in 0..crease.len() as u32 {
+            let r = find(&mut erep, ei);
+            *comp_size.entry(r).or_insert(0) += 1;
+            let ((a, b), _) = crease[ei as usize];
+            if vdeg[&a] == 1 || vdeg[&b] == 1 {
+                comp_open.insert(r, true);
+            }
+        }
+        for ei in 0..crease.len() as u32 {
+            let r = find(&mut erep, ei);
+            if comp_size[&r] < NOISE_CHAIN_MIN && comp_open.get(&r).copied().unwrap_or(false) {
+                let [i, j] = crease[ei as usize].1;
+                let (ri, rj) = (find(&mut rep, i), find(&mut rep, j));
+                if ri != rj {
+                    rep[ri.max(rj) as usize] = ri.min(rj);
+                }
             }
         }
     }

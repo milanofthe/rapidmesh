@@ -190,8 +190,14 @@ class _Rasterizer:
             self.proc.kill()
 
 
-def _jobs_for(name: str, kind: str, mp: Path, out_normal: Path, out_debug: Path):
+def _jobs_for(name: str, kind: str, mp: Path, out_normal: Path, out_debug: Path,
+              up: str | None = None):
     base = {"mesh": str(mp), "width": RENDER_W, "height": RENDER_H, "featEdges": False}
+    if up:
+        # Display-only upright fix for y-up imports: the rasterizer rotates
+        # the IMAGE frame; the mesh geometry keeps its authored axes (the
+        # mesher is axis-anisotropic, task #30, so geometry is not rotated).
+        base["upAxis"] = up
     # NORMAL: region-coloured fill (+ interior tet edges on the cutaway for volumes)
     # + surface triangulation. Volumes are clipped so the interior shows.
     normal = {**base, "out": str(out_normal), "clip": 0.55 if kind == "vol" else None,
@@ -262,7 +268,12 @@ def render_corpus(prebuilt: set[str] | None = None, only: set[str] | None = None
                     timings = getattr(m, "timings", None)
                     mp.write_text(json.dumps(vd))
                     del m
-                normal, debug = _jobs_for(name, kind, mp, out / f"{name}.png", dbg / f"{name}.png")
+                normal, debug = _jobs_for(
+                    name, kind, mp, out / f"{name}.png", dbg / f"{name}.png",
+                    # The common-3d-test-models imports are y-up; render them
+                    # upright (display-only, see _jobs_for).
+                    up="y" if _cat == "Import" else None,
+                )
                 ras.render(normal)
                 if ras.render(debug) and (dbg / f"{name}.png").exists():
                     _annotate(dbg / f"{name}.png", name, kind, n, diag, wall, timings)

@@ -109,6 +109,11 @@ pub struct Cdt {
     tris: Vec<[usize; 3]>,
     nbr: Vec<[usize; 3]>,
     alive: Vec<bool>,
+    /// Some alive triangle containing each vertex (`NONE2` if never inserted,
+    /// e.g. a dropped duplicate). Refreshed on every triangle write, so the
+    /// star walk (`star`) replaces the full-mesh scans that made constraint
+    /// forcing O(segments * triangles).
+    vert_hint: Vec<usize>,
 }
 
 impl Cdt {
@@ -135,6 +140,10 @@ impl Cdt {
         let mut tris: Vec<[usize; 3]> = vec![ccw([s0, s1, s2], &pts)];
         let mut nbr: Vec<[usize; 3]> = vec![[NONE2; 3]];
         let mut alive: Vec<bool> = vec![true];
+        let mut vert_hint: Vec<usize> = vec![NONE2; n + 3];
+        for v in [s0, s1, s2] {
+            vert_hint[v] = 0;
+        }
         let mut free: Vec<usize> = Vec::new();
         let mut mark: Vec<u32> = vec![0];
         let mut epoch = 0u32;
@@ -210,11 +219,97 @@ impl Cdt {
                 // edge 1 = (b,i), edge 2 = (i,a): internal cavity edges.
                 link_pedge(&mut edge_map, &mut nbr, slot, 1, b, i);
                 link_pedge(&mut edge_map, &mut nbr, slot, 2, i, a);
+                // Every cavity-boundary vertex (and p) reappears in the fan,
+                // so refreshing hints here keeps them valid for all vertices.
+                vert_hint[a] = slot;
+                vert_hint[b] = slot;
+                vert_hint[i] = slot;
                 last_new = slot;
             }
             last = last_new;
         }
-        Cdt { pts, n, tris, nbr, alive }
+        Cdt { pts, n, tris, nbr, alive, vert_hint }
+    }
+
+    /// All alive triangles containing `v`, walked through the neighbour
+    /// pointers from the vertex hint (`None` if the vertex never entered the
+    /// triangulation, e.g. a dropped exact duplicate). The star of a vertex is
+    /// edge-connected, so the local walk enumerates it completely -- O(degree)
+    /// instead of the full-mesh scan.
+    fn star(&self, v: usize, out: &mut Vec<usize>) -> bool {
+        out.clear();
+        let seed = self.vert_hint[v];
+        if seed == NONE2 || !self.alive[seed] || !self.tris[seed].contains(&v) {
+            debug_assert!(seed == NONE2, "stale vertex hint for {v}");
+            return false;
+        }
+        out.push(seed);
+        let mut head = 0;
+        while head < out.len() {
+            let t = out[head];
+            head += 1;
+            let i = self.tris[t].iter().position(|&w| w == v).expect("star triangle holds v");
+            // The two edges incident to v: slot i = (v, next), slot i+2 = (prev, v).
+            for e in [i, (i + 2) % 3] {
+                let nb = self.nbr[t][e];
+                if nb != NONE2 && !out.contains(&nb) {
+                    debug_assert!(self.alive[nb] && self.tris[nb].contains(&v));
+                    out.push(nb);
+                }
+            }
+        }
+        true
+    }
+
+    /// Builds the CONSTRAINED Delaunay of `points`: every segment forced as a
+    /// mesh edge (Sloan 1993), then the Delaunay property restored on the free
+    /// edges. Returns the LIVE structure plus the recorded constraint set, so
+    /// incremental consumers (the mesh smoother) can move points and re-restore
+    /// locally instead of re-triangulating from scratch.
+    pub fn new_constrained(
+        points: &[P2],
+        segments: &[(usize, usize)],
+    ) -> (Cdt, DSet<(usize, usize)>) {
+        let mut cdt = Cdt::new(points);
+        let mut constraints: DSet<(usize, usize)> = DSet::default();
+        for &(a, b) in segments {
+            cdt.force_edge(a, b, &mut constraints);
+        }
+        cdt.restore_delaunay(&constraints);
+        (cdt, constraints)
+    }
+
+    /// [`Cdt::triangles`] filtered by the region membership of the centroid:
+    /// the conforming triangulation of the face (exterior + holes dropped).
+    pub fn kept_triangles(&self, inside: impl Fn(P2) -> bool) -> Vec<[usize; 3]> {
+        self.triangles()
+            .into_iter()
+            .filter(|t| {
+                let c = [
+                    (self.pts[t[0]][0] + self.pts[t[1]][0] + self.pts[t[2]][0]) / 3.0,
+                    (self.pts[t[0]][1] + self.pts[t[1]][1] + self.pts[t[2]][1]) / 3.0,
+                ];
+                inside(c)
+            })
+            .collect()
+    }
+
+    /// Position of vertex `i` (real or super).
+    pub fn point(&self, i: usize) -> P2 {
+        self.pts[i]
+    }
+
+    /// Moves vertex `i` in place. The caller guarantees the move keeps every
+    /// incident alive triangle positively oriented (guarded moves); Delaunayness
+    /// is repaired afterwards via [`Cdt::restore`].
+    pub fn set_point(&mut self, i: usize, p: P2) {
+        self.pts[i] = p;
+    }
+
+    /// Restores the Delaunay property on non-constraint edges by local flips
+    /// (Lawson) -- the incremental repair after guarded point moves.
+    pub fn restore(&mut self, constraints: &DSet<(usize, usize)>) {
+        self.restore_delaunay(constraints);
     }
 
     /// Alive triangles whose three vertices are all real (super-triangle and its
@@ -271,6 +366,11 @@ impl Cdt {
         // (p,y) moves nn->t.
         self.relink(n_qx, t, nn);
         self.relink(n_py, nn, t);
+        // Hints: p lives only in t now, q only in nn; x and y are in both.
+        self.vert_hint[p] = t;
+        self.vert_hint[x] = t;
+        self.vert_hint[y] = nn;
+        self.vert_hint[q] = nn;
     }
 
     /// Is edge `e=(p,q)` of triangle `t` (interior, with neighbour) flippable,
@@ -309,31 +409,28 @@ impl Cdt {
     }
 
     /// True iff the (undirected) edge `(a,b)` is already an edge of some alive
-    /// triangle.
+    /// triangle. O(degree) via the star of `a`.
     fn has_edge(&self, a: usize, b: usize) -> bool {
-        self.tris.iter().enumerate().any(|(t, tv)| {
-            self.alive[t]
-                && (0..3).any(|e| {
-                    let (u, v) = (tv[e], tv[(e + 1) % 3]);
-                    (u == a && v == b) || (u == b && v == a)
-                })
-        })
+        let mut star = Vec::new();
+        if !self.star(a, &mut star) {
+            return false; // `a` never entered the triangulation
+        }
+        star.iter().any(|&t| self.tris[t].contains(&b))
     }
 
     /// Collects the interior edges `(t, e)` that segment `(a,b)` properly crosses,
     /// by walking triangles from `a` toward `b`. Returns `None` if a third vertex
     /// lies exactly on the segment (the caller then splits the constraint there).
     fn crossing_edges(&self, a: usize, b: usize) -> Option<Vec<(usize, usize)>> {
-        // Start triangle: one incident to `a` whose opposite edge is crossed.
+        // Start triangle: the one in `a`'s star whose opposite edge is crossed
+        // (O(degree), not a full-mesh scan).
+        let mut astar = Vec::new();
+        if !self.star(a, &mut astar) {
+            return None;
+        }
         let mut start = None;
-        for t in 0..self.tris.len() {
-            if !self.alive[t] {
-                continue;
-            }
-            let k = match (0..3).find(|&k| self.tris[t][k] == a) {
-                Some(k) => k,
-                None => continue,
-            };
+        for &t in &astar {
+            let k = self.tris[t].iter().position(|&w| w == a).expect("star triangle holds a");
             let (c, d) = (self.tris[t][(k + 1) % 3], self.tris[t][(k + 2) % 3]);
             if self.proper_cross(a, b, c, d) {
                 start = Some((t, (k + 1) % 3)); // edge (c,d) = slot k+1
@@ -526,22 +623,8 @@ pub fn triangulate_constrained(
     if points.len() < 3 {
         return Vec::new();
     }
-    let mut cdt = Cdt::new(points);
-    let mut constraints: DSet<(usize, usize)> = DSet::default();
-    for &(a, b) in segments {
-        cdt.force_edge(a, b, &mut constraints);
-    }
-    cdt.restore_delaunay(&constraints);
-    cdt.triangles()
-        .into_iter()
-        .filter(|t| {
-            let c = [
-                (points[t[0]][0] + points[t[1]][0] + points[t[2]][0]) / 3.0,
-                (points[t[0]][1] + points[t[1]][1] + points[t[2]][1]) / 3.0,
-            ];
-            inside(c)
-        })
-        .collect()
+    let (cdt, _constraints) = Cdt::new_constrained(points, segments);
+    cdt.kept_triangles(inside)
 }
 
 /// Interior angles (degrees) at each vertex of triangle (a, b, c).
@@ -605,13 +688,19 @@ pub fn refine_quality_with(
 ) {
     let diam2 = |b: &[P2], u: usize, v: usize| 0.25 * dist2(b[u], b[v]);
     let mid = |b: &[P2], u: usize, v: usize| [0.5 * (b[u][0] + b[v][0]), 0.5 * (b[u][1] + b[v][1])];
-    for _ in 0..max_passes {
+    // Per-pass stage timing (RAPIDMESH_2D_TRACE): rebuild / criteria / apply.
+    static TRACE2D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let trace = *TRACE2D.get_or_init(|| std::env::var_os("RAPIDMESH_2D_TRACE").is_some());
+    for pass in 0..max_passes {
+        let t0 = std::time::Instant::now();
         let mut all = boundary.clone();
         all.extend_from_slice(interior);
         let tris = triangulate_constrained(&all, segments, &inside);
+        let t_tri = t0.elapsed();
         on_pass(&all, &tris);
         let mut split: Vec<usize> = Vec::new();
         let mut inserts: Vec<P2> = Vec::new();
+        let t1 = std::time::Instant::now();
 
         // Edge -> the opposite apex of each incident triangle. A constrained
         // segment can only be encroached by a vertex VISIBLE to it, i.e. an apex
@@ -656,6 +745,32 @@ pub fn refine_quality_with(
         if split.is_empty() {
             let cur = tris.len();
             let mut cand: Vec<(f64, P2)> = Vec::new();
+            // Segment lookup grid for the circumcentre encroachment test below:
+            // every segment registers the cells its DIAMETRAL DISK overlaps, so a
+            // candidate reads exactly one cell and tests only nearby segments --
+            // the per-candidate all-segments scan was O(triangles * segments) per
+            // pass, the refinement's remaining quadratic hot spot.
+            let seg_cell = {
+                let mean: f64 = segments
+                    .iter()
+                    .map(|&(u, v)| dist2(boundary[u], boundary[v]).sqrt())
+                    .sum::<f64>()
+                    / segments.len().max(1) as f64;
+                mean.max(1e-12)
+            };
+            let skey = |p: P2| ((p[0] / seg_cell).floor() as i64, (p[1] / seg_cell).floor() as i64);
+            let mut seg_grid: rustc_hash::FxHashMap<(i64, i64), Vec<u32>> =
+                rustc_hash::FxHashMap::default();
+            for (si, &(u, v)) in segments.iter().enumerate() {
+                let m = mid(boundary, u, v);
+                let r = diam2(boundary, u, v).sqrt();
+                let (lo, hi) = (skey([m[0] - r, m[1] - r]), skey([m[0] + r, m[1] + r]));
+                for cx in lo.0..=hi.0 {
+                    for cy in lo.1..=hi.1 {
+                        seg_grid.entry((cx, cy)).or_default().push(si as u32);
+                    }
+                }
+            }
             for t in &tris {
                 let p = [all[t[0]], all[t[1]], all[t[2]]];
                 let a = tri_angles(p[0], p[1], p[2]);
@@ -675,16 +790,20 @@ pub fn refine_quality_with(
                 // diametral circle. A refinable segment is split; a PROTECTED one
                 // makes us drop the insert -- jamming a point against a fixed edge
                 // is exactly what seeds the boundary slivers, so we leave the
-                // (mildly bad) triangle rather than make it worse.
+                // (mildly bad) triangle rather than make it worse. A disk
+                // containing `cc` registered `cc`'s cell, so one lookup is exact.
                 let mut split_seg = None;
                 let mut hits_protected = false;
-                for (si, &(u, v)) in segments.iter().enumerate() {
-                    if dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v) {
-                        if refinable[si] {
-                            split_seg = Some(si);
-                            break;
+                if let Some(list) = seg_grid.get(&skey(cc)) {
+                    for &si in list {
+                        let (u, v) = segments[si as usize];
+                        if dist2(cc, mid(boundary, u, v)) < diam2(boundary, u, v) {
+                            if refinable[si as usize] {
+                                split_seg = Some(si as usize);
+                                break;
+                            }
+                            hits_protected = true;
                         }
-                        hits_protected = true;
                     }
                 }
                 if let Some(si) = split_seg {
@@ -777,11 +896,25 @@ pub fn refine_quality_with(
                 }
             }
         }
+        if trace {
+            eprintln!(
+                "2D pass {pass}: tris {} segs {} pts {}  rebuild {:.3}s criteria+apply {:.3}s",
+                tris.len(),
+                segments.len(),
+                all.len(),
+                t_tri.as_secs_f64(),
+                t1.elapsed().as_secs_f64()
+            );
+        }
     }
     // The Ruppert refinement met the angle bound but left the elements uneven;
     // relax the whole mesh (interior freely, the outline sliding) to convergence for
     // near-equilateral, gmsh-grade shape.
+    let t_sm = std::time::Instant::now();
     smooth_mesh(boundary, segments, interior, &inside, &target, min_angle_deg, 50);
+    if trace {
+        eprintln!("2D smooth: {:.3}s", t_sm.elapsed().as_secs_f64());
+    }
 }
 
 /// Sizing-field-driven Ruppert/Chew refinement (see [`refine_quality_with`])
@@ -869,11 +1002,19 @@ fn smooth_mesh(
         })
         .collect();
 
+    // ONE live constrained triangulation for the whole smoothing: guarded
+    // point moves keep every incident triangle exactly CCW, and a local
+    // Lawson pass (`restore`) repairs Delaunayness after each sweep -- the
+    // full re-triangulation per iteration (constraint forcing included) was
+    // the smoother's dominant, superlinear cost.
+    let mut all: Vec<P2> = boundary.to_vec();
+    all.extend_from_slice(interior);
+    let (mut cdt, constraints) = Cdt::new_constrained(&all, segments);
+    let mut star: Vec<usize> = Vec::new();
+
     const RELAX: f64 = 0.9;
     for _ in 0..max_iters {
-        let mut all: Vec<P2> = boundary.to_vec();
-        all.extend_from_slice(interior);
-        let tris = triangulate_constrained(&all, segments, &inside);
+        let tris = cdt.kept_triangles(&inside);
         let mut incident: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
         for (ti, t) in tris.iter().enumerate() {
             for &i in t {
@@ -881,7 +1022,8 @@ fn smooth_mesh(
             }
         }
         let mut max_rel = 0.0f64;
-        // Gauss-Seidel: each vertex relaxes against the latest positions of its neighbours.
+        // Gauss-Seidel: each vertex relaxes against the latest positions of its
+        // neighbours (read live from the triangulation).
         for i in 0..all.len() {
             let tang = if i < nb {
                 match tangent[i] {
@@ -899,7 +1041,7 @@ fn smooth_mesh(
             let (mut num, mut den, mut hmin) = ([0.0f64; 2], 0.0f64, f64::INFINITY);
             for &ti in &incident[i] {
                 let t = tris[ti];
-                let (a, b, c) = (all[t[0]], all[t[1]], all[t[2]]);
+                let (a, b, c) = (cdt.point(t[0]), cdt.point(t[1]), cdt.point(t[2]));
                 // DENSITY-weighted ODT: weight by area · ρ, ρ = 1/h² from the sizing field at the
                 // triangle centroid. Plain area weighting equidistributes to UNIFORM size and so
                 // fights a graded field at the fine↔coarse transitions (skewed elements); weighting
@@ -908,8 +1050,8 @@ fn smooth_mesh(
                 let cen = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0];
                 let h = target(cen).max(1e-12);
                 let w = 0.5 * sarea2(a, b, c).abs() / (h * h);
-                num[0] += w * (a[0] + b[0] + c[0] - all[i][0]);
-                num[1] += w * (a[1] + b[1] + c[1] - all[i][1]);
+                num[0] += w * (a[0] + b[0] + c[0] - cdt.point(i)[0]);
+                num[1] += w * (a[1] + b[1] + c[1] - cdt.point(i)[1]);
                 den += w;
                 for (u, v) in [(a, b), (b, c), (c, a)] {
                     hmin = hmin.min((u[0] - v[0]).powi(2) + (u[1] - v[1]).powi(2));
@@ -918,29 +1060,43 @@ fn smooth_mesh(
             if den <= 0.0 {
                 continue;
             }
-            let target = [num[0] / (2.0 * den), num[1] / (2.0 * den)];
-            let mut delta = [target[0] - all[i][0], target[1] - all[i][1]];
+            let cur = cdt.point(i);
+            let opt = [num[0] / (2.0 * den), num[1] / (2.0 * den)];
+            let mut delta = [opt[0] - cur[0], opt[1] - cur[1]];
             if let Some(t) = tang {
                 let dp = delta[0] * t[0] + delta[1] * t[1]; // keep only the along-edge component
                 delta = [dp * t[0], dp * t[1]];
             }
-            let cand = [all[i][0] + RELAX * delta[0], all[i][1] + RELAX * delta[1]];
+            let cand = [cur[0] + RELAX * delta[0], cur[1] + RELAX * delta[1]];
             if i >= nb && !inside(cand) {
                 continue;
             }
+            // Quality gate on the KEPT triangles (as before), plus the exact
+            // CCW guard over the FULL star (exterior/hole triangles included):
+            // the live structure's flip invariants need every alive triangle
+            // to stay positively oriented, not just the in-domain ones.
             let ok = incident[i].iter().all(|&ti| {
                 let t = tris[ti];
-                let q: [P2; 3] = std::array::from_fn(|j| if t[j] == i { cand } else { all[t[j]] });
-                let base = sarea2(all[t[0]], all[t[1]], all[t[2]]);
+                let q: [P2; 3] =
+                    std::array::from_fn(|j| if t[j] == i { cand } else { cdt.point(t[j]) });
                 let a = tri_angles(q[0], q[1], q[2]);
-                sarea2(q[0], q[1], q[2]).signum() == base.signum()
-                    && a[0].min(a[1]).min(a[2]) >= min_angle_deg
-            });
+                a[0].min(a[1]).min(a[2]) >= min_angle_deg
+            }) && {
+                cdt.star(i, &mut star)
+                    && star.iter().all(|&ti| {
+                        let t = cdt.tris[ti];
+                        let q: [P2; 3] = std::array::from_fn(|j| {
+                            if t[j] == i { cand } else { cdt.point(t[j]) }
+                        });
+                        orient(q[0], q[1], q[2]) == Sign::Positive
+                    })
+            };
             if ok {
-                let mv2 = (cand[0] - all[i][0]).powi(2) + (cand[1] - all[i][1]).powi(2);
+                let mv2 = (cand[0] - cur[0]).powi(2) + (cand[1] - cur[1]).powi(2);
                 if hmin.is_finite() && hmin > 0.0 {
                     max_rel = max_rel.max(mv2 / hmin);
                 }
+                cdt.set_point(i, cand);
                 all[i] = cand;
             }
         }
@@ -949,6 +1105,8 @@ fn smooth_mesh(
         if max_rel < 1e-6 {
             break; // converged: largest move < 0.1 % of the local edge length
         }
+        // Local Delaunay repair (flips only) before the next sweep.
+        cdt.restore(&constraints);
     }
 }
 
@@ -1104,26 +1262,80 @@ fn grid_clear(
     true
 }
 
-/// Even-odd point-in-contours test: inside the outer loop, outside the holes.
-fn pip_loops(p: P2, loops: &[Vec<P2>]) -> bool {
-    let mut inside = false;
-    for lp in loops {
-        let n = lp.len();
-        if n < 3 {
-            continue;
+/// Even-odd point-in-contours test over ROW-BUCKETED loop edges. Same
+/// crossing rule and per-edge arithmetic as the classic even-odd scan (so the
+/// answers are bit-identical), but a query only touches the edges whose
+/// y-interval intersects its row -- the linear all-loops scan per `inside`
+/// query was THE canvas-scale hot spot (every triangle filter, CVT candidate
+/// and smoothing gate pays one query; with mesh_layers packing every patch
+/// into one canvas, each query scanned the whole layout's outline).
+struct PipRows {
+    y0: f64,
+    cell: f64,
+    rows: Vec<Vec<(P2, P2)>>,
+}
+
+impl PipRows {
+    fn build(loops: &[Vec<P2>]) -> PipRows {
+        let (mut ylo, mut yhi, mut len_sum, mut n_edges) = (f64::INFINITY, f64::NEG_INFINITY, 0.0, 0usize);
+        for lp in loops {
+            let n = lp.len();
+            if n < 3 {
+                continue;
+            }
+            for i in 0..n {
+                let (a, b) = (lp[i], lp[(i + 1) % n]);
+                ylo = ylo.min(a[1]);
+                yhi = yhi.max(a[1]);
+                len_sum += dist2(a, b).sqrt();
+                n_edges += 1;
+            }
         }
-        let mut j = n - 1;
-        for i in 0..n {
-            let (a, b) = (lp[i], lp[j]);
+        if n_edges == 0 || !(yhi > ylo) {
+            return PipRows { y0: 0.0, cell: 1.0, rows: Vec::new() };
+        }
+        // Row height ~ the mean edge length: short (h-sized) boundary edges land
+        // in one or two rows; the row count stays bounded for huge canvases.
+        let cell = (len_sum / n_edges as f64).max((yhi - ylo) / 4096.0).max(1e-12);
+        let nrows = (((yhi - ylo) / cell).ceil() as usize + 1).max(1);
+        let mut rows: Vec<Vec<(P2, P2)>> = vec![Vec::new(); nrows];
+        let row_of = |y: f64| (((y - ylo) / cell).floor() as i64).clamp(0, nrows as i64 - 1) as usize;
+        for lp in loops {
+            let n = lp.len();
+            if n < 3 {
+                continue;
+            }
+            for i in 0..n {
+                let (a, b) = (lp[i], lp[(i + 1) % n]);
+                let (r0, r1) = (row_of(a[1].min(b[1])), row_of(a[1].max(b[1])));
+                for row in rows.iter_mut().take(r1 + 1).skip(r0) {
+                    row.push((a, b));
+                }
+            }
+        }
+        PipRows { y0: ylo, cell, rows }
+    }
+
+    /// Even-odd membership of `p` (inside the outer loop, outside the holes).
+    fn inside(&self, p: P2) -> bool {
+        if self.rows.is_empty() {
+            return false;
+        }
+        let r = ((p[1] - self.y0) / self.cell).floor();
+        if r < 0.0 || r >= self.rows.len() as f64 {
+            return false; // outside the loops' y-range entirely
+        }
+        let mut inside = false;
+        for &(a, b) in &self.rows[r as usize] {
+            // Identical crossing rule to the classic scan (half-open in y).
             if ((a[1] > p[1]) != (b[1] > p[1]))
                 && (p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0])
             {
                 inside = !inside;
             }
-            j = i;
         }
+        inside
     }
-    inside
 }
 
 /// Squared distance from point `p` to segment `a`-`b`.
@@ -1196,8 +1408,9 @@ pub fn mesh_polygon(
             segments.push((base + i, base + (i + 1) % n));
         }
     }
+    let pip = PipRows::build(loops);
     mesh_constrained(
-        boundary, segments, target, |p| pip_loops(p, loops),
+        boundary, segments, target, |p| pip.inside(p),
         params.step, params.min_angle_deg, params.target_count, params.cvt_iters, params.max_passes, on_pass,
     )
 }
@@ -1241,11 +1454,50 @@ pub fn mesh_constrained(
     let mut interior = cvt_fill(&boundary, lo, hi, step, &target, cvt_iters, &inside, true);
     // cvt_fill clears boundary POINTS but not boundary EDGES, so a seed can land
     // just under a contour segment and form a flat boundary triangle. Drop seeds
-    // closer than ~half the local size to any segment.
-    interior.retain(|&p| {
-        let r2 = (0.5 * target(p)).powi(2);
-        !segments.iter().any(|&(u, v)| pt_seg_dist2(p, boundary[u], boundary[v]) < r2)
-    });
+    // closer than ~half the local size to any segment. Segments live in a
+    // uniform grid over their own AABBs; each seed scans only the cells its
+    // clearance ball overlaps (the all-segments scan was O(seeds * segments)).
+    {
+        let seg_cell = {
+            let mean: f64 = segments
+                .iter()
+                .map(|&(u, v)| dist2(boundary[u], boundary[v]).sqrt())
+                .sum::<f64>()
+                / segments.len().max(1) as f64;
+            mean.max(1e-12)
+        };
+        let skey = |p: P2| ((p[0] / seg_cell).floor() as i64, (p[1] / seg_cell).floor() as i64);
+        let mut seg_grid: rustc_hash::FxHashMap<(i64, i64), Vec<u32>> =
+            rustc_hash::FxHashMap::default();
+        for (si, &(u, v)) in segments.iter().enumerate() {
+            let (a, b) = (boundary[u], boundary[v]);
+            let lo = skey([a[0].min(b[0]), a[1].min(b[1])]);
+            let hi = skey([a[0].max(b[0]), a[1].max(b[1])]);
+            for cx in lo.0..=hi.0 {
+                for cy in lo.1..=hi.1 {
+                    seg_grid.entry((cx, cy)).or_default().push(si as u32);
+                }
+            }
+        }
+        interior.retain(|&p| {
+            let r = 0.5 * target(p);
+            let r2 = r * r;
+            let (clo, chi) = (skey([p[0] - r, p[1] - r]), skey([p[0] + r, p[1] + r]));
+            for cx in clo.0..=chi.0 {
+                for cy in clo.1..=chi.1 {
+                    if let Some(list) = seg_grid.get(&(cx, cy)) {
+                        for &si in list {
+                            let (u, v) = segments[si as usize];
+                            if pt_seg_dist2(p, boundary[u], boundary[v]) < r2 {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            true
+        });
+    }
     // The boundary is PROTECTED (caller pre-samples it): Ruppert refines the
     // interior but never re-splits a contour edge, so no boundary spikes.
     let mut refin = vec![false; segments.len()];

@@ -22,3 +22,7 @@ i_overlay = { version = "1.9", optional = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "bench2d"
+required-features = ["mesher"]

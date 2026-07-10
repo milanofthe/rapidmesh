@@ -30,8 +30,15 @@ import rapidmesh as rm  # noqa: E402
 def _assert_fresh_binding():
     import glob as _glob
     import os as _os
+    # Windows builds a .pyd, macOS/Linux a .so (abi3) -- glob both, else the
+    # guard reads "no module" as mtime 0 and always refuses on unix.
+    _dir = _os.path.dirname(rm.__file__)
     pyd = max(
-        (_os.path.getmtime(f) for f in _glob.glob(_os.path.join(_os.path.dirname(rm.__file__), "*.pyd"))),
+        (
+            _os.path.getmtime(f)
+            for pat in ("*.pyd", "*.so", "*.dylib")
+            for f in _glob.glob(_os.path.join(_dir, pat))
+        ),
         default=0.0,
     )
     newest_rs = max(

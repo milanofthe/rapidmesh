@@ -449,8 +449,9 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
 /// Meshes a tagged PLC into a conforming, region-tagged tet mesh, refined to
 /// the given sizing and quality targets (best effort under
 /// `params.max_points`). Delegates to the restricted-Delaunay refinement core
-/// (`docs/refinement-core.md`); the frozen-surface CVT path remains available
-/// as [`crate::cvt::mesh_cdt`] during the migration.
+/// (`docs/refinement-core.md`) -- THE volume engine; every entry point
+/// (`mesh_budgeted`, `rapidmesh_topo::mesh_3d`, the Python binding) routes
+/// through here.
 pub fn mesh_plc_with(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     crate::refine::mesh_refine(plc, params)
 }

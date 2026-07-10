@@ -10,36 +10,17 @@
 //! `-geom`, `-csg`) stay there -- the dependency direction forbids one file across
 //! crates, and they are not mesher tuning knobs.
 
-// ---- surface vs volume sampling -------------------------------------------
-/// The unified surface is meshed FINER than the volume by this factor, so the
-/// restricted-Delaunay boundary recovers cleanly and volume tets cannot straddle
-/// the exact PLC boundary (surface size = `OVERSAMPLE * H`, volume at `H`).
-pub(crate) const OVERSAMPLE: f64 = 0.7;
-/// Old-path surface oversampling for the (retired) restricted-readback mesher.
+// ---- surface sampling ------------------------------------------------------
+/// Surface oversampling of the chart/patch surface path (`surface_mesh`).
 pub(crate) const SURFACE_OVERSAMPLE: f64 = 0.5;
 
-// ---- Lloyd / CVT relaxation -----------------------------------------------
-/// Volume 3D Lloyd passes (relax interior sites to their CVT layout).
-pub(crate) const LLOYD_ITERS: usize = 8;
-/// Lloyd converges when the largest site move drops below this fraction of the
-/// spacing (and nothing new was inserted).
-pub(crate) const LLOYD_CONVERGE_FRAC: f64 = 0.02;
-/// Adaptive Lloyd termination: once no new seeds are being inserted, stop after
-/// this many consecutive passes that fail to shed any further interior slivers
-/// (the layout has plateaued; the geometric `max_move` criterion almost never
-/// bites, so this quality plateau is what actually ends easy geometries early).
-pub(crate) const LLOYD_QUALITY_STALL: usize = 2;
+// ---- 2D surface Lloyd ------------------------------------------------------
 /// 2D surface Lloyd passes for a planar/chart face (`cvt_fill`).
 pub(crate) const SURF_LLOYD_ITERS: usize = 4;
 
 // ---- seeding / domain bounds ----------------------------------------------
 /// Fallback base subdivision of the bbox diagonal when no finite size cap exists.
 pub(crate) const DEFAULT_SUBDIV: f64 = 8.0;
-/// Relative bbox padding for the inside/classification triangle boxes.
-pub(crate) const BOX_PAD_FRAC: f64 = 1e-6;
-/// Interior-seed separation as a fraction of the local size (no sliver seeds).
-pub(crate) const SEPARATION_FRAC: f64 = 0.45;
-
 // ---- quality diagnostics --------------------------------------------------
 /// A tet whose smallest dihedral angle is below this (degrees) is a sliver.
 pub const SLIVER_DEG: f64 = 10.0;

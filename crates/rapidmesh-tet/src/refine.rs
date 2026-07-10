@@ -1589,7 +1589,7 @@ impl<'a> Refiner<'a> {
 }
 
 /// Meshes a tagged PLC by restricted-Delaunay refinement (the refinement-core
-/// path). Same output schema as [`crate::cvt::mesh_cdt`], so downstream
+/// path) -- THE volume engine (every entry point routes here), so downstream
 /// (optimize / topo / python) is unchanged.
 pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     use rapidmesh_exact::log as rmlog;

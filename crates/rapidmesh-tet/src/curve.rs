@@ -100,15 +100,6 @@ impl Curve for PolylineCurve {
     }
 }
 
-/// Distributes points along `curve` and returns their arc-length parameters
-/// (always including the endpoints `0` and `length`). The local target size is
-/// `h(s) = min(maxh, radius(s)*sqrt(8*deflection))`, smoothed by a multiplicative
-/// gradient limit so adjacent elements differ by at most the ratio `1 + grad`.
-/// Points sit at equal increments of the cumulative density `integral 1/h`.
-pub fn distribute(curve: &dyn Curve, deflection: f64, maxh: f64, grad: f64) -> Vec<f64> {
-    distribute_floored(curve, deflection, maxh, grad, 0.0)
-}
-
 /// [`distribute`] with a hard size FLOOR: a curvature-radius spike (the sharp
 /// turn of an intersection curve, a micro-rim) may not drive the sampling below
 /// `minh` -- the local-feature-size clamp of the refinement path. `0` = off.
@@ -203,7 +194,7 @@ mod tests {
         let r = 2.0;
         let delta = 0.02;
         let c = circle(r, 2000);
-        let s = distribute(&c, delta, 100.0, 0.3);
+        let s = distribute_floored(&c, delta, 100.0, 0.3, 0.0);
         // Expected element length ~ R*sqrt(8*delta); count ~ circumference / h.
         let h = r * (8.0 * delta).sqrt();
         let expect = (2.0 * PI * r / h).round() as usize;
@@ -223,7 +214,7 @@ mod tests {
     fn straight_edge_uses_maxh() {
         let pts: Vec<V3> = (0..=50).map(|i| [i as f64 / 50.0 * 10.0, 0.0, 0.0]).collect();
         let c = PolylineCurve::new(&pts).unwrap();
-        let s = distribute(&c, 0.02, 1.0, 0.3);
+        let s = distribute_floored(&c, 0.02, 1.0, 0.3, 0.0);
         let n = s.len() - 1;
         assert_eq!(n, 10, "10 elements of maxh=1 on a length-10 line, got {n}");
     }
@@ -246,7 +237,7 @@ mod tests {
             pts.push([i as f64 / 100.0 * 5.0, 0.0, 0.0]); // arm away
         }
         let c = PolylineCurve::new(&pts).unwrap();
-        let s = distribute(&c, 0.02, 1.0, 0.3);
+        let s = distribute_floored(&c, 0.02, 1.0, 0.3, 0.0);
         let spc: Vec<f64> = s.windows(2).map(|w| w[1] - w[0]).collect();
         // No adjacent pair jumps by more than ~ (1+grad) plus a sampling margin.
         let mut worst = 1.0f64;

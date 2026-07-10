@@ -55,10 +55,6 @@ pub const CREASE_DEG: f64 = 40.0;
 /// Builds a [`Faceted`] from raw triangles: drops exactly degenerate facets,
 /// groups the rest into smooth regions at crease edges (`crease_deg`), and
 /// gives every region ONE [`SurfaceKind::Discrete`] carrier.
-fn faceted_from_tris(tris: Vec<Tri>) -> Faceted {
-    faceted_from_tris_creased(tris, CREASE_DEG)
-}
-
 fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
     let tris: Vec<Tri> = tris
         .into_iter()
@@ -406,7 +402,7 @@ pub fn import_obj_creased(path: &Path, crease_deg: f64) -> Result<Faceted, Impor
     if tris.is_empty() {
         return Err(ImportError::Parse("no faces found".to_string()));
     }
-    Ok(faceted_from_tris(tris))
+    Ok(faceted_from_tris_creased(tris, crease_deg))
 }
 
 // ---------------------------------------------------------- validation

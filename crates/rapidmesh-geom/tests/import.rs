@@ -2,7 +2,9 @@
 //! and meshing an imported solid end to end at the geom level (Scene
 //! assembly).
 
-use rapidmesh_geom::{import_obj, import_stl, solid_box, validate_closed, ImportError, Scene};
+use rapidmesh_geom::{
+    import_obj, import_obj_creased, import_stl, solid_box, validate_closed, ImportError, Scene,
+};
 use std::io::Write as _;
 use std::path::PathBuf;
 
@@ -127,6 +129,40 @@ f -8/1/1 -4/2/2 -1/3/3 -5/4/4
     let f = import_obj(&path).expect("import");
     assert_eq!(f.tris.len(), 12);
     validate_closed(&f).expect("closed");
+}
+
+/// REGRESSION: `import_obj_creased` must actually apply the passed crease
+/// threshold (it silently used the 40-degree default before). A cube's edges
+/// turn by 90 degrees: below-threshold (120) they merge into ONE smooth
+/// region, above-threshold (40) they split into one region per face.
+#[test]
+fn obj_crease_threshold_is_applied() {
+    let obj = b"\
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+v 0 0 1
+v 1 0 1
+v 1 1 1
+v 0 1 1
+f 1 4 3 2
+f 5 6 7 8
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 4 1 5 8
+";
+    let path = temp_file("crease_cube.obj", obj);
+    let sharp = import_obj_creased(&path, 40.0).expect("import");
+    let smooth = import_obj_creased(&path, 120.0).expect("import");
+    assert_eq!(smooth.surfaces.len(), 1, "120 deg threshold merges the cube into one region");
+    assert!(
+        sharp.surfaces.len() > smooth.surfaces.len(),
+        "40 deg threshold must split at the 90-degree edges ({} vs {})",
+        sharp.surfaces.len(),
+        smooth.surfaces.len()
+    );
 }
 
 #[test]

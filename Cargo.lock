@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-brep"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-csg"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "geometry-predicates",
  "num-bigint",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-exact"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "geometry-predicates",
  "num-bigint",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-geom"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "num-rational",
  "num-traits",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-testutil"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "num-bigint",
  "num-rational",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-tet"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "geometry-predicates",
  "num-rational",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-topo"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "i_overlay",
  "rapidmesh-geom",

@@ -679,7 +679,7 @@ mod tests {
         let b = Region2D::new(vec![[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]], 2);
         let m = mesh_2d(&[a, b], |_p| 0.34, &Mesh2DOptions::default());
         assert_eq!(n_components(&m), 1, "abutting regions must weld into one component");
-        assert!(m.tri_tags.iter().any(|&t| t == 1) && m.tri_tags.iter().any(|&t| t == 2), "both tags kept");
+        assert!(m.tri_tags.contains(&1) && m.tri_tags.contains(&2), "both tags kept");
         let area: f64 = m.geom.area.iter().sum();
         assert!((area - 2.0).abs() < 1e-6, "area {area}");
     }
@@ -710,7 +710,7 @@ mod tests {
         let sq = Region2D::new(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], 1);
         for target in [200usize, 800] {
             let opts = Mesh2DOptions { target_count: target, ..Default::default() };
-            let m = mesh_2d(&[sq.clone()], |_p| 5.0, &opts); // coarse field; the budget drives it
+            let m = mesh_2d(std::slice::from_ref(&sq), |_p| 5.0, &opts); // coarse field; the budget drives it
             let n = m.tris.len();
             assert!((n as f64) > 0.6 * target as f64 && (n as f64) < 1.6 * target as f64,
                     "budget {target}: got {n} triangles");

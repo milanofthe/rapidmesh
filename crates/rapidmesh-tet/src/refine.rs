@@ -2652,7 +2652,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 (sizes[&root], comp_region[&root], centroid_of(&all_tets[ti as usize]))
             })
             .collect();
-        info.sort_by(|a, b| b.0.cmp(&a.0));
+        info.sort_by_key(|r| std::cmp::Reverse(r.0));
         eprintln!("CLASSIFY walls {} components {}:", n_walls, comp_best.len());
         for (n, reg, c) in info.iter().take(8) {
             eprintln!("  comp size {n} region {reg} anchor ({:.3}, {:.3}, {:.3})", c[0], c[1], c[2]);

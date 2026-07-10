@@ -253,7 +253,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             *census.entry((on_surf, common, cfaces)).or_insert(0) += 1;
         }
         let mut rows: Vec<_> = census.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
         eprintln!("SLIVER CENSUS (on_surf_verts, all4_one_surface, constrained_facets) -> count");
         for ((os, com, cf), n) in rows.iter().take(12) {
             eprintln!("  ({os}, {com}, {cf}) -> {n}");

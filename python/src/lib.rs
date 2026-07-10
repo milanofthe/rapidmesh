@@ -1290,10 +1290,32 @@ impl PyMesh2D {
     }
 }
 
+/// Builds the [`Mesh2DOptions`] shared by the 2D endpoints (same defaults as
+/// the Rust API): quality bound, work bounds, the triangle BUDGET
+/// (`target_count`, 0 = field-driven), the hard size floor/cap (`minh`/`maxh`,
+/// 0 = off) and the Lipschitz `grading` slope (0 = off).
+#[allow(clippy::too_many_arguments)]
+fn mesh2d_opts(
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+    target_count: usize,
+    minh: f64,
+    maxh: f64,
+    grading: f64,
+) -> Mesh2DOptions {
+    Mesh2DOptions { min_angle_deg, cvt_iters, max_passes, target_count, minh, maxh, grading }
+}
+
 /// THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
-/// (`surf2d`). `regions` are `(outer, holes, tag)`; `h` is the target edge length.
+/// (`surf2d`). `regions` are `(outer, holes, tag)`; `h` is the target edge
+/// length; `target_count` is the triangle BUDGET (0 = field-driven);
+/// `minh`/`maxh` are hard element-size floor/cap and `grading` the Lipschitz
+/// slope of the sizing field (each 0 = off) -- full parity with the Rust
+/// `Mesh2DOptions`.
 #[pyfunction]
-#[pyo3(signature = (regions, h, min_angle_deg=28.0, cvt_iters=4, max_passes=12))]
+#[pyo3(signature = (regions, h, min_angle_deg=28.0, cvt_iters=4, max_passes=12, target_count=0, minh=0.0, maxh=0.0, grading=0.0))]
+#[allow(clippy::too_many_arguments)]
 fn mesh_2d(
     py: Python<'_>,
     regions: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>, i64)>,
@@ -1301,15 +1323,54 @@ fn mesh_2d(
     min_angle_deg: f64,
     cvt_iters: usize,
     max_passes: usize,
+    target_count: usize,
+    minh: f64,
+    maxh: f64,
+    grading: f64,
 ) -> PyMesh2D {
     let t0 = std::time::Instant::now();
     let regs: Vec<Region2D> = regions
         .into_iter()
         .map(|(outer, holes, tag)| Region2D { outer, holes, tag })
         .collect();
-    let opts = Mesh2DOptions { min_angle_deg, cvt_iters, max_passes, ..Default::default() };
+    let opts = mesh2d_opts(min_angle_deg, cvt_iters, max_passes, target_count, minh, maxh, grading);
     let inner = py.allow_threads(|| topo_mesh_2d(&regs, |_p| h, &opts));
     PyMesh2D { inner, millis: t0.elapsed().as_millis() as u64 }
+}
+
+/// THE grouped 2D endpoint (`rapidmesh_topo::mesh_layers`): every `group` is a
+/// layer's `(outer, holes, tag)` regions; abutting/overlapping regions WITHIN a
+/// group weld into one RWG-connected component, groups never merge, and a
+/// `target_count > 0` is ONE budget shared across all groups. Returns one mesh
+/// per group, in input order.
+#[pyfunction]
+#[pyo3(signature = (groups, h, min_angle_deg=28.0, cvt_iters=4, max_passes=12, target_count=0, minh=0.0, maxh=0.0, grading=0.0))]
+#[allow(clippy::too_many_arguments)]
+fn mesh_layers(
+    py: Python<'_>,
+    groups: Vec<Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>, i64)>>,
+    h: f64,
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+    target_count: usize,
+    minh: f64,
+    maxh: f64,
+    grading: f64,
+) -> Vec<PyMesh2D> {
+    let t0 = std::time::Instant::now();
+    let groups: Vec<Vec<Region2D>> = groups
+        .into_iter()
+        .map(|g| {
+            g.into_iter()
+                .map(|(outer, holes, tag)| Region2D { outer, holes, tag })
+                .collect()
+        })
+        .collect();
+    let opts = mesh2d_opts(min_angle_deg, cvt_iters, max_passes, target_count, minh, maxh, grading);
+    let inner = py.allow_threads(|| rapidmesh_topo::mesh_layers(&groups, |_p| h, &opts));
+    let millis = t0.elapsed().as_millis() as u64;
+    inner.into_iter().map(|m| PyMesh2D { inner: m, millis }).collect()
 }
 
 #[pymodule]
@@ -1320,6 +1381,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMesh2D>()?;
     m.add_class::<PyTopology>()?;
     m.add_function(wrap_pyfunction!(mesh_2d, m)?)?;
+    m.add_function(wrap_pyfunction!(mesh_layers, m)?)?;
     m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
     m.add_function(wrap_pyfunction!(set_log_level, m)?)?;
     Ok(())

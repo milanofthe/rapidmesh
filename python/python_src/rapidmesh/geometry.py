@@ -471,6 +471,24 @@ class Mesh2D:
         return self._native.min_angles()
 
 
+def _norm_regions(regions):
+    """``Region2D`` / tuple input -> the native ``(outer, holes, tag)`` form."""
+    norm = []
+    for r in regions:
+        if isinstance(r, Region2D):
+            outer, tag, holes = r.outer, r.tag, (r.holes or [])
+        else:
+            outer = r[0]
+            tag = r[1] if len(r) > 1 else 1
+            holes = r[2] if len(r) > 2 else []
+        norm.append((
+            [list(p) for p in outer],
+            [[list(p) for p in hl] for hl in holes],
+            int(tag),
+        ))
+    return norm
+
+
 def mesh_2d(
     regions,
     h: float,
@@ -478,6 +496,10 @@ def mesh_2d(
     min_angle_deg: float = 28.0,
     cvt_iters: int = 4,
     max_passes: int = 12,
+    target_count: int = 0,
+    minh: float = 0.0,
+    maxh: float = 0.0,
+    grading: float = 0.0,
 ) -> Mesh2D:
     """THE 2D endpoint: mesh tagged 2D polygons through the production 2D path
     (``surf2d`` -- the same gmsh-grade mesher the wasm landing runs), into one
@@ -493,21 +515,44 @@ def mesh_2d(
         target edge length (uniform sizing field).
     min_angle_deg, cvt_iters, max_passes : optional
         Ruppert min-angle bound, CVT seed iterations, max refinement passes.
+    target_count : optional
+        triangle BUDGET: ``> 0`` scales the sizing field by one global factor so
+        the mesh lands near this count (0 = field-driven).
+    minh, maxh : optional
+        hard element-size floor / cap, applied after the budget scaling (0 = off).
+    grading : optional
+        Lipschitz slope of the sizing field (0 = off).
     """
-    norm = []
-    for r in regions:
-        if isinstance(r, Region2D):
-            outer, tag, holes = r.outer, r.tag, (r.holes or [])
-        else:
-            outer = r[0]
-            tag = r[1] if len(r) > 1 else 1
-            holes = r[2] if len(r) > 2 else []
-        norm.append((
-            [list(p) for p in outer],
-            [[list(p) for p in hl] for hl in holes],
-            int(tag),
-        ))
-    return Mesh2D(_native.mesh_2d(norm, float(h), min_angle_deg, cvt_iters, max_passes))
+    return Mesh2D(_native.mesh_2d(
+        _norm_regions(regions), float(h), min_angle_deg, cvt_iters, max_passes,
+        int(target_count), float(minh), float(maxh), float(grading),
+    ))
+
+
+def mesh_layers(
+    groups,
+    h: float,
+    *,
+    min_angle_deg: float = 28.0,
+    cvt_iters: int = 4,
+    max_passes: int = 12,
+    target_count: int = 0,
+    minh: float = 0.0,
+    maxh: float = 0.0,
+    grading: float = 0.0,
+) -> list[Mesh2D]:
+    """THE grouped 2D endpoint (``rapidmesh_topo::mesh_layers``): each ``group``
+    is one layer's region list (same forms as :func:`mesh_2d`). WITHIN a group,
+    abutting/overlapping regions weld into one RWG-connected component; regions
+    of different groups never merge; a ``target_count > 0`` is ONE triangle
+    budget shared across every patch of every group. Returns one
+    :class:`Mesh2D` per group, in input order.
+    """
+    native = _native.mesh_layers(
+        [_norm_regions(g) for g in groups], float(h), min_angle_deg, cvt_iters,
+        max_passes, int(target_count), float(minh), float(maxh), float(grading),
+    )
+    return [Mesh2D(m) for m in native]
 
 
 def _refresh_manifest(directory: Path) -> None:

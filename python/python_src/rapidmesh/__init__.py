@@ -10,7 +10,7 @@
     mesh = g.mesh()
 """
 
-from .geometry import Geometry, Mesh, SurfaceMesh, Solid, Mesh2D, Region2D, mesh_2d
+from .geometry import Geometry, Mesh, SurfaceMesh, Solid, Mesh2D, Region2D, mesh_2d, mesh_layers
 from . import adapt
 from .adapt import dorfler_mark, refine_dorfler
 from ._native import set_log_level
@@ -22,6 +22,7 @@ __all__ = [
     "SurfaceMesh",
     "Solid",
     "mesh_2d",
+    "mesh_layers",
     "Mesh2D",
     "Region2D",
     "adapt",

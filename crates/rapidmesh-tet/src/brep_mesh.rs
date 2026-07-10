@@ -1005,7 +1005,7 @@ pub fn surface_sites(
                         vn += 1.0;
                     }
                 }
-                if !ok || ring.iter().any(|&x| x == usize::MAX) {
+                if !ok || ring.contains(&usize::MAX) {
                     ok = false;
                     break;
                 }
@@ -1222,7 +1222,7 @@ pub fn surface_sites(
             let vs: Vec<f64> = boundary.iter().map(|&p| surf.project_uv(p)[1]).collect();
             let vmin = vs.iter().cloned().fold(f64::INFINITY, f64::min);
             let vmax = vs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            for p in revolution_grid(surf, vmin, vmax, &rays, &target) {
+            for p in revolution_grid(surf, vmin, vmax, &rays, target) {
                 sites.push(Site::on_surface(kind.clone(), p));
                 point_tile.push(fid as u32);
                 point_size.push(params.surf_maxh_for(fid));

@@ -18,3 +18,6 @@ smallvec.workspace = true
 rapidmesh-testutil.workspace = true
 num-rational = "0.4"
 num-traits = "0.2"
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 rapidmesh-exact.workspace = true
+
+[lints]
+workspace = true

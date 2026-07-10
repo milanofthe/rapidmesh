@@ -12,3 +12,6 @@ rustc-hash.workspace = true
 
 [dev-dependencies]
 rapidmesh-testutil.workspace = true
+
+[lints]
+workspace = true

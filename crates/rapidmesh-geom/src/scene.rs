@@ -112,7 +112,7 @@ impl Scene {
             let base = surfaces.len() as u32;
             surfaces.extend(f.surfaces.iter().cloned());
             let owner = solid.map_or(SHEET_OWNER, |k| k as u32);
-            surface_owners.extend(std::iter::repeat(owner).take(f.surfaces.len()));
+            surface_owners.extend(std::iter::repeat_n(owner, f.surfaces.len()));
             // Flat faces first, as boundary polygons with their helper tiling.
             let mut claimed = vec![false; f.tris.len()];
             for fl in &f.flats {

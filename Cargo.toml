@@ -18,6 +18,17 @@ edition = "2021"
 publish = false
 license = "MIT"
 
+# Deliberate house style, allowed workspace-wide:
+# - `!(x > 0.0)` guards treat NaN as "not valid" (a plain `x <= 0.0` flips the
+#   NaN semantics); the codebase uses that shape as the canonical validity gate.
+# - Numeric kernels index several parallel arrays per loop; iterator rewrites
+#   obscure the stride relationships without a measured win.
+[workspace.lints.clippy]
+neg_cmp_op_on_partial_ord = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+too_many_arguments = "allow"
+
 [workspace.dependencies]
 rapidmesh-exact = { path = "crates/rapidmesh-exact" }
 rapidmesh-geom = { path = "crates/rapidmesh-geom" }

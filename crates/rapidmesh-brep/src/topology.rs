@@ -174,7 +174,7 @@ impl Topology {
         self.regions
             .iter()
             .copied()
-            .filter(|&t| want.map_or(true, |w| t == w))
+            .filter(|&t| want.is_none_or(|w| t == w))
             .collect()
     }
 

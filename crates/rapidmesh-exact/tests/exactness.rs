@@ -171,7 +171,7 @@ fn orient3d_lnc_matches_oracle() {
     let (mut zeros, mut nonzeros) = (0u32, 0u32);
     for i in 0..3000 {
         let coarse = i % 3 == 0; // coarse grid hits coplanar/degenerate configs
-        let mut mk = |r: &mut Rng| {
+        let mk = |r: &mut Rng| {
             if coarse {
                 r.point_coarse()
             } else {

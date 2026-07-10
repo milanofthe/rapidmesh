@@ -67,7 +67,7 @@ impl NurbsCurve {
     /// Builds a curve, validating the knot/control/weight sizes.
     pub fn new(degree: usize, knots: Vec<f64>, ctrl: Vec<P2>, weights: Vec<f64>) -> NurbsCurve {
         assert!(degree >= 1, "degree must be >= 1");
-        assert!(ctrl.len() >= degree + 1, "need at least degree+1 control points");
+        assert!(ctrl.len() > degree, "need at least degree+1 control points");
         assert_eq!(knots.len(), ctrl.len() + degree + 1, "knot count must be n+p+2");
         assert_eq!(weights.len(), ctrl.len(), "one weight per control point");
         assert!(weights.iter().all(|&w| w > 0.0), "weights must be positive");
@@ -86,7 +86,7 @@ impl NurbsCurve {
         for i in 1..=interior {
             knots.push(i as f64 / (interior + 1) as f64);
         }
-        knots.extend(std::iter::repeat(1.0).take(p + 1));
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
         let weights = vec![1.0; n];
         NurbsCurve::new(degree, knots, ctrl, weights)
     }
@@ -278,7 +278,7 @@ impl NurbsCurve {
     pub fn arc_length(&self, u0: f64, u1: f64, subdivisions: usize) -> f64 {
         // 3-point Gauss-Legendre nodes/weights on [-1, 1].
         const X: [f64; 3] = [-0.774_596_669_241_483_4, 0.0, 0.774_596_669_241_483_4];
-        const W: [f64; 3] = [0.555_555_555_555_555_6, 0.888_888_888_888_888_9, 0.555_555_555_555_555_6];
+        const W: [f64; 3] = [0.555_555_555_555_555_6, 0.888_888_888_888_889, 0.555_555_555_555_555_6];
         let n = subdivisions.max(1);
         let h = (u1 - u0) / n as f64;
         let mut total = 0.0;

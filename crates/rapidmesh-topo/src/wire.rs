@@ -69,6 +69,7 @@ impl<'a> FrameReader<'a> {
     }
 
     /// Read the next block as `Vec<T>` (bulk copy; tolerates misalignment).
+    #[allow(clippy::should_implement_trait)]
     pub fn next<T: Pod>(&mut self) -> Option<Vec<T>> {
         if self.remaining == 0 || self.pos + 8 > self.buf.len() {
             return None;
@@ -79,7 +80,7 @@ impl<'a> FrameReader<'a> {
             return None;
         }
         let sz = core::mem::size_of::<T>();
-        if sz == 0 || len % sz != 0 {
+        if sz == 0 || !len.is_multiple_of(sz) {
             return None;
         }
         let bytes = &self.buf[self.pos..self.pos + len];

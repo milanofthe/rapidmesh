@@ -3052,8 +3052,6 @@ fn cached_q_free(points: &[[f64; 3]], tets: &[[usize; 4]], tet_q: &mut [f64], ti
     tet_q[ti]
 }
 
-/// The four vertex-index triples spanning a tet's faces (unoriented).
-
 /// Collapse rejection diagnostics (RAPIDMESH_OPT_TRACE).
 pub static COLLAPSE_REJECTS: [std::sync::atomic::AtomicUsize; 6] = [
     std::sync::atomic::AtomicUsize::new(0), // 0 no admissible (a, b) pair at all

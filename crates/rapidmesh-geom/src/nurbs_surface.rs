@@ -37,7 +37,7 @@ impl NurbsSurface {
         weights: Vec<f64>,
     ) -> NurbsSurface {
         assert!(degree[0] >= 1 && degree[1] >= 1, "degrees must be >= 1");
-        assert!(n[0] >= degree[0] + 1 && n[1] >= degree[1] + 1, "need degree+1 controls per dir");
+        assert!(n[0] > degree[0] && n[1] > degree[1], "need degree+1 controls per dir");
         assert_eq!(knots[0].len(), n[0] + degree[0] + 1, "U knot count must be n_u+p+1");
         assert_eq!(knots[1].len(), n[1] + degree[1] + 1, "V knot count must be n_v+q+1");
         assert_eq!(ctrl.len(), n[0] * n[1], "control net must be n_u*n_v");

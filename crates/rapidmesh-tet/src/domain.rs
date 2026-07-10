@@ -1,10 +1,10 @@
 //! The central spatial structure of the mesher: one static octree over the
 //! domain, refined to the local sizing field h(x). Everything queries it:
 //!
-//!   * `h_at(p)`        — the sizing field (per-leaf, cached).
-//!   * `region_at(p)`   — the material region (cached per leaf; exact ray-cast
-//!                        only on boundary leaves), which accelerates tet
-//!                        classification from O(tets * faces) to ~O(tets).
+//!   * `h_at(p)` — the sizing field (per-leaf, cached).
+//!   * `region_at(p)` — the material region (cached per leaf; exact ray-cast
+//!     only on boundary leaves), which accelerates tet classification from
+//!     O(tets * faces) to ~O(tets).
 //!
 //! h(x) = min( region cap, surface_h + grading * dist-to-boundary, point
 //! sources ); Lipschitz by the grading term, so it grows smoothly from the fine

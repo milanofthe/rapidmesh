@@ -594,13 +594,14 @@ impl<'a> Refiner<'a> {
         if self.band <= 0.0 || self.bvh.nearest_dist(p) > self.band {
             return self.domain.region_at(p);
         }
+        const R: f64 = std::f64::consts::FRAC_1_SQRT_2;
         const DIRS: [V3; 6] = [
             [0.9631, 0.1908, 0.1902],
             [-0.1791, 0.9645, 0.1937],
             [0.2113, -0.1979, 0.9571],
             [-0.5774, -0.5774, 0.5774],
-            [0.7071, 0.0, -0.7071],
-            [0.0, -0.7071, 0.7071],
+            [R, 0.0, -R],
+            [0.0, -R, R],
         ];
         for d in DIRS {
             if let Some(r) = self.region_walk(p, d) {
@@ -764,10 +765,6 @@ impl<'a> Refiner<'a> {
     /// Splits a live segment incident to protected vertex `v` (Cheng-Dey-Ramos:
     /// a crowded ball refines its feature, shrinking the balls until the
     /// blocked repair fits). Returns true if a split happened.
-    fn split_ball_feature(&mut self, v: usize) -> bool {
-        self.split_ball_feature_with(v, false)
-    }
-
     fn split_ball_feature_with(&mut self, v: usize, force: bool) -> bool {
         let key = self
             .segs
@@ -832,7 +829,7 @@ impl<'a> Refiner<'a> {
                         // strictly inside the open diametral ball
                         if dot(sub(p, a), sub(p, b)) < 0.0 {
                             let d = dist(p, mid3(a, b));
-                            if best.map_or(true, |(_, bd)| d < bd) {
+                            if best.is_none_or(|(_, bd)| d < bd) {
                                 best = Some((key, d));
                             }
                         }
@@ -1096,10 +1093,7 @@ impl<'a> Refiner<'a> {
                 let p2: [V3; 4] = std::array::from_fn(|k| self.pos(t[k]));
                 std::array::from_fn(|k| 0.25 * (p2[0][k] + p2[1][k] + p2[2][k] + p2[3][k]))
             }
-            None => match self.hull_dual_end(c1, fv) {
-                Some(e) => e,
-                None => return None,
-            },
+            None => self.hull_dual_end(c1, fv)?,
         };
         // Prune: both centroids farther from the surface than their distance
         // cannot straddle it.
@@ -2688,7 +2682,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 }
             }
         };
-        for (_, &(a, b)) in &owners {
+        for &(a, b) in owners.values() {
             if b == u32::MAX {
                 continue;
             }

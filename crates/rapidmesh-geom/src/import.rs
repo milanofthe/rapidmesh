@@ -221,7 +221,7 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
             crate::discrete::DiscreteSurface::new(l_pts, l_tris),
         )));
         for &fi in &members {
-            f.push_tri(tris[fi as usize].clone(), s);
+            f.push_tri(tris[fi as usize], s);
         }
     }
     f

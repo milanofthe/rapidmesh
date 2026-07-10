@@ -816,9 +816,9 @@ pub fn refine_quality(
 /// the triangle count are preserved. Stops early once the largest move is below a
 /// thousandth of the local edge length.
 fn smooth_mesh(
-    boundary: &mut Vec<P2>,
+    boundary: &mut [P2],
     segments: &[(usize, usize)],
-    interior: &mut Vec<P2>,
+    interior: &mut [P2],
     inside: impl Fn(P2) -> bool,
     target: impl Fn(P2) -> f64,
     min_angle_deg: f64,
@@ -871,7 +871,7 @@ fn smooth_mesh(
 
     const RELAX: f64 = 0.9;
     for _ in 0..max_iters {
-        let mut all: Vec<P2> = boundary.clone();
+        let mut all: Vec<P2> = boundary.to_vec();
         all.extend_from_slice(interior);
         let tris = triangulate_constrained(&all, segments, &inside);
         let mut incident: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
@@ -944,12 +944,8 @@ fn smooth_mesh(
                 all[i] = cand;
             }
         }
-        for i in 0..nb {
-            boundary[i] = all[i];
-        }
-        for k in 0..interior.len() {
-            interior[k] = all[nb + k];
-        }
+        boundary.copy_from_slice(&all[..nb]);
+        interior.copy_from_slice(&all[nb..]);
         if max_rel < 1e-6 {
             break; // converged: largest move < 0.1 % of the local edge length
         }

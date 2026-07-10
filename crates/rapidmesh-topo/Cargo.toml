@@ -20,3 +20,6 @@ rapidmesh-geom = { workspace = true, optional = true }
 # regions into connected shapes before triangulating, so a conductor handed in as many
 # polygons meshes as ONE conforming, electrically-continuous region.
 i_overlay = { version = "1.9", optional = true }
+
+[lints]
+workspace = true

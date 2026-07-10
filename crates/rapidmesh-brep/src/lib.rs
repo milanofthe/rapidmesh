@@ -73,9 +73,10 @@ pub enum Curve {
         t: [f64; 2],
         z: f64,
     },
-    /// Ellipse: an oblique plane section of a cylinder. `center` + `a·cos(t)·major`
-    /// + `b·sin(t)·minor`, with `axis = major x minor` the section-plane normal.
-    /// Exact closed form (curvature drives the sizing analytically, like `Circle`).
+    /// Ellipse: an oblique plane section of a cylinder. The point is `center`
+    /// plus `a·cos(t)·major` plus `b·sin(t)·minor`, with `axis = major x minor`
+    /// the section-plane normal. Exact closed form (curvature drives the sizing
+    /// analytically, like `Circle`).
     Ellipse { center: V3, major: V3, minor: V3, a: f64, b: f64 },
     /// Intersection of two surfaces, evaluated lazily by projecting the vertex
     /// chain onto both (the mesher reuses its surface projections). Covers every

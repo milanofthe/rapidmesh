@@ -778,7 +778,7 @@ pub fn mesh_cdt(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             let devs = tri.map(|q| dist3(q, crate::project::closest_on_surface(kind, q)));
             let on = devs.iter().filter(|&&d| d < tol).count();
             let tot: f64 = devs.iter().sum();
-            if on >= 1 && best.map_or(true, |(_, bon, btot)| on > bon || (on == bon && tot < btot)) {
+            if on >= 1 && best.is_none_or(|(_, bon, btot)| on > bon || (on == bon && tot < btot)) {
                 best = Some((si as u32, on, tot));
             }
         }

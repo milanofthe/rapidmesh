@@ -1156,7 +1156,11 @@ impl<'a> Refiner<'a> {
                 }
             }
         };
-        let wtrace = std::env::var_os("RAPIDMESH_WALL_TRACE").is_some();
+        // Cached: this runs inside the PARALLEL wall sweep, once per internal
+        // facet -- a per-call env lookup is a syscall tax at that call rate.
+        static WALL_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let wtrace =
+            *WALL_TRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALL_TRACE").is_some());
         if wtrace && cands.is_empty() {
             eprintln!("WALL no cands, fv {fv:?}");
         }

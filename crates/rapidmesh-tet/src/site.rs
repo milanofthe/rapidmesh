@@ -40,6 +40,7 @@ fn plane_basis(n: V3) -> (V3, V3) {
 /// One side of a curved feature edge: the analytic geometry a point on the edge
 /// also lies on. A feature edge is the intersection of TWO such faces.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // scaffolding for #31/#32 (see the carrier-relaxation note below)
 pub enum EdgeFace {
     /// A plane (point `p0`, unit normal `n`).
     Plane { p0: V3, n: V3 },

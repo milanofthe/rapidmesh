@@ -13,7 +13,6 @@ default = []
 mesher = ["dep:rapidmesh-tet", "dep:rapidmesh-geom", "dep:i_overlay"]
 
 [dependencies]
-bytemuck = { version = "1", features = ["extern_crate_alloc", "min_const_generics"] }
 rapidmesh-tet = { workspace = true, optional = true }
 rapidmesh-geom = { workspace = true, optional = true }
 # Robust, fast 2D polygon boolean (MIT) — the 2D mesher unions overlapping/abutting input

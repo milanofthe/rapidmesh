@@ -11,7 +11,8 @@ use pyo3::types::{PyDict, PyList};
 use rapidmesh_geom::{
     cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
     icosphere, import_obj_creased, import_stl_creased, loft, mesh_solid, naca0012_profile, pipe,
-    sheet_disk, sheet_polygon, sheet_rect, solid_box, torus, validate_closed, wedge, facet_count,
+    sheet_disk, sheet_polygon, sheet_rect, solid_box, torus, validate_closed, wedge,
+    facet_subdivisions,
     FaceTag, Scene,
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
@@ -31,16 +32,8 @@ struct SceneBuilder {
     region_maxh: Vec<(u32, f64)>,
     /// The geometry's global target size, so curved primitives can derive a facet
     /// density that tracks the requested mesh (the core owns this -- see
-    /// `rapidmesh_geom::facet_count`; the Python layer only forwards `maxh`).
+    /// `rapidmesh_geom::facet_subdivisions`; the Python layer only forwards `maxh`).
     default_maxh: Option<f64>,
-}
-
-impl SceneBuilder {
-    /// Azimuthal facet count for a curved primitive of `radius`, from the per-solid
-    /// `maxh` (or the geometry default), at the standard 1% surface tolerance.
-    fn segs(&self, radius: f64, maxh: Option<f64>, passed: usize) -> usize {
-        passed.max(facet_count(radius, maxh.or(self.default_maxh), 1e-2))
-    }
 }
 
 impl SceneBuilder {
@@ -115,9 +108,9 @@ impl SceneBuilder {
         // A sphere is faceted GEODESICALLY (icosphere) -- isotropic and pole-free,
         // unlike a UV sphere whose latitude rings cluster at the poles and seed
         // slivers there. Density follows the maxh-driven facet count (`segments`
-        // only sets a floor), so the facets track the requested mesh.
-        let n = self.segs(radius, maxh, segments) as f64;
-        let level = ((1.0515 * n / std::f64::consts::TAU).log2().ceil() as i64).clamp(1, 6) as usize;
+        // only sets a floor); the level formula lives in the core
+        // (`facet_subdivisions`), not here.
+        let level = facet_subdivisions(radius, maxh.or(self.default_maxh), 1e-2, segments);
         self.put(icosphere(center, radius, level), maxh, void)
     }
 

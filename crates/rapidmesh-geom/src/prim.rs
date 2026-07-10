@@ -196,15 +196,16 @@ pub fn facet_count(radius: f64, maxh: Option<f64>, tol: f64) -> usize {
 }
 
 /// The geodesic (icosphere) subdivision level whose edge length matches the
-/// `facet_count` chord for a sphere of `radius` at target `maxh`. A geodesic
-/// tessellation is isotropic and POLE-FREE -- unlike a UV sphere, whose latitude
-/// rings cluster at the poles and seed slivers there -- so it is the right facet
-/// distribution for a curved primitive that gets refined to track `maxh`.
-pub fn facet_subdivisions(radius: f64, maxh: Option<f64>, tol: f64) -> usize {
+/// `facet_count` chord for a sphere of `radius` at target `maxh` (with an
+/// explicit azimuthal floor of `min_segments`). A geodesic tessellation is
+/// isotropic and POLE-FREE -- unlike a UV sphere, whose latitude rings cluster
+/// at the poles and seed slivers there -- so it is the right facet distribution
+/// for a curved primitive that gets refined to track `maxh`.
+pub fn facet_subdivisions(radius: f64, maxh: Option<f64>, tol: f64, min_segments: usize) -> usize {
     use std::f64::consts::TAU;
     // icosphere level-0 edge ~= 1.0515 R; each level halves it. Match it to the
     // facet_count azimuthal chord (2*pi*R / n): level = log2(1.0515 n / (2 pi)).
-    let n = facet_count(radius, maxh, tol) as f64;
+    let n = facet_count(radius, maxh, tol).max(min_segments) as f64;
     ((1.0515 * n / TAU).log2().ceil() as i64).clamp(1, 6) as usize
 }
 

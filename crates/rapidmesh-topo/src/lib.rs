@@ -36,7 +36,6 @@ mod math;
 mod source;
 mod tet;
 mod tri;
-pub mod wire;
 
 #[cfg(feature = "mesher")]
 pub mod mesher;
@@ -50,7 +49,6 @@ pub use csr::Csr;
 pub use source::{TetSource, TriSource, Tets, Tris};
 pub use tet::{TetGeometry, TetTopology};
 pub use tri::{TriGeometry, TriTopology};
-pub use wire::{FrameReader, FrameWriter};
 
 #[cfg(feature = "mesher")]
 pub use bundle::{mesh_2d, mesh_3d, mesh_layers, Mesh2D, Mesh2DOptions, Mesh3D, Region2D};

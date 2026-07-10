@@ -5,6 +5,12 @@
 //! table selects (and possibly flips) the surviving sub-triangles. Output
 //! vertices stay exact ([`Point3`], possibly implicit); rounding to f64 is a
 //! separate downstream decision.
+//!
+//! NOTE: the meshing pipeline itself does NOT go through here -- scene assembly
+//! (`rapidmesh_geom::Scene::assemble`) runs `arrange_facets` + `classify`
+//! directly, keeping regions instead of a single solid. This module is the
+//! standalone mesh-boolean API (`Faceted::to_solid` feeds it) and doubles as
+//! the end-to-end watertightness exercise of the arrangement machinery.
 
 use crate::arrange::arrange;
 use crate::classify::{classify, Placement, TriBoxes};

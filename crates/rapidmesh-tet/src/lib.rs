@@ -48,7 +48,7 @@ pub use conform::{
     log_metrics, log_surface_metrics, mesh_plc, mesh_plc_with, quality_stats, MeshParams,
     QualityStats, SurfaceFace, SurfaceMesh, TetMesh,
 };
-pub use cvt::{frozen_surface, mesh_cdt, mesh_cdt_budgeted, surface_mesh, FrozenSurface};
+pub use cvt::{mesh_cdt, mesh_cdt_budgeted, surface_mesh};
 pub use refine::mesh_refine;
 pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};

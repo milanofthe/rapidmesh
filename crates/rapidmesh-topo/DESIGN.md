@@ -25,7 +25,7 @@ The **2D** endpoint *is* the production 2D path: raw tagged 2D polygons
 wasm landing and the 3D surface stage's planar patches also run). Already have a
 `TetMesh`? `Mesh3D::build`.
 
-Ignore for embedding: `rapidmesh_tet::{mesh_cdt, surface_mesh, …}` (the internal
+Ignore for embedding: `rapidmesh_tet::{mesh_plc_with, surface_mesh, …}` (the internal
 volume/surface mesher; `surface_mesh` is the 3D path's boundary sub-product, NOT
 the 2D endpoint) and `rapidmesh_tet::mom` (the Python bindings' bridge). Neither
 is the Rust front door.

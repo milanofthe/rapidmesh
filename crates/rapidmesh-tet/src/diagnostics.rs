@@ -375,7 +375,7 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
         let plc = scene.assemble();
-        let m = crate::cvt::mesh_cdt(&plc, &crate::conform::MeshParams { maxh: 1.0, ..Default::default() });
+        let m = crate::conform::mesh_plc_with(&plc, &crate::conform::MeshParams { maxh: 1.0, ..Default::default() });
         let d = diagnose(&m);
         assert!(d.watertight, "box must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
         assert_eq!(d.n_straddlers, 0, "a box has no curved straddlers");
@@ -391,7 +391,7 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(sphere([0.0, 0.0, 0.0], 1.0, 24, 12));
         let plc = scene.assemble();
-        let m = crate::cvt::mesh_cdt(&plc, &crate::conform::MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
+        let m = crate::conform::mesh_plc_with(&plc, &crate::conform::MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
         let d = diagnose(&m);
         assert!(d.watertight, "sphere must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
         assert_eq!(d.n_straddlers, 0, "a well-sampled sphere has no straddlers");

@@ -180,7 +180,7 @@ fn tagged_interface_between_slabs_carries_tag() {
 }
 
 #[test]
-#[ignore = "mesh_cdt does not preserve exact per-region polyhedral volume across a \
+#[ignore = "the mesher does not preserve exact per-region polyhedral volume across a \
             shared CURVED material interface (the via wall): the bare-PLC coarse split \
             drifts and refinement can leave a non-manifold face there (tracked: task #51)"]
 fn cylinder_via_in_box_meshes_exactly() {
@@ -522,7 +522,7 @@ fn void_carves_exact_volume() {
 /// Per-face-tag sizing: a tagged sheet refines to its own target inside a
 /// coarse region, and the optimizer's face budget keeps it there.
 #[test]
-#[ignore = "internal tagged sheets embedded in a solid are not yet meshed by mesh_cdt (tracked: task #50)"]
+#[ignore = "internal tagged sheets embedded in a solid are not yet meshed by the refinement core (tracked: task #50)"]
 fn face_maxh_refines_tagged_sheet() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]));
@@ -1058,4 +1058,76 @@ fn cylinder_coarse_interior_terminates() {
         "fine-shell/coarse-bulk cylinder took {:?}",
         t0.elapsed()
     );
+}
+
+/// Closed-manifold check on the boundary faces: every edge of the surface-face
+/// set is shared by exactly two faces (the watertightness contract).
+fn assert_closed_manifold(m: &TetMesh, what: &str) {
+    let mut edge: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for f in &m.faces {
+        for k in 0..3 {
+            let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
+            *edge.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    let bad = edge.values().filter(|&&c| c != 2).count();
+    assert_eq!(bad, 0, "{what}: boundary is not a closed manifold ({bad} bad edges)");
+}
+
+/// GATE (portiert von der Legacy-cvt-Suite): eine radiale UV-Sphere mesht
+/// watertight durch den Refinement-Kern -- Volumen nahe der Kugel, einzelne
+/// Region, geschlossene Mannigfaltigkeit.
+#[test]
+fn uv_sphere_meshes_watertight() {
+    let mut scene = Scene::new();
+    scene.add_solid(rapidmesh_geom::sphere([0.2, -0.1, 0.3], 1.0, 24, 12));
+    let plc = scene.assemble();
+    let m = mesh_plc_with(&plc, &MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
+    assert!(!m.tets.is_empty(), "uv sphere produced tets");
+    assert!(m.tet_regions.iter().all(|r| r.0 == 1), "single region");
+    let vol: f64 = m
+        .tets
+        .iter()
+        .map(|t| {
+            let p: Vec<[f64; 3]> = t.iter().map(|&i| m.points[i]).collect();
+            let d = |a: [f64; 3], b: [f64; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let (e1, e2, e3) = (d(p[0], p[1]), d(p[0], p[2]), d(p[0], p[3]));
+            (e1[0] * (e2[1] * e3[2] - e2[2] * e3[1]) - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]))
+                .abs()
+                / 6.0
+        })
+        .sum();
+    let ball = 4.0 / 3.0 * std::f64::consts::PI;
+    assert!(vol > 0.80 * ball && vol < 1.02 * ball, "uv sphere volume {vol} vs ball {ball}");
+    assert_closed_manifold(&m, "uv sphere");
+}
+
+/// GATE (portiert): ein voller Zylinder mesht watertight durch den
+/// Refinement-Kern (Volumen nahe pi r^2 h, geschlossene Mannigfaltigkeit).
+#[test]
+fn cylinder_meshes_watertight() {
+    let (r, hgt) = (1.0, 3.0);
+    let mut scene = Scene::new();
+    scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, hgt], r, 24));
+    let plc = scene.assemble();
+    let m = mesh_plc_with(&plc, &MeshParams { maxh: 0.5, ..Default::default() });
+    assert!(!m.tets.is_empty());
+    assert!(m.tet_regions.iter().all(|rr| rr.0 == 1), "single region");
+    let vol: f64 = m
+        .tets
+        .iter()
+        .map(|t| {
+            let p: Vec<[f64; 3]> = t.iter().map(|&i| m.points[i]).collect();
+            let d = |a: [f64; 3], b: [f64; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let (e1, e2, e3) = (d(p[0], p[1]), d(p[0], p[2]), d(p[0], p[3]));
+            (e1[0] * (e2[1] * e3[2] - e2[2] * e3[1]) - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]))
+                .abs()
+                / 6.0
+        })
+        .sum();
+    let exact = std::f64::consts::PI * r * r * hgt;
+    assert!(vol > 0.90 * exact && vol < 1.001 * exact, "cylinder volume {vol} vs {exact}");
+    assert_closed_manifold(&m, "cylinder");
 }

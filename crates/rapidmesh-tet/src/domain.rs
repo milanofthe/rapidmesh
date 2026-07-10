@@ -58,7 +58,7 @@ pub struct DomainTree {
     finest: f64,
     /// Hard minimum SURFACE element-size floor (absolute), applied at query time
     /// by [`DomainTree::h_at_surf`]. `0` = off. (The volume floor is applied
-    /// inline in `mesh_cdt`, so it is not stored here.)
+    /// inline in the mesher, so it is not stored here.)
     min_h_surf: f64,
 }
 
@@ -345,7 +345,7 @@ impl DomainTree {
     }
 
     /// Sizing field at `p`, floored by the surface minimum element size. (The
-    /// volume floor is applied inline in `mesh_cdt`, after the region/dimension
+    /// volume floor is applied inline in the mesher, after the region/dimension
     /// caps, so it stays the outermost bound.)
     pub fn h_at_surf(&self, p: V3) -> f64 {
         self.h_at(p).max(self.min_h_surf)

@@ -17,7 +17,7 @@ use rapidmesh_geom::{
 };
 use rapidmesh_brep::{build as brep_build, extract_topology};
 use rapidmesh_tet::{
-    mesh_cdt_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams, QualityStats,
+    mesh_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams, QualityStats,
     SurfaceMesh, TetMesh,
 };
 use rapidmesh_topo::{
@@ -457,7 +457,7 @@ impl SceneBuilder {
             };
             // `optimize=false` (or the legacy RAPIDMESH_SKIP_OPTIMIZE fallback)
             // skips the quality pass. The element budget and the optimize-aware
-            // remesh loop live in Rust (`mesh_cdt_budgeted`); this binding only
+            // remesh loop live in Rust (`mesh_budgeted`); this binding only
             // decides whether to optimize and how many passes.
             let do_optimize = optimize && std::env::var_os("RAPIDMESH_SKIP_OPTIMIZE").is_none();
             let opt_passes = if do_optimize {
@@ -466,7 +466,7 @@ impl SceneBuilder {
                 None
             };
             let tm = std::time::Instant::now();
-            let (mesh, _params) = mesh_cdt_budgeted(&plc, &params0, target_elements, opt_passes);
+            let (mesh, _params) = mesh_budgeted(&plc, &params0, target_elements, opt_passes);
             let t_mesh = tm.elapsed();
             rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
             // Headline metrics (counts, quality, slivers, per-region), logged so a

@@ -1,23 +1,23 @@
-//! Tetrahedral meshing: CVT (centroidal Voronoi) variational meshing.
+//! Tetrahedral meshing: restricted-Delaunay refinement against analytic
+//! carrier oracles (see `docs/refinement-core.md`).
 //!
-//! Pipeline (see the CVT-rewrite plan):
-//! 1. Seed a BCC background lattice over the domain, graded by the sizing field
-//!    (`seed`), filtered to the domain interior.
-//! 2. Relax toward a centroidal Voronoi layout by Lloyd iteration on an
-//!    incremental Delaunay (`cvt` driving `delaunay`), keeping boundary and
-//!    interface sites on their carriers (restricted CVT) so material interfaces
-//!    stay conforming; recover internal interfaces by on-plane refinement.
-//! 3. Quality pass targeting the minimal dihedral angle: edge removal,
-//!    smoothing, sliver removal (`optimize`).
-//! 4. Optional order-2 midside snapping onto the analytic surface via the
-//!    PLC surface back-references (`project`), for curved boundaries.
+//! Pipeline (ONE volume engine, [`refine`], behind every entry point):
+//! 1. Protect the 0/1-features (B-rep corners + edge curves) Ruppert-style
+//!    with shrinking balls; sample every edge on its analytic curve.
+//! 2. Refine surface facets (restricted-Delaunay surface balls against the
+//!    trimmed carriers) and interior cells (circumcenters under a radius-edge
+//!    + size bound), with manifold pierce-repair sweeps.
+//! 3. ODT (Lloyd) relaxation of the interior, then flood-fill region
+//!    classification over the carrier walls.
+//! 4. Quality pass targeting the minimal dihedral angle: exudation, edge
+//!    removal, smoothing, sliver stages (`optimize`).
 
 // Public surface: the 2D core (`surf2d`), adaptive marking (`adapt`), the
 // sizing-field cache (`quadfield`), and `diagnostics`. The MoM/FEM topology +
 // quality accessors live in the downstream `rapidmesh_topo` layer (one
 // implementation for both the 2D and the 3D-surface endpoint). Everything else
 // is the internal mesher engine -- `pub(crate)`, reached only through the
-// re-exported entry points below (`mesh_cdt` / `surface_mesh` / `mesh_plc` /
+// re-exported entry points below (`mesh_budgeted` / `surface_mesh` / `mesh_plc` /
 // `tetrahedralize` / ...). The canonical embedding front door is
 // `rapidmesh_topo::{mesh_2d, mesh_3d}`.
 pub mod adapt;
@@ -27,7 +27,6 @@ pub mod quadfield;
 pub mod surf2d;
 
 pub(crate) mod brep_mesh;
-pub(crate) mod cdt3;
 pub(crate) mod conform;
 pub(crate) mod constants;
 pub(crate) mod curve;
@@ -39,8 +38,6 @@ mod geomutil;
 pub(crate) mod optimize;
 pub(crate) mod project;
 pub(crate) mod refine;
-pub(crate) mod seed;
-pub(crate) mod site;
 pub(crate) mod spatial;
 pub(crate) mod surfchart;
 
@@ -48,7 +45,7 @@ pub use conform::{
     log_metrics, log_surface_metrics, mesh_plc, mesh_plc_with, quality_stats, MeshParams,
     QualityStats, SurfaceFace, SurfaceMesh, TetMesh,
 };
-pub use cvt::{mesh_cdt, mesh_cdt_budgeted, surface_mesh};
+pub use cvt::{mesh_budgeted, surface_mesh};
 pub use refine::mesh_refine;
 pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};

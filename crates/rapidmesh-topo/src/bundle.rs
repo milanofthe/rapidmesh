@@ -26,7 +26,7 @@ use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
 use rapidmesh_tet::gradefield::GradedField;
 use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
-use rapidmesh_tet::{mesh_cdt, MeshParams, TetMesh};
+use rapidmesh_tet::{mesh_plc_with, MeshParams, TetMesh};
 
 // ============================== 2D / surface (MoM) ==========================
 
@@ -596,10 +596,12 @@ impl Mesh3D {
     }
 }
 
-/// THE 3D endpoint: mesh a PLC into a complete volume bundle. For an element
-/// budget, mesh with [`rapidmesh_tet::mesh_cdt_budgeted`] then [`Mesh3D::build`].
+/// THE 3D endpoint: mesh a PLC into a complete volume bundle, through the
+/// restricted-Delaunay refinement core (the same engine the Python binding
+/// runs). For an element budget, mesh with [`rapidmesh_tet::mesh_budgeted`]
+/// then [`Mesh3D::build`].
 pub fn mesh_3d(plc: &TaggedPlc, params: &MeshParams) -> Mesh3D {
-    Mesh3D::build(mesh_cdt(plc, params))
+    Mesh3D::build(mesh_plc_with(plc, params))
 }
 
 #[cfg(test)]

@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-brep"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-csg"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-exact",
@@ -316,14 +316,14 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-exact"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "geometry-predicates",
 ]
 
 [[package]]
 name = "rapidmesh-geom"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "numpy",
  "pyo3",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-tet"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-brep",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-topo"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "i_overlay",
  "rapidmesh-geom",

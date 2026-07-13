@@ -1,4 +1,4 @@
-﻿"""rapidmesh: pure-Rust conforming tetrahedral mesher for EM FEM.
+"""rapidmesh: pure-Rust conforming tetrahedral mesher for EM FEM.
 
 .. code-block:: python
 

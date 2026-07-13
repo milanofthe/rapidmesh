@@ -329,9 +329,15 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     }
     // Bin lookup: a canvas point's patch (vertices live in their patch's bin; gap points snap to a
     // neighbour — only their field value is read, and gap triangles are filtered by `inside`).
+    // Quarter-cell nudge before flooring: `off = k·cell − bbmin` puts a patch's bbox-min boundary
+    // vertices EXACTLY on the bin edge, so `p + off` can land one fp-ulp BELOW `k·cell` and a plain
+    // floor assigns the vertex to the neighbouring bin — the read-back then un-translates it with
+    // the wrong offset, displacing it by a whole bin pitch (the opamp met2 serpentine, rapidmom).
+    // Patch content spans `[k·cell, k·cell + extent]` with `extent ≤ cell/2`, so `+cell/4` keeps
+    // every content point strictly inside its bin while absorbing fp noise on the low edge.
     let bin_at = |p: [f64; 2]| -> usize {
-        let col = (p[0] / cell).floor().clamp(0.0, (ncols - 1) as f64) as usize;
-        let row = (p[1] / cell).floor().clamp(0.0, (nrows - 1) as f64) as usize;
+        let col = ((p[0] + 0.25 * cell) / cell).floor().clamp(0.0, (ncols - 1) as f64) as usize;
+        let row = ((p[1] + 0.25 * cell) / cell).floor().clamp(0.0, (nrows - 1) as f64) as usize;
         let g = grid[row * ncols + col];
         if g >= 0 { g as usize } else { 0 }
     };
@@ -743,6 +749,80 @@ mod tests {
             // bigger layer draws more of the shared budget (area-proportional emergence).
             assert!(ms[0].tris.len() > ms[1].tris.len(), "big layer takes more budget");
         }
+    }
+
+    /// Read-back bin assignment regression (rapidmom sky130-opamp met2 serpentine): the union of
+    /// abutting rectangles puts resampled boundary vertices EXACTLY on their packing-bin edge, and
+    /// an fp-ulp of rounding used to tip them into the neighbouring bin — un-translated with the
+    /// wrong offset, they came back displaced by a whole bin pitch (stray nodes ~45 um outside the
+    /// layout, giant sliver triangles). Every output vertex must stay inside the input bbox.
+    #[test]
+    fn mesh_layers_readback_keeps_vertices_in_input_bbox() {
+        // 38 abutting met2 rectangles (sky130 opamp serpentine power rail, um) — the minimal
+        // real-layout set (ddmin) that reproduced the displacement at h = 0.5.
+        let rects: [[f64; 4]; 38] = [
+            [-20.405, 28.955, 11.995, 28.960],
+            [12.265, 28.450, 13.415, 29.955],
+            [-20.405, 27.755, 13.415, 28.450],
+            [12.265, 26.250, 13.415, 27.755],
+            [-20.405, 25.555, 13.415, 26.250],
+            [12.265, 24.075, 13.415, 25.555],
+            [-20.405, 23.380, 13.415, 24.075],
+            [12.265, 21.950, 13.415, 23.380],
+            [-20.405, 21.255, 13.415, 21.950],
+            [12.265, 20.010, 13.415, 21.255],
+            [12.350, 19.870, 13.415, 20.010],
+            [12.265, 18.850, 13.415, 19.870],
+            [-20.405, 18.155, 13.415, 18.850],
+            [12.265, 16.675, 13.415, 18.155],
+            [-20.405, 15.980, 13.415, 16.675],
+            [12.265, 14.500, 13.415, 15.980],
+            [-20.405, 13.805, 13.415, 14.500],
+            [12.265, 12.325, 13.415, 13.805],
+            [-20.405, 11.630, 13.415, 12.325],
+            [-21.810, 9.150, -20.700, 10.630],
+            [12.265, 10.150, 13.415, 11.630],
+            [-20.405, 9.455, 13.415, 10.150],
+            [-3.915, 3.185, 4.105, 4.235],
+            [4.885, 3.260, 5.410, 5.885],
+            [12.265, 3.165, 13.415, 9.455],
+            [-17.225, 2.180, -10.485, 2.455],
+            [-6.885, 2.170, 9.875, 2.445],
+            [-13.975, 1.865, -13.210, 1.875],
+            [3.585, -1.215, 4.025, 0.140],
+            [5.140, -1.650, 5.575, 0.140],
+            [7.290, -1.685, 7.645, 0.140],
+            [12.265, -4.015, 13.495, 3.165],
+            [-20.460, -4.710, 13.495, -4.015],
+            [12.185, -6.105, 13.495, -4.710],
+            [-20.405, -6.800, 13.495, -6.105],
+            [12.185, -8.195, 13.495, -6.800],
+            [-21.960, -12.360, -20.605, -9.890],
+            [7.865, -17.455, 13.525, -16.100],
+        ];
+        // SI metres — the units the rapidmom solver path feeds in; the fp tipping is
+        // scale-dependent (it did NOT reproduce on the same coordinates in um).
+        const UM: f64 = 1e-6;
+        let regions: Vec<Region2D> = rects
+            .iter()
+            .enumerate()
+            .map(|(i, &[x0, y0, x1, y1])| {
+                Region2D::new(
+                    vec![[x0 * UM, y0 * UM], [x1 * UM, y0 * UM], [x1 * UM, y1 * UM], [x0 * UM, y1 * UM]],
+                    i as i64,
+                )
+            })
+            .collect();
+        let m = mesh_2d(&regions, |_p| 0.5 * UM, &Mesh2DOptions::default());
+        assert!(!m.tris.is_empty());
+        let (lo, hi) = ([-21.960 * UM, -17.455 * UM], [13.525 * UM, 29.955 * UM]);
+        let tol = 1e-6 * UM;
+        let stray: Vec<&[f64; 2]> = m
+            .points
+            .iter()
+            .filter(|p| p[0] < lo[0] - tol || p[0] > hi[0] + tol || p[1] < lo[1] - tol || p[1] > hi[1] + tol)
+            .collect();
+        assert!(stray.is_empty(), "{} vertices outside the input bbox, e.g. {:?}", stray.len(), stray.first());
     }
 
     #[test]

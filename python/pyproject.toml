@@ -1,10 +1,10 @@
-[build-system]
+﻿[build-system]
 requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "rapidmesh"
-version = "0.3.1"
+version = "0.3.2"
 description = "Pure-Rust conforming tetrahedral mesher for electromagnetic FEM, with exact CSG and a Python builder API."
 readme = "README.md"
 license = "MIT"

@@ -863,6 +863,26 @@ class Geometry:
             )
         return self._solid(region)
 
+    def implicit(
+        self,
+        sdf: dict,
+        bbox_min: tuple[float, float, float],
+        bbox_max: tuple[float, float, float],
+        *,
+        cells: int = 64,
+        maxh: float | None = None,
+        void: bool = False,
+    ) -> Solid:
+        """Implicit (SDF) solid: the zero set of a signed-distance expression
+        built with :mod:`rapidmesh.sdf`. Enters the pipeline as a surface-nets
+        proxy over ``bbox`` at ``cells`` resolution and is remeshed against
+        the analytic field — the fillet/blend/offset path exact B-rep CSG
+        cannot express. The zero set must lie strictly inside the bbox."""
+        region = self._builder.add_implicit(
+            sdf, list(bbox_min), list(bbox_max), cells, maxh, void
+        )
+        return self._solid(region)
+
     def sphere(
         self,
         radius: float,

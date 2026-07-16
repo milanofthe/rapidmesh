@@ -151,6 +151,24 @@ CASES = [
     ("flush_tee", "Boolean", "vol", 1.0e-3,
         lambda g, h: (g.box(10e-3, 4e-3, 2e-3),
                       g.box(4e-3, 4e-3, 2e-3, position=(3e-3, 4e-3, 0)))),
+    # --- implicit (SDF) solids: the blend/fillet/offset carrier -------------
+    # Surface-nets proxy entry + gradient-Newton remeshing against the field;
+    # exactly the geometry class exact B-rep CSG cannot express.
+    ("blend_spheres", "Implicit", "vol", 0.18,
+        lambda g, h: g.implicit(
+            rm.sdf.smooth_union(rm.sdf.sphere((-0.6, 0, 0), 1.0),
+                                rm.sdf.sphere((0.6, 0, 0), 1.0), 0.4),
+            (-2.0, -1.6, -1.6), (2.0, 1.6, 1.6))),
+    ("rounded_box", "Implicit", "vol", 0.20,
+        lambda g, h: g.implicit(
+            rm.sdf.offset(rm.sdf.box((0, 0, 0), (0.7, 0.7, 0.7)), 0.25),
+            (-1.4, -1.4, -1.4), (1.4, 1.4, 1.4))),
+    # Boolean across carrier kinds: implicit rounded box + sharp B-rep box.
+    ("implicit_bool", "Implicit", "vol", 0.18,
+        lambda g, h: (g.implicit(
+            rm.sdf.offset(rm.sdf.box((0, 0, 0), (0.7, 0.7, 0.7)), 0.25),
+            (-1.4, -1.4, -1.4), (1.4, 1.4, 1.4)),
+            g.box(1.4, 0.8, 0.8, position=(0.6, -0.4, -0.4)))),
     # --- imported triangle soups (WP5 discrete-envelope path) ---------------
     # The SOTA-mesher reference set (alecjacobson/common-3d-test-models, via
     # bench/fetch_models.py; only the validate_closed survivors). fandisk:

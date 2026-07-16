@@ -12,6 +12,7 @@
 
 from .geometry import Geometry, Mesh, SurfaceMesh, Solid, Mesh2D, Region2D, mesh_2d, mesh_layers
 from . import adapt
+from . import sdf
 from .adapt import dorfler_mark, refine_dorfler
 from ._native import set_log_level
 

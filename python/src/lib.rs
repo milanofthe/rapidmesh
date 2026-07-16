@@ -24,6 +24,45 @@ use rapidmesh_topo::{
     mesh_2d as topo_mesh_2d, Mesh2D as TopoMesh2D, Mesh2DOptions, Region2D, TriGeometry, TriTopology,
 };
 
+/// Parses the nested-dict SDF spec built by `rapidmesh.sdf` into the geometry
+/// crate's expression tree.
+fn parse_sdf(d: &Bound<'_, PyAny>) -> PyResult<rapidmesh_geom::Sdf> {
+    use rapidmesh_geom::Sdf;
+    let op: String = d
+        .get_item("op")
+        .map_err(|_| PyValueError::new_err("sdf node: missing \"op\" key"))?
+        .extract()?;
+    let v3 = |k: &str| -> PyResult<[f64; 3]> { d.get_item(k)?.extract() };
+    let num = |k: &str| -> PyResult<f64> { d.get_item(k)?.extract() };
+    let sub = |k: &str| -> PyResult<std::boxed::Box<Sdf>> {
+        Ok(std::boxed::Box::new(parse_sdf(&d.get_item(k)?)?))
+    };
+    Ok(match op.as_str() {
+        "sphere" => Sdf::Sphere { center: v3("center")?, radius: num("radius")? },
+        "box" => Sdf::Box { center: v3("center")?, half: v3("half")? },
+        "cylinder" => Sdf::Cylinder { a: v3("a")?, b: v3("b")?, radius: num("radius")? },
+        "capsule" => Sdf::Capsule { a: v3("a")?, b: v3("b")?, radius: num("radius")? },
+        "torus" => Sdf::Torus {
+            center: v3("center")?,
+            axis: v3("axis")?,
+            major: num("major")?,
+            minor: num("minor")?,
+        },
+        "half_space" => Sdf::HalfSpace { point: v3("point")?, normal: v3("normal")? },
+        "union" => Sdf::Union(sub("a")?, sub("b")?),
+        "intersect" => Sdf::Intersect(sub("a")?, sub("b")?),
+        "difference" => Sdf::Difference(sub("a")?, sub("b")?),
+        "smooth_union" => Sdf::SmoothUnion { a: sub("a")?, b: sub("b")?, k: num("k")? },
+        "smooth_intersect" => Sdf::SmoothIntersect { a: sub("a")?, b: sub("b")?, k: num("k")? },
+        "smooth_difference" => Sdf::SmoothDifference { a: sub("a")?, b: sub("b")?, k: num("k")? },
+        "offset" => Sdf::Offset { a: sub("a")?, d: num("d")? },
+        "shell" => Sdf::Shell { a: sub("a")?, t: num("t")? },
+        other => return Err(PyValueError::new_err(format!("unknown sdf op {other:?}"))),
+    })
+}
+
+
+
 /// Incremental scene builder (one solid/sheet per call); the Python layer
 /// owns naming, defaults, and validation.
 #[pyclass]
@@ -67,6 +106,28 @@ impl SceneBuilder {
     #[pyo3(signature = (min, max, maxh=None, void=false))]
     fn add_box(&mut self, min: [f64; 3], max: [f64; 3], maxh: Option<f64>, void: bool) -> u32 {
         self.put(solid_box(min, max), maxh, void)
+    }
+
+    /// Implicit (SDF) solid: `sdf` is a nested dict tree (see
+    /// `rapidmesh.sdf`), tessellated into a surface-nets proxy over `bbox`
+    /// at `cells` resolution and remeshed against the analytic field.
+    #[pyo3(signature = (sdf, bbox_min, bbox_max, cells=64, maxh=None, void=false))]
+    fn add_implicit(
+        &mut self,
+        sdf: &Bound<'_, PyAny>,
+        bbox_min: [f64; 3],
+        bbox_max: [f64; 3],
+        cells: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> PyResult<u32> {
+        let tree = parse_sdf(sdf)?;
+        let surf = rapidmesh_geom::ImplicitSurface::new(tree, (bbox_min, bbox_max));
+        let f = rapidmesh_geom::implicit_solid(surf, cells)
+            .map_err(PyValueError::new_err)?;
+        rapidmesh_geom::validate_closed(&f)
+            .map_err(|e| PyValueError::new_err(format!("implicit solid: {e}")))?;
+        Ok(self.put(f, maxh, void))
     }
 
     /// Unions solids: retag every solid in region `from` into `into`, so the

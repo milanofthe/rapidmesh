@@ -100,6 +100,13 @@ pub enum SurfaceKind {
         /// Tube radius.
         radius: f64,
     },
+    /// An implicit (SDF) surface: the zero set of a signed-distance
+    /// expression. Like `Discrete`, the solid enters the pipeline as a
+    /// tessellated proxy (surface nets, see `implicit::implicit_solid`) and is
+    /// REMESHED against the carrier — but the carrier is analytic: projection
+    /// by gradient Newton, exact normals, curvature from the field. This is
+    /// the fillet/blend/offset path that exact B-rep CSG cannot express.
+    Implicit(Arc<crate::implicit::ImplicitSurface>),
 }
 
 /// A tessellated shape: triangles plus, per triangle, the analytic surface
@@ -271,6 +278,11 @@ impl Faceted {
                             d.tris.clone(),
                         ),
                     )),
+                    // The implicit carrier composes the placement affine onto
+                    // its frame; the SDF tree itself is untouched.
+                    SurfaceKind::Implicit(im) => SurfaceKind::Implicit(std::sync::Arc::new(
+                        im.transformed(linear, offset),
+                    )),
                 })
                 .collect(),
         }
@@ -351,13 +363,20 @@ impl Faceted {
                     // uniform scale: the path scaled with the shape, only the
                     // radius follows here
                     SurfaceKind::Tube { radius, .. } => *radius *= s,
+                    // `transformed` composed the scale into the carrier frame;
+                    // the field is queried through it, nothing to adjust.
+                    SurfaceKind::Implicit(_) => {}
                 }
             }
         } else {
             for kind in &mut out.surfaces {
-                // discrete carriers survive any linear map (the point set was
-                // transformed); analytic kinds lose their closed form
-                if !matches!(kind, SurfaceKind::Plane | SurfaceKind::Discrete(_)) {
+                // discrete and implicit carriers survive any invertible
+                // linear map (point set transformed / affine composed into the
+                // query frame); analytic kinds lose their closed form
+                if !matches!(
+                    kind,
+                    SurfaceKind::Plane | SurfaceKind::Discrete(_) | SurfaceKind::Implicit(_)
+                ) {
                     *kind = SurfaceKind::Plane;
                 }
             }

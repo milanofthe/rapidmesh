@@ -9,6 +9,7 @@
 
 pub mod discrete;
 mod faceted;
+pub mod implicit;
 pub mod import;
 pub mod nurbs;
 pub mod nurbs_surface;
@@ -20,6 +21,7 @@ pub mod scene;
 pub mod vec3;
 
 pub use discrete::DiscreteSurface;
+pub use implicit::{implicit_solid, tessellate_surface_nets, ImplicitSurface, Sdf};
 pub use tube::TubePath;
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
 pub use import::{import_obj, import_obj_creased, import_stl, import_stl_creased, min_height_ratio, validate_closed, ImportError, CREASE_DEG};

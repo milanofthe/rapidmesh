@@ -50,6 +50,10 @@ pub enum Surface {
     /// [`Surface::Discrete`], but the oracle is analytic per segment -- smooth
     /// where it matters and with exact curvature `radius` for sizing.
     Tube { path: Arc<rapidmesh_geom::TubePath>, radius: f64 },
+    /// An implicit (SDF) zero set, queried by gradient-Newton projection like
+    /// [`Surface::Discrete`] (no parameter map) -- but the carrier is analytic:
+    /// exact normals from the gradient, curvature from the field.
+    Implicit(Arc<rapidmesh_geom::ImplicitSurface>),
 }
 
 impl Surface {
@@ -92,6 +96,7 @@ impl Surface {
                 profile: profile.clone(),
             },
             SurfaceKind::Discrete(d) => Surface::Discrete(d.clone()),
+            SurfaceKind::Implicit(im) => Surface::Implicit(im.clone()),
             SurfaceKind::Tube { path, radius } => {
                 Surface::Tube { path: path.clone(), radius: *radius }
             }
@@ -105,6 +110,7 @@ impl Surface {
     pub fn closest(&self, p: V3) -> (V3, V3) {
         match self {
             Surface::Discrete(d) => d.closest(p),
+            Surface::Implicit(im) => im.closest(p),
             Surface::Tube { path, radius } => {
                 let q = path.closest(p);
                 let d: V3 = sub(p, q);
@@ -158,6 +164,7 @@ impl Surface {
             // no parameter map: the (u,v) API is chart territory, and discrete
             // patches never chart -- callers on the meshing path use `closest`
             Surface::Discrete(_) => [p[0], p[1], 0.0],
+            Surface::Implicit(_) => [p[0], p[1], 0.0],
             Surface::Tube { .. } => [p[0], p[1], 0.0],
         }
     }
@@ -200,6 +207,7 @@ impl Surface {
             }
             Surface::Nurbs(s) => nurbs_footpoint(s, p),
             Surface::Discrete(_) => [p[0], p[1]],
+            Surface::Implicit(_) => [p[0], p[1]],
             Surface::Tube { .. } => [p[0], p[1]],
         }
     }
@@ -239,6 +247,7 @@ impl Surface {
                 norm(cross(su, sv))
             }
             Surface::Discrete(_) => [0.0, 0.0, 1.0],
+            Surface::Implicit(_) => [0.0, 0.0, 1.0],
             Surface::Tube { .. } => [0.0, 0.0, 1.0],
         }
     }
@@ -262,6 +271,9 @@ impl Surface {
             }
             Surface::Nurbs(_) => f64::INFINITY, // analytic curvature lands later
             Surface::Discrete(_) => f64::INFINITY, // discrete curvature lands later
+            // No parameter map; curvature is queried at 3D points through the
+            // SurfaceKind path (project::curvature_radius_on).
+            Surface::Implicit(_) => f64::INFINITY,
             Surface::Tube { radius, .. } => *radius,
         }
     }

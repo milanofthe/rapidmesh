@@ -249,6 +249,8 @@ impl Chart {
             SurfaceKind::Extruded { .. } => return None,
             // Discrete patches have no parameter map -- no chart, ever.
             SurfaceKind::Discrete(_) => return None,
+            // Implicit carriers project by closest-point, like Discrete: no chart.
+            SurfaceKind::Implicit(_) => return None,
             // Tubes project by closest-point, like Discrete: no chart.
             SurfaceKind::Tube { .. } => return None,
             SurfaceKind::Sphere { center, radius } => {

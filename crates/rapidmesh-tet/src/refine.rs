@@ -248,6 +248,18 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
                 trace_crossings(surf, a, b)
             }
         }
+        Surface::Implicit(im) => {
+            // Field sign changes along the segment: direct SDF evaluations
+            // with bisection refinement — no oracle projections. The field
+            // sign equals the offset sign (outward gradient normal), so the
+            // transversal semantics match the tracer's exactly.
+            let mut cand = Vec::new();
+            im.segment_hits(a, b, &mut cand);
+            let mut out = SmallVec::new();
+            out.extend(cand);
+            drop_endpoint_touch(surf, a, b, &mut out);
+            out
+        }
         _ => trace_crossings(surf, a, b),
     }
 }

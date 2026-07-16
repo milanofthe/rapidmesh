@@ -70,6 +70,8 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
         // discrete patches: the facet normal at the footpoint (tessellation-
         // faithful; no closed form exists by construction)
         SurfaceKind::Discrete(d) => Some(d.closest(p).1),
+        // implicit carriers: the outward field gradient at the footpoint
+        SurfaceKind::Implicit(im) => Some(im.closest(p).1),
         // tube: radially outward from the closest path point
         SurfaceKind::Tube { path, .. } => {
             let q = path.closest(p);

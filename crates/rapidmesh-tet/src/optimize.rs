@@ -3176,6 +3176,7 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
     match kind {
         SurfaceKind::Plane => p,
         SurfaceKind::Discrete(d) => d.closest(p).0,
+        SurfaceKind::Implicit(im) => im.closest(p).0,
         SurfaceKind::Tube { path, radius } => {
             let s = rapidmesh_brep::Surface::from_kind(
                 &SurfaceKind::Tube { path: path.clone(), radius: *radius },
@@ -3684,6 +3685,10 @@ fn surface_pass(
                     // Discrete has no UV chart (project_uv drops z), so the
                     // curvature lookup takes the world point directly.
                     dsc.curvature_radius(m)
+                } else if let SurfaceKind::Implicit(ref im) = kind {
+                    // Implicit likewise has no UV chart: field curvature at
+                    // the world point.
+                    im.curvature_radius(m)
                 } else {
                     let s = Surface::from_kind(&kind, &[]);
                     s.curvature_radius(s.project_uv(m))

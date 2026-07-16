@@ -386,6 +386,62 @@ mod tests {
     }
 
     #[test]
+    fn implicit_blend_is_watertight_and_on_surface() {
+        // Smooth union of two spheres — a blend surface no exact B-rep CSG can
+        // express. Enters as a surface-nets proxy, refines against the field.
+        use rapidmesh_geom::{implicit_solid, ImplicitSurface, Sdf};
+        let sdf = Sdf::SmoothUnion {
+            a: Box::new(Sdf::Sphere { center: [-0.6, 0.0, 0.0], radius: 1.0 }),
+            b: Box::new(Sdf::Sphere { center: [0.6, 0.0, 0.0], radius: 1.0 }),
+            k: 0.4,
+        };
+        let surf = ImplicitSurface::new(sdf, ([-2.0, -1.6, -1.6], [2.0, 1.6, 1.6]));
+        let solid = implicit_solid(surf, 40).expect("proxy tessellation");
+        let mut scene = Scene::new();
+        scene.add_solid(solid);
+        let plc = scene.assemble();
+        let m = crate::conform::mesh_plc_with(
+            &plc,
+            &crate::conform::MeshParams { maxh: 0.35, tol_surf: 1e-2, ..Default::default() },
+        );
+        let d = diagnose(&m);
+        assert!(d.watertight, "blend must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
+        assert_eq!(d.n_straddlers, 0, "blend surface straddlers");
+        assert!(d.max_surface_deviation < 0.1, "deviation {}", d.max_surface_deviation);
+        // Two overlapping unit spheres blended: volume above one sphere, below two.
+        let vol: f64 = d.region_volumes.iter().map(|&(_, v)| v).sum();
+        let one = 4.0 / 3.0 * std::f64::consts::PI;
+        assert!(vol > one && vol < 2.0 * one, "blend volume {vol}");
+    }
+
+    #[test]
+    fn implicit_offset_box_boolean_with_brep_box() {
+        // A rounded (offset) implicit box overlapping a sharp B-rep box: the
+        // exact arrangement runs on the surface-nets proxy; the refinement
+        // projects the rounded region back onto the field. Two conforming
+        // regions, watertight across the shared interface.
+        use rapidmesh_geom::{implicit_solid, solid_box, ImplicitSurface, Sdf};
+        let sdf = Sdf::Offset {
+            a: Box::new(Sdf::Box { center: [0.0, 0.0, 0.0], half: [0.7, 0.7, 0.7] }),
+            d: 0.25,
+        };
+        let surf = ImplicitSurface::new(sdf, ([-1.4, -1.4, -1.4], [1.4, 1.4, 1.4]));
+        let rounded = implicit_solid(surf, 40).expect("proxy tessellation");
+        let mut scene = Scene::new();
+        scene.add_solid(rounded);
+        scene.add_solid(solid_box([0.6, -0.4, -0.4], [2.0, 0.4, 0.4]));
+        let plc = scene.assemble();
+        let m = crate::conform::mesh_plc_with(
+            &plc,
+            &crate::conform::MeshParams { maxh: 0.3, tol_surf: 1e-2, ..Default::default() },
+        );
+        let d = diagnose(&m);
+        assert!(d.watertight, "boolean must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
+        assert!(d.region_volumes.len() >= 2, "expected two regions, got {:?}", d.region_volumes);
+        assert!(d.max_surface_deviation < 0.1, "deviation {}", d.max_surface_deviation);
+    }
+
+    #[test]
     fn sphere_is_watertight_and_on_surface() {
         use rapidmesh_geom::sphere;
         let mut scene = Scene::new();

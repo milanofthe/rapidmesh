@@ -50,6 +50,29 @@ on every full corpus run.
 
 The Python extension lives in `python/` (PyO3 + maturin).
 
+## Implicit (SDF) solids
+
+Blends, fillets and offset shells — the geometry class exact B-rep CSG cannot
+express — enter as implicit solids: a signed-distance expression
+(`rapidmesh.sdf` builders: primitives, sharp/smooth booleans, `offset`,
+`shell`) is tessellated once into a surface-nets proxy, the exact arrangement
+runs on the proxy like on any import, and refinement/optimization project onto
+the *analytic* field (gradient-Newton closest point, exact normals, field
+curvature for sizing). Booleans across carrier kinds work: an implicit rounded
+box against a sharp B-rep box meshes as two conforming regions.
+
+```python
+g = rm.Geometry()
+rounded = rm.sdf.offset(rm.sdf.box((0, 0, 0), (0.7, 0.7, 0.7)), 0.25)
+g.implicit(rounded, (-1.4, -1.4, -1.4), (1.4, 1.4, 1.4))
+mesh = g.mesh(maxh=0.3)
+```
+
+The corpus category `Implicit` (blend, fillet, cross-kind boolean) gates the
+path; the EM use cases are rounded conductor edges, conformal
+coating/plating shells (`offset`), and solder/glob-top blends
+(`smooth_union`).
+
 ## 2D meshing (planar / MoM)
 
 The same `surf2d` core that meshes each 3D surface patch is the standalone 2D

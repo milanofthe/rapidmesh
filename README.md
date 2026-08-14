@@ -108,3 +108,7 @@ metrics, quality, log).
 ## License
 
 [MIT](LICENSE).
+
+## Commercial support
+
+Consulting, integration and commercial support: [milanrother.com/consulting](https://milanrother.com/consulting/)

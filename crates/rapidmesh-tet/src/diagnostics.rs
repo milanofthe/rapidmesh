@@ -10,8 +10,8 @@
 //! the picture so every later step is measurable and visible.
 
 use crate::conform::TetMesh;
-use rapidmesh_geom::vec3::{V3, sub, dist};
 use crate::project::closest_on_surface;
+use rapidmesh_geom::vec3::{dist, sub, V3};
 use rapidmesh_geom::SurfaceKind;
 
 /// The kind of a located mesh defect.
@@ -194,7 +194,11 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             hist[bin] += 1;
             if md < SLIVER_DEG {
                 n_slivers += 1;
-                defects.push(Defect { kind: DefectKind::Sliver, pos: centroid(&p), value: md });
+                defects.push(Defect {
+                    kind: DefectKind::Sliver,
+                    pos: centroid(&p),
+                    value: md,
+                });
             }
         }
         if let Some(re) = radius_edge(p) {
@@ -202,7 +206,11 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         }
         *region_vol.entry(mesh.tet_regions[ti].0).or_insert(0.0) += tet_volume(p);
     }
-    let mean_dih = if mesh.tets.is_empty() { 0.0 } else { sum_dih / mesh.tets.len() as f64 };
+    let mean_dih = if mesh.tets.is_empty() {
+        0.0
+    } else {
+        sum_dih / mesh.tets.len() as f64
+    };
 
     // Sliver census (RAPIDMESH_SLIVER_CENSUS): classify every sliver tet by
     // its surface entanglement -- how many of its vertices sit on surface
@@ -309,10 +317,16 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
     // the wrong sphere, and a tagged-only test then reports a phantom straddler for
     // every on-surface vertex it mislabels. Planes carry no geometry here
     // (`closest_on_surface` is the identity), so they cannot anchor the fit.
-    let curved: Vec<&SurfaceKind> =
-        mesh.surfaces.iter().filter(|k| !matches!(k, SurfaceKind::Plane)).collect();
+    let curved: Vec<&SurfaceKind> = mesh
+        .surfaces
+        .iter()
+        .filter(|k| !matches!(k, SurfaceKind::Plane))
+        .collect();
     let nearest_off = |q: V3| -> f64 {
-        curved.iter().map(|k| dist(q, closest_on_surface(k, q))).fold(f64::INFINITY, f64::min)
+        curved
+            .iter()
+            .map(|k| dist(q, closest_on_surface(k, q)))
+            .fold(f64::INFINITY, f64::min)
     };
     for f in &mesh.faces {
         let kind = &mesh.surfaces[f.surface as usize];
@@ -320,13 +334,19 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             continue; // planar faces are exact; deviation is 0
         }
         let v = [pt(f.tri[0]), pt(f.tri[1]), pt(f.tri[2])];
-        let longest = (0..3).map(|k| dist(v[k], v[(k + 1) % 3])).fold(0.0f64, f64::max);
+        let longest = (0..3)
+            .map(|k| dist(v[k], v[(k + 1) % 3]))
+            .fold(0.0f64, f64::max);
         // straddler: a VERTEX off EVERY analytic surface (a genuinely leaked
         // interior point), not merely off this face's tagged surface.
         let vmax_off = v.iter().map(|&q| nearest_off(q)).fold(0.0f64, f64::max);
         if longest > 0.0 && vmax_off > 0.25 * longest {
             n_straddlers += 1;
-            defects.push(Defect { kind: DefectKind::Straddler, pos: centroid(&v), value: vmax_off });
+            defects.push(Defect {
+                kind: DefectKind::Straddler,
+                pos: centroid(&v),
+                value: vmax_off,
+            });
         }
         // accuracy: chord sagitta = centroid distance to the nearest true surface
         // (a real bridge face -- flat over a concave crease -- still reports far off).
@@ -375,11 +395,24 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
         let plc = scene.assemble();
-        let m = crate::conform::mesh_plc_with(&plc, &crate::conform::MeshParams { maxh: 1.0, ..Default::default() });
+        let m = crate::conform::mesh_plc_with(
+            &plc,
+            &crate::conform::MeshParams {
+                maxh: 1.0,
+                ..Default::default()
+            },
+        );
         let d = diagnose(&m);
-        assert!(d.watertight, "box must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
+        assert!(
+            d.watertight,
+            "box must be watertight ({} non-manifold)",
+            d.n_nonmanifold_edges
+        );
         assert_eq!(d.n_straddlers, 0, "a box has no curved straddlers");
-        assert!(d.max_surface_deviation < 1e-9, "planar faces have zero deviation");
+        assert!(
+            d.max_surface_deviation < 1e-9,
+            "planar faces have zero deviation"
+        );
         assert!(d.min_dihedral_deg > 0.0, "well-defined dihedral");
         let vol: f64 = d.region_volumes.iter().map(|&(_, v)| v).sum();
         assert!((vol - 24.0).abs() < 1e-6, "box volume 24, got {vol}");
@@ -391,11 +424,26 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(sphere([0.0, 0.0, 0.0], 1.0, 24, 12));
         let plc = scene.assemble();
-        let m = crate::conform::mesh_plc_with(&plc, &crate::conform::MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
+        let m = crate::conform::mesh_plc_with(
+            &plc,
+            &crate::conform::MeshParams {
+                maxh: 0.4,
+                tol_surf: 1e-2,
+                ..Default::default()
+            },
+        );
         let d = diagnose(&m);
-        assert!(d.watertight, "sphere must be watertight ({} non-manifold)", d.n_nonmanifold_edges);
+        assert!(
+            d.watertight,
+            "sphere must be watertight ({} non-manifold)",
+            d.n_nonmanifold_edges
+        );
         assert_eq!(d.n_straddlers, 0, "a well-sampled sphere has no straddlers");
         // chord sagitta of a radius-1 sphere at this density is small but nonzero
-        assert!(d.max_surface_deviation < 0.1, "sphere deviation within tol, got {}", d.max_surface_deviation);
+        assert!(
+            d.max_surface_deviation < 0.1,
+            "sphere deviation within tol, got {}",
+            d.max_surface_deviation
+        );
     }
 }

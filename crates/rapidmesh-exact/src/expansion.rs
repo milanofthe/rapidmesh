@@ -318,7 +318,13 @@ pub fn div_round(x: &Expansion, w: &Expansion) -> f64 {
                 match beyond_mid(q, n) {
                     Sign::Positive => q = n,
                     Sign::Negative => return q + 0.0,
-                    Sign::Zero => return if (q.to_bits() & 1) == 0 { q + 0.0 } else { n + 0.0 },
+                    Sign::Zero => {
+                        return if (q.to_bits() & 1) == 0 {
+                            q + 0.0
+                        } else {
+                            n + 0.0
+                        }
+                    }
                 }
             }
             Sign::Negative => {
@@ -326,7 +332,13 @@ pub fn div_round(x: &Expansion, w: &Expansion) -> f64 {
                 match beyond_mid(n, q) {
                     Sign::Negative => q = n,
                     Sign::Positive => return q + 0.0,
-                    Sign::Zero => return if (q.to_bits() & 1) == 0 { q + 0.0 } else { n + 0.0 },
+                    Sign::Zero => {
+                        return if (q.to_bits() & 1) == 0 {
+                            q + 0.0
+                        } else {
+                            n + 0.0
+                        }
+                    }
                 }
             }
         }

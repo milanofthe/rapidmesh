@@ -36,7 +36,16 @@ impl GradedField {
         }
         if grading > 0.0 {
             let (s, sd) = (grading * cell, grading * cell * std::f64::consts::SQRT_2);
-            let nb = [(-1i32, 0i32, s), (1, 0, s), (0, -1, s), (0, 1, s), (-1, -1, sd), (1, -1, sd), (-1, 1, sd), (1, 1, sd)];
+            let nb = [
+                (-1i32, 0i32, s),
+                (1, 0, s),
+                (0, -1, s),
+                (0, 1, s),
+                (-1, -1, sd),
+                (1, -1, sd),
+                (-1, 1, sd),
+                (1, 1, sd),
+            ];
             // Min-plus fast sweep: 2 rounds × 4 sweep directions propagate the envelope everywhere.
             for _ in 0..2 {
                 for d in 0..4 {
@@ -62,7 +71,13 @@ impl GradedField {
                 }
             }
         }
-        GradedField { lo, cell, nx, ny, v }
+        GradedField {
+            lo,
+            cell,
+            nx,
+            ny,
+            v,
+        }
     }
 
     /// Field value at `p`: bilinear interpolation over the grid (clamped to the border outside).

@@ -6,13 +6,12 @@
 
 // Leaf capacity + depth cap: see crate::constants.
 use crate::constants::{OCTREE_LEAF_CAP as LEAF_CAP, OCTREE_MAX_DEPTH as MAX_DEPTH};
-use rapidmesh_geom::vec3::{V3};
+use rapidmesh_geom::vec3::V3;
 
 fn dist2(a: V3, b: V3) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
-
 
 enum Node {
     Leaf(Vec<u32>),
@@ -57,7 +56,12 @@ impl Octree {
         half = (half * 1.0001).max(1e-12);
         let all: Vec<u32> = (0..pts.len() as u32).collect();
         let root = build_node(&pts, center, half, all, 0);
-        Octree { pts, center, half, root }
+        Octree {
+            pts,
+            center,
+            half,
+            root,
+        }
     }
 
     /// Index of the point nearest to `q`, or `None` if the tree is empty.
@@ -73,7 +77,6 @@ impl Octree {
             Some(best.1)
         }
     }
-
 }
 
 fn child_box(center: V3, half: f64, octant: usize) -> (V3, f64) {
@@ -172,7 +175,11 @@ mod tests {
         for i in 0..n {
             for j in 0..n {
                 for k in 0..n {
-                    v.push([i as f64 * 0.37, j as f64 * 0.61 - 2.0, k as f64 * 0.13 + 1.0]);
+                    v.push([
+                        i as f64 * 0.37,
+                        j as f64 * 0.61 - 2.0,
+                        k as f64 * 0.13 + 1.0,
+                    ]);
                 }
             }
         }

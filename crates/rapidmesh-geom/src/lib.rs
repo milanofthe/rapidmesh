@@ -15,21 +15,24 @@ pub mod nurbs_surface;
 pub mod plc;
 pub mod polygon;
 pub mod prim;
-pub mod tube;
 pub mod scene;
+pub mod tube;
 pub mod vec3;
 
 pub use discrete::DiscreteSurface;
-pub use tube::TubePath;
 pub use faceted::{Faceted, FlatFacet, SurfaceKind};
-pub use import::{import_obj, import_obj_creased, import_stl, import_stl_creased, min_height_ratio, validate_closed, ImportError, CREASE_DEG};
-pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
-pub use scene::Scene;
-pub use polygon::{polygon_orientation, triangulate_polygon};
+pub use import::{
+    import_obj, import_obj_creased, import_stl, import_stl_creased, min_height_ratio,
+    validate_closed, ImportError, CREASE_DEG,
+};
 pub use nurbs::NurbsCurve;
 pub use nurbs_surface::NurbsSurface;
+pub use plc::{FaceTag, RegionTag, SurfaceRef, TaggedPlc};
+pub use polygon::{polygon_orientation, triangulate_polygon};
 pub use prim::{
-    cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, frustum, frustum_iso, helix,
-    icosphere, loft, mesh_solid, naca0012_profile, pipe, sheet_disk, sheet_polygon, sheet_rect,
-    solid_box, sphere, torus, wedge, facet_count, facet_subdivisions,
+    cylinder, cylinder_iso, extrude_polygon, extrude_spline_profile, facet_count,
+    facet_subdivisions, frustum, frustum_iso, helix, icosphere, loft, mesh_solid, naca0012_profile,
+    pipe, sheet_disk, sheet_polygon, sheet_rect, solid_box, sphere, torus, wedge,
 };
+pub use scene::Scene;
+pub use tube::TubePath;

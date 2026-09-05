@@ -15,7 +15,7 @@ use crate::{
     Brep, CoEdge, CoEdgeId, Curve, Edge, EdgeId, Face, FaceId, Loop, PCurve, Surface, SurfaceId,
     Vertex, VertexId,
 };
-use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, dist, normalize as norm};
+use rapidmesh_geom::vec3::{add, cross, dist, dot, normalize as norm, scale, sub, V3};
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 // Deterministic (seedless) hashers: from_plc's map ITERATION order sets the
 // B-rep edge / face / vertex order, which flows into the surface point order and
@@ -79,13 +79,21 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     // patches of the same surface stay separate).
     let tkey = |i: usize| -> (u32, u32, u32, u32) {
         let r = plc.region_tags[i];
-        (plc.surface_refs[i].0, r[0].0.min(r[1].0), r[0].0.max(r[1].0), plc.face_tags[i].0)
+        (
+            plc.surface_refs[i].0,
+            r[0].0.min(r[1].0),
+            r[0].0.max(r[1].0),
+            plc.face_tags[i].0,
+        )
     };
     let mut edge_tris: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
     for i in 0..n_tri {
         let c = tri(i);
         for e in 0..3 {
-            edge_tris.entry(key2(c[e], c[(e + 1) % 3])).or_default().push(i);
+            edge_tris
+                .entry(key2(c[e], c[(e + 1) % 3]))
+                .or_default()
+                .push(i);
         }
     }
     let mut frep: Vec<usize> = (0..n_tri).collect();
@@ -194,7 +202,11 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     };
     let mut chains: Vec<Vec<usize>> = Vec::new();
     let mut done: HashSet<(usize, usize)> = HashSet::default();
-    let mut corners: Vec<usize> = adj.keys().copied().filter(|&v| is_corner(v, &adj)).collect();
+    let mut corners: Vec<usize> = adj
+        .keys()
+        .copied()
+        .filter(|&v| is_corner(v, &adj))
+        .collect();
     corners.sort_unstable();
     for &c0 in &corners {
         for &start in &adj[&c0].clone() {
@@ -236,9 +248,9 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     let mut vid: HashMap<usize, VertexId> = HashMap::default();
     let mut vertices: Vec<Vertex> = Vec::new();
     let corner_id = |plc_v: usize,
-                         vid: &mut HashMap<usize, VertexId>,
-                         vertices: &mut Vec<Vertex>,
-                         vrep: &[usize]|
+                     vid: &mut HashMap<usize, VertexId>,
+                     vertices: &mut Vec<Vertex>,
+                     vrep: &[usize]|
      -> VertexId {
         let r = vrep[plc_v];
         *vid.entry(r).or_insert_with(|| {
@@ -258,10 +270,18 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         let chain_pts: Vec<V3> = ch.iter().map(|&v| pos[v]).collect();
         // radial faces: the face set of the chain's segments (constant by the
         // same-face-set split, so the first segment suffices).
-        let mut rad: Vec<FaceId> = fset(ch[0], ch[1]).iter().map(|&f| FaceId(f as u32)).collect();
+        let mut rad: Vec<FaceId> = fset(ch[0], ch[1])
+            .iter()
+            .map(|&f| FaceId(f as u32))
+            .collect();
         rad.sort_unstable();
         let curve = recover_curve(&chain_pts, &rad, &faces, plc, tol);
-        edges.push(Edge { ends: [va, vb], chain: chain_pts, curve, coedges: Vec::new() });
+        edges.push(Edge {
+            ends: [va, vb],
+            chain: chain_pts,
+            curve,
+            coedges: Vec::new(),
+        });
         edge_faces.push(rad);
     }
 
@@ -285,9 +305,16 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         // not the float edge points. Other kinds ignore the frame (self-contained).
         let frame_pts: Vec<V3> = if let Some(&tfi) = faces[fid].facets.first() {
             let t = plc.triangles[tfi as usize];
-            vec![plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]]
+            vec![
+                plc.vertices[t[0] as usize],
+                plc.vertices[t[1] as usize],
+                plc.vertices[t[2] as usize],
+            ]
         } else {
-            signed.first().map(|lp| loop_points(lp, &edges)).unwrap_or_default()
+            signed
+                .first()
+                .map(|lp| loop_points(lp, &edges))
+                .unwrap_or_default()
         };
         let mut kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
         // A `Plane` kind whose facets are NOT coplanar is a faceted CURVED
@@ -348,7 +375,13 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         faces[fid].loops = loops_out;
     }
 
-    Brep { vertices, edges, coedges, faces, surfaces }
+    Brep {
+        vertices,
+        edges,
+        coedges,
+        faces,
+        surfaces,
+    }
 }
 
 /// Ordered 3D points along a signed-edge loop (chains concatenated, reversed where
@@ -357,7 +390,11 @@ fn loop_points(sl: &[(usize, bool)], edges: &[Edge]) -> Vec<V3> {
     let mut pts: Vec<V3> = Vec::new();
     for &(ei, fwd) in sl {
         let ch = &edges[ei].chain;
-        let seq: Vec<V3> = if fwd { ch.clone() } else { ch.iter().rev().cloned().collect() };
+        let seq: Vec<V3> = if fwd {
+            ch.clone()
+        } else {
+            ch.iter().rev().cloned().collect()
+        };
         for p in seq {
             if pts.last().map(|&q| dist(q, p) > 1e-12).unwrap_or(true) {
                 pts.push(p);
@@ -400,7 +437,9 @@ fn order_loops(eids: &[usize], edges: &[Edge]) -> Vec<Vec<(usize, bool)>> {
             let next_v = if forward { b.0 } else { a.0 };
             seq.push((cur, forward));
             perim += arc_len(&edges[cur].chain);
-            let nxt = adj.get(&next_v).and_then(|inc| inc.iter().copied().find(|&e| !used[e]));
+            let nxt = adj
+                .get(&next_v)
+                .and_then(|inc| inc.iter().copied().find(|&e| !used[e]));
             match nxt {
                 Some(e) => {
                     cur = e;
@@ -422,13 +461,7 @@ fn arc_len(chain: &[V3]) -> f64 {
 /// Recovers the analytic curve of an edge from its vertex chain and the surfaces
 /// of its radial faces. Handles the forms our scenes use; everything else falls
 /// back to the faceted polyline (`Curve::Polyline`).
-fn recover_curve(
-    chain: &[V3],
-    rad: &[FaceId],
-    faces: &[Face],
-    plc: &TaggedPlc,
-    tol: f64,
-) -> Curve {
+fn recover_curve(chain: &[V3], rad: &[FaceId], faces: &[Face], plc: &TaggedPlc, tol: f64) -> Curve {
     if chain.len() < 2 {
         return Curve::Polyline;
     }
@@ -459,16 +492,27 @@ fn recover_curve(
     // independent, so the recovered circle lies exactly on both spheres.
     let spheres: Vec<(V3, f64)> = rad
         .iter()
-        .filter_map(|f| match &plc.surfaces[faces[f.0 as usize].plc_surface as usize] {
-            SurfaceKind::Sphere { center, radius } => Some((*center, *radius)),
-            _ => None,
-        })
+        .filter_map(
+            |f| match &plc.surfaces[faces[f.0 as usize].plc_surface as usize] {
+                SurfaceKind::Sphere { center, radius } => Some((*center, *radius)),
+                _ => None,
+            },
+        )
         .collect();
     if spheres.len() >= 2 {
-        if let Some((center, axis, radius, x)) =
-            sphere_sphere_circle(spheres[0].0, spheres[0].1, spheres[1].0, spheres[1].1, chain)
-        {
-            return Curve::Circle { center, axis, radius, x };
+        if let Some((center, axis, radius, x)) = sphere_sphere_circle(
+            spheres[0].0,
+            spheres[0].1,
+            spheres[1].0,
+            spheres[1].1,
+            chain,
+        ) {
+            return Curve::Circle {
+                center,
+                axis,
+                radius,
+                x,
+            };
         }
     }
 
@@ -483,7 +527,12 @@ fn recover_curve(
         analytic_circle(chain, kind).filter(|c| circle_fits_chain(chain, c))
     });
     if let Some((center, axis, radius, x)) = circ {
-        return Curve::Circle { center, axis, radius, x };
+        return Curve::Circle {
+            center,
+            axis,
+            radius,
+            x,
+        };
     }
 
     // Oblique plane section of a cylinder: an exact ELLIPSE (the axis-perpendicular
@@ -494,15 +543,24 @@ fn recover_curve(
     let planes: Vec<(V3, V3)> = rad
         .iter()
         .filter(|f| {
-            matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+            matches!(
+                plc.surfaces[faces[f.0 as usize].plc_surface as usize],
+                SurfaceKind::Plane
+            )
         })
         .filter_map(|f| exact_face_plane(&faces[f.0 as usize], plc))
         .collect();
     for f in rad {
         let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
-        if let SurfaceKind::Cylinder { center, axis, radius } = kind {
+        if let SurfaceKind::Cylinder {
+            center,
+            axis,
+            radius,
+        } = kind
+        {
             for &(po, pn) in &planes {
-                if let Some(e) = plane_cylinder_ellipse(chain, po, pn, *center, norm(*axis), *radius, tol)
+                if let Some(e) =
+                    plane_cylinder_ellipse(chain, po, pn, *center, norm(*axis), *radius, tol)
                 {
                     return e;
                 }
@@ -513,13 +571,20 @@ fn recover_curve(
     // On an extruded surface at constant height: the analytic profile curve.
     for f in rad {
         let sid = faces[f.0 as usize].surface;
-        if let SurfaceKind::Extruded { profile, base, udir, vdir, axis } =
-            &plc.surfaces[sid.0 as usize]
+        if let SurfaceKind::Extruded {
+            profile,
+            base,
+            udir,
+            vdir,
+            axis,
+        } = &plc.surfaces[sid.0 as usize]
         {
             let (u, v, a) = (norm(*udir), norm(*vdir), norm(*axis));
             let z0 = dot(sub(p0, *base), a);
             // constant extrusion height along the whole chain -> a profile edge
-            let const_h = chain.iter().all(|&p| (dot(sub(p, *base), a) - z0).abs() < tol.max(1e-7));
+            let const_h = chain
+                .iter()
+                .all(|&p| (dot(sub(p, *base), a) - z0).abs() < tol.max(1e-7));
             if const_h {
                 let foot = |p: V3| -> f64 {
                     let rel = sub(p, *base);
@@ -548,7 +613,11 @@ fn recover_curve(
             .iter()
             .map(|&f| {
                 let sid = faces[f.0 as usize].plc_surface;
-                (matches!(plc.surfaces[sid as usize], SurfaceKind::Plane), sid, f)
+                (
+                    matches!(plc.surfaces[sid as usize], SurfaceKind::Plane),
+                    sid,
+                    f,
+                )
             })
             .collect();
         carriers.sort_unstable_by_key(|&(is_plane, sid, _)| (is_plane, sid));
@@ -568,11 +637,19 @@ fn recover_curve(
     // a circular chain with no recoverable carrier pair (a smooth seam inside one
     // surface). Loose by nature, so it must never shadow an exact recovery.
     let curved = rad.iter().any(|f| {
-        !matches!(plc.surfaces[faces[f.0 as usize].plc_surface as usize], SurfaceKind::Plane)
+        !matches!(
+            plc.surfaces[faces[f.0 as usize].plc_surface as usize],
+            SurfaceKind::Plane
+        )
     });
     if curved {
         if let Some((center, axis, radius, x)) = fit_circle(chain) {
-            return Curve::Circle { center, axis, radius, x };
+            return Curve::Circle {
+                center,
+                axis,
+                radius,
+                x,
+            };
         }
     }
 
@@ -667,7 +744,13 @@ fn plane_cylinder_ellipse(
             return None;
         }
     }
-    Some(Curve::Ellipse { center, major: major_dir, minor: minor_dir, a, b })
+    Some(Curve::Ellipse {
+        center,
+        major: major_dir,
+        minor: minor_dir,
+        a,
+        b,
+    })
 }
 
 /// The chain's best-fit plane `(centroid, unit Newell normal)`; `None` if degenerate.
@@ -699,7 +782,13 @@ fn chain_plane(chain: &[V3]) -> Option<(V3, V3)> {
 /// plane (perpendicular to the centre line, at the exact offset). Returns
 /// `(center, unit axis, radius, unit in-plane x toward the chain start)`. None if
 /// the spheres are concentric, tangent, or disjoint.
-fn sphere_sphere_circle(c1: V3, r1: f64, c2: V3, r2: f64, chain: &[V3]) -> Option<(V3, V3, f64, V3)> {
+fn sphere_sphere_circle(
+    c1: V3,
+    r1: f64,
+    c2: V3,
+    r2: f64,
+    chain: &[V3],
+) -> Option<(V3, V3, f64, V3)> {
     let dvec = sub(c2, c1);
     let d2 = dot(dvec, dvec);
     if d2 < 1e-18 {
@@ -714,7 +803,9 @@ fn sphere_sphere_circle(c1: V3, r1: f64, c2: V3, r2: f64, chain: &[V3]) -> Optio
     }
     let center = add(c1, scale(axis, a));
     let dchain = sub(chain[0], center);
-    let x = norm(std::array::from_fn(|k| dchain[k] - axis[k] * dot(dchain, axis)));
+    let x = norm(std::array::from_fn(|k| {
+        dchain[k] - axis[k] * dot(dchain, axis)
+    }));
     Some((center, axis, rr.sqrt(), x))
 }
 
@@ -734,7 +825,11 @@ fn analytic_circle(chain: &[V3], kind: &SurfaceKind) -> Option<(V3, V3, f64, V3)
             let c = add(*center, scale(n, d));
             Some((c, n, r2.sqrt(), xref(c, n)))
         }
-        SurfaceKind::Cylinder { center, axis, radius } => {
+        SurfaceKind::Cylinder {
+            center,
+            axis,
+            radius,
+        } => {
             let a = norm(*axis);
             if dot(n, a).abs() < 0.99 {
                 return None; // the plane must cut perpendicular to the axis
@@ -742,7 +837,11 @@ fn analytic_circle(chain: &[V3], kind: &SurfaceKind) -> Option<(V3, V3, f64, V3)
             let c = add(*center, scale(a, dot(sub(o, *center), a)));
             Some((c, a, *radius, xref(c, a)))
         }
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             let a = norm(*axis);
             if dot(n, a).abs() < 0.99 {
                 return None;

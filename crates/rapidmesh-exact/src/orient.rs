@@ -85,8 +85,9 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
                         for parent in &parents[..2] {
                             let mut q = explicit;
                             q[k] = *parent;
-                            match Sign::of_f64(geometry_predicates::orient3d(q[0], q[1], q[2], q[3]))
-                            {
+                            match Sign::of_f64(geometry_predicates::orient3d(
+                                q[0], q[1], q[2], q[3],
+                            )) {
                                 Sign::Positive => pos = true,
                                 Sign::Negative => neg = true,
                                 Sign::Zero => {}
@@ -117,9 +118,7 @@ pub fn orient3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3) -> Option<Sign> 
         affine_interval(c),
         affine_interval(d),
     ) {
-        let row = |p: &[Interval; 3]| -> [Interval; 3] {
-            std::array::from_fn(|k| p[k].sub(pd[k]))
-        };
+        let row = |p: &[Interval; 3]| -> [Interval; 3] { std::array::from_fn(|k| p[k].sub(pd[k])) };
         if let Some(sign) = det3(&[row(&pa), row(&pb), row(&pc)]).sign() {
             return Some(sign);
         }
@@ -194,12 +193,7 @@ pub fn incircle2d(a: &Point3, b: &Point3, c: &Point3, d: &Point3, drop: Axis) ->
 
     fn lifted_row<T: crate::ring::Ring>(h: &[T; 3]) -> [T; 4] {
         let (x, y, w) = (&h[0], &h[1], &h[2]);
-        [
-            x.mul(w),
-            y.mul(w),
-            x.mul(x).add(&y.mul(y)),
-            w.mul(w),
-        ]
+        [x.mul(w), y.mul(w), x.mul(x).add(&y.mul(y)), w.mul(w)]
     }
 
     let pts = [a, b, c, d];
@@ -240,13 +234,7 @@ pub fn incircle2d(a: &Point3, b: &Point3, c: &Point3, d: &Point3, drop: Axis) ->
 /// by w^2 becomes (X W, Y W, Z W, X^2 + Y^2 + Z^2, W^2), polynomial in the
 /// homogeneous coordinates; the scaling factors w^2 are strictly positive
 /// for valid points, so the determinant sign needs no w correction.
-pub fn insphere3d(
-    a: &Point3,
-    b: &Point3,
-    c: &Point3,
-    d: &Point3,
-    e: &Point3,
-) -> Option<Sign> {
+pub fn insphere3d(a: &Point3, b: &Point3, c: &Point3, d: &Point3, e: &Point3) -> Option<Sign> {
     // Fast adaptive path: all points explicit.
     if let (Some(pa), Some(pb), Some(pc), Some(pd), Some(pe)) = (
         a.as_explicit(),

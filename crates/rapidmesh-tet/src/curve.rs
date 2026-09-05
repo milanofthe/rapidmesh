@@ -18,8 +18,8 @@
 //! not know about the mesh, surfaces, or the PLC; higher stages feed it curves and
 //! consume its points.
 
-use rapidmesh_geom::vec3::{V3, dist};
 use crate::geomutil::circumradius;
+use rapidmesh_geom::vec3::{dist, V3};
 /// A general edge curve, parametrized by arc length `s in [0, length()]`.
 /// `Send + Sync` supertraits: curve evaluators are plain data, and the
 /// refiner is shared across rayon workers for its read-only stages.
@@ -65,10 +65,12 @@ impl PolylineCurve {
     /// Sample index `i` with `cum[i] <= s` (for interpolation).
     fn seg(&self, s: f64) -> usize {
         let s = s.clamp(0.0, self.cum[self.cum.len() - 1]);
-        self.cum.partition_point(|&c| c < s).clamp(1, self.cum.len() - 1) - 1
+        self.cum
+            .partition_point(|&c| c < s)
+            .clamp(1, self.cum.len() - 1)
+            - 1
     }
 }
-
 
 impl Curve for PolylineCurve {
     fn length(&self) -> f64 {
@@ -78,7 +80,11 @@ impl Curve for PolylineCurve {
     fn point_at(&self, s: f64) -> V3 {
         let i = self.seg(s);
         let (s0, s1) = (self.cum[i], self.cum[i + 1]);
-        let f = if s1 > s0 { (s.clamp(s0, s1) - s0) / (s1 - s0) } else { 0.0 };
+        let f = if s1 > s0 {
+            (s.clamp(s0, s1) - s0) / (s1 - s0)
+        } else {
+            0.0
+        };
         std::array::from_fn(|k| self.pts[i][k] + f * (self.pts[i + 1][k] - self.pts[i][k]))
     }
 
@@ -86,9 +92,7 @@ impl Curve for PolylineCurve {
         // Osculating radius at the sample nearest `s` (its two polyline neighbours).
         let i = self.seg(s);
         // Use the vertex closest to s as the apex of the triple.
-        let apex = if i + 1 < self.pts.len()
-            && (s - self.cum[i]) > (self.cum[i + 1] - s)
-        {
+        let apex = if i + 1 < self.pts.len() && (s - self.cum[i]) > (self.cum[i + 1] - s) {
             i + 1
         } else {
             i
@@ -122,7 +126,13 @@ pub fn distribute_floored(
     for i in 0..=m {
         let s = (i as f64) * ds;
         let r = curve.radius_at(s);
-        h[i] = if r.is_finite() { (r * chord).min(maxh) } else { maxh }.max(minh).max(1e-12);
+        h[i] = if r.is_finite() {
+            (r * chord).min(maxh)
+        } else {
+            maxh
+        }
+        .max(minh)
+        .max(1e-12);
     }
     // Multiplicative gradient limit: h cannot grow faster than the ratio (1+grad)
     // per element of its own length. Over a sub-element sample step `ds`, that is
@@ -212,7 +222,9 @@ mod tests {
 
     #[test]
     fn straight_edge_uses_maxh() {
-        let pts: Vec<V3> = (0..=50).map(|i| [i as f64 / 50.0 * 10.0, 0.0, 0.0]).collect();
+        let pts: Vec<V3> = (0..=50)
+            .map(|i| [i as f64 / 50.0 * 10.0, 0.0, 0.0])
+            .collect();
         let c = PolylineCurve::new(&pts).unwrap();
         let s = distribute_floored(&c, 0.02, 1.0, 0.3, 0.0);
         let n = s.len() - 1;
@@ -246,6 +258,9 @@ mod tests {
         }
         assert!(worst < 1.6, "adjacent spacing ratio {worst} not smooth");
         // And it must actually refine the bump (some element far below maxh).
-        assert!(spc.iter().cloned().fold(f64::MAX, f64::min) < 0.1, "bump not refined");
+        assert!(
+            spc.iter().cloned().fold(f64::MAX, f64::min) < 0.1,
+            "bump not refined"
+        );
     }
 }

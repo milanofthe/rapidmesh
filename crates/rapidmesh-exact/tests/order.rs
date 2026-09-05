@@ -2,9 +2,7 @@
 
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
-use rapidmesh_exact::{
-    cmp_along, collinear, strictly_between, within_closed, Point3, Sign,
-};
+use rapidmesh_exact::{cmp_along, collinear, strictly_between, within_closed, Point3, Sign};
 use rapidmesh_testutil::{affine, rat, Rng};
 
 trait RngExt {
@@ -120,7 +118,10 @@ fn lli_coplanar_intersection_is_on_both_lines() {
             Some(true)
         );
     }
-    assert!(valid > 100, "expected many valid intersections, got {valid}");
+    assert!(
+        valid > 100,
+        "expected many valid intersections, got {valid}"
+    );
 }
 
 #[test]

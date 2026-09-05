@@ -118,11 +118,7 @@ pub fn triangulate_polygon(outer: &[[f64; 2]], holes: &[Vec<[f64; 2]>]) -> Vec<[
     // Keep sub-triangles whose barycenter is inside by even-odd parity.
     let mut out = Vec::new();
     for t in &ft.triangles {
-        let (p0, p1, p2) = (
-            &ft.vertices[t[0]],
-            &ft.vertices[t[1]],
-            &ft.vertices[t[2]],
-        );
+        let (p0, p1, p2) = (&ft.vertices[t[0]], &ft.vertices[t[1]], &ft.vertices[t[2]]);
         let bary = Point3::bary(p0.clone(), p1.clone(), p2.clone());
         if !point_in_edges_z0(&bary, &edges, hi) {
             continue;

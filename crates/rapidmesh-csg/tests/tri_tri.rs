@@ -217,7 +217,10 @@ fn tri_tri_segment_endpoints_lie_on_both_planes() {
             }
         }
     }
-    assert!(segments > 10, "expected many intersecting pairs, got {segments}");
+    assert!(
+        segments > 10,
+        "expected many intersecting pairs, got {segments}"
+    );
 }
 
 #[test]
@@ -252,8 +255,7 @@ fn tri_tri_handcrafted_cases() {
             let e0 = Point3::explicit(-2.0, -2.0, 0.0);
             let e1 = Point3::explicit(2.0, -2.0, 0.0);
             assert!(
-                (a.coincides(&e0) && b.coincides(&e1))
-                    || (a.coincides(&e1) && b.coincides(&e0))
+                (a.coincides(&e0) && b.coincides(&e1)) || (a.coincides(&e1) && b.coincides(&e0))
             );
         }
         other => panic!("expected shared-edge Segment, got {other:?}"),
@@ -261,5 +263,8 @@ fn tri_tri_handcrafted_cases() {
 
     // Clearly separated.
     let far = Tri::new([10.0, 10.0, 10.0], [11.0, 10.0, 10.0], [10.0, 11.0, 10.0]);
-    assert_eq!(tri_tri_intersection(&horizontal, &far), TriTriIsect::Disjoint);
+    assert_eq!(
+        tri_tri_intersection(&horizontal, &far),
+        TriTriIsect::Disjoint
+    );
 }

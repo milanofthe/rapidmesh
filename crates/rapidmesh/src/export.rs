@@ -100,7 +100,10 @@ pub fn write_manifest(out_dir: &Path) {
         })
         .collect();
     names.sort_by_key(|n| {
-        let rank = canonical.iter().position(|&c| c == n).unwrap_or(canonical.len());
+        let rank = canonical
+            .iter()
+            .position(|&c| c == n)
+            .unwrap_or(canonical.len());
         (rank, n.clone())
     });
     std::fs::write(
@@ -146,11 +149,11 @@ pub fn write_plc_json(
         let u: [f64; 3] = std::array::from_fn(|k| p[1][k] - p[0][k]);
         let v: [f64; 3] = std::array::from_fn(|k| p[2][k] - p[0][k]);
         let w: [f64; 3] = std::array::from_fn(|k| p[3][k] - p[0][k]);
-        let vol = (u[0] * (v[1] * w[2] - v[2] * w[1]) + u[1] * (v[2] * w[0] - v[0] * w[2])
+        let vol = (u[0] * (v[1] * w[2] - v[2] * w[1])
+            + u[1] * (v[2] * w[0] - v[0] * w[2])
             + u[2] * (v[0] * w[1] - v[1] * w[0]))
             .abs();
-        let bary: [f64; 3] =
-            std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k] + p[3][k]) / 4.0);
+        let bary: [f64; 3] = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k] + p[3][k]) / 4.0);
         let e = best.entry(r.0).or_insert((-1.0, bary));
         if vol > e.0 {
             *e = (vol, bary);

@@ -246,7 +246,13 @@ impl Faceted {
                         major_radius: *major_radius,
                         minor_radius: *minor_radius,
                     },
-                    SurfaceKind::Extruded { profile, base, udir, vdir, axis } => {
+                    SurfaceKind::Extruded {
+                        profile,
+                        base,
+                        udir,
+                        vdir,
+                        axis,
+                    } => {
                         // Rigid map: the 2D profile is unchanged; its frame and
                         // origin move with the shape.
                         SurfaceKind::Extruded {

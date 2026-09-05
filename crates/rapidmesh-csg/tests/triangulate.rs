@@ -91,5 +91,8 @@ fn randomized_plane_cut_constraints_keep_all_invariants() {
         let ft = triangulate_facet(&facet, &points, &constraints);
         check_invariants(&facet, &ft, &constraints);
     }
-    assert!(nontrivial > 30, "expected many constrained cases, got {nontrivial}");
+    assert!(
+        nontrivial > 30,
+        "expected many constrained cases, got {nontrivial}"
+    );
 }

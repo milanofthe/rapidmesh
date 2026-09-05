@@ -54,8 +54,15 @@ impl Aabb {
 }
 
 pub(crate) enum Bvh {
-    Leaf { aabb: Aabb, items: Vec<usize> },
-    Inner { aabb: Aabb, left: Box<Bvh>, right: Box<Bvh> },
+    Leaf {
+        aabb: Aabb,
+        items: Vec<usize>,
+    },
+    Inner {
+        aabb: Aabb,
+        left: Box<Bvh>,
+        right: Box<Bvh>,
+    },
 }
 
 impl Bvh {
@@ -84,8 +91,14 @@ pub(crate) fn build_bvh(items: &mut [usize], boxes: &[Aabb]) -> Bvh {
     let axis = (0..3)
         .max_by(|&a, &b| {
             let spread = |k: usize| {
-                let lo = items.iter().map(|&i| boxes[i].centroid(k)).fold(f64::MAX, f64::min);
-                let hi = items.iter().map(|&i| boxes[i].centroid(k)).fold(f64::MIN, f64::max);
+                let lo = items
+                    .iter()
+                    .map(|&i| boxes[i].centroid(k))
+                    .fold(f64::MAX, f64::min);
+                let hi = items
+                    .iter()
+                    .map(|&i| boxes[i].centroid(k))
+                    .fold(f64::MIN, f64::max);
                 hi - lo
             };
             spread(a).partial_cmp(&spread(b)).expect("finite")
@@ -156,7 +169,11 @@ fn cross_pairs(a: &Bvh, b: &Bvh, boxes: &[Aabb], out: &mut Vec<(usize, usize)>) 
 /// (closed, convex) facet. Returns the clipped sub-segment endpoints ordered
 /// along u→v; they coincide for a single-point touch. `None` if the edge
 /// misses the facet.
-pub(crate) fn clip_coplanar_edge(facet: &Tri, u: [f64; 3], v: [f64; 3]) -> Option<(Point3, Point3)> {
+pub(crate) fn clip_coplanar_edge(
+    facet: &Tri,
+    u: [f64; 3],
+    v: [f64; 3],
+) -> Option<(Point3, Point3)> {
     let (axis, orientation) = facet.projection_axis();
     let pu = Point3::Explicit(u);
     let pv = Point3::Explicit(v);
@@ -179,8 +196,7 @@ pub(crate) fn clip_coplanar_edge(facet: &Tri, u: [f64; 3], v: [f64; 3]) -> Optio
             }
         }
         // Facet corner lying on the edge (covers collinear-overlap cases).
-        if collinear(&pu, &pv, &pa).expect("valid")
-            && within_closed(&pu, &pv, &pa).expect("valid")
+        if collinear(&pu, &pv, &pa).expect("valid") && within_closed(&pu, &pv, &pa).expect("valid")
         {
             cands.push(pa);
         }

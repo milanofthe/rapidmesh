@@ -4,8 +4,8 @@
 use num_rational::BigRational;
 use num_traits::Zero;
 use rapidmesh_exact::Sign;
-use rapidmesh_tet::tetrahedralize;
 use rapidmesh_testutil::{rat, Rng};
+use rapidmesh_tet::tetrahedralize;
 
 fn box_corners(lo: [f64; 3], hi: [f64; 3]) -> Vec<[f64; 3]> {
     (0..8)
@@ -35,7 +35,11 @@ fn check(points: &[[f64; 3]], box_volume6: f64) {
             + &r[0][2] * (&r[1][0] * &r[2][1] - &r[1][1] * &r[2][0]);
         acc + det
     });
-    assert_eq!(v6, rat(box_volume6), "tet volumes must fill the hull exactly");
+    assert_eq!(
+        v6,
+        rat(box_volume6),
+        "tet volumes must fill the hull exactly"
+    );
 
     // Exact Delaunay property: no point strictly inside any circumsphere.
     for t in &dt.tets {
@@ -57,7 +61,12 @@ fn check(points: &[[f64; 3]], box_volume6: f64) {
     // Conformity: every face in at most 2 tets.
     let mut count: std::collections::HashMap<[usize; 3], usize> = std::collections::HashMap::new();
     for t in &dt.tets {
-        for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
+        for f in [
+            [t[0], t[1], t[2]],
+            [t[0], t[1], t[3]],
+            [t[0], t[2], t[3]],
+            [t[1], t[2], t[3]],
+        ] {
             let mut k = f;
             k.sort_unstable();
             *count.entry(k).or_default() += 1;
@@ -155,7 +164,11 @@ fn three_tet_fixture() -> rapidmesh_tet::DelaunayBuilder {
     for p in pts {
         b.insert(p);
     }
-    assert_eq!(b.tets().len(), 3, "fixture must triangulate around edge 3-4");
+    assert_eq!(
+        b.tets().len(),
+        3,
+        "fixture must triangulate around edge 3-4"
+    );
     assert!(b.edge_exists(3, 4));
     b
 }
@@ -232,9 +245,7 @@ fn insert_exact_lnc_recovers_segment_pieces() {
     }
     let mut rng = Rng::new(0xD7);
     for _ in 0..40 {
-        ids.push(b.insert(std::array::from_fn(|_| {
-            (rng.f64_wide().abs() % 0.8) + 0.1
-        })));
+        ids.push(b.insert(std::array::from_fn(|_| (rng.f64_wide().abs() % 0.8) + 0.1)));
     }
     let a = [0.05, 0.05, 0.05];
     let c = [0.95, 0.95, 0.95];

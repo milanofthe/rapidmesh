@@ -11,7 +11,7 @@
 //! inverse map (`(x,y,z) -> (u,v)`, a Newton projection) lands when the mesher
 //! needs it; point evaluation is exact and complete here.
 
-use crate::vec3::{V3};
+use crate::vec3::V3;
 /// A tensor-product rational B-spline surface `S(u,v)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NurbsSurface {
@@ -37,13 +37,30 @@ impl NurbsSurface {
         weights: Vec<f64>,
     ) -> NurbsSurface {
         assert!(degree[0] >= 1 && degree[1] >= 1, "degrees must be >= 1");
-        assert!(n[0] > degree[0] && n[1] > degree[1], "need degree+1 controls per dir");
-        assert_eq!(knots[0].len(), n[0] + degree[0] + 1, "U knot count must be n_u+p+1");
-        assert_eq!(knots[1].len(), n[1] + degree[1] + 1, "V knot count must be n_v+q+1");
+        assert!(
+            n[0] > degree[0] && n[1] > degree[1],
+            "need degree+1 controls per dir"
+        );
+        assert_eq!(
+            knots[0].len(),
+            n[0] + degree[0] + 1,
+            "U knot count must be n_u+p+1"
+        );
+        assert_eq!(
+            knots[1].len(),
+            n[1] + degree[1] + 1,
+            "V knot count must be n_v+q+1"
+        );
         assert_eq!(ctrl.len(), n[0] * n[1], "control net must be n_u*n_v");
         assert_eq!(weights.len(), ctrl.len(), "one weight per control point");
         assert!(weights.iter().all(|&w| w > 0.0), "weights must be positive");
-        NurbsSurface { degree, knots, n, ctrl, weights }
+        NurbsSurface {
+            degree,
+            knots,
+            n,
+            ctrl,
+            weights,
+        }
     }
 
     /// Parameter domain `([u_min, u_max], [v_min, v_max])` (the clamped end knots).
@@ -167,7 +184,10 @@ mod tests {
             .collect();
         let s = NurbsSurface::new(
             [2, 2],
-            [vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
+            [
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            ],
             [3, 3],
             ctrl,
             vec![1.0; 9],

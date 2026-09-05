@@ -41,12 +41,12 @@ pub(crate) mod refine;
 pub(crate) mod spatial;
 pub(crate) mod surfchart;
 
+pub use adapt::dorfler_mark;
 pub use conform::{
     log_metrics, log_surface_metrics, mesh_plc, mesh_plc_with, quality_stats, MeshParams,
     QualityStats, SurfaceFace, SurfaceMesh, TetMesh,
 };
 pub use cvt::{mesh_budgeted, surface_mesh};
-pub use refine::mesh_refine;
-pub use adapt::dorfler_mark;
 pub use delaunay::{tetrahedralize, DelaunayBuilder, DelaunayTets};
 pub use optimize::{optimize, OptimizeParams};
+pub use refine::mesh_refine;

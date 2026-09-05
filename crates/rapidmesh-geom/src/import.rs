@@ -105,7 +105,10 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
     for (i, c) in conn.iter().enumerate() {
         for e in 0..3 {
             let (a, b) = (c[e], c[(e + 1) % 3]);
-            by_edge.entry((a.min(b), a.max(b))).or_default().push(i as u32);
+            by_edge
+                .entry((a.min(b), a.max(b)))
+                .or_default()
+                .push(i as u32);
         }
     }
 
@@ -150,8 +153,8 @@ fn faceted_from_tris_creased(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
     const NOISE_CHAIN_MIN: usize = 8;
     if !crease.is_empty() {
         crease.sort_unstable(); // deterministic component ids
-        // Connected components of crease edges via shared vertices, plus
-        // per-vertex degree (open component <=> some vertex has degree 1).
+                                // Connected components of crease edges via shared vertices, plus
+                                // per-vertex degree (open component <=> some vertex has degree 1).
         let mut vfirst: HashMap<u32, u32> = HashMap::new();
         let mut erep: Vec<u32> = (0..crease.len() as u32).collect();
         let mut vdeg: HashMap<u32, u32> = HashMap::new();
@@ -269,11 +272,12 @@ fn parse_stl_binary(bytes: &[u8]) -> Result<Vec<Tri>, ImportError> {
     for i in 0..n {
         let base = 84 + 50 * i;
         // 12 bytes facet normal (skipped), then 3 vertices of 12 bytes.
-        let v: [[f64; 3]; 3] = std::array::from_fn(|j| {
-            std::array::from_fn(|k| f32_at(base + 12 + 12 * j + 4 * k))
-        });
+        let v: [[f64; 3]; 3] =
+            std::array::from_fn(|j| std::array::from_fn(|k| f32_at(base + 12 + 12 * j + 4 * k)));
         if v.iter().flatten().any(|x| !x.is_finite()) {
-            return Err(ImportError::Parse(format!("non-finite vertex in facet {i}")));
+            return Err(ImportError::Parse(format!(
+                "non-finite vertex in facet {i}"
+            )));
         }
         tris.push(Tri::new(v[0], v[1], v[2]));
     }

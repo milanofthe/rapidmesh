@@ -97,7 +97,10 @@ impl TetMesh {
                 SurfaceKind::Plane => sf.patch,
                 _ => u32::MAX,
             };
-            let (r0, r1) = (sf.regions[0].0.min(sf.regions[1].0), sf.regions[0].0.max(sf.regions[1].0));
+            let (r0, r1) = (
+                sf.regions[0].0.min(sf.regions[1].0),
+                sf.regions[0].0.max(sf.regions[1].0),
+            );
             (sf.surface, smooth, sf.face_tag.0, r0, r1)
         };
         // edge -> (incidence count, first face key seen, mixed-key flag)
@@ -149,9 +152,9 @@ pub(crate) fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
     let pt = |v: usize| Point3::Explicit(plc.vertices[v]);
     let coplanar = |a: usize, b: usize| -> bool {
         let pa = tri(a);
-        tri(b).iter().all(|&v| {
-            orient3d(&pt(pa[0]), &pt(pa[1]), &pt(pa[2]), &pt(v)) == Some(Sign::Zero)
-        })
+        tri(b)
+            .iter()
+            .all(|&v| orient3d(&pt(pa[0]), &pt(pa[1]), &pt(pa[2]), &pt(v)) == Some(Sign::Zero))
     };
 
     let mut parent: Vec<usize> = (0..n).collect();
@@ -168,7 +171,10 @@ pub(crate) fn build_patches(plc: &TaggedPlc) -> Vec<Patch> {
     for i in 0..n {
         let t = tri(i);
         for e in 0..3 {
-            by_edge.entry(sorted2(t[e], t[(e + 1) % 3])).or_default().push(i);
+            by_edge
+                .entry(sorted2(t[e], t[(e + 1) % 3]))
+                .or_default()
+                .push(i);
         }
     }
     for owners in by_edge.values() {
@@ -320,7 +326,10 @@ impl Default for MeshParams {
 }
 
 fn lookup(table: &[(u32, f64)], id: usize) -> Option<f64> {
-    table.iter().find(|&&(i, _)| i as usize == id).map(|&(_, v)| v)
+    table
+        .iter()
+        .find(|&&(i, _)| i as usize == id)
+        .map(|&(_, v)| v)
 }
 
 impl MeshParams {
@@ -375,7 +384,9 @@ impl MeshParams {
     }
     /// Size cap for brep edge `id`: its per-edge override, else the edge cap.
     pub fn edge_maxh_for(&self, id: usize) -> f64 {
-        lookup(&self.edge_maxh, id).unwrap_or(f64::INFINITY).min(self.edge_cap())
+        lookup(&self.edge_maxh, id)
+            .unwrap_or(f64::INFINITY)
+            .min(self.edge_cap())
     }
     /// Deflection for brep edge `id`: its per-edge override, else `tol_edge`.
     pub fn edge_tol_for(&self, id: usize) -> f64 {
@@ -383,7 +394,9 @@ impl MeshParams {
     }
     /// Size cap for brep face `id`: its per-face override, else the surface cap.
     pub fn surf_maxh_for(&self, id: usize) -> f64 {
-        lookup(&self.surf_maxh, id).unwrap_or(f64::INFINITY).min(self.surf_cap())
+        lookup(&self.surf_maxh, id)
+            .unwrap_or(f64::INFINITY)
+            .min(self.surf_cap())
     }
     /// Deflection for brep face `id`: its per-face override, else `tol_surf`.
     pub fn surf_tol_for(&self, id: usize) -> f64 {
@@ -397,7 +410,11 @@ fn tet_circumcenter(p: [[f64; 3]; 4]) -> Option<([f64; 3], f64)> {
     let row = |i: usize| -> [f64; 3] { std::array::from_fn(|k| 2.0 * (p[i][k] - p[0][k])) };
     let sq = |q: [f64; 3]| -> f64 { q.iter().map(|x| x * x).sum() };
     let (r1, r2, r3) = (row(1), row(2), row(3));
-    let b = [sq(p[1]) - sq(p[0]), sq(p[2]) - sq(p[0]), sq(p[3]) - sq(p[0])];
+    let b = [
+        sq(p[1]) - sq(p[0]),
+        sq(p[2]) - sq(p[0]),
+        sq(p[3]) - sq(p[0]),
+    ];
     let det3 = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| -> f64 {
         a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
             + a[2] * (b[0] * c[1] - b[1] * c[0])
@@ -434,7 +451,10 @@ pub fn mesh_plc(plc: &TaggedPlc) -> TetMesh {
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max).max(1e-12);
+    let diag = (0..3)
+        .map(|k| hi[k] - lo[k])
+        .fold(0.0_f64, f64::max)
+        .max(1e-12);
     mesh_plc_with(
         plc,
         &MeshParams {
@@ -569,7 +589,10 @@ pub fn quality_stats(mesh: &TetMesh) -> QualityStats {
         worst_tet,
         worst_location,
         worst_region,
-        per_region: per_region.into_iter().map(|(r, (m, n))| (r, m, n)).collect(),
+        per_region: per_region
+            .into_iter()
+            .map(|(r, (m, n))| (r, m, n))
+            .collect(),
     }
 }
 
@@ -658,7 +681,11 @@ pub fn log_surface_metrics(mesh: &SurfaceMesh) {
         .faces
         .iter()
         .map(|f| {
-            let (a, b, c) = (mesh.points[f.tri[0]], mesh.points[f.tri[1]], mesh.points[f.tri[2]]);
+            let (a, b, c) = (
+                mesh.points[f.tri[0]],
+                mesh.points[f.tri[1]],
+                mesh.points[f.tri[2]],
+            );
             angle(a, b, c).min(angle(b, c, a)).min(angle(c, a, b))
         })
         .collect();

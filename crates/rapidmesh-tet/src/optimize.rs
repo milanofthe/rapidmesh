@@ -15,8 +15,8 @@
 //! when nothing improves.
 
 use crate::conform::TetMesh;
-use rapidmesh_exact::{collinear, orient2d, power_test3d, Axis, Point3, Sign};
 use rapidmesh_brep::Surface;
+use rapidmesh_exact::{collinear, orient2d, power_test3d, Axis, Point3, Sign};
 use rapidmesh_geom::SurfaceKind;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -54,7 +54,9 @@ fn radius_edge(p: [[f64; 3]; 4]) -> f64 {
         for k in 0..3 {
             m[i][k] = 2.0 * (p[i + 1][k] - p[0][k]);
         }
-        b[i] = (0..3).map(|k| p[i + 1][k] * p[i + 1][k] - p[0][k] * p[0][k]).sum();
+        b[i] = (0..3)
+            .map(|k| p[i + 1][k] * p[i + 1][k] - p[0][k] * p[0][k])
+            .sum();
     }
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -196,7 +198,9 @@ fn lmax2_of(points: &[[f64; 3]], tets: &[[usize; 4]], ids: &[usize]) -> f64 {
         for i in 0..4 {
             for j in i + 1..4 {
                 m = m.max(
-                    (0..3).map(|k| (points[t[i]][k] - points[t[j]][k]).powi(2)).sum(),
+                    (0..3)
+                        .map(|k| (points[t[i]][k] - points[t[j]][k]).powi(2))
+                        .sum(),
                 );
             }
         }
@@ -502,43 +506,52 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     .filter(|&ti| {
                         let t = &mesh.tets[ti as usize];
                         (0..4).any(|i| {
-                            (i + 1..4)
-                                .any(|j| e1.contains(&(t[i].min(t[j]), t[i].max(t[j]))))
+                            (i + 1..4).any(|j| e1.contains(&(t[i].min(t[j]), t[i].max(t[j]))))
                         })
                     })
                     .collect()
             }
         };
-        let is_active =
-            |vs: &[usize]| active_verts.as_ref().is_none_or(|av| vs.iter().any(|v| av.contains(v)));
+        let is_active = |vs: &[usize]| {
+            active_verts
+                .as_ref()
+                .is_none_or(|av| vs.iter().any(|v| av.contains(v)))
+        };
         // Exact candidate filter: a candidate is re-evaluated only if its
         // complex (the vertices its outcome depends on) contains a vertex
         // CHANGED by the previous pass. `is_active` (one ring wider) only
         // keeps the owner maps complete; filtering with it would saturate
         // on small meshes.
-        let complex_changed =
-            |vs: &[usize]| dirty.as_ref().is_none_or(|d| vs.iter().any(|v| d.contains(v)));
+        let complex_changed = |vs: &[usize]| {
+            dirty
+                .as_ref()
+                .is_none_or(|d| vs.iter().any(|v| d.contains(v)))
+        };
         let mut next_dirty: DSet<usize> = DSet::default();
 
         // Surface improvement first: boundary slivers cannot be fixed by
         // interior-only operations. Skipped in the ENDGAME (positional
         // stages undo the perturber, see above).
         stage_mark("surf");
-        ops += if endgame || exude_phase { 0 } else { surface_pass(
-            mesh,
-            &mut g_incident,
-            &alive,
-            &mut tet_q,
-            &mut face_idx,
-            &mut constrained_faces,
-            &mut constrained_edges,
-            &map_tets,
-            &is_active,
-            &complex_changed,
-            &edge_budget2,
-            &face_budget2,
-            &mut next_dirty,
-        ) };
+        ops += if endgame || exude_phase {
+            0
+        } else {
+            surface_pass(
+                mesh,
+                &mut g_incident,
+                &alive,
+                &mut tet_q,
+                &mut face_idx,
+                &mut constrained_faces,
+                &mut constrained_edges,
+                &map_tets,
+                &is_active,
+                &complex_changed,
+                &edge_budget2,
+                &face_budget2,
+                &mut next_dirty,
+            )
+        };
         let t_surf = t0.elapsed();
         acc_surf += t_surf;
         edge_watch("surf", mesh, &alive);
@@ -549,12 +562,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // ------------------------------------------------- smoothing
         // Topology is fixed during smoothing; the persistent incidence
         // serves directly (dead slots filtered on read).
-        fn cached_q(
-            points: &[[f64; 3]],
-            tets: &[[usize; 4]],
-            tet_q: &mut [f64],
-            ti: usize,
-        ) -> f64 {
+        fn cached_q(points: &[[f64; 3]], tets: &[[usize; 4]], tet_q: &mut [f64], ti: usize) -> f64 {
             if tet_q[ti].is_nan() {
                 tet_q[ti] = quality(points, tets[ti]);
             }
@@ -606,7 +614,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             // longest incident edge: reference for the minimum-move gate.
             let mut lref2 = 0.0f64;
             for &w in &nbrs {
-                let d2: f64 = (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
+                let d2: f64 = (0..3)
+                    .map(|k| (mesh.points[w][k] - old_pos[k]).powi(2))
+                    .sum();
                 lref2 = lref2.max(d2);
             }
             // ODT relocation (volume-weighted): x* = Σ_T |T| · (sum of T's other
@@ -669,14 +679,13 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     let mut budget2 = f64::INFINITY;
                     for &ti in &inc {
                         if mesh.tets[ti as usize].contains(&w) {
-                            budget2 =
-                                budget2.min(edge_budget2(mesh.tet_regions[ti as usize]));
+                            budget2 = budget2.min(edge_budget2(mesh.tet_regions[ti as usize]));
                         }
                     }
-                    let dw_old: f64 =
-                        (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
-                    let dw_new: f64 =
-                        (0..3).map(|k| (mesh.points[w][k] - avg[k]).powi(2)).sum();
+                    let dw_old: f64 = (0..3)
+                        .map(|k| (mesh.points[w][k] - old_pos[k]).powi(2))
+                        .sum();
+                    let dw_new: f64 = (0..3).map(|k| (mesh.points[w][k] - avg[k]).powi(2)).sum();
                     if dw_new > dw_old.max(budget2) {
                         blocked = true;
                         break;
@@ -736,17 +745,21 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // boundary slivers (the wedge along an intersection curve) are only
         // reachable by this pass.
         stage_mark("sliver");
-        ops += if endgame || exude_phase { 0 } else { sliver_pass(
-            mesh,
-            &g_incident,
-            &alive,
-            &mut tet_q,
-            &constrained_verts,
-            &complex_changed,
-            &edge_budget2,
-            &face_budget2,
-            &mut next_dirty,
-        ) };
+        ops += if endgame || exude_phase {
+            0
+        } else {
+            sliver_pass(
+                mesh,
+                &g_incident,
+                &alive,
+                &mut tet_q,
+                &constrained_verts,
+                &complex_changed,
+                &edge_budget2,
+                &face_budget2,
+                &mut next_dirty,
+            )
+        };
         acc_sliver += lap();
         edge_watch("sliver", mesh, &alive);
         manifold_watch("sliver", mesh, &alive);
@@ -758,16 +771,20 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         // flipping around them cycles; the nudge restores generic position
         // first. No positional optimizer runs in either phase, so the nudges
         // are not smoothed back.
-        let perturb_ops = if !(endgame || exude_phase) { 0 } else { perturb_pass(
-            mesh,
-            &g_incident,
-            &alive,
-            &mut tet_q,
-            &constrained_verts,
-            &complex_changed,
-            &mut perturbed,
-            &mut next_dirty,
-        ) };
+        let perturb_ops = if !(endgame || exude_phase) {
+            0
+        } else {
+            perturb_pass(
+                mesh,
+                &g_incident,
+                &alive,
+                &mut tet_q,
+                &constrained_verts,
+                &complex_changed,
+                &mut perturbed,
+                &mut next_dirty,
+            )
+        };
         if trace && perturb_ops > 0 {
             eprintln!("  perturb: {perturb_ops} nudges");
         }
@@ -1046,7 +1063,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     return None;
                 }
                 if dist2_pts(mesh.points[d], mesh.points[e])
-                    > lmax2_of(&mesh.points, &mesh.tets, &[t1, t2]).max(edge_budget2(mesh.tet_regions[t1]))
+                    > lmax2_of(&mesh.points, &mesh.tets, &[t1, t2])
+                        .max(edge_budget2(mesh.tet_regions[t1]))
                 {
                     return None;
                 }
@@ -1095,7 +1113,9 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
             .collect();
         let mut n_exude23 = 0usize;
         for (&(f, t1, t2), plan) in groups23.iter().zip(&plans23) {
-            let Some((n1, n2, n3, d, e, exu)) = *plan else { continue };
+            let Some((n1, n2, n3, d, e, exu)) = *plan else {
+                continue;
+            };
             if !alive[t1] || !alive[t2] {
                 continue; // claimed by an earlier apply in this pass
             }
@@ -1162,226 +1182,240 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
         let plans_er: Vec<Option<PlanEr>> = groups_er
             .par_iter()
             .map(|&(key, ts_arr, k)| -> Option<PlanEr> {
-            let ts = &ts_arr[..k];
-            if constrained_edges.contains(&key) {
-                return None;
-            }
-            if ts.iter().any(|&t| !alive[t]) {
-                return None;
-            }
-            if !ts.iter().any(|&t| complex_changed(&mesh.tets[t])) {
-                return None;
-            }
-            if ts
-                .iter()
-                .any(|&t| mesh.tet_regions[t] != mesh.tet_regions[ts[0]])
-            {
-                return None;
-            }
-            let old_q = {
-                let mut q = f64::MAX;
-                for &t in ts {
-                    q = q.min(tet_q[t]);
-                }
-                q
-            };
-            // EXUDATION (see the 2-3 stage): with a pumped weight among the
-            // star's vertices, a RING-3 removal is decided by regularity --
-            // the edge goes iff some ring tet's power sphere is violated by
-            // the third ring vertex (checked after the ring walk below); the
-            // DP then needs embeddability only, not quality gain. k == 3
-            // ONLY: with a single alternative triangulation the power-gated
-            // move IS the regular 3-2 flip, so the flipping stays acyclic.
-            // Larger rings triangulate by max-min quality (Klincsek), which
-            // is NOT the regular side -- power-releasing those diverged
-            // (measured: per-pass exude removals GREW 758 -> 6082 over the
-            // phase instead of drying up, and watertightness broke).
-            let exude = exude_phase
-                && k == 3
-                && ts.iter().any(|&t| mesh.tets[t].iter().any(|&v| wt(v) != 0.0));
-            if !exude && old_q >= TARGET_Q {
-                return None;
-            }
-            let (d, e) = key;
-            // Each tet contributes the pair of its two non-(d,e) vertices;
-            // the pairs must chain into a single closed ring (interior
-            // edge), walked here into cyclic order. All on the stack: a
-            // distinct-vertex table (k <= 7) with degree-2 adjacency.
-            let mut vs = [usize::MAX; MAX_RING];
-            let mut adj = [[usize::MAX; 2]; MAX_RING];
-            let mut deg = [0u8; MAX_RING];
-            let mut nv = 0usize;
-            let mut ok = true;
-            'tets: for &t in ts {
-                let mut pr = mesh.tets[t].iter().copied().filter(|&x| x != d && x != e);
-                let (a, b) = (pr.next().expect("pair"), pr.next().expect("pair"));
-                for x in [a, b] {
-                    let y = if x == a { b } else { a };
-                    let slot = match vs[..nv].iter().position(|&w| w == x) {
-                        Some(i) => i,
-                        None => {
-                            if nv == k {
-                                ok = false;
-                                break 'tets; // more than k distinct: not a ring
-                            }
-                            vs[nv] = x;
-                            nv += 1;
-                            nv - 1
-                        }
-                    };
-                    if deg[slot] == 2 {
-                        ok = false;
-                        break 'tets;
-                    }
-                    adj[slot][deg[slot] as usize] = y;
-                    deg[slot] += 1;
-                }
-            }
-            if !ok || nv != k || deg[..k].iter().any(|&x| x != 2) {
-                return None;
-            }
-            let start = *vs[..k].iter().min().expect("nonempty");
-            let mut ring = [usize::MAX; MAX_RING];
-            ring[0] = start;
-            let mut prev = usize::MAX;
-            for i in 1..k {
-                let cur = ring[i - 1];
-                let slot = vs[..k].iter().position(|&w| w == cur).expect("in table");
-                let p = adj[slot];
-                let next = if p[0] != prev { p[0] } else { p[1] };
-                prev = cur;
-                ring[i] = next;
-            }
-            // Closed ring?
-            {
-                let slot = vs[..k].iter().position(|&w| w == ring[k - 1]).expect("in table");
-                if !adj[slot].contains(&start) {
+                let ts = &ts_arr[..k];
+                if constrained_edges.contains(&key) {
                     return None;
                 }
-            }
-            // Orient the cycle so that consecutive pairs rotate positively
-            // around d-e: orient3d(a_i, a_{i+1}, d, e) > 0 for all i (an
-            // embedded star is consistent; anything else is degenerate).
-            let side = |a: usize, b: usize| {
-                Sign::of_f64(geometry_predicates::orient3d(
-                    mesh.points[a],
-                    mesh.points[b],
-                    mesh.points[d],
-                    mesh.points[e],
-                ))
-            };
-            if side(ring[0], ring[1]) == Sign::Negative {
-                ring[..k].reverse();
-            }
-            if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
-                return None;
-            }
-            // The exudation firing test: some ring tet non-regular against a
-            // ring-vertex witness outside it. Weight-involved candidates
-            // whose star IS regular are blocked outright (power decides in
-            // both directions, keeping the flipping acyclic).
-            if exude {
-                let fire = ts.iter().any(|&t| {
-                    let tt = mesh.tets[t];
-                    ring[..k].iter().any(|&wv| {
-                        !tt.contains(&wv)
-                            && power_test3d(
-                                mesh.points[tt[0]],
-                                wt(tt[0]),
-                                mesh.points[tt[1]],
-                                wt(tt[1]),
-                                mesh.points[tt[2]],
-                                wt(tt[2]),
-                                mesh.points[tt[3]],
-                                wt(tt[3]),
-                                mesh.points[wv],
-                                wt(wv),
-                            ) == Sign::Positive
-                    })
-                });
-                if !fire {
+                if ts.iter().any(|&t| !alive[t]) {
                     return None;
                 }
-            }
-            // Klincsek DP over the ring polygon: best[i][j] = max-min
-            // quality of triangulating the sub-polygon ring[i..=j]. Each
-            // triangle (p, q, r) in ring order spawns the tet pair
-            // (p, q, r, e) and (p, r, q, d), both required positive.
-            // Values not above the incumbent old_q are clamped to MIN (the
-            // final gate rejects them anyway), which lets the quality
-            // evaluation exit early.
-            let star_lmax2 = lmax2_of(&mesh.points, &mesh.tets, ts)
-                .max(edge_budget2(mesh.tet_regions[ts[0]]));
-            // Exudation candidates need embeddability plus the
-            // anti-degeneracy floor (see the 2-3 stage), not quality gain.
-            let q_floor = if exude { EXUDE_MIN_Q } else { old_q };
-            let pair_q = |i: usize, m: usize, j: usize| -> f64 {
-                let (p, q, r) = (ring[i], ring[m], ring[j]);
-                // Sizing invariant: new chords stay within the old star's
-                // longest edge.
-                if dist2_pts(mesh.points[p], mesh.points[q]) > star_lmax2
-                    || dist2_pts(mesh.points[q], mesh.points[r]) > star_lmax2
-                    || dist2_pts(mesh.points[p], mesh.points[r]) > star_lmax2
+                if !ts.iter().any(|&t| complex_changed(&mesh.tets[t])) {
+                    return None;
+                }
+                if ts
+                    .iter()
+                    .any(|&t| mesh.tet_regions[t] != mesh.tet_regions[ts[0]])
                 {
-                    return f64::MIN;
+                    return None;
                 }
-                let t1 = [p, q, r, e];
-                let t2 = [p, r, q, d];
-                if !orient_positive(&mesh.points, t1) || !orient_positive(&mesh.points, t2) {
-                    return f64::MIN;
-                }
-                match (
-                    quality_above(&mesh.points, t1, q_floor),
-                    quality_above(&mesh.points, t2, q_floor),
-                ) {
-                    (Some(q1), Some(q2)) => q1.min(q2),
-                    _ => f64::MIN,
-                }
-            };
-            let mut best = [[f64::MAX; MAX_RING]; MAX_RING];
-            let mut cut = [[usize::MAX; MAX_RING]; MAX_RING];
-            for len in 2..k {
-                for i in 0..k - len {
-                    let j = i + len;
-                    let (mut bq, mut bm) = (f64::MIN, usize::MAX);
-                    #[allow(clippy::needless_range_loop)]
-                    for m in i + 1..j {
-                        let q = pair_q(i, m, j).min(best[i][m]).min(best[m][j]);
-                        if q > bq {
-                            bq = q;
-                            bm = m;
-                        }
+                let old_q = {
+                    let mut q = f64::MAX;
+                    for &t in ts {
+                        q = q.min(tet_q[t]);
                     }
-                    best[i][j] = bq;
-                    cut[i][j] = bm;
+                    q
+                };
+                // EXUDATION (see the 2-3 stage): with a pumped weight among the
+                // star's vertices, a RING-3 removal is decided by regularity --
+                // the edge goes iff some ring tet's power sphere is violated by
+                // the third ring vertex (checked after the ring walk below); the
+                // DP then needs embeddability only, not quality gain. k == 3
+                // ONLY: with a single alternative triangulation the power-gated
+                // move IS the regular 3-2 flip, so the flipping stays acyclic.
+                // Larger rings triangulate by max-min quality (Klincsek), which
+                // is NOT the regular side -- power-releasing those diverged
+                // (measured: per-pass exude removals GREW 758 -> 6082 over the
+                // phase instead of drying up, and watertightness broke).
+                let exude = exude_phase
+                    && k == 3
+                    && ts
+                        .iter()
+                        .any(|&t| mesh.tets[t].iter().any(|&v| wt(v) != 0.0));
+                if !exude && old_q >= TARGET_Q {
+                    return None;
                 }
-            }
-            if exude {
-                if best[0][k - 1] == f64::MIN {
-                    return None; // no embeddable ring triangulation
+                let (d, e) = key;
+                // Each tet contributes the pair of its two non-(d,e) vertices;
+                // the pairs must chain into a single closed ring (interior
+                // edge), walked here into cyclic order. All on the stack: a
+                // distinct-vertex table (k <= 7) with degree-2 adjacency.
+                let mut vs = [usize::MAX; MAX_RING];
+                let mut adj = [[usize::MAX; 2]; MAX_RING];
+                let mut deg = [0u8; MAX_RING];
+                let mut nv = 0usize;
+                let mut ok = true;
+                'tets: for &t in ts {
+                    let mut pr = mesh.tets[t].iter().copied().filter(|&x| x != d && x != e);
+                    let (a, b) = (pr.next().expect("pair"), pr.next().expect("pair"));
+                    for x in [a, b] {
+                        let y = if x == a { b } else { a };
+                        let slot = match vs[..nv].iter().position(|&w| w == x) {
+                            Some(i) => i,
+                            None => {
+                                if nv == k {
+                                    ok = false;
+                                    break 'tets; // more than k distinct: not a ring
+                                }
+                                vs[nv] = x;
+                                nv += 1;
+                                nv - 1
+                            }
+                        };
+                        if deg[slot] == 2 {
+                            ok = false;
+                            break 'tets;
+                        }
+                        adj[slot][deg[slot] as usize] = y;
+                        deg[slot] += 1;
+                    }
                 }
-            } else if best[0][k - 1] <= old_q + QUALITY_EPS {
-                return None;
-            }
-            let region = mesh.tet_regions[ts[0]];
-            let mut new_tets: Vec<[usize; 4]> = Vec::new();
-            let mut stack = [(0usize, 0usize); 2 * MAX_RING];
-            stack[0] = (0, k - 1);
-            let mut sp = 1usize;
-            while sp > 0 {
-                sp -= 1;
-                let (i, j) = stack[sp];
-                if j - i < 2 {
-                    continue;
+                if !ok || nv != k || deg[..k].iter().any(|&x| x != 2) {
+                    return None;
                 }
-                let m = cut[i][j];
-                new_tets.push([ring[i], ring[m], ring[j], e]);
-                new_tets.push([ring[i], ring[j], ring[m], d]);
-                stack[sp] = (i, m);
-                stack[sp + 1] = (m, j);
-                sp += 2;
-            }
-            Some(PlanEr { ts: ts_arr, k, new_tets, ring, d, e, region, exude })
+                let start = *vs[..k].iter().min().expect("nonempty");
+                let mut ring = [usize::MAX; MAX_RING];
+                ring[0] = start;
+                let mut prev = usize::MAX;
+                for i in 1..k {
+                    let cur = ring[i - 1];
+                    let slot = vs[..k].iter().position(|&w| w == cur).expect("in table");
+                    let p = adj[slot];
+                    let next = if p[0] != prev { p[0] } else { p[1] };
+                    prev = cur;
+                    ring[i] = next;
+                }
+                // Closed ring?
+                {
+                    let slot = vs[..k]
+                        .iter()
+                        .position(|&w| w == ring[k - 1])
+                        .expect("in table");
+                    if !adj[slot].contains(&start) {
+                        return None;
+                    }
+                }
+                // Orient the cycle so that consecutive pairs rotate positively
+                // around d-e: orient3d(a_i, a_{i+1}, d, e) > 0 for all i (an
+                // embedded star is consistent; anything else is degenerate).
+                let side = |a: usize, b: usize| {
+                    Sign::of_f64(geometry_predicates::orient3d(
+                        mesh.points[a],
+                        mesh.points[b],
+                        mesh.points[d],
+                        mesh.points[e],
+                    ))
+                };
+                if side(ring[0], ring[1]) == Sign::Negative {
+                    ring[..k].reverse();
+                }
+                if (0..k).any(|i| side(ring[i], ring[(i + 1) % k]) != Sign::Positive) {
+                    return None;
+                }
+                // The exudation firing test: some ring tet non-regular against a
+                // ring-vertex witness outside it. Weight-involved candidates
+                // whose star IS regular are blocked outright (power decides in
+                // both directions, keeping the flipping acyclic).
+                if exude {
+                    let fire = ts.iter().any(|&t| {
+                        let tt = mesh.tets[t];
+                        ring[..k].iter().any(|&wv| {
+                            !tt.contains(&wv)
+                                && power_test3d(
+                                    mesh.points[tt[0]],
+                                    wt(tt[0]),
+                                    mesh.points[tt[1]],
+                                    wt(tt[1]),
+                                    mesh.points[tt[2]],
+                                    wt(tt[2]),
+                                    mesh.points[tt[3]],
+                                    wt(tt[3]),
+                                    mesh.points[wv],
+                                    wt(wv),
+                                ) == Sign::Positive
+                        })
+                    });
+                    if !fire {
+                        return None;
+                    }
+                }
+                // Klincsek DP over the ring polygon: best[i][j] = max-min
+                // quality of triangulating the sub-polygon ring[i..=j]. Each
+                // triangle (p, q, r) in ring order spawns the tet pair
+                // (p, q, r, e) and (p, r, q, d), both required positive.
+                // Values not above the incumbent old_q are clamped to MIN (the
+                // final gate rejects them anyway), which lets the quality
+                // evaluation exit early.
+                let star_lmax2 = lmax2_of(&mesh.points, &mesh.tets, ts)
+                    .max(edge_budget2(mesh.tet_regions[ts[0]]));
+                // Exudation candidates need embeddability plus the
+                // anti-degeneracy floor (see the 2-3 stage), not quality gain.
+                let q_floor = if exude { EXUDE_MIN_Q } else { old_q };
+                let pair_q = |i: usize, m: usize, j: usize| -> f64 {
+                    let (p, q, r) = (ring[i], ring[m], ring[j]);
+                    // Sizing invariant: new chords stay within the old star's
+                    // longest edge.
+                    if dist2_pts(mesh.points[p], mesh.points[q]) > star_lmax2
+                        || dist2_pts(mesh.points[q], mesh.points[r]) > star_lmax2
+                        || dist2_pts(mesh.points[p], mesh.points[r]) > star_lmax2
+                    {
+                        return f64::MIN;
+                    }
+                    let t1 = [p, q, r, e];
+                    let t2 = [p, r, q, d];
+                    if !orient_positive(&mesh.points, t1) || !orient_positive(&mesh.points, t2) {
+                        return f64::MIN;
+                    }
+                    match (
+                        quality_above(&mesh.points, t1, q_floor),
+                        quality_above(&mesh.points, t2, q_floor),
+                    ) {
+                        (Some(q1), Some(q2)) => q1.min(q2),
+                        _ => f64::MIN,
+                    }
+                };
+                let mut best = [[f64::MAX; MAX_RING]; MAX_RING];
+                let mut cut = [[usize::MAX; MAX_RING]; MAX_RING];
+                for len in 2..k {
+                    for i in 0..k - len {
+                        let j = i + len;
+                        let (mut bq, mut bm) = (f64::MIN, usize::MAX);
+                        #[allow(clippy::needless_range_loop)]
+                        for m in i + 1..j {
+                            let q = pair_q(i, m, j).min(best[i][m]).min(best[m][j]);
+                            if q > bq {
+                                bq = q;
+                                bm = m;
+                            }
+                        }
+                        best[i][j] = bq;
+                        cut[i][j] = bm;
+                    }
+                }
+                if exude {
+                    if best[0][k - 1] == f64::MIN {
+                        return None; // no embeddable ring triangulation
+                    }
+                } else if best[0][k - 1] <= old_q + QUALITY_EPS {
+                    return None;
+                }
+                let region = mesh.tet_regions[ts[0]];
+                let mut new_tets: Vec<[usize; 4]> = Vec::new();
+                let mut stack = [(0usize, 0usize); 2 * MAX_RING];
+                stack[0] = (0, k - 1);
+                let mut sp = 1usize;
+                while sp > 0 {
+                    sp -= 1;
+                    let (i, j) = stack[sp];
+                    if j - i < 2 {
+                        continue;
+                    }
+                    let m = cut[i][j];
+                    new_tets.push([ring[i], ring[m], ring[j], e]);
+                    new_tets.push([ring[i], ring[j], ring[m], d]);
+                    stack[sp] = (i, m);
+                    stack[sp + 1] = (m, j);
+                    sp += 2;
+                }
+                Some(PlanEr {
+                    ts: ts_arr,
+                    k,
+                    new_tets,
+                    ring,
+                    d,
+                    e,
+                    region,
+                    exude,
+                })
             })
             .collect();
         let mut n_exude_er = 0usize;
@@ -1461,166 +1495,164 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 let region = mesh.tet_regions[ti];
                 let t = mesh.tets[ti];
                 let interior_done = 'interior: {
-                let mut cavity: Vec<usize> = vec![ti];
-                for i in 0..4 {
-                    let key = sorted3(opp_face(t, i));
-                    if constrained_faces.contains(&key) {
-                        continue; // stays cavity boundary
-                    }
-                    for e in face_owners(key) {
-                        let nb = e.1 as usize;
-                        if nb != ti && alive[nb] && mesh.tet_regions[nb] == region {
-                            cavity.push(nb);
-                        }
-                    }
-                }
-                cavity.sort_unstable();
-                cavity.dedup();
-                // Cavity faces: interior iff shared by two cavity tets.
-                // Constrained interior faces veto the candidate.
-                let mut faces: Vec<([usize; 3], [usize; 3])> = Vec::new(); // (sorted, oriented)
-                for &c in &cavity {
+                    let mut cavity: Vec<usize> = vec![ti];
                     for i in 0..4 {
-                        let of = opp_face(mesh.tets[c], i);
-                        faces.push((sorted3(of), of));
-                    }
-                }
-                faces.sort_unstable();
-                let mut bfaces: Vec<[usize; 3]> = Vec::new();
-                let mut fi = 0;
-                while fi < faces.len() {
-                    let same = faces[fi..].iter().take_while(|f| f.0 == faces[fi].0).count();
-                    if same == 1 {
-                        bfaces.push(faces[fi].1);
-                    } else if constrained_faces.contains(&faces[fi].0) {
-                        break 'interior false;
-                    }
-                    fi += same;
-                }
-                let mut verts: Vec<usize> = cavity.iter().flat_map(|&c| mesh.tets[c]).collect();
-                verts.sort_unstable();
-                verts.dedup();
-                let mut x = [0.0f64; 3];
-                let mut diag2 = 0.0f64;
-                for &v in &verts {
-                    for (k, a) in x.iter_mut().enumerate() {
-                        *a += mesh.points[v][k];
-                    }
-                }
-                for a in &mut x {
-                    *a /= verts.len() as f64;
-                }
-                for &v in &verts {
-                    let d2: f64 =
-                        (0..3).map(|k| (mesh.points[v][k] - x[k]).powi(2)).sum();
-                    diag2 = diag2.max(d2);
-                }
-                let mut old_q = f64::MAX;
-                for &c in &cavity {
-                    old_q = old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, c));
-                }
-                let mut old_re = 0.0f64;
-                for &c in &cavity {
-                    old_re = old_re.max(radius_edge(std::array::from_fn(|k| {
-                        mesh.points[mesh.tets[c][k]]
-                    })));
-                }
-                let re_cap = old_re.max(INSERT_RE_ALLOW);
-                // Optimization-based positioning (the Stellar recipe): the
-                // centroid cone of a squashed sliver cavity is itself thin,
-                // so the insertion point pattern-searches the position that
-                // maximizes the worst cone DIHEDRAL quality. The radius-edge
-                // cap is a hard constraint INSIDE the objective: needles
-                // have fine dihedrals, so without it the search happily
-                // walks into huge-circumsphere positions.
-                // Objective: worst cone dihedral quality, with the
-                // radius-edge cap as a PENALTY rather than a hard wall
-                // (infeasible start positions would otherwise sit on a MIN
-                // plateau the pattern search cannot leave). Acceptance at
-                // the end is strict on both.
-                let cav_lmax2 =
-                    lmax2_of(&mesh.points, &mesh.tets, &cavity).max(edge_budget2(region));
-                let cone_eval = |x: [f64; 3]| -> (f64, f64) {
-                    let mut q = f64::MAX;
-                    let mut re = 0.0f64;
-                    for f in &bfaces {
-                        let p: [[f64; 3]; 4] = [
-                            mesh.points[f[0]],
-                            mesh.points[f[1]],
-                            mesh.points[f[2]],
-                            x,
-                        ];
-                        if (0..3).any(|k| dist2_pts(p[k], x) > cav_lmax2) {
-                            return (f64::MIN, f64::MAX);
+                        let key = sorted3(opp_face(t, i));
+                        if constrained_faces.contains(&key) {
+                            continue; // stays cavity boundary
                         }
-                        if Sign::of_f64(geometry_predicates::orient3d(p[0], p[1], p[2], p[3]))
-                            != Sign::Positive
-                        {
-                            return (f64::MIN, f64::MAX);
-                        }
-                        re = re.max(radius_edge(p));
-                        match quality_above_coords(p, f64::MIN) {
-                            Some(cq) => q = q.min(cq),
-                            None => return (f64::MIN, f64::MAX),
-                        }
-                    }
-                    (q, re)
-                };
-                let score = |(q, re): (f64, f64)| -> f64 {
-                    if q == f64::MIN {
-                        f64::MIN
-                    } else {
-                        q - 0.5 * ((re / re_cap) - 1.0).max(0.0)
-                    }
-                };
-                let mut best = cone_eval(x);
-                let mut best_s = score(best);
-                let mut step = 0.25 * diag2.sqrt();
-                for _ in 0..3 {
-                    loop {
-                        let mut improved = false;
-                        for k in 0..3 {
-                            for sgn in [-1.0, 1.0] {
-                                let mut cand = x;
-                                cand[k] += sgn * step;
-                                let e = cone_eval(cand);
-                                let sc = score(e);
-                                if sc > best_s {
-                                    best_s = sc;
-                                    best = e;
-                                    x = cand;
-                                    improved = true;
-                                }
+                        for e in face_owners(key) {
+                            let nb = e.1 as usize;
+                            if nb != ti && alive[nb] && mesh.tet_regions[nb] == region {
+                                cavity.push(nb);
                             }
                         }
-                        if !improved {
-                            break;
+                    }
+                    cavity.sort_unstable();
+                    cavity.dedup();
+                    // Cavity faces: interior iff shared by two cavity tets.
+                    // Constrained interior faces veto the candidate.
+                    let mut faces: Vec<([usize; 3], [usize; 3])> = Vec::new(); // (sorted, oriented)
+                    for &c in &cavity {
+                        for i in 0..4 {
+                            let of = opp_face(mesh.tets[c], i);
+                            faces.push((sorted3(of), of));
                         }
                     }
-                    step *= 0.5;
-                }
-                // Acceptance is on the dihedral objective alone: the
-                // radius-edge penalty steers the search away from needle
-                // positions, but a sliver removal is not sacrificed to the
-                // occasional long cone (slivers hurt Nedelec conditioning
-                // directly; needles with sound dihedrals do not).
-                if best.0 <= old_q + QUALITY_EPS {
-                    break 'interior false;
-                }
-                let xi = mesh.points.len();
-                mesh.points.push(x);
-                for &c in &cavity {
-                    alive[c] = false;
-                }
-                for f in bfaces {
-                    added.push(([f[0], f[1], f[2], xi], region));
-                }
-                for &v in &verts {
-                    next_dirty.insert(v);
-                }
-                next_dirty.insert(xi);
-                ops += 1;
-                true
+                    faces.sort_unstable();
+                    let mut bfaces: Vec<[usize; 3]> = Vec::new();
+                    let mut fi = 0;
+                    while fi < faces.len() {
+                        let same = faces[fi..]
+                            .iter()
+                            .take_while(|f| f.0 == faces[fi].0)
+                            .count();
+                        if same == 1 {
+                            bfaces.push(faces[fi].1);
+                        } else if constrained_faces.contains(&faces[fi].0) {
+                            break 'interior false;
+                        }
+                        fi += same;
+                    }
+                    let mut verts: Vec<usize> = cavity.iter().flat_map(|&c| mesh.tets[c]).collect();
+                    verts.sort_unstable();
+                    verts.dedup();
+                    let mut x = [0.0f64; 3];
+                    let mut diag2 = 0.0f64;
+                    for &v in &verts {
+                        for (k, a) in x.iter_mut().enumerate() {
+                            *a += mesh.points[v][k];
+                        }
+                    }
+                    for a in &mut x {
+                        *a /= verts.len() as f64;
+                    }
+                    for &v in &verts {
+                        let d2: f64 = (0..3).map(|k| (mesh.points[v][k] - x[k]).powi(2)).sum();
+                        diag2 = diag2.max(d2);
+                    }
+                    let mut old_q = f64::MAX;
+                    for &c in &cavity {
+                        old_q = old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, c));
+                    }
+                    let mut old_re = 0.0f64;
+                    for &c in &cavity {
+                        old_re = old_re.max(radius_edge(std::array::from_fn(|k| {
+                            mesh.points[mesh.tets[c][k]]
+                        })));
+                    }
+                    let re_cap = old_re.max(INSERT_RE_ALLOW);
+                    // Optimization-based positioning (the Stellar recipe): the
+                    // centroid cone of a squashed sliver cavity is itself thin,
+                    // so the insertion point pattern-searches the position that
+                    // maximizes the worst cone DIHEDRAL quality. The radius-edge
+                    // cap is a hard constraint INSIDE the objective: needles
+                    // have fine dihedrals, so without it the search happily
+                    // walks into huge-circumsphere positions.
+                    // Objective: worst cone dihedral quality, with the
+                    // radius-edge cap as a PENALTY rather than a hard wall
+                    // (infeasible start positions would otherwise sit on a MIN
+                    // plateau the pattern search cannot leave). Acceptance at
+                    // the end is strict on both.
+                    let cav_lmax2 =
+                        lmax2_of(&mesh.points, &mesh.tets, &cavity).max(edge_budget2(region));
+                    let cone_eval = |x: [f64; 3]| -> (f64, f64) {
+                        let mut q = f64::MAX;
+                        let mut re = 0.0f64;
+                        for f in &bfaces {
+                            let p: [[f64; 3]; 4] =
+                                [mesh.points[f[0]], mesh.points[f[1]], mesh.points[f[2]], x];
+                            if (0..3).any(|k| dist2_pts(p[k], x) > cav_lmax2) {
+                                return (f64::MIN, f64::MAX);
+                            }
+                            if Sign::of_f64(geometry_predicates::orient3d(p[0], p[1], p[2], p[3]))
+                                != Sign::Positive
+                            {
+                                return (f64::MIN, f64::MAX);
+                            }
+                            re = re.max(radius_edge(p));
+                            match quality_above_coords(p, f64::MIN) {
+                                Some(cq) => q = q.min(cq),
+                                None => return (f64::MIN, f64::MAX),
+                            }
+                        }
+                        (q, re)
+                    };
+                    let score = |(q, re): (f64, f64)| -> f64 {
+                        if q == f64::MIN {
+                            f64::MIN
+                        } else {
+                            q - 0.5 * ((re / re_cap) - 1.0).max(0.0)
+                        }
+                    };
+                    let mut best = cone_eval(x);
+                    let mut best_s = score(best);
+                    let mut step = 0.25 * diag2.sqrt();
+                    for _ in 0..3 {
+                        loop {
+                            let mut improved = false;
+                            for k in 0..3 {
+                                for sgn in [-1.0, 1.0] {
+                                    let mut cand = x;
+                                    cand[k] += sgn * step;
+                                    let e = cone_eval(cand);
+                                    let sc = score(e);
+                                    if sc > best_s {
+                                        best_s = sc;
+                                        best = e;
+                                        x = cand;
+                                        improved = true;
+                                    }
+                                }
+                            }
+                            if !improved {
+                                break;
+                            }
+                        }
+                        step *= 0.5;
+                    }
+                    // Acceptance is on the dihedral objective alone: the
+                    // radius-edge penalty steers the search away from needle
+                    // positions, but a sliver removal is not sacrificed to the
+                    // occasional long cone (slivers hurt Nedelec conditioning
+                    // directly; needles with sound dihedrals do not).
+                    if best.0 <= old_q + QUALITY_EPS {
+                        break 'interior false;
+                    }
+                    let xi = mesh.points.len();
+                    mesh.points.push(x);
+                    for &c in &cavity {
+                        alive[c] = false;
+                    }
+                    for f in bfaces {
+                        added.push(([f[0], f[1], f[2], xi], region));
+                    }
+                    for &v in &verts {
+                        next_dirty.insert(v);
+                    }
+                    next_dirty.insert(xi);
+                    ops += 1;
+                    true
                 };
                 if interior_done {
                     continue;
@@ -1676,24 +1708,22 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                         continue;
                     }
                     let strictly_inside = |x: [f64; 3]| -> bool {
-                        [(pa, pb), (pb, pc), (pc, pa)].iter().all(|&(u, v)| {
-                            orient2d(&pe(u), &pe(v), &pe(x), axis) == Some(face_ori)
-                        })
+                        [(pa, pb), (pb, pc), (pc, pa)]
+                            .iter()
+                            .all(|&(u, v)| orient2d(&pe(u), &pe(v), &pe(x), axis) == Some(face_ori))
                     };
                     let mut old_q = f64::MAX;
                     let mut old_re = 0.0f64;
                     for e in owners {
                         let o = e.1 as usize;
-                        old_q =
-                            old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, o));
+                        old_q = old_q.min(cached_q(&mesh.points, &mesh.tets, &mut tet_q, o));
                         old_re = old_re.max(radius_edge(std::array::from_fn(|k| {
                             mesh.points[mesh.tets[o][k]]
                         })));
                     }
                     let re_cap = old_re.max(INSERT_RE_ALLOW);
                     // Sub-tets: each owner with one face vertex replaced by x.
-                    let owner_ids: Vec<usize> =
-                        owners.iter().map(|e| e.1 as usize).collect();
+                    let owner_ids: Vec<usize> = owners.iter().map(|e| e.1 as usize).collect();
                     let own_lmax2 = lmax2_of(&mesh.points, &mesh.tets, &owner_ids)
                         .max(edge_budget2(mesh.tet_regions[owner_ids[0]]));
                     let split_eval = |x: [f64; 3]| -> (f64, f64) {
@@ -1712,9 +1742,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                                         mesh.points[ot[k]]
                                     }
                                 });
-                                if (0..4).any(|k| {
-                                    p[k] != x && dist2_pts(p[k], x) > own_lmax2
-                                }) {
+                                if (0..4).any(|k| p[k] != x && dist2_pts(p[k], x) > own_lmax2) {
                                     return (f64::MIN, f64::MAX);
                                 }
                                 if Sign::of_f64(geometry_predicates::orient3d(
@@ -1745,9 +1773,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                             ref curved => project_to_surface(curved, x),
                         }
                     };
-                    let mut x = project(std::array::from_fn(|k| {
-                        (pa[k] + pb[k] + pc[k]) / 3.0
-                    }));
+                    let mut x = project(std::array::from_fn(|k| (pa[k] + pb[k] + pc[k]) / 3.0));
                     let mut best = split_eval(x);
                     let mut best_s = score(best);
                     let diag = (0..3)
@@ -1875,7 +1901,10 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 .iter()
                 .map(|c| c.swap(0, Ordering::Relaxed))
                 .collect();
-            eprintln!("  collapse rejects [surface {}, link {}, valid {}, quality {}, fold {}]", cr[1], cr[2], cr[3], cr[4], cr[5]);
+            eprintln!(
+                "  collapse rejects [surface {}, link {}, valid {}, quality {}, fold {}]",
+                cr[1], cr[2], cr[3], cr[4], cr[5]
+            );
             let cp: Vec<u64> = COLLAPSE_PROF
                 .iter()
                 .map(|c| c.swap(0, Ordering::Relaxed))
@@ -2009,7 +2038,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                 }
                 let (t1, t2) = (o[0] as usize, o[1] as usize);
                 if mesh.tet_regions[t1] != mesh.tet_regions[t2] {
-                    *cnt.entry("facet: region interface (unconstrained!)").or_insert(0) += 1;
+                    *cnt.entry("facet: region interface (unconstrained!)")
+                        .or_insert(0) += 1;
                     continue;
                 }
                 let other = if t1 == ti { t2 } else { t1 };
@@ -2049,8 +2079,8 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     *cnt.entry("flip23: new tet inverted").or_insert(0) += 1;
                     continue;
                 };
-                let old_q = quality(&mesh.points, mesh.tets[t1])
-                    .min(quality(&mesh.points, mesh.tets[t2]));
+                let old_q =
+                    quality(&mesh.points, mesh.tets[t1]).min(quality(&mesh.points, mesh.tets[t2]));
                 let new_q = quality(&mesh.points, n1)
                     .min(quality(&mesh.points, n2))
                     .min(quality(&mesh.points, n3));
@@ -2076,9 +2106,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                     let ring: Vec<u32> = g_incident[t[a]]
                         .iter()
                         .copied()
-                        .filter(|&x| {
-                            alive[x as usize] && mesh.tets[x as usize].contains(&t[b])
-                        })
+                        .filter(|&x| alive[x as usize] && mesh.tets[x as usize].contains(&t[b]))
                         .collect();
                     match ring.len() {
                         0..=2 => *cnt.entry("edge: ring<3 (boundary)").or_insert(0) += 1,
@@ -2112,8 +2140,7 @@ pub fn optimize(mesh: &mut TetMesh, params: &OptimizeParams) -> usize {
                                 .iter()
                                 .map(|&x| quality(&mesh.points, mesh.tets[x as usize]))
                                 .fold(f64::MAX, f64::min);
-                            let new_q = quality(&mesh.points, n1)
-                                .min(quality(&mesh.points, n2));
+                            let new_q = quality(&mesh.points, n1).min(quality(&mesh.points, n2));
                             if new_q > old_q + QUALITY_EPS {
                                 *cnt.entry("flip32: VIABLE (missed?)").or_insert(0) += 1;
                             } else {
@@ -2265,8 +2292,7 @@ fn perturb_pass(
         let n: [f64; 3] = best_n.map(|v| v * scale);
         let delta = 0.05 * lmin;
         'verts: for &v in &t {
-            if v < mesh.plc_points || constrained_verts.contains(&v) || perturbed.contains(&v)
-            {
+            if v < mesh.plc_points || constrained_verts.contains(&v) || perturbed.contains(&v) {
                 continue;
             }
             let p0 = mesh.points[v];
@@ -2285,9 +2311,7 @@ fn perturb_pass(
                 let star_ok = g_incident[v]
                     .iter()
                     .zip(&was_pos)
-                    .all(|(&x, &wp)| {
-                        !wp || orient_positive(&mesh.points, mesh.tets[x as usize])
-                    });
+                    .all(|(&x, &wp)| !wp || orient_positive(&mesh.points, mesh.tets[x as usize]));
                 if star_ok {
                     for &x in &g_incident[v] {
                         tet_q[x as usize] = f64::NAN;
@@ -2366,8 +2390,8 @@ fn exude_pass(
                 continue;
             }
             weights[v] = 0.16 * lmin2; // (0.4 * nn)^2
-            // The weight changes flip decisions across v's whole star: mark
-            // it dirty so the next pass re-evaluates those candidates.
+                                       // The weight changes flip decisions across v's whole star: mark
+                                       // it dirty so the next pass re-evaluates those candidates.
             for &x in &g_incident[v] {
                 if alive[x as usize] {
                     for &u in &mesh.tets[x as usize] {
@@ -2437,8 +2461,7 @@ fn try_edge_collapse(
     // Hoisted: env::var_os takes the process env lock on every call, and this
     // function runs once per collapse candidate.
     static CTRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let ctrace =
-        *CTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some());
+    let ctrace = *CTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_COLLAPSE_TRACE").is_some());
     cprof_count(6);
     scratch.ak_arena.clear();
     scratch.ak_valid = [false; 4];
@@ -2462,9 +2485,10 @@ fn try_edge_collapse(
         // target dies at the surface gate, so skip the star scans outright
         // (the dominant case by far: ~half of all target attempts).
         if b_on_surface
-            && !t.iter().enumerate().any(|(aj, &a)| {
-                aj != bi && constrained_edges.contains(&(a.min(b), a.max(b)))
-            })
+            && !t
+                .iter()
+                .enumerate()
+                .any(|(aj, &a)| aj != bi && constrained_edges.contains(&(a.min(b), a.max(b))))
         {
             creject(1);
             continue;
@@ -2512,9 +2536,12 @@ fn try_edge_collapse(
         drop(ProfGuard(0, prof_bf));
         let prof_ft = std::time::Instant::now();
         scratch.b_patches.clear();
-        scratch
-            .b_patches
-            .extend(scratch.b_faces.iter().map(|&(idx, _)| mesh.faces[idx as usize].patch));
+        scratch.b_patches.extend(
+            scratch
+                .b_faces
+                .iter()
+                .map(|&(idx, _)| mesh.faces[idx as usize].patch),
+        );
         scratch.b_patches.sort_unstable();
         scratch.b_patches.dedup();
         // Feature neighbors of b among its surface edges: a surface edge
@@ -2547,8 +2574,7 @@ fn try_edge_collapse(
                         n_efs += 1;
                     }
                 }
-                n_efs != 2
-                    || face_group(mesh, efs[0] as usize) != face_group(mesh, efs[1] as usize)
+                n_efs != 2 || face_group(mesh, efs[0] as usize) != face_group(mesh, efs[1] as usize)
             });
         }
         let b_has_features = !scratch.feature_nbrs.is_empty();
@@ -2637,16 +2663,18 @@ fn try_edge_collapse(
             // hash set.
             if !scratch.ak_valid[ai] {
                 let start = scratch.ak_arena.len();
-                scratch.ak_arena.extend(
-                    g_incident[a]
-                        .iter()
-                        .filter(|&&x| alive[x as usize])
-                        .map(|&x| {
-                            let mut k = mesh.tets[x as usize];
-                            k.sort_unstable();
-                            k
-                        }),
-                );
+                scratch
+                    .ak_arena
+                    .extend(
+                        g_incident[a]
+                            .iter()
+                            .filter(|&&x| alive[x as usize])
+                            .map(|&x| {
+                                let mut k = mesh.tets[x as usize];
+                                k.sort_unstable();
+                                k
+                            }),
+                    );
                 scratch.ak_arena[start..].sort_unstable();
                 scratch.ak_range[ai] = (start as u32, scratch.ak_arena.len() as u32);
                 scratch.ak_valid[ai] = true;
@@ -2730,9 +2758,13 @@ fn try_edge_collapse(
                     .map(|&x| x as usize),
             );
             scratch.surviving_a.clear();
-            scratch
-                .surviving_a
-                .extend(scratch.star_a.iter().copied().filter(|ta| !mesh.tets[*ta].contains(&b)));
+            scratch.surviving_a.extend(
+                scratch
+                    .star_a
+                    .iter()
+                    .copied()
+                    .filter(|ta| !mesh.tets[*ta].contains(&b)),
+            );
             let a_free = scratch.b_faces.is_empty() && !constrained_verts.contains(&a);
             let pa0 = mesh.points[a];
             let pb0 = mesh.points[b];
@@ -2824,7 +2856,11 @@ fn try_edge_collapse(
                     // Quality mode requires improvement (cutoff old_q);
                     // coarsening only requires do-no-harm, so its cutoff sits
                     // just below old_q to let quality-neutral merges through.
-                    let cutoff = if coarsen { old_q - 2.0 * QUALITY_EPS } else { old_q };
+                    let cutoff = if coarsen {
+                        old_q - 2.0 * QUALITY_EPS
+                    } else {
+                        old_q
+                    };
                     match quality_above(&mesh.points, n, cutoff) {
                         Some(q) => new_q = new_q.min(q),
                         None => {
@@ -2972,9 +3008,7 @@ fn volume_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
             continue;
         }
         let p: [[f64; 3]; 4] = std::array::from_fn(|k| mesh.points[t[k]]);
-        let r: [[f64; 3]; 3] = std::array::from_fn(|i| {
-            std::array::from_fn(|k| p[i][k] - p[3][k])
-        });
+        let r: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|k| p[i][k] - p[3][k]));
         v6 += r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
             - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
             + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
@@ -2999,7 +3033,11 @@ fn manifold_watch(label: &str, mesh: &TetMesh, alive: &[bool]) {
     }
     let bad: Vec<_> = cnt.iter().filter(|(_, &c)| c > 2).collect();
     if !bad.is_empty() {
-        eprintln!("  [manifold {label}] {} edges with >2 faces, first: {:?}", bad.len(), bad[0]);
+        eprintln!(
+            "  [manifold {label}] {} edges with >2 faces, first: {:?}",
+            bad.len(),
+            bad[0]
+        );
         let &(a, b) = bad[0].0;
         for (fi, sf) in mesh.faces.iter().enumerate() {
             if sf.tri.contains(&a) && sf.tri.contains(&b) {
@@ -3152,7 +3190,9 @@ fn face_normal(points: &[[f64; 3]], t: [usize; 3]) -> [f64; 3] {
         u[2] * v[0] - u[0] * v[2],
         u[0] * v[1] - u[1] * v[0],
     ];
-    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(f64::MIN_POSITIVE);
+    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2])
+        .sqrt()
+        .max(f64::MIN_POSITIVE);
     [n[0] / l, n[1] / l, n[2] / l]
 }
 
@@ -3178,7 +3218,10 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
         SurfaceKind::Discrete(d) => d.closest(p).0,
         SurfaceKind::Tube { path, radius } => {
             let s = rapidmesh_brep::Surface::from_kind(
-                &SurfaceKind::Tube { path: path.clone(), radius: *radius },
+                &SurfaceKind::Tube {
+                    path: path.clone(),
+                    radius: *radius,
+                },
                 &[],
             );
             s.closest(p).0
@@ -3191,7 +3234,11 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
             }
             std::array::from_fn(|k| center[k] + radius * w[k] / l)
         }
-        SurfaceKind::Cylinder { center, axis, radius } => {
+        SurfaceKind::Cylinder {
+            center,
+            axis,
+            radius,
+        } => {
             let al = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
             let a: [f64; 3] = std::array::from_fn(|k| axis[k] / al);
             let w: [f64; 3] = std::array::from_fn(|k| p[k] - center[k]);
@@ -3203,7 +3250,11 @@ fn project_to_surface(kind: &SurfaceKind, p: [f64; 3]) -> [f64; 3] {
             }
             std::array::from_fn(|k| center[k] + t * a[k] + radius * radial[k] / rl)
         }
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             let al = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
             let a: [f64; 3] = std::array::from_fn(|k| axis[k] / al);
             let w: [f64; 3] = std::array::from_fn(|k| p[k] - apex[k]);
@@ -3387,7 +3438,12 @@ fn sliver_pass(
     let mut inc: Vec<u32> = Vec::new();
     for &v in &sliver_verts {
         inc.clear();
-        inc.extend(g_incident[v].iter().copied().filter(|&ti| alive[ti as usize]));
+        inc.extend(
+            g_incident[v]
+                .iter()
+                .copied()
+                .filter(|&ti| alive[ti as usize]),
+        );
         if inc.is_empty() {
             continue;
         }
@@ -3406,8 +3462,9 @@ fn sliver_pass(
         for &ti in &inc {
             for &w in &mesh.tets[ti as usize] {
                 if w != v {
-                    let d2: f64 =
-                        (0..3).map(|k| (mesh.points[w][k] - old_pos[k]).powi(2)).sum();
+                    let d2: f64 = (0..3)
+                        .map(|k| (mesh.points[w][k] - old_pos[k]).powi(2))
+                        .sum();
                     lref2 = lref2.max(d2);
                 }
             }
@@ -3469,9 +3526,8 @@ fn sliver_pass(
                             let d_old: f64 = (0..3)
                                 .map(|k| (mesh.points[w][k] - old_pos[k]).powi(2))
                                 .sum();
-                            let d_new: f64 = (0..3)
-                                .map(|k| (mesh.points[w][k] - cand[k]).powi(2))
-                                .sum();
+                            let d_new: f64 =
+                                (0..3).map(|k| (mesh.points[w][k] - cand[k]).powi(2)).sum();
                             if d_new > d_old.max(budget2) {
                                 blocked = true;
                                 break 'edges;
@@ -3659,9 +3715,8 @@ fn surface_pass(
             if face_group(mesh, fi1).0 == 1 {
                 let kind = mesh.surfaces[mesh.faces[fi1].surface as usize].clone();
                 let residual = |u: usize, w: usize| -> f64 {
-                    let m: [f64; 3] = std::array::from_fn(|k| {
-                        0.5 * (mesh.points[u][k] + mesh.points[w][k])
-                    });
+                    let m: [f64; 3] =
+                        std::array::from_fn(|k| 0.5 * (mesh.points[u][k] + mesh.points[w][k]));
                     let pr = project_to_surface(&kind, m);
                     (0..3).map(|k| (pr[k] - m[k]).powi(2)).sum::<f64>().sqrt()
                 };
@@ -3677,9 +3732,8 @@ fn surface_pass(
                 // blocked exactly the flips that repair boundary slivers along
                 // intersection curves, and with both endpoints on the carrier
                 // the wedge-shaving ratchet it prevented cannot start.
-                let m: [f64; 3] = std::array::from_fn(|k| {
-                    0.5 * (mesh.points[c][k] + mesh.points[d][k])
-                });
+                let m: [f64; 3] =
+                    std::array::from_fn(|k| 0.5 * (mesh.points[c][k] + mesh.points[d][k]));
                 let rr = if let SurfaceKind::Discrete(ref dsc) = kind {
                     // Discrete has no UV chart (project_uv drops z), so the
                     // curvature lookup takes the world point directly.
@@ -3730,14 +3784,21 @@ fn surface_pass(
                 continue;
             }
             let apex = |ti: usize, tri: [usize; 3]| -> usize {
-                *mesh.tets[ti].iter().find(|v| !tri.contains(v)).expect("apex")
+                *mesh.tets[ti]
+                    .iter()
+                    .find(|v| !tri.contains(v))
+                    .expect("apex")
             };
             let mut pairs: Vec<(usize, usize, usize)> = Vec::new(); // (t1, t2, apex)
             let mut ok = true;
             for e1 in t1s {
                 let t1 = e1.1 as usize;
                 let p = apex(t1, sf1.tri);
-                match t2s.iter().map(|e| e.1 as usize).find(|&t2| apex(t2, sf2.tri) == p) {
+                match t2s
+                    .iter()
+                    .map(|e| e.1 as usize)
+                    .find(|&t2| apex(t2, sf2.tri) == p)
+                {
                     Some(t2) if mesh.tet_regions[t1] == mesh.tet_regions[t2] => {
                         pairs.push((t1, t2, p))
                     }
@@ -3780,7 +3841,9 @@ fn surface_pass(
                     ok = false;
                     break;
                 };
-                new_q = new_q.min(quality(&mesh.points, n1)).min(quality(&mesh.points, n2));
+                new_q = new_q
+                    .min(quality(&mesh.points, n1))
+                    .min(quality(&mesh.points, n2));
                 repl.push((t1, n1, t2, n2));
             }
             if !ok || new_q <= old_q + QUALITY_EPS {
@@ -3871,7 +3934,8 @@ fn surface_pass(
                     nbrs.push(w);
                     let efs = ef_get((x.min(y), x.max(y)));
                     if efs.len() != 2
-                        || face_group(mesh, efs[0].1 as usize) != face_group(mesh, efs[1].1 as usize)
+                        || face_group(mesh, efs[0].1 as usize)
+                            != face_group(mesh, efs[1].1 as usize)
                     {
                         feature_nbrs.push(w);
                     }
@@ -3902,7 +3966,11 @@ fn surface_pass(
             // analytic geometry".
             let lref2 = nbrs
                 .iter()
-                .map(|&w| (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum::<f64>())
+                .map(|&w| {
+                    (0..3)
+                        .map(|k| (mesh.points[w][k] - cur[k]).powi(2))
+                        .sum::<f64>()
+                })
                 .fold(0.0_f64, f64::max);
             let tol = 1e-7 * lref2.sqrt();
             // A vertex OFF its analytic geometry is a constraint violation
@@ -4007,9 +4075,8 @@ fn surface_pass(
                     } else {
                         // On the curve: slide along it (1D Laplacian of the
                         // feature neighbors, projected back onto the curve).
-                        let mid: [f64; 3] = std::array::from_fn(|k| {
-                            0.5 * (mesh.points[u][k] + mesh.points[w][k])
-                        });
+                        let mid: [f64; 3] =
+                            std::array::from_fn(|k| 0.5 * (mesh.points[u][k] + mesh.points[w][k]));
                         let Some(t) = project_onto_all(&cons, mid, tol) else {
                             continue;
                         };
@@ -4065,10 +4132,10 @@ fn surface_pass(
                             ));
                         }
                     }
-                    let dw_old: f64 =
-                        (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum();
-                    let dw_new: f64 =
-                        (0..3).map(|k| (mesh.points[w][k] - target[k]).powi(2)).sum();
+                    let dw_old: f64 = (0..3).map(|k| (mesh.points[w][k] - cur[k]).powi(2)).sum();
+                    let dw_new: f64 = (0..3)
+                        .map(|k| (mesh.points[w][k] - target[k]).powi(2))
+                        .sum();
                     if dw_new > dw_old.max(budget2) {
                         blocked = true;
                         break;

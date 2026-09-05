@@ -153,7 +153,12 @@ fn build(
         }
     }
     let idx = nodes.len() as i32;
-    nodes.push(Node { lo, hi, left: 0, right: 0 });
+    nodes.push(Node {
+        lo,
+        hi,
+        left: 0,
+        right: 0,
+    });
     let count = end - start;
     if count <= 8 {
         nodes[idx as usize].left = start as i32;

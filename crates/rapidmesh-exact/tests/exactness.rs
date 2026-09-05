@@ -34,14 +34,17 @@ fn expansion_add_matches_rational() {
     for _ in 0..500 {
         let a: Vec<f64> = (0..5).map(|_| rng.f64_wide()).collect();
         let b: Vec<f64> = (0..5).map(|_| rng.f64_wide()).collect();
-        let ea = a
-            .iter()
-            .fold(Expansion::from_f64(0.0), |acc, &v| acc.add(&Expansion::from_f64(v)));
-        let eb = b
-            .iter()
-            .fold(Expansion::from_f64(0.0), |acc, &v| acc.add(&Expansion::from_f64(v)));
+        let ea = a.iter().fold(Expansion::from_f64(0.0), |acc, &v| {
+            acc.add(&Expansion::from_f64(v))
+        });
+        let eb = b.iter().fold(Expansion::from_f64(0.0), |acc, &v| {
+            acc.add(&Expansion::from_f64(v))
+        });
         let sum = ea.add(&eb);
-        let want: BigRational = a.iter().chain(&b).fold(BigRational::zero(), |acc, &v| acc + rat(v));
+        let want: BigRational = a
+            .iter()
+            .chain(&b)
+            .fold(BigRational::zero(), |acc, &v| acc + rat(v));
         assert_eq!(expansion_to_rat(&sum), want);
     }
 }
@@ -52,12 +55,12 @@ fn expansion_mul_matches_rational() {
     for _ in 0..500 {
         let a: Vec<f64> = (0..4).map(|_| rng.f64_wide()).collect();
         let b: Vec<f64> = (0..4).map(|_| rng.f64_wide()).collect();
-        let ea = a
-            .iter()
-            .fold(Expansion::from_f64(0.0), |acc, &v| acc.add(&Expansion::from_f64(v)));
-        let eb = b
-            .iter()
-            .fold(Expansion::from_f64(0.0), |acc, &v| acc.add(&Expansion::from_f64(v)));
+        let ea = a.iter().fold(Expansion::from_f64(0.0), |acc, &v| {
+            acc.add(&Expansion::from_f64(v))
+        });
+        let eb = b.iter().fold(Expansion::from_f64(0.0), |acc, &v| {
+            acc.add(&Expansion::from_f64(v))
+        });
         let prod = ea.mul(&eb);
         let ra = a.iter().fold(BigRational::zero(), |acc, &v| acc + rat(v));
         let rb = b.iter().fold(BigRational::zero(), |acc, &v| acc + rat(v));
@@ -93,7 +96,10 @@ fn interval_det4_contains_rational_value() {
             std::array::from_fn(|i| std::array::from_fn(|j| Rat::from_f64(m[i][j])));
         let di = det4(&mi);
         let dr = det4(&mr).0;
-        assert!(rat(di.lo()) <= dr && dr <= rat(di.hi()), "det4 interval must contain exact value");
+        assert!(
+            rat(di.lo()) <= dr && dr <= rat(di.hi()),
+            "det4 interval must contain exact value"
+        );
     }
 }
 
@@ -157,7 +163,10 @@ fn orient3d_explicit_matches_oracle() {
         }
     }
     // Coarse-grid rounds must have produced exact coplanarity.
-    assert!(zeros > 0, "coarse grid points should hit exact coplanar cases");
+    assert!(
+        zeros > 0,
+        "coarse grid points should hit exact coplanar cases"
+    );
 }
 
 #[test]
@@ -167,7 +176,17 @@ fn orient3d_lnc_matches_oracle() {
     // the segment is clearly on one side and where it straddles the plane
     // (fall-through), and at parameters near 0 and 1.
     let mut rng = Rng::new(0x4C);
-    let ts = [1e-12, 1e-3, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0 - 1e-3, 1.0 - 1e-12];
+    let ts = [
+        1e-12,
+        1e-3,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1.0 - 1e-3,
+        1.0 - 1e-12,
+    ];
     let (mut zeros, mut nonzeros) = (0u32, 0u32);
     for i in 0..3000 {
         let coarse = i % 3 == 0; // coarse grid hits coplanar/degenerate configs
@@ -200,7 +219,10 @@ fn orient3d_lnc_matches_oracle() {
             }
         }
     }
-    assert!(nonzeros > 0 && zeros > 0, "test should hit both signed and coplanar cases");
+    assert!(
+        nonzeros > 0 && zeros > 0,
+        "test should hit both signed and coplanar cases"
+    );
 }
 
 #[test]
@@ -446,7 +468,10 @@ fn orient2d_implicit_matches_oracle() {
             }
         }
     }
-    assert!(checked > 100, "expected many decidable cases, got {checked}");
+    assert!(
+        checked > 100,
+        "expected many decidable cases, got {checked}"
+    );
 }
 
 #[test]
@@ -562,17 +587,26 @@ fn lnc_affine_rat(a: [f64; 3], b: [f64; 3], t: f64) -> [BigRational; 3] {
 /// calibrated against Shewchuk's `insphere` by the explicit randomized test.
 fn insphere_affine_oracle(p: [[BigRational; 3]; 5]) -> Sign {
     let row = |i: usize| -> [Rat; 4] {
-        let d: [BigRational; 3] =
-            std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
-        let lift = d.iter().map(|v| v * v).fold(BigRational::zero(), |a, v| a + v);
-        [Rat(d[0].clone()), Rat(d[1].clone()), Rat(d[2].clone()), Rat(lift)]
+        let d: [BigRational; 3] = std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
+        let lift = d
+            .iter()
+            .map(|v| v * v)
+            .fold(BigRational::zero(), |a, v| a + v);
+        [
+            Rat(d[0].clone()),
+            Rat(d[1].clone()),
+            Rat(d[2].clone()),
+            Rat(lift),
+        ]
     };
     let m: [[Rat; 4]; 4] = std::array::from_fn(row);
     sign_of_rat(&det4(&m).0)
 }
 
 fn golden_t(i: usize) -> f64 {
-    (((i as f64) + 1.0) * 0.618_033_988_749_894_9).fract().clamp(0.05, 0.95)
+    (((i as f64) + 1.0) * 0.618_033_988_749_894_9)
+        .fract()
+        .clamp(0.05, 0.95)
 }
 
 #[test]
@@ -653,7 +687,12 @@ fn lnc_orient3d_matches_independent_rational() {
         let d = rng.point3(16);
         let t = golden_t(i);
         let l = Point3::lnc(a, b, t);
-        let got = orient3d(&Point3::Explicit(c), &Point3::Explicit(d), &Point3::Explicit(a), &l);
+        let got = orient3d(
+            &Point3::Explicit(c),
+            &Point3::Explicit(d),
+            &Point3::Explicit(a),
+            &l,
+        );
         // Independent affine-rational determinant.
         let lp = lnc_affine_rat(a, b, t);
         let rows: [[Rat; 3]; 3] = [
@@ -724,9 +763,8 @@ fn insphere3d_with_lnc_matches_independent_rational() {
         let l = Point3::lnc(sa, sb, t);
         let e: [Point3; 4] = p.map(Point3::Explicit);
         let got = insphere3d(&e[0], &e[1], &e[2], &e[3], &l);
-        let mut affine: [[BigRational; 3]; 5] = std::array::from_fn(|j| {
-            std::array::from_fn(|k| rat(p[std::cmp::min(j, 3)][k]))
-        });
+        let mut affine: [[BigRational; 3]; 5] =
+            std::array::from_fn(|j| std::array::from_fn(|k| rat(p[std::cmp::min(j, 3)][k])));
         affine[4] = lnc_affine_rat(sa, sb, t);
         let want = insphere_affine_oracle(affine);
         assert_eq!(got, Some(want));
@@ -739,11 +777,18 @@ fn insphere3d_with_lnc_matches_independent_rational() {
 /// (p - e, |p - e|^2 - (wp - we)).
 fn power_affine_oracle(p: [[BigRational; 3]; 5], w: [BigRational; 5]) -> Sign {
     let row = |i: usize| -> [Rat; 4] {
-        let d: [BigRational; 3] =
-            std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
-        let lift = d.iter().map(|v| v * v).fold(BigRational::zero(), |a, v| a + v)
+        let d: [BigRational; 3] = std::array::from_fn(|k| p[i][k].clone() - p[4][k].clone());
+        let lift = d
+            .iter()
+            .map(|v| v * v)
+            .fold(BigRational::zero(), |a, v| a + v)
             - (w[i].clone() - w[4].clone());
-        [Rat(d[0].clone()), Rat(d[1].clone()), Rat(d[2].clone()), Rat(lift)]
+        [
+            Rat(d[0].clone()),
+            Rat(d[1].clone()),
+            Rat(d[2].clone()),
+            Rat(lift),
+        ]
     };
     let m: [[Rat; 4]; 4] = std::array::from_fn(row);
     sign_of_rat(&det4(&m).0)
@@ -762,9 +807,7 @@ fn power_test3d_matches_rational_oracle_and_insphere_at_zero() {
         } else {
             std::array::from_fn(|j| golden_t(i * 5 + j) * 0.01 - 0.005)
         };
-        let got = power_test3d(
-            p[0], w[0], p[1], w[1], p[2], w[2], p[3], w[3], p[4], w[4],
-        );
+        let got = power_test3d(p[0], w[0], p[1], w[1], p[2], w[2], p[3], w[3], p[4], w[4]);
         let pr: [[BigRational; 3]; 5] =
             std::array::from_fn(|j| std::array::from_fn(|k| rat(p[j][k])));
         let wr: [BigRational; 5] = std::array::from_fn(|j| rat(w[j]));

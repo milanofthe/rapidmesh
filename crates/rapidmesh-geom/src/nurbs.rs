@@ -68,10 +68,19 @@ impl NurbsCurve {
     pub fn new(degree: usize, knots: Vec<f64>, ctrl: Vec<P2>, weights: Vec<f64>) -> NurbsCurve {
         assert!(degree >= 1, "degree must be >= 1");
         assert!(ctrl.len() > degree, "need at least degree+1 control points");
-        assert_eq!(knots.len(), ctrl.len() + degree + 1, "knot count must be n+p+2");
+        assert_eq!(
+            knots.len(),
+            ctrl.len() + degree + 1,
+            "knot count must be n+p+2"
+        );
         assert_eq!(weights.len(), ctrl.len(), "one weight per control point");
         assert!(weights.iter().all(|&w| w > 0.0), "weights must be positive");
-        NurbsCurve { degree, knots, ctrl, weights }
+        NurbsCurve {
+            degree,
+            knots,
+            ctrl,
+            weights,
+        }
     }
 
     /// A uniform clamped cubic (degree 3) interpolating the given control points
@@ -203,7 +212,8 @@ impl NurbsCurve {
                 let j1 = if rk >= -1 { 1 } else { (-rk) as usize };
                 let j2 = if (r as isize) - 1 <= pk { k - 1 } else { p - r };
                 for j in j1..=j2 {
-                    a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[(pk + 1) as usize][(rk + j as isize) as usize];
+                    a[s2][j] = (a[s1][j] - a[s1][j - 1])
+                        / ndu[(pk + 1) as usize][(rk + j as isize) as usize];
                     d += a[s2][j] * ndu[(rk + j as isize) as usize][pk as usize];
                 }
                 if r <= pk as usize {
@@ -278,7 +288,11 @@ impl NurbsCurve {
     pub fn arc_length(&self, u0: f64, u1: f64, subdivisions: usize) -> f64 {
         // 3-point Gauss-Legendre nodes/weights on [-1, 1].
         const X: [f64; 3] = [-0.774_596_669_241_483_4, 0.0, 0.774_596_669_241_483_4];
-        const W: [f64; 3] = [0.555_555_555_555_555_6, 0.888_888_888_888_889, 0.555_555_555_555_555_6];
+        const W: [f64; 3] = [
+            0.555_555_555_555_555_6,
+            0.888_888_888_888_889,
+            0.555_555_555_555_555_6,
+        ];
         let n = subdivisions.max(1);
         let h = (u1 - u0) / n as f64;
         let mut total = 0.0;
@@ -315,11 +329,19 @@ mod tests {
         );
         for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
             let p = c.eval(t);
-            assert!((norm(p) - 1.0).abs() < 1e-12, "on unit circle at {t}: |p|={}", norm(p));
+            assert!(
+                (norm(p) - 1.0).abs() < 1e-12,
+                "on unit circle at {t}: |p|={}",
+                norm(p)
+            );
         }
         // curvature of the unit circle is 1 everywhere.
         for &t in &[0.1, 0.5, 0.9] {
-            assert!((c.curvature(t) - 1.0).abs() < 1e-9, "kappa at {t} = {}", c.curvature(t));
+            assert!(
+                (c.curvature(t) - 1.0).abs() < 1e-9,
+                "kappa at {t} = {}",
+                c.curvature(t)
+            );
         }
         // arc length of the quarter circle is pi/2.
         let l = c.arc_length(0.0, 1.0, 64);
@@ -328,7 +350,12 @@ mod tests {
 
     #[test]
     fn straight_segment_has_zero_curvature() {
-        let c = NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 1.0], vec![[0.0, 0.0], [3.0, 4.0]], vec![1.0, 1.0]);
+        let c = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0], [3.0, 4.0]],
+            vec![1.0, 1.0],
+        );
         assert!(c.curvature(0.5) < 1e-12);
         assert!((c.arc_length(0.0, 1.0, 4) - 5.0).abs() < 1e-12);
         let p = c.eval(0.5);
@@ -350,7 +377,8 @@ mod tests {
         // At t=0.5 the Bezier apex: B=(0, 0), B'=(2,0), B''=(4,4)? curvature =
         // |x'y''-y'x''|/|x'|^3. Compute numerically-independent reference.
         let (_, d1, d2) = c.ders2(0.5);
-        let kappa = (d1[0] * d2[1] - d1[1] * d2[0]).abs() / (d1[0] * d1[0] + d1[1] * d1[1]).powf(1.5);
+        let kappa =
+            (d1[0] * d2[1] - d1[1] * d2[0]).abs() / (d1[0] * d1[0] + d1[1] * d1[1]).powf(1.5);
         assert!((c.curvature(0.5) - kappa).abs() < 1e-12);
         assert!(kappa > 0.0);
     }

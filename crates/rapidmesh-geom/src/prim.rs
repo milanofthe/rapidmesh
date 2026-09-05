@@ -69,7 +69,10 @@ fn embed(base: [f64; 3], u: [f64; 3], v: [f64; 3], p: [f64; 2]) -> [f64; 3] {
 /// Axis-aligned box. Six `Plane` face groups in the order
 /// -z, +z, -y, +y, -x, +x.
 pub fn solid_box(min: [f64; 3], max: [f64; 3]) -> Faceted {
-    assert!((0..3).all(|k| min[k] < max[k]), "box must have positive extent");
+    assert!(
+        (0..3).all(|k| min[k] < max[k]),
+        "box must have positive extent"
+    );
     // Corner index bits: bit0 = x, bit1 = y, bit2 = z.
     let c: [[f64; 3]; 8] = std::array::from_fn(|i| {
         [
@@ -110,7 +113,10 @@ pub fn frustum(
     segments: usize,
 ) -> Faceted {
     assert!(segments >= 3, "need at least 3 segments");
-    assert!(r_base > 0.0 && r_top >= 0.0, "radii must be positive (top may be 0)");
+    assert!(
+        r_base > 0.0 && r_top >= 0.0,
+        "radii must be positive (top may be 0)"
+    );
     let (e1, e2) = orthonormal_basis(axis);
     let top_center = add(base_center, axis);
     let ring = |center: [f64; 3], r: f64| -> Vec<[f64; 3]> {
@@ -211,7 +217,10 @@ pub fn facet_subdivisions(radius: f64, maxh: Option<f64>, tol: f64, min_segments
 
 /// UV sphere: `segments` longitudes (>= 3), `rings` latitude bands (>= 2).
 pub fn sphere(center: [f64; 3], radius: f64, segments: usize, rings: usize) -> Faceted {
-    assert!(segments >= 3 && rings >= 2, "sphere needs >= 3 segments, >= 2 rings");
+    assert!(
+        segments >= 3 && rings >= 2,
+        "sphere needs >= 3 segments, >= 2 rings"
+    );
     assert!(radius > 0.0);
     let mut f = Faceted::new();
     let s = f.add_surface(SurfaceKind::Sphere { center, radius });
@@ -231,7 +240,12 @@ pub fn sphere(center: [f64; 3], radius: f64, segments: usize, rings: usize) -> F
         .map(|k| {
             let theta = std::f64::consts::PI * k as f64 / rings as f64;
             (0..segments)
-                .map(|i| pt(theta, 2.0 * std::f64::consts::PI * i as f64 / segments as f64))
+                .map(|i| {
+                    pt(
+                        theta,
+                        2.0 * std::f64::consts::PI * i as f64 / segments as f64,
+                    )
+                })
                 .collect()
         })
         .collect();
@@ -306,8 +320,7 @@ pub fn extrude_polygon(
             )
         })
         .collect();
-    let bottom_outer: Vec<[f64; 3]> =
-        embed_loop(&outer_ccw, base).into_iter().rev().collect();
+    let bottom_outer: Vec<[f64; 3]> = embed_loop(&outer_ccw, base).into_iter().rev().collect();
     let bottom_holes: Vec<Vec<[f64; 3]>> = holes_cw
         .iter()
         .map(|h| embed_loop(h, base).into_iter().rev().collect())
@@ -330,9 +343,12 @@ pub fn extrude_polygon(
         })
         .collect();
     let top_outer = embed_loop(&outer_ccw, top_base);
-    let top_holes: Vec<Vec<[f64; 3]>> =
-        holes_cw.iter().map(|h| embed_loop(h, top_base)).collect();
-    f.push_flat(PlanarFacet::with_holes(top_outer, top_holes), &top_tris, top);
+    let top_holes: Vec<Vec<[f64; 3]>> = holes_cw.iter().map(|h| embed_loop(h, top_base)).collect();
+    f.push_flat(
+        PlanarFacet::with_holes(top_outer, top_holes),
+        &top_tris,
+        top,
+    );
 
     // Walls: region lies left of every (normalized) ring edge, so the quad
     // (a, b, b+h, a+h) faces outward. Each wall is a DISTINCT plane, so each gets
@@ -367,7 +383,10 @@ pub fn extrude_spline_profile(
     v: [f64; 3],
     h: [f64; 3],
 ) -> Faceted {
-    assert!(dot3(cross3(u, v), h) > 0.0, "extrusion frame must be right-handed");
+    assert!(
+        dot3(cross3(u, v), h) > 0.0,
+        "extrusion frame must be right-handed"
+    );
     assert!(n_seg >= 2, "need at least 2 segments");
     let (lo, hi) = profile.domain();
     let mut pts2: Vec<[f64; 2]> = (0..=n_seg)
@@ -389,7 +408,13 @@ pub fn extrude_spline_profile(
     let bottom = f.add_surface(SurfaceKind::Plane);
     let bottom_tris: Vec<Tri> = cap
         .iter()
-        .map(|t| Tri::new(embed(base, u, v, t[0]), embed(base, u, v, t[2]), embed(base, u, v, t[1])))
+        .map(|t| {
+            Tri::new(
+                embed(base, u, v, t[0]),
+                embed(base, u, v, t[2]),
+                embed(base, u, v, t[1]),
+            )
+        })
         .collect();
     let bottom_loop: Vec<[f64; 3]> = pts2.iter().rev().map(|&p| embed(base, u, v, p)).collect();
     f.push_flat(PlanarFacet::new(bottom_loop), &bottom_tris, bottom);
@@ -397,7 +422,13 @@ pub fn extrude_spline_profile(
     let top = f.add_surface(SurfaceKind::Plane);
     let top_tris: Vec<Tri> = cap
         .iter()
-        .map(|t| Tri::new(embed(top_base, u, v, t[0]), embed(top_base, u, v, t[1]), embed(top_base, u, v, t[2])))
+        .map(|t| {
+            Tri::new(
+                embed(top_base, u, v, t[0]),
+                embed(top_base, u, v, t[1]),
+                embed(top_base, u, v, t[2]),
+            )
+        })
         .collect();
     let top_loop: Vec<[f64; 3]> = pts2.iter().map(|&p| embed(top_base, u, v, p)).collect();
     f.push_flat(PlanarFacet::new(top_loop), &top_tris, top);
@@ -470,7 +501,10 @@ pub fn torus(
     segments_major: usize,
     segments_minor: usize,
 ) -> Faceted {
-    assert!(segments_major >= 3 && segments_minor >= 3, "torus needs >= 3 segments per ring");
+    assert!(
+        segments_major >= 3 && segments_minor >= 3,
+        "torus needs >= 3 segments per ring"
+    );
     assert!(
         major_radius > minor_radius && minor_radius > 0.0,
         "torus needs 0 < minor_radius < major_radius"
@@ -512,7 +546,10 @@ pub fn torus(
 /// `top_x` along x (0 gives a triangular prism). The trapezoid profile lives
 /// in the xz-plane and extrudes along +y.
 pub fn wedge(position: [f64; 3], dx: f64, dy: f64, dz: f64, top_x: f64) -> Faceted {
-    assert!(dx > 0.0 && dy > 0.0 && dz > 0.0, "wedge must have positive extent");
+    assert!(
+        dx > 0.0 && dy > 0.0 && dz > 0.0,
+        "wedge must have positive extent"
+    );
     assert!((0.0..=dx).contains(&top_x), "top_x must lie in [0, dx]");
     // Profile points as (z, x) pairs in the (u = z-hat, v = x-hat) frame:
     // (u x v) . h = (z x x) . y = +1, right-handed.
@@ -585,14 +622,20 @@ pub fn cylinder_iso(
     segments: usize,
     rows: usize,
 ) -> Faceted {
-    assert!(segments >= 3 && rows >= 1, "need >= 3 segments and >= 1 row");
+    assert!(
+        segments >= 3 && rows >= 1,
+        "need >= 3 segments and >= 1 row"
+    );
     assert!(radius > 0.0);
     let (e1, e2) = orthonormal_basis(axis);
     let ring = |center: [f64; 3]| -> Vec<[f64; 3]> {
         (0..segments)
             .map(|i| {
                 let a = 2.0 * std::f64::consts::PI * i as f64 / segments as f64;
-                add(center, add(scale(e1, radius * a.cos()), scale(e2, radius * a.sin())))
+                add(
+                    center,
+                    add(scale(e1, radius * a.cos()), scale(e2, radius * a.sin())),
+                )
             })
             .collect()
     };
@@ -602,7 +645,11 @@ pub fn cylinder_iso(
         .collect();
 
     let mut f = Faceted::new();
-    let barrel = f.add_surface(SurfaceKind::Cylinder { center: base_center, axis, radius });
+    let barrel = f.add_surface(SurfaceKind::Cylinder {
+        center: base_center,
+        axis,
+        radius,
+    });
     for k in 0..rows {
         let (lo, hi) = (&levels[k], &levels[k + 1]);
         for i in 0..segments {
@@ -646,8 +693,14 @@ pub fn frustum_iso(
     segments: usize,
     rows: usize,
 ) -> Faceted {
-    assert!(segments >= 3 && rows >= 1, "need >= 3 segments and >= 1 row");
-    assert!(r_base > 0.0 && r_top >= 0.0, "radii must be positive (top may be 0)");
+    assert!(
+        segments >= 3 && rows >= 1,
+        "need >= 3 segments and >= 1 row"
+    );
+    assert!(
+        r_base > 0.0 && r_top >= 0.0,
+        "radii must be positive (top may be 0)"
+    );
     let (e1, e2) = orthonormal_basis(axis);
     let ring = |center: [f64; 3], r: f64| -> Vec<[f64; 3]> {
         (0..segments)
@@ -659,11 +712,17 @@ pub fn frustum_iso(
     };
     let radius_at = |k: usize| r_base + (r_top - r_base) * (k as f64 / rows as f64);
     let center_at = |k: usize| add(base_center, scale(axis, k as f64 / rows as f64));
-    let levels: Vec<Vec<[f64; 3]>> = (0..=rows).map(|k| ring(center_at(k), radius_at(k))).collect();
+    let levels: Vec<Vec<[f64; 3]>> = (0..=rows)
+        .map(|k| ring(center_at(k), radius_at(k)))
+        .collect();
 
     let mut f = Faceted::new();
     let barrel_kind = if r_top == r_base {
-        SurfaceKind::Cylinder { center: base_center, axis, radius: r_base }
+        SurfaceKind::Cylinder {
+            center: base_center,
+            axis,
+            radius: r_base,
+        }
     } else {
         let factor = r_base / (r_base - r_top);
         let apex = add(base_center, scale(axis, factor));
@@ -720,31 +779,64 @@ pub fn icosphere(center: [f64; 3], radius: f64, subdivisions: usize) -> Faceted 
     // Regular icosahedron (golden-ratio rectangles).
     let t = (1.0 + 5.0_f64.sqrt()) / 2.0;
     let mut verts: Vec<[f64; 3]> = vec![
-        [-1.0, t, 0.0], [1.0, t, 0.0], [-1.0, -t, 0.0], [1.0, -t, 0.0],
-        [0.0, -1.0, t], [0.0, 1.0, t], [0.0, -1.0, -t], [0.0, 1.0, -t],
-        [t, 0.0, -1.0], [t, 0.0, 1.0], [-t, 0.0, -1.0], [-t, 0.0, 1.0],
+        [-1.0, t, 0.0],
+        [1.0, t, 0.0],
+        [-1.0, -t, 0.0],
+        [1.0, -t, 0.0],
+        [0.0, -1.0, t],
+        [0.0, 1.0, t],
+        [0.0, -1.0, -t],
+        [0.0, 1.0, -t],
+        [t, 0.0, -1.0],
+        [t, 0.0, 1.0],
+        [-t, 0.0, -1.0],
+        [-t, 0.0, 1.0],
     ];
     let mut faces: Vec<[usize; 3]> = vec![
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
     // Loop-subdivide: each triangle -> four, sharing edge midpoints (a cache
     // keyed by the sorted endpoint pair keeps the mesh watertight).
-    let mut cache: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    let mut cache: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
     for _ in 0..subdivisions {
         cache.clear();
         let mut next = Vec::with_capacity(faces.len() * 4);
         for tri in &faces {
-            let mid = |a: usize, b: usize, verts: &mut Vec<[f64; 3]>,
-                       cache: &mut std::collections::HashMap<(usize, usize), usize>| -> usize {
+            let mid = |a: usize,
+                       b: usize,
+                       verts: &mut Vec<[f64; 3]>,
+                       cache: &mut std::collections::HashMap<(usize, usize), usize>|
+             -> usize {
                 let key = if a < b { (a, b) } else { (b, a) };
                 if let Some(&m) = cache.get(&key) {
                     return m;
                 }
                 let (va, vb) = (verts[a], verts[b]);
-                verts.push([(va[0] + vb[0]) * 0.5, (va[1] + vb[1]) * 0.5, (va[2] + vb[2]) * 0.5]);
+                verts.push([
+                    (va[0] + vb[0]) * 0.5,
+                    (va[1] + vb[1]) * 0.5,
+                    (va[2] + vb[2]) * 0.5,
+                ]);
                 let idx = verts.len() - 1;
                 cache.insert(key, idx);
                 idx
@@ -768,7 +860,11 @@ pub fn icosphere(center: [f64; 3], radius: f64, subdivisions: usize) -> Faceted 
     let s = f.add_surface(SurfaceKind::Sphere { center, radius });
     for tri in &faces {
         f.push_tri(
-            Tri::new(proj(verts[tri[0]]), proj(verts[tri[1]]), proj(verts[tri[2]])),
+            Tri::new(
+                proj(verts[tri[0]]),
+                proj(verts[tri[1]]),
+                proj(verts[tri[2]]),
+            ),
             s,
         );
     }
@@ -874,7 +970,13 @@ pub fn pipe(path: &[[f64; 3]], radius: f64, segments: usize) -> Faceted {
     f.push_flat(PlanarFacet::new(cap0_loop), &cap0_tris, cap0);
     let cap1 = f.add_surface(SurfaceKind::Plane);
     let cap1_tris: Vec<Tri> = (0..segments)
-        .map(|j| Tri::new(path[n - 1], rings[n - 1][j], rings[n - 1][(j + 1) % segments]))
+        .map(|j| {
+            Tri::new(
+                path[n - 1],
+                rings[n - 1][j],
+                rings[n - 1][(j + 1) % segments],
+            )
+        })
         .collect();
     f.push_flat(PlanarFacet::new(rings[n - 1].clone()), &cap1_tris, cap1);
     debug_assert!(signed_volume(&f) > 0.0, "pipe orientation");

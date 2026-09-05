@@ -16,7 +16,11 @@ pub(crate) fn scale(a: V3, s: f64) -> V3 {
 }
 #[inline]
 pub(crate) fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 #[inline]
 pub(crate) fn dot(a: V3, b: V3) -> f64 {

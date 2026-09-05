@@ -19,8 +19,8 @@
 //! (`curve`), region classification (`region_at`), volume filling -- so there is
 //! no half-edge/pcurve/shell/region machinery here.
 
+use rapidmesh_geom::vec3::V3;
 use rapidmesh_geom::{FaceTag, RegionTag};
-use rapidmesh_geom::vec3::{V3};
 use std::sync::Arc;
 
 pub mod build;
@@ -59,7 +59,12 @@ pub enum Curve {
     /// Straight segment through `p0` with unit direction `dir`.
     Line { p0: V3, dir: V3 },
     /// Circle: center, unit `axis` (normal), `radius`, in-plane unit `x` axis.
-    Circle { center: V3, axis: V3, radius: f64, x: V3 },
+    Circle {
+        center: V3,
+        axis: V3,
+        radius: f64,
+        x: V3,
+    },
     /// A 2D profile NURBS lifted to 3D on an extrusion frame at height `z` over the
     /// parameter range `t`: point = `base + axis*z + u*profile(t).x + v*profile(t).y`.
     /// Self-contained (the airfoil outline edge); the analytic curvature drives the
@@ -77,7 +82,13 @@ pub enum Curve {
     /// plus `a·cos(t)·major` plus `b·sin(t)·minor`, with `axis = major x minor`
     /// the section-plane normal. Exact closed form (curvature drives the sizing
     /// analytically, like `Circle`).
-    Ellipse { center: V3, major: V3, minor: V3, a: f64, b: f64 },
+    Ellipse {
+        center: V3,
+        major: V3,
+        minor: V3,
+        a: f64,
+        b: f64,
+    },
     /// Intersection of two surfaces, evaluated lazily by projecting the vertex
     /// chain onto both (the mesher reuses its surface projections). Covers every
     /// analytic∩analytic curve with no closed form (cylinder∩cylinder, oblique

@@ -1,4 +1,4 @@
-﻿//! Benchmark harness: meshes the comparison scenes and any surface models in
+//! Benchmark harness: meshes the comparison scenes and any surface models in
 //! bench/models/ (STL/OBJ, fetched by bench/fetch_models.py), with per-stage
 //! timing and quality statistics. Writes bench/results.json, viewer JSONs for
 //! the surface models, and PLC JSONs (bench/plc/) so the tetgen reference
@@ -52,7 +52,11 @@ fn run_one(
     dirs: &OutDirs,
 ) -> BenchRecord {
     let (out_dir, plc_dir): (&Path, &Path) = (&dirs.meshes, &dirs.plc);
-    println!("  assembled: {} facets, {} ms", plc.triangles.len(), assemble_ms);
+    println!(
+        "  assembled: {} facets, {} ms",
+        plc.triangles.len(),
+        assemble_ms
+    );
     let t1 = Instant::now();
     let mut mesh = mesh_plc_with(plc, params);
     let mesh_ms = t1.elapsed().as_millis();
@@ -156,7 +160,10 @@ fn main() {
     // Smallest models first: scaling becomes visible early and a stuck big
     // model does not block all results.
     model_files.sort_by_key(|p| {
-        (std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX), p.clone())
+        (
+            std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX),
+            p.clone(),
+        )
     });
     if model_files.is_empty() {
         println!("no surface models in bench/models (run bench/fetch_models.py)");
@@ -228,7 +235,16 @@ fn main() {
     println!();
     println!(
         "{:<20} {:>9} {:>8} {:>8} {:>8} {:>7} {:>9} {:>8} {:>7} {:>8}",
-        "geometry", "in-faces", "points", "tets", "min-dih", "max-re", "assemble", "mesh", "opt", "total"
+        "geometry",
+        "in-faces",
+        "points",
+        "tets",
+        "min-dih",
+        "max-re",
+        "assemble",
+        "mesh",
+        "opt",
+        "total"
     );
     for r in &records {
         println!(

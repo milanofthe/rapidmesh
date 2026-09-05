@@ -168,7 +168,9 @@ fn build_loops(
 }
 
 fn pack_points(pts: &[P2]) -> Vec<f32> {
-    pts.iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect()
+    pts.iter()
+        .flat_map(|p| [p[0] as f32, p[1] as f32])
+        .collect()
 }
 fn pack_tris(tris: &[[usize; 3]]) -> Vec<u32> {
     tris.iter()
@@ -195,15 +197,21 @@ pub fn triangulate(
     let loops = build_loops(width, height, outline, loop_lens, h_near, h_far);
     // Bake the (expensive) distance-graded field onto a quadtree once, then the
     // mesher's millions of size queries are O(depth) lookups.
-    let field = QuadtreeField::from_fn(
-        [0.0, 0.0], [width, height], h_near, 12,
-        |p| graded(p, &loops[1..], h_near, h_far, grade),
-    );
+    let field = QuadtreeField::from_fn([0.0, 0.0], [width, height], h_near, 12, |p| {
+        graded(p, &loops[1..], h_near, h_far, grade)
+    });
     let params = PolyMeshParams {
-        step: h_near, min_angle_deg: min_angle, target_count: 0, cvt_iters: CVT_ITERS, max_passes: REFINE_PASSES,
+        step: h_near,
+        min_angle_deg: min_angle,
+        target_count: 0,
+        cvt_iters: CVT_ITERS,
+        max_passes: REFINE_PASSES,
     };
     let (pts, tris) = mesh_polygon(&loops, |p| field.eval(p), &params, |_, _| {});
-    Mesh2D { pts: pack_points(&pts), tris: pack_tris(&tris) }
+    Mesh2D {
+        pts: pack_points(&pts),
+        tris: pack_tris(&tris),
+    }
 }
 
 /// Like [`triangulate`], but also returns every coarse-to-fine intermediate
@@ -222,15 +230,18 @@ pub fn triangulate_steps(
     min_angle: f64,
 ) -> MeshSteps {
     let loops = build_loops(width, height, outline, loop_lens, h_near, h_far);
-    let field = QuadtreeField::from_fn(
-        [0.0, 0.0], [width, height], h_near, 12,
-        |p| graded(p, &loops[1..], h_near, h_far, grade),
-    );
+    let field = QuadtreeField::from_fn([0.0, 0.0], [width, height], h_near, 12, |p| {
+        graded(p, &loops[1..], h_near, h_far, grade)
+    });
     let mut step_pts: Vec<Vec<f32>> = Vec::new();
     let mut step_tris: Vec<Vec<u32>> = Vec::new();
     let mut last_n = usize::MAX;
     let params = PolyMeshParams {
-        step: h_near, min_angle_deg: min_angle, target_count: 0, cvt_iters: CVT_ITERS, max_passes: REFINE_PASSES,
+        step: h_near,
+        min_angle_deg: min_angle,
+        target_count: 0,
+        cvt_iters: CVT_ITERS,
+        max_passes: REFINE_PASSES,
     };
     let (pts, tris) = mesh_polygon(
         &loops,
@@ -246,5 +257,8 @@ pub fn triangulate_steps(
     );
     step_pts.push(pack_points(&pts));
     step_tris.push(pack_tris(&tris));
-    MeshSteps { pts: step_pts, tris: step_tris }
+    MeshSteps {
+        pts: step_pts,
+        tris: step_tris,
+    }
 }

@@ -10,7 +10,7 @@
 //! is a tolerance property, matching the curved-scene fixtures).
 
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, len as norm, normalize};
+use rapidmesh_geom::vec3::{add, cross, dot, len as norm, normalize, scale, sub, V3};
 use rapidmesh_geom::SurfaceKind;
 
 /// Nearest parameter on a 2D curve to point `q` (the footpoint): a coarse scan
@@ -74,7 +74,10 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
         SurfaceKind::Discrete(ref d) => d.closest(p).0,
         SurfaceKind::Tube { ref path, radius } => {
             let s = rapidmesh_brep::Surface::from_kind(
-                &SurfaceKind::Tube { path: path.clone(), radius },
+                &SurfaceKind::Tube {
+                    path: path.clone(),
+                    radius,
+                },
                 &[],
             );
             s.closest(p).0
@@ -89,16 +92,28 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
                 add(center, scale(r, radius / l))
             }
         }
-        SurfaceKind::Cylinder { center, axis, radius } => {
+        SurfaceKind::Cylinder {
+            center,
+            axis,
+            radius,
+        } => {
             let a = normalize(axis);
             let t = dot(sub(p, center), a);
             let foot = add(center, scale(a, t));
             let radial = sub(p, foot);
             let l = norm(radial);
-            let dir = if l == 0.0 { any_perp(a) } else { scale(radial, 1.0 / l) };
+            let dir = if l == 0.0 {
+                any_perp(a)
+            } else {
+                scale(radial, 1.0 / l)
+            };
             add(foot, scale(dir, radius))
         }
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             // Snap radially at the current axial position: at axial distance h
             // (>= 0) the cone radius is h*tan(alpha). Lands exactly on the cone.
             let a = normalize(axis);
@@ -106,15 +121,28 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
             let axis_pt = add(apex, scale(a, h));
             let radial = sub(p, axis_pt);
             let l = norm(radial);
-            let dir = if l == 0.0 { any_perp(a) } else { scale(radial, 1.0 / l) };
+            let dir = if l == 0.0 {
+                any_perp(a)
+            } else {
+                scale(radial, 1.0 / l)
+            };
             add(axis_pt, scale(dir, h * tan_half_angle))
         }
-        SurfaceKind::Torus { center, axis, major_radius, minor_radius } => {
+        SurfaceKind::Torus {
+            center,
+            axis,
+            major_radius,
+            minor_radius,
+        } => {
             let a = normalize(axis);
             let z = dot(sub(p, center), a);
             let planar = sub(sub(p, center), scale(a, z));
             let rho = norm(planar);
-            let pdir = if rho == 0.0 { any_perp(a) } else { scale(planar, 1.0 / rho) };
+            let pdir = if rho == 0.0 {
+                any_perp(a)
+            } else {
+                scale(planar, 1.0 / rho)
+            };
             // Nearest point on the tube-center (major) circle.
             let tube_center = add(center, scale(pdir, major_radius));
             let r = sub(p, tube_center);
@@ -122,7 +150,13 @@ pub fn closest_on_surface(kind: &SurfaceKind, p: V3) -> V3 {
             let dir = if l == 0.0 { pdir } else { scale(r, 1.0 / l) };
             add(tube_center, scale(dir, minor_radius))
         }
-        SurfaceKind::Extruded { ref profile, base, udir, vdir, axis } => {
+        SurfaceKind::Extruded {
+            ref profile,
+            base,
+            udir,
+            vdir,
+            axis,
+        } => {
             // Keep the axial coordinate; snap the in-plane part to the curve
             // footpoint. Lands exactly on the analytic extruded surface.
             let (u, v, a) = (normalize(udir), normalize(vdir), normalize(axis));
@@ -149,7 +183,11 @@ pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
         SurfaceKind::Plane => f64::INFINITY,
         SurfaceKind::Sphere { radius, .. } => radius,
         SurfaceKind::Cylinder { radius, .. } => radius,
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             // The tightest radius is the local cross-section radius (the cone is
             // flat along the generator): perpendicular distance to the axis.
             let a = normalize(axis);
@@ -157,7 +195,13 @@ pub fn surface_curvature_radius(kind: &SurfaceKind, p: V3) -> f64 {
             (h * tan_half_angle).max(1e-12)
         }
         SurfaceKind::Torus { minor_radius, .. } => minor_radius,
-        SurfaceKind::Extruded { ref profile, base, udir, vdir, axis } => {
+        SurfaceKind::Extruded {
+            ref profile,
+            base,
+            udir,
+            vdir,
+            axis,
+        } => {
             let (u, v, a) = (normalize(udir), normalize(vdir), normalize(axis));
             let h = dot(sub(p, base), a);
             let rel = sub(sub(p, base), scale(a, h));
@@ -194,27 +238,44 @@ mod tests {
 
     #[test]
     fn sphere_projection() {
-        let k = SurfaceKind::Sphere { center: [0.0, 0.0, 0.0], radius: 2.0 };
+        let k = SurfaceKind::Sphere {
+            center: [0.0, 0.0, 0.0],
+            radius: 2.0,
+        };
         let q = closest_on_surface(&k, [3.0, 4.0, 0.0]);
         assert!((norm(q) - 2.0).abs() < 1e-12);
         assert!(on_surface(&k, q, 1e-12));
-        assert!(norm(sub(q, closest_on_surface(&k, q))) < 1e-12, "idempotent");
+        assert!(
+            norm(sub(q, closest_on_surface(&k, q))) < 1e-12,
+            "idempotent"
+        );
     }
 
     #[test]
     fn cylinder_projection() {
-        let k = SurfaceKind::Cylinder { center: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 5.0], radius: 1.0 };
+        let k = SurfaceKind::Cylinder {
+            center: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 5.0],
+            radius: 1.0,
+        };
         let q = closest_on_surface(&k, [3.0, 0.0, 7.0]);
         // radial distance to z-axis is the radius, axial position preserved.
         assert!(((q[0] * q[0] + q[1] * q[1]).sqrt() - 1.0).abs() < 1e-12);
         assert!((q[2] - 7.0).abs() < 1e-12);
-        assert!(norm(sub(q, closest_on_surface(&k, q))) < 1e-12, "idempotent");
+        assert!(
+            norm(sub(q, closest_on_surface(&k, q))) < 1e-12,
+            "idempotent"
+        );
     }
 
     #[test]
     fn cone_projection() {
         // 45 degree cone from origin along +z.
-        let k = SurfaceKind::Cone { apex: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], tan_half_angle: 1.0 };
+        let k = SurfaceKind::Cone {
+            apex: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            tan_half_angle: 1.0,
+        };
         let q = closest_on_surface(&k, [3.0, 0.0, 2.0]);
         let rho = (q[0] * q[0] + q[1] * q[1]).sqrt();
         assert!((rho - q[2]).abs() < 1e-12, "on 45deg cone: radius == axial");

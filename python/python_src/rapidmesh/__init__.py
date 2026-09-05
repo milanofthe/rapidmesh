@@ -15,7 +15,7 @@ from . import adapt
 from .adapt import dorfler_mark, refine_dorfler
 from ._native import set_log_level
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 __all__ = [
     "Geometry",
     "Mesh",

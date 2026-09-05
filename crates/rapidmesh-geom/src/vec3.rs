@@ -37,7 +37,11 @@ pub fn dot(a: V3, b: V3) -> f64 {
 /// Cross product `a x b`.
 #[inline]
 pub fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 /// Euclidean magnitude `|a|`.

@@ -36,10 +36,17 @@ fn box_has_6_faces_12_edges_8_corners() {
     for f in &b.faces {
         assert!(matches!(b.surface(f.surface), Surface::Plane { .. }));
         assert_eq!(f.loops.len(), 1, "a box face has one loop");
-        assert_eq!(f.loops[0].coedges.len(), 4, "a box face loop has 4 co-edges");
+        assert_eq!(
+            f.loops[0].coedges.len(),
+            4,
+            "a box face loop has 4 co-edges"
+        );
         // one side is a region, the other background (0)
         let (a, c) = (f.regions[0].0, f.regions[1].0);
-        assert!((a == 0) ^ (c == 0), "box wall separates region from background");
+        assert!(
+            (a == 0) ^ (c == 0),
+            "box wall separates region from background"
+        );
         // the loop's PCurves map to a proper 2D region in the face (u,v): a
         // nonzero-area bounding box, proving the planar chart is well-posed
         let mut lo = [f64::MAX; 2];
@@ -54,7 +61,10 @@ fn box_has_6_faces_12_edges_8_corners() {
                 }
             }
         }
-        assert!(hi[0] - lo[0] > 1e-9 && hi[1] - lo[1] > 1e-9, "face (u,v) region has area");
+        assert!(
+            hi[0] - lo[0] > 1e-9 && hi[1] - lo[1] > 1e-9,
+            "face (u,v) region has area"
+        );
     }
     // every edge is a straight line, shared by exactly two co-edges (two faces)
     for e in &b.edges {
@@ -72,7 +82,10 @@ fn sphere_is_one_closed_face_no_edges() {
 
     // one analytic sphere surface, no feature edges, no corners (closed smooth)
     assert_eq!(b.faces.len(), 1, "sphere is one face");
-    assert!(matches!(b.surface(b.faces[0].surface), Surface::Sphere { .. }));
+    assert!(matches!(
+        b.surface(b.faces[0].surface),
+        Surface::Sphere { .. }
+    ));
     assert_eq!(b.edges.len(), 0, "closed sphere has no feature edges");
     assert_eq!(b.vertices.len(), 0, "closed sphere has no corners");
 }
@@ -103,7 +116,11 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     assert!(b.faces.len() >= 3, "mantle + caps, got {}", b.faces.len());
 
     // the mantle's rim edges are recovered as analytic profile curves
-    let n_profile = b.edges.iter().filter(|e| matches!(e.curve, Curve::Profile { .. })).count();
+    let n_profile = b
+        .edges
+        .iter()
+        .filter(|e| matches!(e.curve, Curve::Profile { .. }))
+        .count();
     assert!(n_profile >= 1, "at least one profile edge, got {n_profile}");
     assert!(!b.edges.is_empty(), "airfoil has feature edges");
 
@@ -117,7 +134,10 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     let mut n_uv = 0;
     for lp in &mantle.loops {
         for &cid in &lp.coedges {
-            assert!(b.coedge(cid).pcurve.uv.len() >= 2, "mantle co-edge has a PCurve");
+            assert!(
+                b.coedge(cid).pcurve.uv.len() >= 2,
+                "mantle co-edge has a PCurve"
+            );
             n_uv += b.coedge(cid).pcurve.uv.len();
         }
     }
@@ -130,7 +150,12 @@ fn oblique_cylinder_cut_recovers_ellipse() {
     // the rim is an oblique plane section -> an exact Ellipse (NOT a Polyline).
     // axis (1,0,2)/sqrt(5): cos(phi) = 2/sqrt(5) ~ 0.894 -- oblique, not a circle.
     let mut scene = Scene::new();
-    scene.add_solid(rapidmesh_geom::cylinder([0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5, 24));
+    scene.add_solid(rapidmesh_geom::cylinder(
+        [0.0, 0.0, -2.0],
+        [1.0, 0.0, 2.0],
+        0.5,
+        24,
+    ));
     scene.add_void(solid_box([-3.0, -3.0, 0.0], [3.0, 3.0, 3.0]));
     let b = from_plc(&scene.assemble());
     let (a, mi) = b
@@ -142,8 +167,14 @@ fn oblique_cylinder_cut_recovers_ellipse() {
         })
         .expect("oblique rim recovered as an Ellipse");
     let cosphi = 2.0 / 5.0f64.sqrt();
-    assert!((mi - 0.5).abs() < 1e-9, "semi-minor {mi} ~ cylinder radius 0.5");
-    assert!((a - 0.5 / cosphi).abs() < 1e-9, "semi-major {a} ~ r/cos(phi)");
+    assert!(
+        (mi - 0.5).abs() < 1e-9,
+        "semi-minor {mi} ~ cylinder radius 0.5"
+    );
+    assert!(
+        (a - 0.5 / cosphi).abs() < 1e-9,
+        "semi-major {a} ~ r/cos(phi)"
+    );
 }
 
 #[test]
@@ -152,15 +183,28 @@ fn crossed_cylinders_recover_intersection_edges() {
     // is a cylinder-cylinder intersection curve -- no closed form, so it must be
     // recovered as Curve::Intersection (POCS-refined downstream), NOT a Polyline.
     let mut scene = Scene::new();
-    scene.add_solid(rapidmesh_geom::cylinder([-2.0, 0.0, 0.0], [4.0, 0.0, 0.0], 0.8, 24));
-    scene.add_void(rapidmesh_geom::cylinder([0.0, -2.0, 0.0], [0.0, 4.0, 0.0], 0.4, 24));
+    scene.add_solid(rapidmesh_geom::cylinder(
+        [-2.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        0.8,
+        24,
+    ));
+    scene.add_void(rapidmesh_geom::cylinder(
+        [0.0, -2.0, 0.0],
+        [0.0, 4.0, 0.0],
+        0.4,
+        24,
+    ));
     let b = from_plc(&scene.assemble());
     let n_isect = b
         .edges
         .iter()
         .filter(|e| matches!(e.curve, Curve::Intersection { .. }))
         .count();
-    assert!(n_isect >= 1, "cyl-cyl rim recovered as Intersection, got {n_isect}");
+    assert!(
+        n_isect >= 1,
+        "cyl-cyl rim recovered as Intersection, got {n_isect}"
+    );
     // and the two referenced surfaces really are the two cylinders
     for e in &b.edges {
         if let Curve::Intersection { a, b: sb } = e.curve {

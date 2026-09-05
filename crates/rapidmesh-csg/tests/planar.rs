@@ -53,8 +53,12 @@ fn single_facet_no_cuts_tiles_its_area() {
     }]);
     assert_eq!(arr.facets.len(), 1);
     let ft = &arr.facets[0];
-    assert!((total_area2(ft) - 8.0).abs() < 1e-12, "area {}", total_area2(ft)); // 2x area = 2*4
-    // No interior helper vertex leaked into the result.
+    assert!(
+        (total_area2(ft) - 8.0).abs() < 1e-12,
+        "area {}",
+        total_area2(ft)
+    ); // 2x area = 2*4
+       // No interior helper vertex leaked into the result.
     for v in &ft.vertices {
         let q = v.approx().unwrap();
         assert!(
@@ -92,7 +96,11 @@ fn holed_facet_tiles_outer_minus_hole() {
         helpers,
     }]);
     let ft = &arr.facets[0];
-    assert!((total_area2(ft) - 24.0).abs() < 1e-12, "area {}", total_area2(ft)); // 2x area = 2*12
+    assert!(
+        (total_area2(ft) - 24.0).abs() < 1e-12,
+        "area {}",
+        total_area2(ft)
+    ); // 2x area = 2*12
 }
 
 #[test]
@@ -125,7 +133,7 @@ fn fan_facet_pierced_conformally_no_sliver() {
 
     // Area conserved.
     assert!((total_area2(cap_ft) - 8.0).abs() < 1e-12); // 2x area = 2*4
-    // Exactly the four corners plus the two true crossings -> 6 vertices.
+                                                        // Exactly the four corners plus the two true crossings -> 6 vertices.
     assert_eq!(cap_ft.vertices.len(), 6, "expected 4 corners + 2 crossings");
     // The merged constraint edge (0,-1,0)-(0,1,0) is present.
     let find = |target: [f64; 3]| -> usize {
@@ -140,7 +148,10 @@ fn fan_facet_pierced_conformally_no_sliver() {
     };
     let a = find([0.0, -1.0, 0.0]);
     let b = find([0.0, 1.0, 0.0]);
-    assert!(cap_ft.has_edge(a, b), "merged cut constraint must be an edge");
+    assert!(
+        cap_ft.has_edge(a, b),
+        "merged cut constraint must be an edge"
+    );
     // No sliver: every sub-triangle has a healthy area.
     for &t in &cap_ft.triangles {
         assert!(

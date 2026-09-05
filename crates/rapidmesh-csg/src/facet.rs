@@ -26,7 +26,10 @@ impl PlanarFacet {
     /// New simple (hole-free) facet from an ordered outer loop.
     pub fn new(outer: Vec<[f64; 3]>) -> PlanarFacet {
         assert!(outer.len() >= 3, "planar facet needs at least 3 vertices");
-        PlanarFacet { outer, holes: Vec::new() }
+        PlanarFacet {
+            outer,
+            holes: Vec::new(),
+        }
     }
 
     /// New facet with holes.
@@ -118,7 +121,11 @@ impl PlanarFacet {
             let b = uv(self.outer[(i + 1) % m]);
             let cross = Expansion::from_f64(a[0])
                 .mul(&Expansion::from_f64(b[1]))
-                .add(&Expansion::from_f64(b[0]).mul(&Expansion::from_f64(a[1])).neg());
+                .add(
+                    &Expansion::from_f64(b[0])
+                        .mul(&Expansion::from_f64(a[1]))
+                        .neg(),
+                );
             acc = acc.add(&cross);
         }
         acc.sign()
@@ -206,7 +213,12 @@ mod tests {
     #[test]
     fn bbox_covers_outer_and_holes() {
         let f = PlanarFacet::with_holes(
-            vec![[0.0, 0.0, 2.0], [4.0, 0.0, 2.0], [4.0, 3.0, 2.0], [0.0, 3.0, 2.0]],
+            vec![
+                [0.0, 0.0, 2.0],
+                [4.0, 0.0, 2.0],
+                [4.0, 3.0, 2.0],
+                [0.0, 3.0, 2.0],
+            ],
             vec![vec![[1.0, 1.0, 2.0], [2.0, 1.0, 2.0], [2.0, 2.0, 2.0]]],
         );
         let (lo, hi) = f.bbox();
@@ -276,7 +288,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn degenerate_collinear_facet_panics() {
-        PlanarFacet::new(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
-            .projection_axis();
+        PlanarFacet::new(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]).projection_axis();
     }
 }

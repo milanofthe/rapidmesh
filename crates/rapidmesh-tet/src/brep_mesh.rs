@@ -7,12 +7,11 @@
 //! volume Lloyd, region classification and restricted-Delaunay extraction are
 //! unchanged.
 
-use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross};
 use crate::curve::{Curve, PolylineCurve};
 use rapidmesh_brep::{Brep, Curve as BCurve, Edge as BEdge, Surface};
 use rapidmesh_geom::nurbs::NurbsCurve;
+use rapidmesh_geom::vec3::{add, cross, dot, scale, sub, V3};
 use std::sync::Arc;
-
 
 fn dist3(a: V3, b: V3) -> f64 {
     let d = sub(a, b);
@@ -31,7 +30,15 @@ struct ProfileCurve {
 }
 
 impl ProfileCurve {
-    fn new(profile: Arc<NurbsCurve>, base: V3, u: V3, v: V3, axis: V3, t: [f64; 2], z: f64) -> Option<ProfileCurve> {
+    fn new(
+        profile: Arc<NurbsCurve>,
+        base: V3,
+        u: V3,
+        v: V3,
+        axis: V3,
+        t: [f64; 2],
+        z: f64,
+    ) -> Option<ProfileCurve> {
         let (lo, hi) = (t[0].min(t[1]), t[0].max(t[1]));
         if !(hi > lo) {
             return None;
@@ -46,18 +53,33 @@ impl ProfileCurve {
             ss.push(acc);
             prev = tt;
         }
-        Some(ProfileCurve { profile, base, u, v, axis, z, ts, ss })
+        Some(ProfileCurve {
+            profile,
+            base,
+            u,
+            v,
+            axis,
+            z,
+            ts,
+            ss,
+        })
     }
     fn s_to_t(&self, s: f64) -> f64 {
         let s = s.clamp(0.0, self.ss[self.ss.len() - 1]);
-        let i = self.ss.partition_point(|&x| x < s).clamp(1, self.ss.len() - 1);
+        let i = self
+            .ss
+            .partition_point(|&x| x < s)
+            .clamp(1, self.ss.len() - 1);
         let (s0, s1) = (self.ss[i - 1], self.ss[i]);
         let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
         self.ts[i - 1] + f * (self.ts[i] - self.ts[i - 1])
     }
     fn at3(&self, t: f64) -> V3 {
         let c = self.profile.eval(t);
-        add(add(self.base, scale(self.axis, self.z)), add(scale(self.u, c[0]), scale(self.v, c[1])))
+        add(
+            add(self.base, scale(self.axis, self.z)),
+            add(scale(self.u, c[0]), scale(self.v, c[1])),
+        )
     }
 }
 
@@ -112,7 +134,14 @@ impl CircleCurve {
         if span.abs() < 1e-9 {
             return None;
         }
-        Some(CircleCurve { center, x, y, radius, a0, span })
+        Some(CircleCurve {
+            center,
+            x,
+            y,
+            radius,
+            a0,
+            span,
+        })
     }
 }
 
@@ -182,11 +211,22 @@ impl EllipseCurve {
             ss.push(ss[i - 1] + dist3(prev, p));
             prev = p;
         }
-        Some(EllipseCurve { center, major, minor, a, b, ts, ss })
+        Some(EllipseCurve {
+            center,
+            major,
+            minor,
+            a,
+            b,
+            ts,
+            ss,
+        })
     }
     fn s_to_t(&self, s: f64) -> f64 {
         let s = s.clamp(0.0, self.ss[self.ss.len() - 1]);
-        let i = self.ss.partition_point(|&x| x < s).clamp(1, self.ss.len() - 1);
+        let i = self
+            .ss
+            .partition_point(|&x| x < s)
+            .clamp(1, self.ss.len() - 1);
         let (s0, s1) = (self.ss[i - 1], self.ss[i]);
         let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
         self.ts[i - 1] + f * (self.ts[i] - self.ts[i - 1])
@@ -200,7 +240,9 @@ impl Curve for EllipseCurve {
     fn point_at(&self, s: f64) -> V3 {
         let t = self.s_to_t(s);
         let (st, ct) = t.sin_cos();
-        std::array::from_fn(|k| self.center[k] + self.a * ct * self.major[k] + self.b * st * self.minor[k])
+        std::array::from_fn(|k| {
+            self.center[k] + self.a * ct * self.major[k] + self.b * st * self.minor[k]
+        })
     }
     fn radius_at(&self, s: f64) -> f64 {
         let t = self.s_to_t(s);
@@ -261,7 +303,11 @@ impl Curve for IntersectionCurve {
         let p0 = self.poly.point_at(s);
         let p = pocs(&self.sa, &self.sb, p0, self.tol);
         // Divergence guard, as in the polyline construction.
-        if dist3(p, p0) <= 0.05 * self.poly.length() { p } else { p0 }
+        if dist3(p, p0) <= 0.05 * self.poly.length() {
+            p
+        } else {
+            p0
+        }
     }
     fn radius_at(&self, s: f64) -> f64 {
         self.poly.radius_at(s)
@@ -294,7 +340,11 @@ fn intersection_polyline(sa: &Surface, sb: &Surface, chain: &[V3]) -> Option<Pol
             let p = pocs(sa, sb, p0, tol);
             // Divergence guard: a projected point that left the segment's own
             // neighbourhood is a failed projection -- keep the chain point.
-            out.push(if dist3(p, p0) <= seg.max(0.05 * total) { p } else { p0 });
+            out.push(if dist3(p, p0) <= seg.max(0.05 * total) {
+                p
+            } else {
+                p0
+            });
         }
     }
     // Endpoints: corners are shared pinned sites -- keep them EXACTLY as the
@@ -310,19 +360,32 @@ fn intersection_polyline(sa: &Surface, sb: &Surface, chain: &[V3]) -> Option<Pol
 /// exactly a 2-point polyline, so it reduces to uniform spacing).
 pub fn edge_curve(brep: &Brep, edge: &BEdge) -> Option<Box<dyn Curve>> {
     match &edge.curve {
-        BCurve::Profile { profile, base, u, v, axis, t, z } => {
-            ProfileCurve::new(profile.clone(), *base, *u, *v, *axis, *t, *z)
-                .map(|c| Box::new(c) as Box<dyn Curve>)
-        }
-        BCurve::Circle { center, axis, radius, x } => {
-            CircleCurve::new(*center, *axis, *x, *radius, &edge.chain)
-                .map(|c| Box::new(c) as Box<dyn Curve>)
-        }
-        BCurve::Ellipse { center, major, minor, a, b } => {
-            EllipseCurve::new(*center, *major, *minor, *a, *b, &edge.chain)
-                .map(|c| Box::new(c) as Box<dyn Curve>)
-                .or_else(|| PolylineCurve::new(&edge.chain).map(|c| Box::new(c) as Box<dyn Curve>))
-        }
+        BCurve::Profile {
+            profile,
+            base,
+            u,
+            v,
+            axis,
+            t,
+            z,
+        } => ProfileCurve::new(profile.clone(), *base, *u, *v, *axis, *t, *z)
+            .map(|c| Box::new(c) as Box<dyn Curve>),
+        BCurve::Circle {
+            center,
+            axis,
+            radius,
+            x,
+        } => CircleCurve::new(*center, *axis, *x, *radius, &edge.chain)
+            .map(|c| Box::new(c) as Box<dyn Curve>),
+        BCurve::Ellipse {
+            center,
+            major,
+            minor,
+            a,
+            b,
+        } => EllipseCurve::new(*center, *major, *minor, *a, *b, &edge.chain)
+            .map(|c| Box::new(c) as Box<dyn Curve>)
+            .or_else(|| PolylineCurve::new(&edge.chain).map(|c| Box::new(c) as Box<dyn Curve>)),
         BCurve::Intersection { a, b } => {
             let (sa, sb) = (brep.surface(*a), brep.surface(*b));
             match intersection_polyline(sa, sb, &edge.chain) {
@@ -378,8 +441,11 @@ mod curve_tests {
         assert!(s.len() > 4, "several points on the rim");
         for &si in &s {
             let p = c.point_at(si);
-            assert!(cyl_dev(p, [0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5) < 1e-9,
-                    "point off the cylinder by {}", cyl_dev(p, [0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5));
+            assert!(
+                cyl_dev(p, [0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5) < 1e-9,
+                "point off the cylinder by {}",
+                cyl_dev(p, [0.0, 0.0, -2.0], [1.0, 0.0, 2.0], 0.5)
+            );
             assert!(p[2].abs() < 1e-9, "point off the cut plane by {}", p[2]);
         }
     }

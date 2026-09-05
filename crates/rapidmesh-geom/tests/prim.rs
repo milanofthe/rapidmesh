@@ -62,8 +62,8 @@ fn polygon_l_shape_exact_area() {
     // Area = 3*1 + 1*1 = 4 (times 2 = 8), every triangle counterclockwise.
     assert_eq!(area2_of_tris(&tris), rat(8.0));
     for t in &tris {
-        let d = (t[1][0] - t[0][0]) * (t[2][1] - t[0][1])
-            - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
+        let d =
+            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
         assert!(d > 0.0, "output triangle not counterclockwise");
     }
 }
@@ -107,7 +107,11 @@ fn cylinder_is_an_exact_prism() {
         acc + (rat(ring[i][0]) * rat(ring[j][1]) - rat(ring[j][0]) * rat(ring[i][1]))
     });
     // 6V = 3 * area2 * h with h = 2 exactly.
-    assert_eq!(v6, area2 * rat(6.0), "cylinder volume must equal prism volume");
+    assert_eq!(
+        v6,
+        area2 * rat(6.0),
+        "cylinder volume must equal prism volume"
+    );
 }
 
 #[test]
@@ -440,7 +444,10 @@ fn noncollinear_triple(loop3: &[[f64; 3]]) -> (Point3, Point3, Point3) {
 fn assert_flats_consistent(f: &Faceted, exact_planar: bool) {
     let mut covered = vec![false; f.tris.len()];
     for FlatFacet { facet, tris, .. } in &f.flats {
-        assert!(tris.end <= f.tris.len() && tris.start < tris.end, "bad range");
+        assert!(
+            tris.end <= f.tris.len() && tris.start < tris.end,
+            "bad range"
+        );
         // Disjoint coverage.
         for i in tris.clone() {
             assert!(!covered[i], "helper triangle {i} claimed by two flats");
@@ -548,7 +555,11 @@ fn sheets_and_disk_are_flats() {
 
 #[test]
 fn pipe_end_caps_are_flats() {
-    let f = pipe(&[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]], 0.3, 12);
+    let f = pipe(
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+        0.3,
+        12,
+    );
     assert_eq!(f.flats.len(), 2, "two end caps; barrel stays curved");
     assert_flats_consistent(&f, true);
 }

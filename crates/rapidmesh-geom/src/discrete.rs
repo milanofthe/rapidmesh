@@ -119,9 +119,7 @@ impl DiscreteSurface {
             .iter()
             .map(|t| {
                 std::array::from_fn(|k| {
-                    (points[t[0] as usize][k]
-                        + points[t[1] as usize][k]
-                        + points[t[2] as usize][k])
+                    (points[t[0] as usize][k] + points[t[1] as usize][k] + points[t[2] as usize][k])
                         / 3.0
                 })
             })
@@ -180,10 +178,7 @@ impl DiscreteSurface {
                 }
                 let mut lmax2 = 0.0f64;
                 for e in 0..3 {
-                    lmax2 = lmax2.max(d2(
-                        points[t[e] as usize],
-                        points[t[(e + 1) % 3] as usize],
-                    ));
+                    lmax2 = lmax2.max(d2(points[t[e] as usize], points[t[(e + 1) % 3] as usize]));
                 }
                 curv_r[i] = curv_r[i].max(4.0 * lmax2.sqrt());
             }
@@ -191,9 +186,25 @@ impl DiscreteSurface {
         let mut order: Vec<u32> = (0..tris.len() as u32).collect();
         let mut nodes = Vec::new();
         if !tris.is_empty() {
-            build(&points, &tris, &centroids, &mut order, 0, tris.len(), &mut nodes);
+            build(
+                &points,
+                &tris,
+                &centroids,
+                &mut order,
+                0,
+                tris.len(),
+                &mut nodes,
+            );
         }
-        DiscreteSurface { points, tris, normals, curv_r, closed, nodes, order }
+        DiscreteSurface {
+            points,
+            tris,
+            normals,
+            curv_r,
+            closed,
+            nodes,
+            order,
+        }
     }
 
     /// Closest point on the patch and the (facet) normal there.
@@ -382,7 +393,12 @@ fn build(
         }
     }
     let idx = nodes.len() as i32;
-    nodes.push(Node { lo, hi, left: 0, right: 0 });
+    nodes.push(Node {
+        lo,
+        hi,
+        left: 0,
+        right: 0,
+    });
     let count = end - start;
     if count <= 8 {
         nodes[idx as usize].left = start as i32;
@@ -392,12 +408,11 @@ fn build(
     let axis = (0..3)
         .max_by(|&a, &b| (hi[a] - lo[a]).partial_cmp(&(hi[b] - lo[b])).unwrap())
         .unwrap();
-    order[start..end]
-        .sort_unstable_by(|&a, &b| {
-            centroids[a as usize][axis]
-                .partial_cmp(&centroids[b as usize][axis])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    order[start..end].sort_unstable_by(|&a, &b| {
+        centroids[a as usize][axis]
+            .partial_cmp(&centroids[b as usize][axis])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mid = start + count / 2;
     let l = build(points, tris, centroids, order, start, mid, nodes);
     let r = build(points, tris, centroids, order, mid, end, nodes);

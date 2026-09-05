@@ -1,4 +1,4 @@
-﻿//! End-to-end: scene -> TaggedPlc -> conforming region-tagged tet mesh.
+//! End-to-end: scene -> TaggedPlc -> conforming region-tagged tet mesh.
 //! Gates: every constraint face is a tet face, per-region tet volumes match
 //! the PLC's polyhedral region volumes exactly, orientation and conformity.
 
@@ -6,10 +6,10 @@ use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use num_traits::Zero;
 use rapidmesh_geom::{cylinder, sheet_rect, solid_box, FaceTag, RegionTag, Scene, TaggedPlc};
+use rapidmesh_testutil::rat;
 use rapidmesh_tet::{
     mesh_plc, mesh_plc_with, optimize, quality_stats, MeshParams, OptimizeParams, TetMesh,
 };
-use rapidmesh_testutil::rat;
 
 /// Exact 6x volume of a PLC region from its interface facets.
 fn plc_region_volume6(plc: &TaggedPlc, r: RegionTag) -> BigRational {
@@ -29,8 +29,7 @@ fn plc_region_volume6(plc: &TaggedPlc, r: RegionTag) -> BigRational {
             plc.vertices[t[1] as usize].map(rat),
             plc.vertices[t[2] as usize].map(rat),
         );
-        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1])
-            - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
+        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1]) - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
             + &a[2] * (&b[0] * &c[1] - &b[1] * &c[0]);
         acc += if sign > 0 { det } else { -det };
     }
@@ -70,7 +69,11 @@ fn mesh_region_volume6(m: &TetMesh, r: RegionTag) -> BigRational {
 /// Region volume within 1e-9 relative of the target (the refinement-core
 /// volume contract; see `mesh_region_volume6`).
 fn assert_close6(have: BigRational, want: BigRational) {
-    let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
+    let diff = if have > want.clone() {
+        have - want.clone()
+    } else {
+        want.clone() - have
+    };
     let rel = (&diff / &want).to_f64().unwrap_or(f64::NAN);
     assert!(
         diff <= want.clone() * rat(1e-9),
@@ -102,12 +105,7 @@ fn check_structure(m: &TetMesh) {
         if sf.regions[0] != sf.regions[1] {
             let mut have: Vec<u32> = owners.iter().map(|&ti| m.tet_regions[ti].0).collect();
             have.sort_unstable();
-            let mut want: Vec<u32> = sf
-                .regions
-                .iter()
-                .map(|r| r.0)
-                .filter(|&r| r != 0)
-                .collect();
+            let mut want: Vec<u32> = sf.regions.iter().map(|r| r.0).filter(|&r| r != 0).collect();
             want.sort_unstable();
             assert_eq!(have, want, "interface face has wrong adjacent regions");
         } else {
@@ -117,7 +115,10 @@ fn check_structure(m: &TetMesh) {
         }
     }
     // Every face is shared by at most 2 tets.
-    assert!(tet_faces.values().all(|v| v.len() <= 2), "non-manifold face");
+    assert!(
+        tet_faces.values().all(|v| v.len() <= 2),
+        "non-manifold face"
+    );
 }
 
 #[test]
@@ -139,7 +140,11 @@ fn air_dielectric_pec_scene_meshes_exactly() {
     // Float-distributed boundary -> volume exact to float, gated 1e-9 relative.
     let close = |have: BigRational, want: BigRational| {
         let hf = num_traits::ToPrimitive::to_f64(&have).unwrap_or(f64::NAN);
-        let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
+        let diff = if have > want.clone() {
+            have - want.clone()
+        } else {
+            want.clone() - have
+        };
         assert!(
             diff <= want.clone() * rat(1e-9),
             "region volume off by more than 1e-9 relative: have {hf} want {want}"
@@ -151,7 +156,11 @@ fn air_dielectric_pec_scene_meshes_exactly() {
 
     // PEC faces made it into the mesh as tet faces (checked in
     // check_structure) and exist in nonzero number.
-    let pec = mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count();
+    let pec = mesh
+        .faces
+        .iter()
+        .filter(|f| f.face_tag == FaceTag(7))
+        .count();
     assert!(pec >= 4, "expected PEC faces in the mesh, got {pec}");
 }
 
@@ -166,12 +175,28 @@ fn tagged_interface_between_slabs_carries_tag() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0])); // region 1
     scene.add_solid(solid_box([0.0, 0.0, 2.0], [4.0, 4.0, 4.0])); // region 2
-    scene.add_sheet(sheet_rect([0.0, 0.0, 2.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]), FaceTag(7));
+    scene.add_sheet(
+        sheet_rect([0.0, 0.0, 2.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]),
+        FaceTag(7),
+    );
     let plc = scene.assemble();
-    let mesh = mesh_plc_with(&plc, &MeshParams { maxh: 1.0, ..MeshParams::default() });
+    let mesh = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 1.0,
+            ..MeshParams::default()
+        },
+    );
     check_structure(&mesh); // conformity + interface regions + manifold
-    let tagged: Vec<_> = mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).collect();
-    assert!(!tagged.is_empty(), "tagged interface faces must carry the face tag");
+    let tagged: Vec<_> = mesh
+        .faces
+        .iter()
+        .filter(|f| f.face_tag == FaceTag(7))
+        .collect();
+    assert!(
+        !tagged.is_empty(),
+        "tagged interface faces must carry the face tag"
+    );
     for f in &tagged {
         let mut rs = [f.regions[0].0, f.regions[1].0];
         rs.sort_unstable();
@@ -208,7 +233,10 @@ fn cylinder_via_in_box_meshes_exactly() {
         mesh_region_volume6(&mesh, block),
         plc_region_volume6(&plc, block),
     );
-    close(mesh_region_volume6(&mesh, via), plc_region_volume6(&plc, via));
+    close(
+        mesh_region_volume6(&mesh, via),
+        plc_region_volume6(&plc, via),
+    );
     check_structure(&mesh);
 }
 
@@ -271,7 +299,11 @@ fn sized_box_respects_maxh_and_quality() {
         "min dihedral {} too small after optimization",
         q.min_dihedral_deg
     );
-    assert!(q.n_tets > 100, "expected real refinement, got {} tets", q.n_tets);
+    assert!(
+        q.n_tets > 100,
+        "expected real refinement, got {} tets",
+        q.n_tets
+    );
 }
 
 #[test]
@@ -326,14 +358,22 @@ fn sized_em_scene_stays_exact_and_conforming() {
     check_structure(&mesh);
     // Sizing is a target (like gmsh's mesh size), not a hard bound; allow
     // slack for corner configurations.
-    assert!(q.max_edge <= 1.5 * params.maxh, "edge {} too long", q.max_edge);
+    assert!(
+        q.max_edge <= 1.5 * params.maxh,
+        "edge {} too long",
+        q.max_edge
+    );
     assert!(
         q.min_dihedral_deg >= 5.0,
         "min dihedral {} too small after optimization",
         q.min_dihedral_deg
     );
     assert!(
-        mesh.faces.iter().filter(|f| f.face_tag == FaceTag(7)).count() >= 2,
+        mesh.faces
+            .iter()
+            .filter(|f| f.face_tag == FaceTag(7))
+            .count()
+            >= 2,
         "PEC faces must survive refinement"
     );
 }
@@ -416,7 +456,10 @@ fn single_box_meshes_exactly() {
     let mesh = mesh_plc(&plc);
     assert_close6(mesh_region_volume6(&mesh, r), rat(36.0));
     check_structure(&mesh);
-    assert!(mesh.tets.iter().all(|t| t.iter().all(|&v| v < mesh.points.len())));
+    assert!(mesh
+        .tets
+        .iter()
+        .all(|t| t.iter().all(|&v| v < mesh.points.len())));
 }
 
 /// Regression for the cylinder-tessellation recovery lottery: stacked
@@ -495,8 +538,15 @@ fn void_carves_exact_volume() {
     // vertices), so the volume is exact to float, gated 1e-9 relative (not the old
     // bit-exact rational equality).
     let (have, want) = (mesh_region_volume6(&mesh, block), rat(168.0));
-    let diff = if have > want.clone() { have - want.clone() } else { want.clone() - have };
-    assert!(diff <= want * rat(1e-9), "block volume off by more than 1e-9 relative");
+    let diff = if have > want.clone() {
+        have - want.clone()
+    } else {
+        want.clone() - have
+    };
+    assert!(
+        diff <= want * rat(1e-9),
+        "block volume off by more than 1e-9 relative"
+    );
     check_structure(&mesh);
     // The void walls are boundary faces (block on one side, background on
     // the other) that boundary conditions can target.
@@ -507,16 +557,17 @@ fn void_carves_exact_volume() {
             let r = [f.regions[0].0, f.regions[1].0];
             r.contains(&0) && r.contains(&block.0) && {
                 let c: [f64; 3] = std::array::from_fn(|k| {
-                    (mesh.points[f.tri[0]][k]
-                        + mesh.points[f.tri[1]][k]
-                        + mesh.points[f.tri[2]][k])
+                    (mesh.points[f.tri[0]][k] + mesh.points[f.tri[1]][k] + mesh.points[f.tri[2]][k])
                         / 3.0
                 });
                 c[0] > 0.9 && c[0] < 3.1 && c[1] > 0.9 && c[1] < 3.1 && c[2] > 0.4 && c[2] < 1.6
             }
         })
         .count();
-    assert!(wall_faces >= 12, "expected void wall faces, got {wall_faces}");
+    assert!(
+        wall_faces >= 12,
+        "expected void wall faces, got {wall_faces}"
+    );
 }
 
 /// Per-face-tag sizing: a tagged sheet refines to its own target inside a
@@ -640,7 +691,10 @@ fn cylinder_void_volume_through_optimize() {
         } else {
             want - have
         };
-        assert!(diff <= tol, "{what}: volume off by more than {tol_rel:e} relative");
+        assert!(
+            diff <= tol,
+            "{what}: volume off by more than {tol_rel:e} relative"
+        );
     };
     let mut scene = Scene::new();
     let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
@@ -706,7 +760,11 @@ fn torus_meshes_exactly() {
     // maxh 0.4 on rho 0.5).
     let want = rat(6.0 * 2.0 * std::f64::consts::PI.powi(2) * 2.0 * 0.5 * 0.5);
     let tol = want.clone() * rat(2e-2);
-    let diff = if have > want.clone() { have.clone() - want.clone() } else { want.clone() - have.clone() };
+    let diff = if have > want.clone() {
+        have.clone() - want.clone()
+    } else {
+        want.clone() - have.clone()
+    };
     assert!(
         diff <= tol,
         "torus volume off the analytic body by more than mesh resolution: have {} want {}",
@@ -768,14 +826,17 @@ fn horn_loft_flat_tet_tiling() {
         let want = plc_region_volume6(&plc, r);
         let have = mesh_region_volume6(&mesh, r);
         let tol = want.clone() * rat(1e-9);
-        let diff = if have > want.clone() { have - want.clone() } else { want - have };
+        let diff = if have > want.clone() {
+            have - want.clone()
+        } else {
+            want - have
+        };
         assert!(diff <= tol, "region {} volume off (patch abandoned?)", r.0);
     }
     // The double-counted complex exports BOTH cap layers as surface faces:
     // a non-manifold edge inside one patch (3+ incident faces). Every patch
     // must tile manifold (interior edges shared by exactly <= 2 faces).
-    let mut per_patch: std::collections::HashMap<(u32, usize, usize), usize> =
-        Default::default();
+    let mut per_patch: std::collections::HashMap<(u32, usize, usize), usize> = Default::default();
     for f in &mesh.faces {
         for k in 0..3 {
             let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
@@ -908,8 +969,20 @@ fn trace_face_maxh_does_not_starve_interface_tiling() {
 fn box_feature_edges_are_the_box_edges() {
     let mut scene = Scene::new();
     scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]));
-    let mut mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.4, ..MeshParams::default() });
-    optimize(&mut mesh, &OptimizeParams { maxh: 0.4, ..OptimizeParams::default() });
+    let mut mesh = mesh_plc_with(
+        &plc_of(&scene),
+        &MeshParams {
+            maxh: 0.4,
+            ..MeshParams::default()
+        },
+    );
+    optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: 0.4,
+            ..OptimizeParams::default()
+        },
+    );
     let dims = [2.0, 1.0, 1.0];
     // A point is on a box edge iff it lies on the surface of two axis slabs.
     let on_edge_of = |p: [f64; 3]| -> Option<(usize, usize)> {
@@ -941,7 +1014,11 @@ fn box_feature_edges_are_the_box_edges() {
             }
         }
     }
-    assert_eq!(corners_seen.len(), 8, "not all box corners appear on feature edges");
+    assert_eq!(
+        corners_seen.len(),
+        8,
+        "not all box corners appear on feature edges"
+    );
 }
 
 /// Feature edges of a meshed cylinder are ONLY the two rim circles: the
@@ -951,8 +1028,20 @@ fn box_feature_edges_are_the_box_edges() {
 fn cylinder_feature_edges_are_the_rims() {
     let mut scene = Scene::new();
     scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 24));
-    let mut mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.5, ..MeshParams::default() });
-    optimize(&mut mesh, &OptimizeParams { maxh: 0.5, ..OptimizeParams::default() });
+    let mut mesh = mesh_plc_with(
+        &plc_of(&scene),
+        &MeshParams {
+            maxh: 0.5,
+            ..MeshParams::default()
+        },
+    );
+    optimize(
+        &mut mesh,
+        &OptimizeParams {
+            maxh: 0.5,
+            ..OptimizeParams::default()
+        },
+    );
     let edges = mesh.feature_edges();
     assert!(!edges.is_empty());
     for [a, b] in &edges {
@@ -978,7 +1067,13 @@ fn surface_owners_track_solids_and_voids() {
     let mut scene = Scene::new();
     let block = scene.add_solid(solid_box([0.0, 0.0, 0.0], [4.0, 4.0, 2.0]));
     scene.add_void(cylinder([2.0, 2.0, 0.0], [0.0, 0.0, 2.0], 0.8, 24));
-    let mesh = mesh_plc_with(&plc_of(&scene), &MeshParams { maxh: 0.6, ..MeshParams::default() });
+    let mesh = mesh_plc_with(
+        &plc_of(&scene),
+        &MeshParams {
+            maxh: 0.6,
+            ..MeshParams::default()
+        },
+    );
     assert_eq!(mesh.surface_owners.len(), mesh.surfaces.len());
     let mut bore_faces = 0usize;
     for f in &mesh.faces {
@@ -1026,10 +1121,28 @@ fn per_edge_maxh_refines_that_edge() {
             })
             .count()
     };
-    let coarse = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, ..Default::default() });
-    let fine = mesh_plc_with(&plc, &MeshParams { maxh: 4.0, edge_maxh: vec![(0, 0.25)], ..Default::default() });
+    let coarse = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 4.0,
+            ..Default::default()
+        },
+    );
+    let fine = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 4.0,
+            edge_maxh: vec![(0, 0.25)],
+            ..Default::default()
+        },
+    );
     // 0.25 on a length-4 edge -> ~16 segments -> >=10 points on it.
-    assert!(near(&fine) >= 10, "per-edge maxh=0.25 should give many points on edge 0: {} -> {}", near(&coarse), near(&fine));
+    assert!(
+        near(&fine) >= 10,
+        "per-edge maxh=0.25 should give many points on edge 0: {} -> {}",
+        near(&coarse),
+        near(&fine)
+    );
 }
 
 /// Fine shell, coarse bulk on a CYLINDER (`maxh_surf` far below `maxh_vol`) --
@@ -1063,7 +1176,8 @@ fn cylinder_coarse_interior_terminates() {
 /// Closed-manifold check on the boundary faces: every edge of the surface-face
 /// set is shared by exactly two faces (the watertightness contract).
 fn assert_closed_manifold(m: &TetMesh, what: &str) {
-    let mut edge: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    let mut edge: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
     for f in &m.faces {
         for k in 0..3 {
             let (a, b) = (f.tri[k], f.tri[(k + 1) % 3]);
@@ -1071,7 +1185,10 @@ fn assert_closed_manifold(m: &TetMesh, what: &str) {
         }
     }
     let bad = edge.values().filter(|&&c| c != 2).count();
-    assert_eq!(bad, 0, "{what}: boundary is not a closed manifold ({bad} bad edges)");
+    assert_eq!(
+        bad, 0,
+        "{what}: boundary is not a closed manifold ({bad} bad edges)"
+    );
 }
 
 /// GATE (portiert von der Legacy-cvt-Suite): eine radiale UV-Sphere mesht
@@ -1082,7 +1199,14 @@ fn uv_sphere_meshes_watertight() {
     let mut scene = Scene::new();
     scene.add_solid(rapidmesh_geom::sphere([0.2, -0.1, 0.3], 1.0, 24, 12));
     let plc = scene.assemble();
-    let m = mesh_plc_with(&plc, &MeshParams { maxh: 0.4, tol_surf: 1e-2, ..Default::default() });
+    let m = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 0.4,
+            tol_surf: 1e-2,
+            ..Default::default()
+        },
+    );
     assert!(!m.tets.is_empty(), "uv sphere produced tets");
     assert!(m.tet_regions.iter().all(|r| r.0 == 1), "single region");
     let vol: f64 = m
@@ -1099,7 +1223,10 @@ fn uv_sphere_meshes_watertight() {
         })
         .sum();
     let ball = 4.0 / 3.0 * std::f64::consts::PI;
-    assert!(vol > 0.80 * ball && vol < 1.02 * ball, "uv sphere volume {vol} vs ball {ball}");
+    assert!(
+        vol > 0.80 * ball && vol < 1.02 * ball,
+        "uv sphere volume {vol} vs ball {ball}"
+    );
     assert_closed_manifold(&m, "uv sphere");
 }
 
@@ -1111,7 +1238,13 @@ fn cylinder_meshes_watertight() {
     let mut scene = Scene::new();
     scene.add_solid(cylinder([0.0, 0.0, 0.0], [0.0, 0.0, hgt], r, 24));
     let plc = scene.assemble();
-    let m = mesh_plc_with(&plc, &MeshParams { maxh: 0.5, ..Default::default() });
+    let m = mesh_plc_with(
+        &plc,
+        &MeshParams {
+            maxh: 0.5,
+            ..Default::default()
+        },
+    );
     assert!(!m.tets.is_empty());
     assert!(m.tet_regions.iter().all(|rr| rr.0 == 1), "single region");
     let vol: f64 = m
@@ -1128,6 +1261,9 @@ fn cylinder_meshes_watertight() {
         })
         .sum();
     let exact = std::f64::consts::PI * r * r * hgt;
-    assert!(vol > 0.90 * exact && vol < 1.001 * exact, "cylinder volume {vol} vs {exact}");
+    assert!(
+        vol > 0.90 * exact && vol < 1.001 * exact,
+        "cylinder volume {vol} vs {exact}"
+    );
     assert_closed_manifold(&m, "cylinder");
 }

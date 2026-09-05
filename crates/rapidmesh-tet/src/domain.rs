@@ -11,12 +11,12 @@
 //! boundary into the coarse interior.
 
 use crate::conform::MeshParams;
-use rapidmesh_geom::vec3::{V3, sub, dot, dist};
-use crate::geomutil::circumradius;
 use crate::facetbvh::FacetBvh;
+use crate::geomutil::circumradius;
 use rapidmesh_csg::classify::{point_inside_solid, TriBoxes};
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
+use rapidmesh_geom::vec3::{dist, dot, sub, V3};
 use rapidmesh_geom::{SurfaceKind, TaggedPlc};
 
 use crate::constants::DOMAIN_MAX_DEPTH as MAX_DEPTH;
@@ -124,7 +124,12 @@ impl DomainTree {
                 let boxes = TriBoxes::build(&tris, pad);
                 let facets: Vec<(Tri, f64)> = tris.iter().map(|&t| (t, 0.0)).collect();
                 let bvh = FacetBvh::build(&facets);
-                RegionSoup { region: r, tris, boxes, bvh }
+                RegionSoup {
+                    region: r,
+                    tris,
+                    boxes,
+                    bvh,
+                }
             })
             .collect();
 
@@ -134,7 +139,11 @@ impl DomainTree {
         } else {
             diag / 8.0
         };
-        let grading = if params.grading > 0.0 { params.grading } else { 0.5 };
+        let grading = if params.grading > 0.0 {
+            params.grading
+        } else {
+            0.5
+        };
 
         let region_of = |p: V3| -> u32 {
             for rs in &regions {
@@ -253,7 +262,11 @@ impl DomainTree {
         // The global volume cap (`maxh_vol`) floors the base spacing so the
         // INTERIOR refines under `g.region().maxh`, not just the near-surface band.
         s0 = s0.min(params.vol_cap());
-        let spacing = if s0.is_finite() && s0 > 0.0 { s0 } else { diag / 8.0 };
+        let spacing = if s0.is_finite() && s0 > 0.0 {
+            s0
+        } else {
+            diag / 8.0
+        };
         let min_half = (0.5 * spacing).max(1e-9 * diag.max(1.0));
 
         // Facet BVH: O(log F) nearest-facet distance and graded-min, replacing
@@ -297,7 +310,15 @@ impl DomainTree {
             h
         };
 
-        let root = build_node(center, half, 0, &region_of, &dist_to_boundary, &h_of, min_half);
+        let root = build_node(
+            center,
+            half,
+            0,
+            &region_of,
+            &dist_to_boundary,
+            &h_of,
+            min_half,
+        );
         DomainTree {
             lo,
             hi,
@@ -387,9 +408,7 @@ impl DomainTree {
             None => 0,
         }
     }
-
 }
-
 
 /// Sagitta-bounded sizing targets along curved feature edges (WP-R3), derived
 /// purely from geometry. A feature edge is a PLC edge whose two adjacent facets
@@ -439,8 +458,11 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
         let s = plc.surface_refs[fi].0;
         if matches!(plc.surfaces[s as usize], SurfaceKind::Plane) {
             plane_geom.entry(s).or_insert_with(|| {
-                let (v0, v1, v2) =
-                    (plc.vertices[t[0] as usize], plc.vertices[t[1] as usize], plc.vertices[t[2] as usize]);
+                let (v0, v1, v2) = (
+                    plc.vertices[t[0] as usize],
+                    plc.vertices[t[1] as usize],
+                    plc.vertices[t[2] as usize],
+                );
                 let (e1, e2) = (sub(v1, v0), sub(v2, v0));
                 let n = [
                     e1[1] * e2[2] - e1[2] * e2[1],
@@ -448,7 +470,14 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
                     e1[0] * e2[1] - e1[1] * e2[0],
                 ];
                 let nl = dot(n, n).sqrt();
-                (v0, if nl > 1e-12 { [n[0] / nl, n[1] / nl, n[2] / nl] } else { [0.0, 0.0, 1.0] })
+                (
+                    v0,
+                    if nl > 1e-12 {
+                        [n[0] / nl, n[1] / nl, n[2] / nl]
+                    } else {
+                        [0.0, 0.0, 1.0]
+                    },
+                )
             });
         }
     }
@@ -511,7 +540,11 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
         while acc < eps {
             let next = match nbr.get(&cur) {
                 Some(ns) if ns.len() == 2 => {
-                    if ns[0] == prev { ns[1] } else { ns[0] }
+                    if ns[0] == prev {
+                        ns[1]
+                    } else {
+                        ns[0]
+                    }
                 }
                 _ => break, // junction / open end
             };
@@ -612,14 +645,27 @@ mod tests {
         );
         let h_at_point = t.h_at([2.0, 2.0, 2.0]);
         let h_away = t.h_at([2.0, 2.0, 3.5]);
-        assert!(h_at_point < h_away, "at point {h_at_point} finer than away {h_away}");
-        assert!(h_at_point <= 0.3, "near the size point ~0.1, got {h_at_point}");
+        assert!(
+            h_at_point < h_away,
+            "at point {h_at_point} finer than away {h_away}"
+        );
+        assert!(
+            h_at_point <= 0.3,
+            "near the size point ~0.1, got {h_at_point}"
+        );
     }
 
     #[test]
     fn region_inside_outside() {
         let plc = cube_plc(4.0);
-        let t = DomainTree::build(&plc, &MeshParams { maxh: 0.8, ..Default::default() }, &[]);
+        let t = DomainTree::build(
+            &plc,
+            &MeshParams {
+                maxh: 0.8,
+                ..Default::default()
+            },
+            &[],
+        );
         assert_ne!(t.region_at([2.0, 2.0, 2.0]), 0, "center inside");
         assert_eq!(t.region_at([-1.0, 2.0, 2.0]), 0, "outside");
     }
@@ -634,7 +680,12 @@ mod tests {
         let plc = scene.assemble();
         let t = DomainTree::build(
             &plc,
-            &MeshParams { maxh: 4.0, region_maxh: vec![(inner.0, 1.0)], grading: 0.5, ..Default::default() },
+            &MeshParams {
+                maxh: 4.0,
+                region_maxh: vec![(inner.0, 1.0)],
+                grading: 0.5,
+                ..Default::default()
+            },
             &[],
         );
         // h is finer inside the small cube than out in the bulk.

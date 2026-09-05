@@ -122,7 +122,11 @@ pub fn coplanar_same_normal(t1: &Tri, t2: &Tri) -> bool {
     let (axis, s1) = t1.projection_axis();
     let s2 = orient2d(&t2.point(0), &t2.point(1), &t2.point(2), axis)
         .expect("explicit points are always valid");
-    debug_assert_ne!(s2, Sign::Zero, "triangles must be coplanar and non-degenerate");
+    debug_assert_ne!(
+        s2,
+        Sign::Zero,
+        "triangles must be coplanar and non-degenerate"
+    );
     s1 == s2
 }
 

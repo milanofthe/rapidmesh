@@ -107,7 +107,11 @@ fn tet_circumcenter(p: [V3; 4]) -> Option<(V3, f64)> {
     let row = |i: usize| -> V3 { std::array::from_fn(|k| 2.0 * (p[i][k] - p[0][k])) };
     let sq = |q: V3| -> f64 { q.iter().map(|x| x * x).sum() };
     let (r1, r2, r3) = (row(1), row(2), row(3));
-    let b = [sq(p[1]) - sq(p[0]), sq(p[2]) - sq(p[0]), sq(p[3]) - sq(p[0])];
+    let b = [
+        sq(p[1]) - sq(p[0]),
+        sq(p[2]) - sq(p[0]),
+        sq(p[3]) - sq(p[0]),
+    ];
     let det3 = |a: V3, b: V3, c: V3| -> f64 {
         a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
             + a[2] * (b[0] * c[1] - b[1] * c[0])
@@ -176,9 +180,7 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
         // walks are robust to the ~1e-9 shift).
         Surface::Plane { .. } => {
             static ANALYTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if !*ANALYTIC
-                .get_or_init(|| std::env::var_os("RAPIDMESH_ANALYTIC_PLANE").is_some())
-            {
+            if !*ANALYTIC.get_or_init(|| std::env::var_os("RAPIDMESH_ANALYTIC_PLANE").is_some()) {
                 return trace_crossings(surf, a, b);
             }
             // Asymmetric endpoint semantics, matching the march's
@@ -187,10 +189,7 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             // Zeno samples round to 0.0 there).
             let (s0, s1) = (signed_offset(surf, a), signed_offset(surf, b));
             let mut out = SmallVec::new();
-            if s0 != 0.0
-                && s1.abs() > endpoint_noise(a, b)
-                && s0.signum() != s1.signum()
-            {
+            if s0 != 0.0 && s1.abs() > endpoint_noise(a, b) && s0.signum() != s1.signum() {
                 let t = s0 / (s0 - s1);
                 if t > 0.0 && t < 1.0 {
                     out.push(t);
@@ -205,7 +204,12 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             drop_endpoint_touch(surf, a, b, &mut out);
             out
         }
-        Surface::Cylinder { center, axis, radius, .. } => {
+        Surface::Cylinder {
+            center,
+            axis,
+            radius,
+            ..
+        } => {
             // Components orthogonal to the (unit) axis; the barrel is the
             // zero set of |perp|^2 - r^2, quadratic along the segment.
             let reject = |v: V3| -> V3 {
@@ -214,7 +218,12 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             };
             let (u0, u1) = (reject(sub(a, *center)), reject(d));
             let mut out = SmallVec::new();
-            push_quad_roots_01(dot(u1, u1), dot(u0, u1), dot(u0, u0) - radius * radius, &mut out);
+            push_quad_roots_01(
+                dot(u1, u1),
+                dot(u0, u1),
+                dot(u0, u0) - radius * radius,
+                &mut out,
+            );
             drop_endpoint_touch(surf, a, b, &mut out);
             out
         }
@@ -229,9 +238,7 @@ fn carrier_crossings(surf: &Surface, a: V3, b: V3) -> SmallVec<[f64; 4]> {
             // agree, and the analytic arm is ~6-8x faster end to end.
             // RAPIDMESH_TRACE_DISCRETE=1 falls back to the tracer (A/B).
             static ANALYTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if !*ANALYTIC
-                .get_or_init(|| std::env::var_os("RAPIDMESH_TRACE_DISCRETE").is_none())
-            {
+            if !*ANALYTIC.get_or_init(|| std::env::var_os("RAPIDMESH_TRACE_DISCRETE").is_none()) {
                 return trace_crossings(surf, a, b);
             }
             if d.is_closed() {
@@ -289,7 +296,11 @@ fn discrete_crossings(
         let mut out = SmallVec::new();
         for (i, &t) in cand.iter().enumerate() {
             let lo = if i > 0 { 0.5 * (cand[i - 1] + t) } else { 0.0 };
-            let hi = if i + 1 < cand.len() { 0.5 * (t + cand[i + 1]) } else { 1.0 };
+            let hi = if i + 1 < cand.len() {
+                0.5 * (t + cand[i + 1])
+            } else {
+                1.0
+            };
             let s_before = f((t - DELTA).max(lo));
             let s_after = f((t + DELTA).min(hi));
             if s_before != 0.0 && s_after != 0.0 && s_before.signum() != s_after.signum() {
@@ -385,7 +396,12 @@ fn tube_crossings(
                 std::array::from_fn(|k| v[k] - t * e[k])
             };
             let (u0, u1) = (reject(sub(a, q0)), reject(d));
-            push_quad_roots_01(dot(u1, u1), dot(u0, u1), dot(u0, u0) - radius * radius, &mut cand);
+            push_quad_roots_01(
+                dot(u1, u1),
+                dot(u0, u1),
+                dot(u0, u0) - radius * radius,
+                &mut cand,
+            );
         }
         for q in [q0, q1] {
             let w = sub(a, q);
@@ -405,7 +421,11 @@ fn tube_crossings(
     let mut out = SmallVec::new();
     let mut s_left = f(0.0);
     for (i, &t) in cand.iter().enumerate() {
-        let t_right = if i + 1 < cand.len() { 0.5 * (t + cand[i + 1]) } else { 0.5 * (t + 1.0) };
+        let t_right = if i + 1 < cand.len() {
+            0.5 * (t + cand[i + 1])
+        } else {
+            0.5 * (t + 1.0)
+        };
         let s_right = f(t_right);
         if s_left != 0.0 && s_right != 0.0 && s_left.signum() != s_right.signum() {
             out.push(t);
@@ -619,8 +639,7 @@ impl<'a> Refiner<'a> {
     /// (grazing crossing, membership mismatch) -- the caller retries rotated.
     fn region_walk(&self, p: V3, d: V3) -> Option<u32> {
         static WTRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let wtrace =
-            *WTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALK_TRACE").is_some());
+        let wtrace = *WTRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALK_TRACE").is_some());
         let ll = 6.0 * self.band;
         let mut q: V3 = std::array::from_fn(|k| p[k] + ll * d[k]);
         // extend until the anchor is out of the band (bounded tries)
@@ -698,7 +717,13 @@ impl<'a> Refiner<'a> {
         if wtrace {
             eprintln!(
                 "WALK p ({:.9},{:.9},{:.9}) d ({:.3},{:.3},{:.3}) -> {region} ({} crossings)",
-                p[0], p[1], p[2], d[0], d[1], d[2], crossings.len()
+                p[0],
+                p[1],
+                p[2],
+                d[0],
+                d[1],
+                d[2],
+                crossings.len()
             );
         }
         Some(region)
@@ -817,7 +842,9 @@ impl<'a> Refiner<'a> {
         for dx in -1..=1i64 {
             for dy in -1..=1i64 {
                 for dz in -1..=1i64 {
-                    let Some(keys) = self.seg_grid.get(&[cell[0] + dx, cell[1] + dy, cell[2] + dz])
+                    let Some(keys) = self
+                        .seg_grid
+                        .get(&[cell[0] + dx, cell[1] + dy, cell[2] + dz])
                     else {
                         continue;
                     };
@@ -892,8 +919,20 @@ impl<'a> Refiner<'a> {
         self.prov.push(Prov::Edge(seg.ei));
         self.vfaces.push(self.edge_faces(seg.ei));
         self.ball.push(0.0);
-        self.add_seg(Seg { ei: seg.ei, va: seg.va, vb: v, sa: seg.sa, sb: sm });
-        self.add_seg(Seg { ei: seg.ei, va: v, vb: seg.vb, sa: sm, sb: seg.sb });
+        self.add_seg(Seg {
+            ei: seg.ei,
+            va: seg.va,
+            vb: v,
+            sa: seg.sa,
+            sb: sm,
+        });
+        self.add_seg(Seg {
+            ei: seg.ei,
+            va: v,
+            vb: seg.vb,
+            sa: sm,
+            sb: seg.sb,
+        });
         let rb = 0.6 * dist(self.pos(seg.va), p).min(dist(self.pos(seg.vb), p));
         self.set_ball(v, rb);
         self.set_ball(seg.va, rb.max(dist(self.pos(seg.va), p) * 0.6));
@@ -960,7 +999,8 @@ impl<'a> Refiner<'a> {
             None => (a, b),
         };
         for t in carrier_crossings(surf, a, b) {
-            self.n_cross_found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.n_cross_found
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let x0: V3 = std::array::from_fn(|k| a[k] + t * (b[k] - a[k]));
             if let Some((c, rmax)) = near {
                 if dist(x0, c) > rmax {
@@ -974,7 +1014,9 @@ impl<'a> Refiner<'a> {
             // nearest-facet test attributes an on-edge crossing to whichever
             // wall wins the tie; rejecting it there opened flood-fill leaks
             // through the edges of an interior void).
-            let Some((fi, d)) = self.bvh.nearest_index(x) else { continue };
+            let Some((fi, d)) = self.bvh.nearest_index(x) else {
+                continue;
+            };
             if d <= self.h_at(x) {
                 let owner = self.facet_face[fi];
                 if owner == f {
@@ -987,7 +1029,8 @@ impl<'a> Refiner<'a> {
                     }
                 }
             }
-            self.n_member_reject.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.n_member_reject
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         None
     }
@@ -999,7 +1042,8 @@ impl<'a> Refiner<'a> {
         let fv: [usize; 3] = std::array::from_fn(|k| tet[FACET_LOCAL[i][k]]);
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
         let Some((c1, r1)) = tet_circumcenter(p) else {
-            self.n_cc_none.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.n_cc_none
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return None;
         };
         // Dual endpoint on the other side: neighbour circumcenter, or an
@@ -1147,20 +1191,28 @@ impl<'a> Refiner<'a> {
                 // provenance shortcut) fragmented the sagitta band into
                 // thousands of enclaves instead.
                 (false, false) => {
-                    if signed_offset(surf, cen) >= 0.0 { 1 } else { -1 }
+                    if signed_offset(surf, cen) >= 0.0 {
+                        1
+                    } else {
+                        -1
+                    }
                 }
                 (true, true) => {
                     // piercing: dominant side by centroid
-                    self.n_side_pierce.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if signed_offset(surf, cen) >= 0.0 { 1 } else { -1 }
+                    self.n_side_pierce
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if signed_offset(surf, cen) >= 0.0 {
+                        1
+                    } else {
+                        -1
+                    }
                 }
             }
         };
         // Cached: this runs inside the PARALLEL wall sweep, once per internal
         // facet -- a per-call env lookup is a syscall tax at that call rate.
         static WALL_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let wtrace =
-            *WALL_TRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALL_TRACE").is_some());
+        let wtrace = *WALL_TRACE.get_or_init(|| std::env::var_os("RAPIDMESH_WALL_TRACE").is_some());
         if wtrace && cands.is_empty() {
             eprintln!("WALL no cands, fv {fv:?}");
         }
@@ -1196,7 +1248,10 @@ impl<'a> Refiner<'a> {
                 if let Some((fi, d)) = self.bvh.nearest_index(x) {
                     let owner = self.facet_face[fi];
                     if wtrace {
-                        eprintln!("WALL f {f} membership owner {owner} d {d:.4} h {:.4}", self.h_at(x));
+                        eprintln!(
+                            "WALL f {f} membership owner {owner} d {d:.4} h {:.4}",
+                            self.h_at(x)
+                        );
                     }
                     if d <= self.h_at(x) && owner == f {
                         return Some(f);
@@ -1204,8 +1259,7 @@ impl<'a> Refiner<'a> {
                     // near a feature edge the neighbour face may own the
                     // footpoint; accept when it shares the carrier locally
                     if d <= self.h_at(x) && owner != u32::MAX {
-                        let osurf =
-                            self.brep.surface(self.brep.faces[owner as usize].surface);
+                        let osurf = self.brep.surface(self.brep.faces[owner as usize].surface);
                         if signed_offset(osurf, x).abs() <= tol_on {
                             return Some(f);
                         }
@@ -1223,8 +1277,7 @@ impl<'a> Refiner<'a> {
     /// on-carrier projection as the repair point.
     fn pierce_repair(&self, tet: [usize; 4]) -> Option<(u32, V3)> {
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
-        let cen: V3 =
-            std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
+        let cen: V3 = std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
         // cheap prune: a tet farther from the surface than its own extent
         // cannot pierce.
         let mut ext = 0.0f64;
@@ -1475,7 +1528,11 @@ impl<'a> Refiner<'a> {
             if na == u32::MAX || nb == u32::MAX {
                 continue;
             }
-            self.add_seg(Seg { va: na as usize, vb: nb as usize, ..s });
+            self.add_seg(Seg {
+                va: na as usize,
+                vb: nb as usize,
+                ..s
+            });
         }
         // Work-queue slots/tets reference the old builder: all invalid now.
         self.queue.clear();
@@ -1503,9 +1560,9 @@ impl<'a> Refiner<'a> {
             };
             let fv: [usize; 3] = std::array::from_fn(|k| tet[FACET_LOCAL[i][k]]);
             let h = self.h_at(x);
-            let on_face = fv.iter().all(|&v| {
-                self.vfaces[v].contains(&f) || matches!(self.prov[v], Prov::Corner)
-            });
+            let on_face = fv
+                .iter()
+                .all(|&v| self.vfaces[v].contains(&f) || matches!(self.prov[v], Prov::Corner));
             let (a, b, c) = (self.pos(fv[0]), self.pos(fv[1]), self.pos(fv[2]));
             // The off-face rule (a vertex not on `f` sits in a surface facet)
             // only refines ABOVE a size floor: in thin regions every interior
@@ -1520,7 +1577,9 @@ impl<'a> Refiner<'a> {
             // facets are the optimizer's sliver stage's job.
             let bad_shape = tri_min_angle(a, b, c) < FACET_ANGLE_DEG && r > 0.8 * h;
             let bad_off = !on_face && r > 0.5 * h;
-            if (bad_size || bad_shape || bad_off) && self.insert_protected(x, Prov::Face(f), vec![f]) {
+            if (bad_size || bad_shape || bad_off)
+                && self.insert_protected(x, Prov::Face(f), vec![f])
+            {
                 if bad_size {
                     self.n_bad_size += 1;
                 } else if bad_shape {
@@ -1539,8 +1598,7 @@ impl<'a> Refiner<'a> {
     fn process_cell(&mut self, slot: u32, tet: [usize; 4]) -> bool {
         // Only tets inside a meshed region.
         let p: [V3; 4] = std::array::from_fn(|k| self.pos(tet[k]));
-        let centroid: V3 =
-            std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
+        let centroid: V3 = std::array::from_fn(|k| 0.25 * (p[0][k] + p[1][k] + p[2][k] + p[3][k]));
         let region = self.region_at_c(centroid);
         if region == 0 {
             return false;
@@ -1602,12 +1660,19 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let diag = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max).max(1e-12);
+    let diag = (0..3)
+        .map(|k| hi[k] - lo[k])
+        .fold(0.0_f64, f64::max)
+        .max(1e-12);
 
     let trace0 = std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some();
     let brep = rapidmesh_brep::build::from_plc(plc);
     if trace0 {
-        eprintln!("CHECKPOINT brep: {} faces {} edges", brep.faces.len(), brep.edges.len());
+        eprintln!(
+            "CHECKPOINT brep: {} faces {} edges",
+            brep.faces.len(),
+            brep.edges.len()
+        );
     }
     let domain = crate::cvt::build_sizing_domain(plc, params, &brep);
     if trace0 {
@@ -1616,7 +1681,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     if std::env::var_os("RAPIDMESH_REFINE_TRACE").is_some() {
         for t in plc.triangles.iter().take(3) {
             let c: V3 = std::array::from_fn(|k| {
-                (plc.vertices[t[0] as usize][k] + plc.vertices[t[1] as usize][k] + plc.vertices[t[2] as usize][k]) / 3.0
+                (plc.vertices[t[0] as usize][k]
+                    + plc.vertices[t[1] as usize][k]
+                    + plc.vertices[t[2] as usize][k])
+                    / 3.0
             });
             eprintln!("TRACE h_at({c:?}) = {}", domain.h_at(c));
         }
@@ -1721,7 +1789,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                 .map(|&(_, h)| h)
                 .chain(params.size_points.iter().map(|&(_, h)| h))
                 .fold(f64::INFINITY, f64::min);
-            params.min_h_surf.max((h_ref / 8.0).min(user_min)).max(1e-12)
+            params
+                .min_h_surf
+                .max((h_ref / 8.0).min(user_min))
+                .max(1e-12)
         },
         n_facet_ins: 0,
         n_cell_ins: 0,
@@ -1802,7 +1873,11 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .fold(f64::INFINITY, f64::min)
             .min(user_cap)
             .max(floor);
-        let grad = if params.grading > 0.0 { params.grading } else { 0.5 };
+        let grad = if params.grading > 0.0 {
+            params.grading
+        } else {
+            0.5
+        };
         let ss = distribute_floored(&**curve, params.edge_tol_for(ei), cap, grad, floor);
         let fs = r.edge_faces(ei as u32);
         // Vertex ids along the edge WITH their arc params, in curve order (a
@@ -1822,7 +1897,13 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         vids.push((corner_vid[edge.ends[1].0 as usize], ss[ss.len() - 1]));
         for w in vids.windows(2) {
             if w[0].0 != w[1].0 {
-                r.add_seg(Seg { ei: ei as u32, va: w[0].0, vb: w[1].0, sa: w[0].1, sb: w[1].1 });
+                r.add_seg(Seg {
+                    ei: ei as u32,
+                    va: w[0].0,
+                    vb: w[1].0,
+                    sa: w[0].1,
+                    sb: w[1].1,
+                });
                 let d = 0.6 * dist(r.pos(w[0].0), r.pos(w[1].0));
                 r.set_ball(w[0].0, d);
                 r.set_ball(w[1].0, d);
@@ -1875,15 +1956,19 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             .collect();
         let n_seed = 32.min(cents.len());
         let mut chosen: Vec<usize> = vec![0];
-        let mut dist2: Vec<f64> = cents.iter().map(|&c| {
-            let d = sub(c, cents[0]);
-            dot(d, d)
-        }).collect();
+        let mut dist2: Vec<f64> = cents
+            .iter()
+            .map(|&c| {
+                let d = sub(c, cents[0]);
+                dot(d, d)
+            })
+            .collect();
         while chosen.len() < n_seed {
-            let (best, _) = dist2
-                .iter()
-                .enumerate()
-                .fold((0, -1.0), |acc, (i, &d)| if d > acc.1 { (i, d) } else { acc });
+            let (best, _) =
+                dist2.iter().enumerate().fold(
+                    (0, -1.0),
+                    |acc, (i, &d)| if d > acc.1 { (i, d) } else { acc },
+                );
             chosen.push(best);
             for (i, &c) in cents.iter().enumerate() {
                 let d = sub(c, cents[best]);
@@ -1928,9 +2013,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
             eprintln!("CHECKPOINT seeding grid step {step:.6} -> {nx} x {ny} x {nz} cells");
         }
         let ncell = step.max(1e-9);
-        let ckey = |p: V3| -> [i64; 3] {
-            std::array::from_fn(|k| (p[k] / ncell).floor() as i64)
-        };
+        let ckey = |p: V3| -> [i64; 3] { std::array::from_fn(|k| (p[k] / ncell).floor() as i64) };
         let mut grid: DMap<[i64; 3], Vec<V3>> = DMap::default();
         for i in 1..nx {
             for j in 1..ny {
@@ -1960,8 +2043,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                             for dz in -1..=1i64 {
                                 if let Some(v) = grid.get(&[cc[0] + dx, cc[1] + dy, cc[2] + dz]) {
                                     for &q in v {
-                                        let d2: f64 =
-                                            (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
+                                        let d2: f64 = (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
                                         if d2 < r2 {
                                             clear = false;
                                             break 'scan;
@@ -2210,8 +2292,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     let e2 = sub(p[2], p[0]);
                     let e3 = sub(p[3], p[0]);
                     let w = dot(e1, cross(e2, e3)).abs();
-                    let sum4: V3 =
-                        std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
+                    let sum4: V3 = std::array::from_fn(|k| p[0][k] + p[1][k] + p[2][k] + p[3][k]);
                     for &i in &pi {
                         for k in 0..3 {
                             num[i][k] += w * (sum4[k] - all[i][k]);
@@ -2228,9 +2309,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     let tgt: V3 = std::array::from_fn(|k| num[gi][k] / (3.0 * den[gi]));
                     // stay inside, out of protecting balls, clear of the
                     // surface (a hugger pierces the finer wall sampling)
-                    if r.in_ball(tgt)
-                        || r.domain.region_at(tgt) == 0
-                        || !r.surface_clear(tgt, 0.5)
+                    if r.in_ball(tgt) || r.domain.region_at(tgt) == 0 || !r.surface_clear(tgt, 0.5)
                     {
                         continue;
                     }
@@ -2262,9 +2341,7 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                     if best_len <= 1.4 * h {
                         continue;
                     }
-                    if r.in_ball(mid)
-                        || r.domain.region_at(mid) == 0
-                        || !r.surface_clear(mid, 0.5)
+                    if r.in_ball(mid) || r.domain.region_at(mid) == 0 || !r.surface_clear(mid, 0.5)
                     {
                         continue;
                     }
@@ -2375,10 +2452,8 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
                         if trace {
                             let provs: Vec<String> =
                                 tet.iter().map(|&v| format!("{:?}", r.prov[v])).collect();
-                            let offs: Vec<f64> = tet
-                                .iter()
-                                .map(|&v| signed_offset(surf, r.pos(v)))
-                                .collect();
+                            let offs: Vec<f64> =
+                                tet.iter().map(|&v| signed_offset(surf, r.pos(v))).collect();
                             let ps: Vec<String> = tet
                                 .iter()
                                 .map(|&v| {
@@ -2473,12 +2548,10 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
     let mut n_walls = 0u64;
     // RAPIDMESH_DEBUG_LEAK="x0,y0,z0,x1,y1,z1": report non-wall facets whose
     // two tets straddle this box's boundary (the classification-leak tracer).
-    let dbg_box: Option<[f64; 6]> = std::env::var("RAPIDMESH_DEBUG_LEAK")
-        .ok()
-        .and_then(|s| {
-            let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-            (v.len() == 6).then(|| std::array::from_fn(|i| v[i]))
-        });
+    let dbg_box: Option<[f64; 6]> = std::env::var("RAPIDMESH_DEBUG_LEAK").ok().and_then(|s| {
+        let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (v.len() == 6).then(|| std::array::from_fn(|i| v[i]))
+    });
     let dbg_leak = dbg_box.is_some();
     let in_void = |c: &V3| -> bool {
         let b = dbg_box.unwrap_or([0.0; 6]);
@@ -2649,13 +2722,20 @@ pub fn mesh_refine(plc: &TaggedPlc, params: &MeshParams) -> TetMesh {
         let mut info: Vec<(usize, u32, V3)> = comp_best
             .iter()
             .map(|(&root, &(_, ti))| {
-                (sizes[&root], comp_region[&root], centroid_of(&all_tets[ti as usize]))
+                (
+                    sizes[&root],
+                    comp_region[&root],
+                    centroid_of(&all_tets[ti as usize]),
+                )
             })
             .collect();
         info.sort_by_key(|r| std::cmp::Reverse(r.0));
         eprintln!("CLASSIFY walls {} components {}:", n_walls, comp_best.len());
         for (n, reg, c) in info.iter().take(8) {
-            eprintln!("  comp size {n} region {reg} anchor ({:.3}, {:.3}, {:.3})", c[0], c[1], c[2]);
+            eprintln!(
+                "  comp size {n} region {reg} anchor ({:.3}, {:.3}, {:.3})",
+                c[0], c[1], c[2]
+            );
         }
     }
     let mut region_of: Vec<u32> = Vec::with_capacity(all_tets.len());
@@ -2890,7 +2970,10 @@ mod oracle_tests {
     fn analytic_crossings_match_reference() {
         let mut surfs: Vec<Surface> = vec![
             Surface::from_kind(
-                &SurfaceKind::Sphere { center: [0.1, -0.2, 0.3], radius: 0.9 },
+                &SurfaceKind::Sphere {
+                    center: [0.1, -0.2, 0.3],
+                    radius: 0.9,
+                },
                 &[],
             ),
             Surface::from_kind(
@@ -2903,7 +2986,12 @@ mod oracle_tests {
             ),
             Surface::from_kind(
                 &SurfaceKind::Plane,
-                &[[0.0, 0.0, 0.2], [1.0, 0.0, 0.3], [1.0, 1.0, 0.5], [0.0, 1.0, 0.4]],
+                &[
+                    [0.0, 0.0, 0.2],
+                    [1.0, 0.0, 0.3],
+                    [1.0, 1.0, 0.5],
+                    [0.0, 1.0, 0.4],
+                ],
             ),
         ];
         // helix tube (the coil carrier class)

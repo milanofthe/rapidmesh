@@ -38,15 +38,15 @@ mod tet;
 mod tri;
 
 #[cfg(feature = "mesher")]
-pub mod mesher;
-#[cfg(feature = "mesher")]
 mod bundle;
+#[cfg(feature = "mesher")]
+pub mod mesher;
 
 pub use convention::{
     canonical_edge, sort3_sign, NONE, TET_EDGE_LOCAL, TET_FACE_LOCAL, TRI_EDGE_LOCAL,
 };
 pub use csr::Csr;
-pub use source::{TetSource, TriSource, Tets, Tris};
+pub use source::{TetSource, Tets, TriSource, Tris};
 pub use tet::{TetGeometry, TetTopology};
 pub use tri::{TriGeometry, TriTopology};
 

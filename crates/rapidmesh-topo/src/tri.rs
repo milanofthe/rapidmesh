@@ -72,7 +72,15 @@ impl TriTopology {
         }
 
         let vert_tris = Csr::from_pairs(src.n_verts(), &vt_pairs);
-        TriTopology { n_verts: src.n_verts(), tris, edges, tri_edges, edge_tris, edge_tags, vert_tris }
+        TriTopology {
+            n_verts: src.n_verts(),
+            tris,
+            edges,
+            tri_edges,
+            edge_tris,
+            edge_tags,
+            vert_tris,
+        }
     }
 
     /// RWG-eligible edges: interior edges shared by two SAME-tag triangles, as
@@ -81,7 +89,9 @@ impl TriTopology {
     /// the actual basis on top.
     pub fn rwg_candidate_edges(&self) -> Vec<[u32; 4]> {
         (0..self.edges.len())
-            .filter(|&e| self.edge_tris[e][1] != NONE && self.edge_tags[e][0] == self.edge_tags[e][1])
+            .filter(|&e| {
+                self.edge_tris[e][1] != NONE && self.edge_tags[e][0] == self.edge_tags[e][1]
+            })
             .map(|e| {
                 let [a, b] = self.edges[e];
                 [a, b, self.edge_tris[e][0], self.edge_tris[e][1]]
@@ -93,7 +103,9 @@ impl TriTopology {
     /// `[v0, v1, tri]`. Pure topology.
     pub fn boundary_edges(&self) -> Vec<[u32; 3]> {
         (0..self.edges.len())
-            .filter(|&e| self.edge_tris[e][1] == NONE || self.edge_tags[e][0] != self.edge_tags[e][1])
+            .filter(|&e| {
+                self.edge_tris[e][1] == NONE || self.edge_tags[e][0] != self.edge_tags[e][1]
+            })
             .map(|e| {
                 let [a, b] = self.edges[e];
                 [a, b, self.edge_tris[e][0]]
@@ -140,13 +152,21 @@ impl TriGeometry {
         let mut min_angle = vec![0.0; nt];
         for t in 0..nt {
             let [ia, ib, ic] = topo.tris[t];
-            let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
+            let (a, b, c) = (
+                coords[ia as usize],
+                coords[ib as usize],
+                coords[ic as usize],
+            );
             let signed = 0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
             area[t] = signed.abs();
             normal[t] = [0.0, 0.0, if signed >= 0.0 { 1.0 } else { -1.0 }];
             let (cx, cy) = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0);
             centroid[t] = [cx, cy, 0.0];
-            let d = [[a[0] - cx, a[1] - cy], [b[0] - cx, b[1] - cy], [c[0] - cx, c[1] - cy]];
+            let d = [
+                [a[0] - cx, a[1] - cy],
+                [b[0] - cx, b[1] - cy],
+                [c[0] - cx, c[1] - cy],
+            ];
             let (mut sxx, mut sxy, mut syy) = (0.0, 0.0, 0.0);
             for p in &d {
                 sxx += p[0] * p[0];
@@ -155,7 +175,8 @@ impl TriGeometry {
             }
             let k = area[t] / 12.0;
             inertia[t] = [k * sxx, k * sxy, k * syy];
-            min_angle[t] = tri_min_angle_deg([a[0], a[1], 0.0], [b[0], b[1], 0.0], [c[0], c[1], 0.0]);
+            min_angle[t] =
+                tri_min_angle_deg([a[0], a[1], 0.0], [b[0], b[1], 0.0], [c[0], c[1], 0.0]);
         }
         let ne = topo.edges.len();
         let mut edge_len = vec![0.0; ne];
@@ -166,7 +187,15 @@ impl TriGeometry {
             edge_len[e] = (dx * dx + dy * dy).sqrt();
             edge_mid[e] = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, 0.0];
         }
-        TriGeometry { area, centroid, normal, inertia, edge_len, edge_mid, min_angle }
+        TriGeometry {
+            area,
+            centroid,
+            normal,
+            inertia,
+            edge_len,
+            edge_mid,
+            min_angle,
+        }
     }
 
     /// Surface (3D-embedded) geometry: area, centroid, unit normal, edge
@@ -181,7 +210,11 @@ impl TriGeometry {
         let mut min_angle = vec![0.0; nt];
         for t in 0..nt {
             let [ia, ib, ic] = topo.tris[t];
-            let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
+            let (a, b, c) = (
+                coords[ia as usize],
+                coords[ib as usize],
+                coords[ic as usize],
+            );
             let n = cross(sub(b, a), sub(c, a));
             area[t] = 0.5 * norm(n);
             normal[t] = normalize(n); // zero vector for a degenerate triangle
@@ -189,7 +222,15 @@ impl TriGeometry {
             min_angle[t] = tri_min_angle_deg(a, b, c);
         }
         let (edge_len, edge_mid) = edge_geom(&topo.edges, coords);
-        TriGeometry { area, centroid, normal, inertia: Vec::new(), edge_len, edge_mid, min_angle }
+        TriGeometry {
+            area,
+            centroid,
+            normal,
+            inertia: Vec::new(),
+            edge_len,
+            edge_mid,
+            min_angle,
+        }
     }
 }
 
@@ -251,7 +292,9 @@ mod tests {
         assert!((g.area[0] - 0.5).abs() < 1e-12);
         assert_eq!(g.normal[0], [0.0, 0.0, 1.0]); // CCW
         let c = g.centroid[0];
-        assert!((c[0] - 1.0 / 3.0).abs() < 1e-12 && (c[1] - 1.0 / 3.0).abs() < 1e-12 && c[2] == 0.0);
+        assert!(
+            (c[0] - 1.0 / 3.0).abs() < 1e-12 && (c[1] - 1.0 / 3.0).abs() < 1e-12 && c[2] == 0.0
+        );
         // symmetric triangle: ∫dx² == ∫dy², cross moment negative.
         assert!((g.inertia[0][0] - g.inertia[0][2]).abs() < 1e-12);
         assert!(g.inertia[0][1] < 0.0);

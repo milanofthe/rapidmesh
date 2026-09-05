@@ -198,7 +198,10 @@ impl DelaunayBuilder {
         if orient(&pts, &[], seed[0], seed[1], seed[2], seed[3]) == Sign::Negative {
             seed.swap(2, 3);
         }
-        debug_assert_eq!(orient(&pts, &[], seed[0], seed[1], seed[2], seed[3]), Sign::Positive);
+        debug_assert_eq!(
+            orient(&pts, &[], seed[0], seed[1], seed[2], seed[3]),
+            Sign::Positive
+        );
         DelaunayBuilder {
             domain: (
                 std::array::from_fn(|k| c[k] - big),
@@ -443,9 +446,8 @@ impl DelaunayBuilder {
     /// Some alive slot whose tet contains the internal vertex, from the
     /// refill-maintained hint (with a linear rescue scan as backstop).
     fn star_seed(&self, vi: u32) -> u32 {
-        let valid = |s: u32| {
-            s != NONE && self.alive[s as usize] && self.tets[s as usize].contains(&vi)
-        };
+        let valid =
+            |s: u32| s != NONE && self.alive[s as usize] && self.tets[s as usize].contains(&vi);
         let hint = self.vert_hint[vi as usize];
         if valid(hint) {
             return hint;
@@ -615,7 +617,7 @@ impl DelaunayBuilder {
                 if !keep(Removal::Face(pf)) {
                     GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                     self.pts.pop();
-            self.exact.pop();
+                    self.exact.pop();
                     return None;
                 }
             }
@@ -631,7 +633,7 @@ impl DelaunayBuilder {
                     if !keep(Removal::Edge((a - 4) as usize, (b - 4) as usize)) {
                         GUARDED_KEEP_VETOES.fetch_add(1, Ordering::Relaxed);
                         self.pts.pop();
-            self.exact.pop();
+                        self.exact.pop();
                         return None;
                     }
                 }
@@ -784,7 +786,10 @@ impl DelaunayBuilder {
             let (ti, fi) = self.boundary[bi];
             let outside = self.neighbors[ti as usize][fi as usize];
             let f = face(self.tets[ti as usize], fi as usize);
-            debug_assert_eq!(orient(&self.pts, &self.exact, f[0], f[1], f[2], p), Sign::Positive);
+            debug_assert_eq!(
+                orient(&self.pts, &self.exact, f[0], f[1], f[2], p),
+                Sign::Positive
+            );
             let nt = self.alloc([f[0], f[1], f[2], p]);
             self.new_tets.push(nt);
             // Across the boundary face (slot 3 = opposite p).
@@ -1166,11 +1171,15 @@ impl DelaunayBuilder {
                     }
                 }
             }
-            Some(Point3::Pac { a, b: bb, c, u, v: vv }) => {
+            Some(Point3::Pac {
+                a,
+                b: bb,
+                c,
+                u,
+                v: vv,
+            }) => {
                 let pac = |uc: f64, vc: f64| -> [f64; 3] {
-                    std::array::from_fn(|k| {
-                        a[k] + uc * (bb[k] - a[k]) + vc * (c[k] - a[k])
-                    })
+                    std::array::from_fn(|k| a[k] + uc * (bb[k] - a[k]) + vc * (c[k] - a[k]))
                 };
                 for du in [0i32, 1, -1, 2, -2] {
                     for dv in [0i32, 1, -1, 2, -2] {
@@ -1180,7 +1189,11 @@ impl DelaunayBuilder {
                         let step = |x: f64, d: i32| -> f64 {
                             let mut y = x;
                             for _ in 0..d.abs() {
-                                y = if d > 0 { f64::next_up(y) } else { f64::next_down(y) };
+                                y = if d > 0 {
+                                    f64::next_up(y)
+                                } else {
+                                    f64::next_down(y)
+                                };
                             }
                             y
                         };

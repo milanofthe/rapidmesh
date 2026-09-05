@@ -22,8 +22,8 @@
 //! volume error.
 
 use crate::project::{closest_on_surface, curve_footpoint};
-use rapidmesh_geom::vec3::{V3, sub, add, scale, dot, cross, len as norm, normalize};
 use rapidmesh_geom::nurbs::NurbsCurve;
+use rapidmesh_geom::vec3::{add, cross, dot, len as norm, normalize, scale, sub, V3};
 use rapidmesh_geom::SurfaceKind;
 use std::sync::Arc;
 
@@ -88,7 +88,14 @@ pub struct ExtrudedChart {
 
 impl ExtrudedChart {
     fn new(kind: &SurfaceKind) -> Option<ExtrudedChart> {
-        let SurfaceKind::Extruded { profile, base, udir, vdir, axis } = kind else {
+        let SurfaceKind::Extruded {
+            profile,
+            base,
+            udir,
+            vdir,
+            axis,
+        } = kind
+        else {
             return None;
         };
         let (lo, hi) = profile.domain();
@@ -122,7 +129,10 @@ impl ExtrudedChart {
     fn t_to_s(&self, t: f64) -> f64 {
         let (lo, hi) = (self.ts[0], self.ts[self.ts.len() - 1]);
         let t = t.clamp(lo, hi);
-        let i = self.ts.partition_point(|&x| x < t).clamp(1, self.ts.len() - 1);
+        let i = self
+            .ts
+            .partition_point(|&x| x < t)
+            .clamp(1, self.ts.len() - 1);
         let (t0, t1) = (self.ts[i - 1], self.ts[i]);
         let f = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
         self.ss[i - 1] + f * (self.ss[i] - self.ss[i - 1])
@@ -131,7 +141,10 @@ impl ExtrudedChart {
     /// Inverse map `s -> t`, table interpolation refined by Newton on speed.
     fn s_to_t(&self, s: f64) -> f64 {
         let s = s.clamp(0.0, self.ss[self.ss.len() - 1]);
-        let i = self.ss.partition_point(|&x| x < s).clamp(1, self.ss.len() - 1);
+        let i = self
+            .ss
+            .partition_point(|&x| x < s)
+            .clamp(1, self.ss.len() - 1);
         let (s0, s1) = (self.ss[i - 1], self.ss[i]);
         let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
         let mut t = self.ts[i - 1] + f * (self.ts[i] - self.ts[i - 1]);
@@ -182,7 +195,11 @@ impl SurfaceChart for ExtrudedChart {
 }
 
 fn any_perp(a: V3) -> V3 {
-    let t = if a[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let t = if a[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
     normalize(cross(a, t))
 }
 
@@ -226,13 +243,43 @@ pub struct Chart {
 #[derive(Clone, Debug)]
 enum Inner {
     /// Azimuthal-equidistant: chart center direction `c`, tangent basis e1,e2.
-    Sphere { center: V3, radius: f64, c: V3, e1: V3, e2: V3 },
+    Sphere {
+        center: V3,
+        radius: f64,
+        c: V3,
+        e1: V3,
+        e2: V3,
+    },
     /// Isometric unroll: axis `a`, radial basis e1,e2, branch `theta0`.
-    Cylinder { center: V3, a: V3, e1: V3, e2: V3, radius: f64, theta0: f64 },
+    Cylinder {
+        center: V3,
+        a: V3,
+        e1: V3,
+        e2: V3,
+        radius: f64,
+        theta0: f64,
+    },
     /// Unrolled sector: apex, axis `a`, radial basis, half-angle via `sin_a`.
-    Cone { apex: V3, a: V3, e1: V3, e2: V3, tan: f64, sin_a: f64, theta0: f64 },
+    Cone {
+        apex: V3,
+        a: V3,
+        e1: V3,
+        e2: V3,
+        tan: f64,
+        sin_a: f64,
+        theta0: f64,
+    },
     /// Parametric (major angle `theta`, minor angle `phi`), near-isometric.
-    Torus { center: V3, a: V3, e1: V3, e2: V3, major: f64, minor: f64, theta0: f64, phi0: f64 },
+    Torus {
+        center: V3,
+        a: V3,
+        e1: V3,
+        e2: V3,
+        major: f64,
+        minor: f64,
+        theta0: f64,
+        phi0: f64,
+    },
 }
 
 impl Chart {
@@ -260,9 +307,19 @@ impl Chart {
                 let c = if norm(c) == 0.0 { [0.0, 0.0, 1.0] } else { c };
                 let e1 = any_perp(c);
                 let e2 = cross(c, e1);
-                Inner::Sphere { center, radius, c, e1, e2 }
+                Inner::Sphere {
+                    center,
+                    radius,
+                    c,
+                    e1,
+                    e2,
+                }
             }
-            SurfaceKind::Cylinder { center, axis, radius } => {
+            SurfaceKind::Cylinder {
+                center,
+                axis,
+                radius,
+            } => {
                 let a = normalize(axis);
                 let e1 = any_perp(a);
                 let e2 = cross(a, e1);
@@ -274,9 +331,20 @@ impl Chart {
                         dot(r, e2).atan2(dot(r, e1))
                     })
                     .collect();
-                Inner::Cylinder { center, a, e1, e2, radius, theta0: circular_mean(&angles) }
+                Inner::Cylinder {
+                    center,
+                    a,
+                    e1,
+                    e2,
+                    radius,
+                    theta0: circular_mean(&angles),
+                }
             }
-            SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            SurfaceKind::Cone {
+                apex,
+                axis,
+                tan_half_angle,
+            } => {
                 let a = normalize(axis);
                 let e1 = any_perp(a);
                 let e2 = cross(a, e1);
@@ -289,9 +357,22 @@ impl Chart {
                         dot(r, e2).atan2(dot(r, e1))
                     })
                     .collect();
-                Inner::Cone { apex, a, e1, e2, tan: tan_half_angle, sin_a, theta0: circular_mean(&angles) }
+                Inner::Cone {
+                    apex,
+                    a,
+                    e1,
+                    e2,
+                    tan: tan_half_angle,
+                    sin_a,
+                    theta0: circular_mean(&angles),
+                }
             }
-            SurfaceKind::Torus { center, axis, major_radius, minor_radius } => {
+            SurfaceKind::Torus {
+                center,
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
                 let a = normalize(axis);
                 let e1 = any_perp(a);
                 let e2 = cross(a, e1);
@@ -317,7 +398,10 @@ impl Chart {
                 }
             }
         };
-        Some(Chart { kind: kind.clone(), inner })
+        Some(Chart {
+            kind: kind.clone(),
+            inner,
+        })
     }
 }
 
@@ -328,7 +412,13 @@ impl SurfaceChart for Chart {
 
     fn to_uv(&self, p: V3) -> P2 {
         match &self.inner {
-            Inner::Sphere { center, radius, c, e1, e2 } => {
+            Inner::Sphere {
+                center,
+                radius,
+                c,
+                e1,
+                e2,
+            } => {
                 let d = normalize(sub(p, *center));
                 let cosang = dot(d, *c).clamp(-1.0, 1.0);
                 let ang = cosang.acos();
@@ -341,14 +431,29 @@ impl SurfaceChart for Chart {
                 let arc = radius * ang;
                 [arc * dot(dirt, *e1), arc * dot(dirt, *e2)]
             }
-            Inner::Cylinder { center, a, e1, e2, radius, theta0 } => {
+            Inner::Cylinder {
+                center,
+                a,
+                e1,
+                e2,
+                radius,
+                theta0,
+            } => {
                 let w = sub(p, *center);
                 let z = dot(w, *a);
                 let r = sub(w, scale(*a, z));
                 let theta = unwrap(dot(r, *e2).atan2(dot(r, *e1)), *theta0);
                 [radius * theta, z]
             }
-            Inner::Cone { apex, a, e1, e2, tan, sin_a, theta0 } => {
+            Inner::Cone {
+                apex,
+                a,
+                e1,
+                e2,
+                tan,
+                sin_a,
+                theta0,
+            } => {
                 let w = sub(p, *apex);
                 let h_ax = dot(w, *a).max(0.0);
                 let r = sub(w, scale(*a, h_ax));
@@ -357,7 +462,16 @@ impl SurfaceChart for Chart {
                 let phi = theta * sin_a;
                 [slant * phi.cos(), slant * phi.sin()]
             }
-            Inner::Torus { center, a, e1, e2, major, minor, theta0, phi0 } => {
+            Inner::Torus {
+                center,
+                a,
+                e1,
+                e2,
+                major,
+                minor,
+                theta0,
+                phi0,
+            } => {
                 let w = sub(p, *center);
                 let z = dot(w, *a);
                 let planar = sub(w, scale(*a, z));
@@ -371,7 +485,13 @@ impl SurfaceChart for Chart {
 
     fn to_xyz(&self, uv: P2) -> V3 {
         match &self.inner {
-            Inner::Sphere { center, radius, c, e1, e2 } => {
+            Inner::Sphere {
+                center,
+                radius,
+                c,
+                e1,
+                e2,
+            } => {
                 let rho = (uv[0] * uv[0] + uv[1] * uv[1]).sqrt();
                 let ang = rho / radius;
                 if rho < 1e-15 {
@@ -381,12 +501,27 @@ impl SurfaceChart for Chart {
                 let d = add(scale(*c, ang.cos()), scale(dirt, ang.sin()));
                 add(*center, scale(d, *radius))
             }
-            Inner::Cylinder { center, a, e1, e2, radius, .. } => {
+            Inner::Cylinder {
+                center,
+                a,
+                e1,
+                e2,
+                radius,
+                ..
+            } => {
                 let theta = uv[0] / radius;
                 let dir = add(scale(*e1, theta.cos()), scale(*e2, theta.sin()));
                 add(add(*center, scale(*a, uv[1])), scale(dir, *radius))
             }
-            Inner::Cone { apex, a, e1, e2, tan, sin_a, .. } => {
+            Inner::Cone {
+                apex,
+                a,
+                e1,
+                e2,
+                tan,
+                sin_a,
+                ..
+            } => {
                 let slant = (uv[0] * uv[0] + uv[1] * uv[1]).sqrt();
                 let phi = uv[1].atan2(uv[0]);
                 let theta = phi / sin_a;
@@ -395,7 +530,15 @@ impl SurfaceChart for Chart {
                 let dir = add(scale(*e1, theta.cos()), scale(*e2, theta.sin()));
                 add(add(*apex, scale(*a, h_ax)), scale(dir, r))
             }
-            Inner::Torus { center, a, e1, e2, major, minor, .. } => {
+            Inner::Torus {
+                center,
+                a,
+                e1,
+                e2,
+                major,
+                minor,
+                ..
+            } => {
                 let theta = uv[0] / major;
                 let phi = uv[1] / minor;
                 let pdir = add(scale(*e1, theta.cos()), scale(*e2, theta.sin()));
@@ -436,7 +579,10 @@ mod tests {
     /// surface (geodesic) distance for the sphere.
     #[test]
     fn sphere_chart_roundtrips_and_is_equidistant() {
-        let k = SurfaceKind::Sphere { center: [1.0, 2.0, 3.0], radius: 2.0 };
+        let k = SurfaceKind::Sphere {
+            center: [1.0, 2.0, 3.0],
+            radius: 2.0,
+        };
         // a cap of points around the +x direction
         let mut pts = Vec::new();
         for i in 0..6 {
@@ -459,13 +605,23 @@ mod tests {
         let uv = chart.to_uv(p);
         let chart_r = (uv[0] * uv[0] + uv[1] * uv[1]).sqrt();
         let dir_c = normalize(sub(chart.to_xyz([0.0, 0.0]), center));
-        let arc = 2.0 * dot(normalize(sub(p, center)), dir_c).clamp(-1.0, 1.0).acos();
-        assert!((chart_r - arc).abs() < 1e-9, "equidistant: chart_r {chart_r} vs arc {arc}");
+        let arc = 2.0
+            * dot(normalize(sub(p, center)), dir_c)
+                .clamp(-1.0, 1.0)
+                .acos();
+        assert!(
+            (chart_r - arc).abs() < 1e-9,
+            "equidistant: chart_r {chart_r} vs arc {arc}"
+        );
     }
 
     #[test]
     fn cylinder_chart_roundtrips() {
-        let k = SurfaceKind::Cylinder { center: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], radius: 1.5 };
+        let k = SurfaceKind::Cylinder {
+            center: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            radius: 1.5,
+        };
         let mut pts = Vec::new();
         for i in 0..6 {
             for j in 0..6 {
@@ -483,7 +639,11 @@ mod tests {
 
     #[test]
     fn cone_chart_roundtrips() {
-        let k = SurfaceKind::Cone { apex: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], tan_half_angle: 0.5 };
+        let k = SurfaceKind::Cone {
+            apex: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            tan_half_angle: 0.5,
+        };
         let mut pts = Vec::new();
         for i in 0..6 {
             for j in 1..6 {

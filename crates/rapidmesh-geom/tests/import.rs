@@ -91,7 +91,10 @@ fn degenerate_facets_dropped() {
 fn open_surface_rejected() {
     let path = temp_file("open.stl", &ascii_stl(&TET_TRIS[..3]));
     let f = import_stl(&path).expect("import");
-    assert!(matches!(validate_closed(&f), Err(ImportError::NotClosed(_))));
+    assert!(matches!(
+        validate_closed(&f),
+        Err(ImportError::NotClosed(_))
+    ));
 }
 
 #[test]
@@ -101,7 +104,10 @@ fn inconsistent_orientation_rejected() {
     tris[3] = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     let path = temp_file("flipped.stl", &ascii_stl(&tris));
     let f = import_stl(&path).expect("import");
-    assert!(matches!(validate_closed(&f), Err(ImportError::NotClosed(_))));
+    assert!(matches!(
+        validate_closed(&f),
+        Err(ImportError::NotClosed(_))
+    ));
 }
 
 #[test]
@@ -156,7 +162,11 @@ f 4 1 5 8
     let path = temp_file("crease_cube.obj", obj);
     let sharp = import_obj_creased(&path, 40.0).expect("import");
     let smooth = import_obj_creased(&path, 120.0).expect("import");
-    assert_eq!(smooth.surfaces.len(), 1, "120 deg threshold merges the cube into one region");
+    assert_eq!(
+        smooth.surfaces.len(),
+        1,
+        "120 deg threshold merges the cube into one region"
+    );
     assert!(
         sharp.surfaces.len() > smooth.surfaces.len(),
         "40 deg threshold must split at the 90-degree edges ({} vs {})",

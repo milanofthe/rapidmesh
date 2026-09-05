@@ -95,9 +95,7 @@ pub fn collinear(a: &Point3, b: &Point3, c: &Point3) -> Option<bool> {
 /// point `p` satisfies a ≤ p ≤ b along the segment. The caller is responsible
 /// for `p` being on the line through `a`, `b`.
 pub fn within_closed(a: &Point3, b: &Point3, p: &Point3) -> Option<bool> {
-    Some(
-        cmp_along(a, b, a, p)? != Sign::Negative && cmp_along(a, b, p, b)? != Sign::Negative,
-    )
+    Some(cmp_along(a, b, a, p)? != Sign::Negative && cmp_along(a, b, p, b)? != Sign::Negative)
 }
 
 /// Exact open betweenness: true if `p` lies strictly between `a` and `b`.

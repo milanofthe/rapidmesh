@@ -102,8 +102,8 @@ pub fn tri_tri_intersection(t0: &Tri, t1: &Tri) -> TriTriIsect {
             let a = distinct.pop().expect("len 2");
             TriTriIsect::Segment(a, b)
         }
-        n => unreachable!(
-            "non-coplanar tri-tri intersection produced {n} distinct candidate points"
-        ),
+        n => {
+            unreachable!("non-coplanar tri-tri intersection produced {n} distinct candidate points")
+        }
     }
 }

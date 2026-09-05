@@ -10,7 +10,7 @@
 //! interface. The exact CSG stays a separate, untouched layer.
 
 use rapidmesh_geom::nurbs::NurbsCurve;
-use rapidmesh_geom::vec3::{V3, add, sub, scale, dot, cross, normalize as norm};
+use rapidmesh_geom::vec3::{add, cross, dot, normalize as norm, scale, sub, V3};
 use rapidmesh_geom::{NurbsSurface, SurfaceKind};
 use std::sync::Arc;
 
@@ -21,7 +21,11 @@ fn add3(a: V3, b: V3) -> V3 {
 }
 /// An arbitrary unit vector perpendicular to `a` (a reference for `theta = 0`).
 fn perp(a: V3) -> V3 {
-    let t = if a[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let t = if a[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
     norm(cross(a, t))
 }
 
@@ -31,15 +35,42 @@ pub enum Surface {
     /// Plane with orthonormal frame `(o; u, v)` and `normal = u x v`.
     Plane { o: V3, u: V3, v: V3, normal: V3 },
     /// Cylinder: `(theta, h)`, `theta` from `x` about `axis`, `h` along `axis`.
-    Cylinder { center: V3, axis: V3, x: V3, radius: f64 },
+    Cylinder {
+        center: V3,
+        axis: V3,
+        x: V3,
+        radius: f64,
+    },
     /// Sphere: `(theta, phi)`, `phi` the latitude about `z`.
-    Sphere { center: V3, x: V3, z: V3, radius: f64 },
+    Sphere {
+        center: V3,
+        x: V3,
+        z: V3,
+        radius: f64,
+    },
     /// Cone: `(theta, s)`, `s` the signed distance from `apex` along `axis`.
-    Cone { apex: V3, axis: V3, x: V3, half_angle: f64 },
+    Cone {
+        apex: V3,
+        axis: V3,
+        x: V3,
+        half_angle: f64,
+    },
     /// Torus: `(theta_major, phi_minor)`.
-    Torus { center: V3, axis: V3, x: V3, major: f64, minor: f64 },
+    Torus {
+        center: V3,
+        axis: V3,
+        x: V3,
+        major: f64,
+        minor: f64,
+    },
     /// Extruded profile: `(t, h)`, `profile(t)` in the `(u, v)` plane, `h` along `axis`.
-    Extruded { base: V3, u: V3, v: V3, axis: V3, profile: Arc<NurbsCurve> },
+    Extruded {
+        base: V3,
+        u: V3,
+        v: V3,
+        axis: V3,
+        profile: Arc<NurbsCurve>,
+    },
     /// A trimmed NURBS surface, mapped by its own `(u, v)`.
     Nurbs(Arc<NurbsSurface>),
     /// A discrete smooth patch of an imported soup, queried by closest-point
@@ -49,7 +80,10 @@ pub enum Surface {
     /// `dist(p, path) = radius`. Queried by closest-point projection like
     /// [`Surface::Discrete`], but the oracle is analytic per segment -- smooth
     /// where it matters and with exact curvature `radius` for sizing.
-    Tube { path: Arc<rapidmesh_geom::TubePath>, radius: f64 },
+    Tube {
+        path: Arc<rapidmesh_geom::TubePath>,
+        radius: f64,
+    },
 }
 
 impl Surface {
@@ -60,21 +94,54 @@ impl Surface {
         match kind {
             SurfaceKind::Plane => {
                 let (o, u, v) = fit_plane(frame_pts);
-                Surface::Plane { o, u, v, normal: norm(cross(u, v)) }
+                Surface::Plane {
+                    o,
+                    u,
+                    v,
+                    normal: norm(cross(u, v)),
+                }
             }
-            SurfaceKind::Cylinder { center, axis, radius } => {
+            SurfaceKind::Cylinder {
+                center,
+                axis,
+                radius,
+            } => {
                 let a = norm(*axis);
-                Surface::Cylinder { center: *center, axis: a, x: perp(a), radius: *radius }
+                Surface::Cylinder {
+                    center: *center,
+                    axis: a,
+                    x: perp(a),
+                    radius: *radius,
+                }
             }
             SurfaceKind::Sphere { center, radius } => {
                 let z = [0.0, 0.0, 1.0];
-                Surface::Sphere { center: *center, x: perp(z), z, radius: *radius }
+                Surface::Sphere {
+                    center: *center,
+                    x: perp(z),
+                    z,
+                    radius: *radius,
+                }
             }
-            SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+            SurfaceKind::Cone {
+                apex,
+                axis,
+                tan_half_angle,
+            } => {
                 let a = norm(*axis);
-                Surface::Cone { apex: *apex, axis: a, x: perp(a), half_angle: tan_half_angle.atan() }
+                Surface::Cone {
+                    apex: *apex,
+                    axis: a,
+                    x: perp(a),
+                    half_angle: tan_half_angle.atan(),
+                }
             }
-            SurfaceKind::Torus { center, axis, major_radius, minor_radius } => {
+            SurfaceKind::Torus {
+                center,
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
                 let a = norm(*axis);
                 Surface::Torus {
                     center: *center,
@@ -84,7 +151,13 @@ impl Surface {
                     minor: *minor_radius,
                 }
             }
-            SurfaceKind::Extruded { profile, base, udir, vdir, axis } => Surface::Extruded {
+            SurfaceKind::Extruded {
+                profile,
+                base,
+                udir,
+                vdir,
+                axis,
+            } => Surface::Extruded {
                 base: *base,
                 u: norm(*udir),
                 v: norm(*vdir),
@@ -92,9 +165,10 @@ impl Surface {
                 profile: profile.clone(),
             },
             SurfaceKind::Discrete(d) => Surface::Discrete(d.clone()),
-            SurfaceKind::Tube { path, radius } => {
-                Surface::Tube { path: path.clone(), radius: *radius }
-            }
+            SurfaceKind::Tube { path, radius } => Surface::Tube {
+                path: path.clone(),
+                radius: *radius,
+            },
         }
     }
 
@@ -127,32 +201,62 @@ impl Surface {
     pub fn eval_uv(&self, p: P2) -> V3 {
         match self {
             Surface::Plane { o, u, v, .. } => add3(*o, add3(scale(*u, p[0]), scale(*v, p[1]))),
-            Surface::Cylinder { center, axis, x, radius } => {
+            Surface::Cylinder {
+                center,
+                axis,
+                x,
+                radius,
+            } => {
                 let y = cross(*axis, *x);
                 let r = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
                 add3(add3(*center, scale(*axis, p[1])), scale(r, *radius))
             }
-            Surface::Sphere { center, x, z, radius } => {
+            Surface::Sphere {
+                center,
+                x,
+                z,
+                radius,
+            } => {
                 let y = cross(*z, *x);
                 let eq = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
                 let dir = add3(scale(eq, p[1].cos()), scale(*z, p[1].sin()));
                 add3(*center, scale(dir, *radius))
             }
-            Surface::Cone { apex, axis, x, half_angle } => {
+            Surface::Cone {
+                apex,
+                axis,
+                x,
+                half_angle,
+            } => {
                 let y = cross(*axis, *x);
                 let rho = p[1] * half_angle.tan();
                 let r = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
                 add3(add3(*apex, scale(*axis, p[1])), scale(r, rho))
             }
-            Surface::Torus { center, axis, x, major, minor } => {
+            Surface::Torus {
+                center,
+                axis,
+                x,
+                major,
+                minor,
+            } => {
                 let y = cross(*axis, *x);
                 let dir = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
                 let ring = scale(dir, major + minor * p[1].cos());
                 add3(add3(*center, ring), scale(*axis, minor * p[1].sin()))
             }
-            Surface::Extruded { base, u, v, axis, profile } => {
+            Surface::Extruded {
+                base,
+                u,
+                v,
+                axis,
+                profile,
+            } => {
                 let c = profile.eval(p[0]);
-                add3(add3(*base, scale(*axis, p[1])), add3(scale(*u, c[0]), scale(*v, c[1])))
+                add3(
+                    add3(*base, scale(*axis, p[1])),
+                    add3(scale(*u, c[0]), scale(*v, c[1])),
+                )
             }
             Surface::Nurbs(s) => s.eval(p[0], p[1]),
             // no parameter map: the (u,v) API is chart territory, and discrete
@@ -166,7 +270,9 @@ impl Surface {
     pub fn project_uv(&self, p: V3) -> P2 {
         match self {
             Surface::Plane { o, u, v, .. } => [dot(sub(p, *o), *u), dot(sub(p, *o), *v)],
-            Surface::Cylinder { center, axis, x, .. } => {
+            Surface::Cylinder {
+                center, axis, x, ..
+            } => {
                 let y = cross(*axis, *x);
                 let d = sub(p, *center);
                 let h = dot(d, *axis);
@@ -176,7 +282,10 @@ impl Surface {
             Surface::Sphere { center, x, z, .. } => {
                 let y = cross(*z, *x);
                 let d = norm(sub(p, *center));
-                [dot(d, y).atan2(dot(d, *x)), dot(d, *z).clamp(-1.0, 1.0).asin()]
+                [
+                    dot(d, y).atan2(dot(d, *x)),
+                    dot(d, *z).clamp(-1.0, 1.0).asin(),
+                ]
             }
             Surface::Cone { apex, axis, x, .. } => {
                 let y = cross(*axis, *x);
@@ -185,7 +294,13 @@ impl Surface {
                 let rd = sub(d, scale(*axis, s));
                 [dot(rd, y).atan2(dot(rd, *x)), s]
             }
-            Surface::Torus { center, axis, x, major, .. } => {
+            Surface::Torus {
+                center,
+                axis,
+                x,
+                major,
+                ..
+            } => {
                 let y = cross(*axis, *x);
                 let d = sub(p, *center);
                 let zc = dot(d, *axis);
@@ -194,9 +309,18 @@ impl Surface {
                 let rho = dot(pd, pd).sqrt() - major;
                 [theta, zc.atan2(rho)]
             }
-            Surface::Extruded { base, u, v, axis, profile } => {
+            Surface::Extruded {
+                base,
+                u,
+                v,
+                axis,
+                profile,
+            } => {
                 let rel = sub(p, *base);
-                [profile_footpoint(profile, [dot(rel, *u), dot(rel, *v)]), dot(rel, *axis)]
+                [
+                    profile_footpoint(profile, [dot(rel, *u), dot(rel, *v)]),
+                    dot(rel, *axis),
+                ]
             }
             Surface::Nurbs(s) => nurbs_footpoint(s, p),
             Surface::Discrete(_) => [p[0], p[1]],
@@ -213,18 +337,38 @@ impl Surface {
                 add3(scale(*x, p[0].cos()), scale(y, p[0].sin()))
             }
             Surface::Sphere { center, .. } => norm(sub(self.eval_uv(p), *center)),
-            Surface::Cone { axis, x, half_angle, .. } => {
+            Surface::Cone {
+                axis,
+                x,
+                half_angle,
+                ..
+            } => {
                 let y = cross(*axis, *x);
                 let radial = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
-                norm(sub(scale(radial, half_angle.cos()), scale(*axis, half_angle.sin())))
+                norm(sub(
+                    scale(radial, half_angle.cos()),
+                    scale(*axis, half_angle.sin()),
+                ))
             }
-            Surface::Torus { center, axis, x, major, .. } => {
+            Surface::Torus {
+                center,
+                axis,
+                x,
+                major,
+                ..
+            } => {
                 let y = cross(*axis, *x);
                 let dir = add3(scale(*x, p[0].cos()), scale(y, p[0].sin()));
                 let tube_center = add3(*center, scale(dir, *major));
                 norm(sub(self.eval_uv(p), tube_center))
             }
-            Surface::Extruded { u, v, axis, profile, .. } => {
+            Surface::Extruded {
+                u,
+                v,
+                axis,
+                profile,
+                ..
+            } => {
                 let (_, c1, _) = profile.ders2(p[0]);
                 let tangent = add3(scale(*u, c1[0]), scale(*v, c1[1]));
                 norm(cross(tangent, *axis))
@@ -364,8 +508,6 @@ fn nurbs_footpoint(surf: &NurbsSurface, p: V3) -> P2 {
     buv
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,10 +521,18 @@ mod tests {
     fn plane_roundtrip() {
         let s = Surface::from_kind(
             &SurfaceKind::Plane,
-            &[[0.0, 0.0, 1.0], [2.0, 0.0, 1.0], [2.0, 3.0, 1.0], [0.0, 3.0, 1.0]],
+            &[
+                [0.0, 0.0, 1.0],
+                [2.0, 0.0, 1.0],
+                [2.0, 3.0, 1.0],
+                [0.0, 3.0, 1.0],
+            ],
         );
         let p = [1.3, 2.1, 1.0];
-        assert!(close(s.eval_uv(s.project_uv(p)), p), "plane eval/project roundtrip");
+        assert!(
+            close(s.eval_uv(s.project_uv(p)), p),
+            "plane eval/project roundtrip"
+        );
         assert!(s.exact_plane().is_some());
         assert!(s.curvature_radius([0.0, 0.0]).is_infinite());
     }
@@ -390,7 +540,11 @@ mod tests {
     #[test]
     fn cylinder_roundtrip_and_radius() {
         let s = Surface::from_kind(
-            &SurfaceKind::Cylinder { center: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], radius: 2.0 },
+            &SurfaceKind::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+                radius: 2.0,
+            },
             &[],
         );
         // a point exactly on the barrel
@@ -404,12 +558,24 @@ mod tests {
     #[test]
     fn sphere_roundtrip() {
         let s = Surface::from_kind(
-            &SurfaceKind::Sphere { center: [1.0, 0.0, 0.0], radius: 3.0 },
+            &SurfaceKind::Sphere {
+                center: [1.0, 0.0, 0.0],
+                radius: 3.0,
+            },
             &[],
         );
         for &(t, f) in &[(0.5, 0.4), (-1.2, -0.8), (PI * 0.5, 0.0)] {
             let p = s.eval_uv([t, f]);
-            assert!((sub(p, [1.0, 0.0, 0.0]).iter().map(|x| x * x).sum::<f64>().sqrt() - 3.0).abs() < 1e-9);
+            assert!(
+                (sub(p, [1.0, 0.0, 0.0])
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f64>()
+                    .sqrt()
+                    - 3.0)
+                    .abs()
+                    < 1e-9
+            );
             assert!(close(s.eval_uv(s.project_uv(p)), p), "sphere roundtrip");
         }
         assert_eq!(s.curvature_radius([0.0, 0.0]), 3.0);

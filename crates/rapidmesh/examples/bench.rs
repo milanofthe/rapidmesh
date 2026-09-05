@@ -15,11 +15,20 @@ use rapidmesh_tet::{mesh_plc_with, MeshParams};
 use std::time::Instant;
 
 /// The stages we track, in print order. `total` is wall-clock of the whole call.
-const STAGES: [&str; 6] =
-    ["mesh.domain", "mesh.surface", "mesh.seed", "mesh.lloyd", "mesh.classify", "total"];
+const STAGES: [&str; 6] = [
+    "mesh.domain",
+    "mesh.surface",
+    "mesh.seed",
+    "mesh.lloyd",
+    "mesh.classify",
+    "total",
+];
 
 fn val(v: &[(String, f64)], key: &str) -> f64 {
-    v.iter().find(|(k, _)| k == key).map(|(_, x)| *x).unwrap_or(0.0)
+    v.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, x)| *x)
+        .unwrap_or(0.0)
 }
 
 struct Sample {
@@ -30,14 +39,21 @@ struct Sample {
 
 fn run(name: &str, plc: &TaggedPlc, maxh: f64) -> Sample {
     let _ = rapidmesh_exact::log::take(); // clear pending records
-    let params = MeshParams { maxh, ..MeshParams::default() };
+    let params = MeshParams {
+        maxh,
+        ..MeshParams::default()
+    };
     let t = Instant::now();
     let _mesh = mesh_plc_with(plc, &params);
     let total = t.elapsed().as_secs_f64() * 1e3;
     let (timings, stats, _) = rapidmesh_exact::log::take();
     let mut ms = [0.0f64; 6];
     for (i, s) in STAGES.iter().enumerate() {
-        ms[i] = if *s == "total" { total } else { val(&timings, s) * 1e3 };
+        ms[i] = if *s == "total" {
+            total
+        } else {
+            val(&timings, s) * 1e3
+        };
     }
     let n_tets = val(&stats, "mesh.tets");
     println!(
@@ -128,7 +144,11 @@ fn main() {
     // Shrinking h ~ factor 1.4 per step: each step ~2.7x more tets, ~5 doublings
     // total, enough to fit a clean scaling exponent.
     sweep("box", &box_plc(4.0), &[0.7, 0.5, 0.36, 0.26, 0.18, 0.13]);
-    sweep("rot-box", &rotated_box_plc(4.0), &[0.7, 0.5, 0.36, 0.26, 0.18]);
+    sweep(
+        "rot-box",
+        &rotated_box_plc(4.0),
+        &[0.7, 0.5, 0.36, 0.26, 0.18],
+    );
     sweep("air+diel", &nested_plc(), &[0.7, 0.5, 0.36, 0.26, 0.18]);
     sweep("cylinder", &cylinder_plc(24), &[0.7, 0.5, 0.36, 0.26, 0.18]);
 }

@@ -143,7 +143,13 @@ impl Point3 {
             [a[0], a[1], a[2] + 1.0],
         ];
         for x in candidates {
-            let cand = Point3::Lpi { p, q, r: a, s: b, t: x };
+            let cand = Point3::Lpi {
+                p,
+                q,
+                r: a,
+                s: b,
+                t: x,
+            };
             if cand.is_valid() {
                 return Some(cand);
             }
@@ -197,9 +203,7 @@ impl Point3 {
     pub fn affine_combo(&self) -> Option<([[f64; 3]; 3], [f64; 3], usize)> {
         match self {
             Point3::Lnc { a, b, t } => Some(([*a, *b, [0.0; 3]], [1.0 - t, *t, 0.0], 2)),
-            Point3::Pac { a, b, c, u, v } => {
-                Some(([*a, *b, *c], [1.0 - u - v, *u, *v], 3))
-            }
+            Point3::Pac { a, b, c, u, v } => Some(([*a, *b, *c], [1.0 - u - v, *u, *v], 3)),
             _ => None,
         }
     }
@@ -299,9 +303,7 @@ impl Point3 {
         // Exact stage.
         let ea = self.hom::<Expansion>();
         let eb = other.hom::<Expansion>();
-        (0..3).all(|i| {
-            Ring::sub(&ea[i].mul(&eb[3]), &eb[i].mul(&ea[3])).is_zero()
-        })
+        (0..3).all(|i| Ring::sub(&ea[i].mul(&eb[3]), &eb[i].mul(&ea[3])).is_zero())
     }
 
     /// Exact sign of the homogeneous w coordinate. [`Sign::Zero`] means the

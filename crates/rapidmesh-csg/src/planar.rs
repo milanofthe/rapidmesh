@@ -18,15 +18,17 @@
 //! a no-op (one helper triangle, one sub-segment per pair) and the result is
 //! identical to the triangle-soup arrangement.
 
-use crate::arrange::{adjacency_skip, build_bvh, clip_coplanar_edge, self_pairs, Aabb, Arrangement};
+use crate::arrange::{
+    adjacency_skip, build_bvh, clip_coplanar_edge, self_pairs, Aabb, Arrangement,
+};
 use crate::constraint::{Constraint, ConstraintLine};
 use crate::facet::PlanarFacet;
 use crate::tri::Tri;
 use crate::tri_tri::{tri_tri_intersection, TriTriIsect};
 use crate::triangulate::triangulate_seeded;
 use rapidmesh_exact::{cmp_along, collinear, Point3, Sign};
-use std::cmp::Ordering;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cmp::Ordering;
 
 /// One input facet for the conformal arrangement: a planar boundary polygon
 /// and a helper triangulation that exactly tiles it (used for intersection
@@ -144,8 +146,16 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
                 validate("seg-b", fi, &b);
                 validate("seg-a", fj, &a);
                 validate("seg-b", fj, &b);
-                cut[fi].entry(fj).or_default().push(CutSeg { a: a.clone(), b: b.clone(), plane: members[mj].v });
-                cut[fj].entry(fi).or_default().push(CutSeg { a, b, plane: members[mi].v });
+                cut[fi].entry(fj).or_default().push(CutSeg {
+                    a: a.clone(),
+                    b: b.clone(),
+                    plane: members[mj].v,
+                });
+                cut[fj].entry(fi).or_default().push(CutSeg {
+                    a,
+                    b,
+                    plane: members[mi].v,
+                });
             }
             PR::Cop(mi, mj) => {
                 let (fi, fj) = (member_facet[mi], member_facet[mj]);
@@ -170,18 +180,24 @@ pub fn arrange_facets(input: &[PlanarInput]) -> Arrangement {
     let contribs: Vec<(usize, Vec<Constraint>, Vec<Point3>)> = cop_pairs
         .par_iter()
         .flat_map_iter(|&(fi, fj)| {
-            [(fi, fj), (fj, fi)].into_iter().map(move |(target, source)| {
-                let mut cs = Vec::new();
-                let mut ps = Vec::new();
-                for (u, v) in boundary_edges(&input[source].boundary) {
-                    let (segs, pts) = clip_edge_to_facet(&input[target].helpers, u, v);
-                    for (a, b) in segs {
-                        cs.push(Constraint { a, b, line: ConstraintLine::Edge(u, v) });
+            [(fi, fj), (fj, fi)]
+                .into_iter()
+                .map(move |(target, source)| {
+                    let mut cs = Vec::new();
+                    let mut ps = Vec::new();
+                    for (u, v) in boundary_edges(&input[source].boundary) {
+                        let (segs, pts) = clip_edge_to_facet(&input[target].helpers, u, v);
+                        for (a, b) in segs {
+                            cs.push(Constraint {
+                                a,
+                                b,
+                                line: ConstraintLine::Edge(u, v),
+                            });
+                        }
+                        ps.extend(pts);
                     }
-                    ps.extend(pts);
-                }
-                (target, cs, ps)
-            })
+                    (target, cs, ps)
+                })
         })
         .collect();
     for (target, cs, ps) in contribs {
@@ -303,11 +319,7 @@ fn collinear_groups(segs: &[CutSeg]) -> Vec<Vec<CutSeg>> {
 /// Merges segments that lie on the common line through `refa`, `refb` into
 /// maximal intervals (touching or overlapping segments coalesce; gaps stay
 /// separate). Endpoints are ordered exactly along the line via [`cmp_along`].
-fn merge_on_line(
-    refa: &Point3,
-    refb: &Point3,
-    segs: &[(Point3, Point3)],
-) -> Vec<(Point3, Point3)> {
+fn merge_on_line(refa: &Point3, refb: &Point3, segs: &[(Point3, Point3)]) -> Vec<(Point3, Point3)> {
     if segs.is_empty() {
         return Vec::new();
     }

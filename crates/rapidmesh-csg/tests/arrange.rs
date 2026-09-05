@@ -7,16 +7,10 @@ use rapidmesh_exact::{collinear, within_closed, Point3};
 use rapidmesh_testutil::{box_tris, check_invariants};
 
 /// Triangulation vertices lying on the closed segment [a, b].
-fn vertices_on_segment<'a>(
-    vertices: &'a [Point3],
-    a: &Point3,
-    b: &Point3,
-) -> Vec<&'a Point3> {
+fn vertices_on_segment<'a>(vertices: &'a [Point3], a: &Point3, b: &Point3) -> Vec<&'a Point3> {
     vertices
         .iter()
-        .filter(|p| {
-            collinear(a, b, p).expect("valid") && within_closed(a, b, p).expect("valid")
-        })
+        .filter(|p| collinear(a, b, p).expect("valid") && within_closed(a, b, p).expect("valid"))
         .collect()
 }
 
@@ -95,6 +89,10 @@ fn single_box_is_left_intact() {
     let tris = box_tris([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
     let arr = check_arrangement(&tris);
     for f in &arr.facets {
-        assert_eq!(f.triangles.len(), 1, "box facet must stay a single triangle");
+        assert_eq!(
+            f.triangles.len(),
+            1,
+            "box facet must stay a single triangle"
+        );
     }
 }

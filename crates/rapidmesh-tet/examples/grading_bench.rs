@@ -26,7 +26,10 @@ fn main() {
         let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
         let mut t = 0.0;
         while t < len - 1e-9 {
-            let p = [a[0] + (b[0] - a[0]) * t / len, a[1] + (b[1] - a[1]) * t / len];
+            let p = [
+                a[0] + (b[0] - a[0]) * t / len,
+                a[1] + (b[1] - a[1]) * t / len,
+            ];
             outline.push(p);
             t += field(p).max(h_min * 0.5);
         }
@@ -34,7 +37,13 @@ fn main() {
 
     let loops = vec![outline];
     // rapidmesh's best quality: more CVT relaxation, full Ruppert.
-    let params = PolyMeshParams { step: h_min, min_angle_deg: 25.0, target_count: 0, cvt_iters: 10, max_passes: 60 };
+    let params = PolyMeshParams {
+        step: h_min,
+        min_angle_deg: 25.0,
+        target_count: 0,
+        cvt_iters: 10,
+        max_passes: 60,
+    };
     let (pts, tris) = mesh_polygon(&loops, field, &params, |_, _| {});
 
     print!("{{\"points\":[");

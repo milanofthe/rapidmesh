@@ -8,13 +8,13 @@
 //! per-patch 2D meshing in the plane / the analytic chart).
 
 use crate::conform::{build_patches, MeshParams, Patch, SurfaceFace, SurfaceMesh, TetMesh};
-use rapidmesh_geom::vec3::{V3, sub, scale, dot, cross, dist};
-use crate::geomutil::in_loops;
 use crate::domain::DomainTree;
+use crate::geomutil::in_loops;
 use crate::surf2d::cvt_fill;
 use crate::surfchart::build_chart;
 use rapidmesh_csg::Tri;
 use rapidmesh_exact::Point3;
+use rapidmesh_geom::vec3::{cross, dist, dot, scale, sub, V3};
 use rapidmesh_geom::{RegionTag, SurfaceKind, TaggedPlc};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -28,9 +28,7 @@ type DMap<K, V> = HashMap<K, V, DHasher>;
 type DSet<T> = HashSet<T, DHasher>;
 
 // All tuning constants are centralised in crate::constants.
-use crate::constants::{
-    SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS,
-};
+use crate::constants::{SURFACE_OVERSAMPLE, SURF_LLOYD_ITERS};
 
 /// Parameters `t in (0,1)` for graded points along edge `va->vb`: places points
 /// at equal fractions of the graded integral `∫ ds / (OVERSAMPLE * h)`. For a
@@ -44,7 +42,8 @@ fn graded_edge_fracs(va: V3, vb: V3, domain: &DomainTree) -> Vec<f64> {
     }
     let dir: V3 = std::array::from_fn(|k| (vb[k] - va[k]) / len);
     // Sample the inverse local spacing finely enough to resolve the grading.
-    let samples = ((len / (SURFACE_OVERSAMPLE * domain.finest())).ceil() as usize * 4).clamp(16, 4096);
+    let samples =
+        ((len / (SURFACE_OVERSAMPLE * domain.finest())).ceil() as usize * 4).clamp(16, 4096);
     let dl = len / samples as f64;
     let mut cum = vec![0.0f64; samples + 1];
     for i in 0..samples {
@@ -141,7 +140,11 @@ fn patch_boundary_edges(plc: &TaggedPlc, patch: &Patch) -> Vec<(usize, usize)> {
             *count.entry(sorted2(c[e], c[(e + 1) % 3])).or_insert(0) += 1;
         }
     }
-    count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect()
+    count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect()
 }
 
 /// True if the point `p` (a valid `Point3`, assumed on the patch plane) lies on
@@ -227,7 +230,11 @@ fn group_boundary_edges(plc: &TaggedPlc, members: &[usize]) -> Vec<(usize, usize
             *count.entry(sorted2(c[e], c[(e + 1) % 3])).or_insert(0) += 1;
         }
     }
-    let mut out: Vec<(usize, usize)> = count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect();
+    let mut out: Vec<(usize, usize)> = count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect();
     out.sort_unstable();
     out
 }
@@ -279,8 +286,10 @@ pub(crate) fn build_sizing_domain(
             let n = ((dist(w[0], w[1]) / h).ceil() as usize).max(1);
             for k in 0..n {
                 let t = k as f64 / n as f64;
-                pa.size_points
-                    .push((std::array::from_fn(|c| w[0][c] + t * (w[1][c] - w[0][c])), h));
+                pa.size_points.push((
+                    std::array::from_fn(|c| w[0][c] + t * (w[1][c] - w[0][c])),
+                    h,
+                ));
             }
         }
         if let Some(&last) = e.chain.last() {
@@ -320,7 +329,12 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let sid = plc.surface_refs[i].0;
         if is_curved(sid) {
             let r = plc.region_tags[i];
-            let key = (sid, r[0].0.min(r[1].0), r[0].0.max(r[1].0), plc.face_tags[i].0);
+            let key = (
+                sid,
+                r[0].0.min(r[1].0),
+                r[0].0.max(r[1].0),
+                plc.face_tags[i].0,
+            );
             groups.entry(key).or_default().push(i);
         }
     }
@@ -334,9 +348,14 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         .filter(|(_, p)| !is_curved(p.surface))
         .map(|(pi, _)| pi)
         .collect();
-    let pbe: Vec<Vec<(usize, usize)>> = planar.iter().map(|&pi| patch_boundary_edges(plc, &patches[pi])).collect();
-    let gbe: Vec<Vec<(usize, usize)>> =
-        group_list.iter().map(|(_, m)| group_boundary_edges(plc, m)).collect();
+    let pbe: Vec<Vec<(usize, usize)>> = planar
+        .iter()
+        .map(|&pi| patch_boundary_edges(plc, &patches[pi]))
+        .collect();
+    let gbe: Vec<Vec<(usize, usize)>> = group_list
+        .iter()
+        .map(|(_, m)| group_boundary_edges(plc, m))
+        .collect();
 
     // Global surface points: PLC corners, then graded points on every boundary
     // edge (shared across tiles via the cache), then per-tile interior points.
@@ -409,7 +428,11 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let mut gidx: Vec<usize> = Vec::new();
         let mut g2l: DMap<usize, usize> = DMap::default();
         let mut seen: DSet<usize> = DSet::default();
-        let push_pt = |g: usize, uv: [f64; 2], loc2: &mut Vec<[f64; 2]>, gidx: &mut Vec<usize>, g2l: &mut DMap<usize, usize>| {
+        let push_pt = |g: usize,
+                       uv: [f64; 2],
+                       loc2: &mut Vec<[f64; 2]>,
+                       gidx: &mut Vec<usize>,
+                       g2l: &mut DMap<usize, usize>| {
             let l = loc2.len();
             loc2.push(uv);
             gidx.push(g);
@@ -418,12 +441,24 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         for &(a, b) in &pbe[li] {
             for cv in [a, b] {
                 if seen.insert(cv) {
-                    push_pt(cv, project2(points[cv], drop), &mut loc2, &mut gidx, &mut g2l);
+                    push_pt(
+                        cv,
+                        project2(points[cv], drop),
+                        &mut loc2,
+                        &mut gidx,
+                        &mut g2l,
+                    );
                 }
             }
             for &gi in &edge_pts[&sorted2(a, b)] {
                 if seen.insert(gi) {
-                    push_pt(gi, project2(points[gi], drop), &mut loc2, &mut gidx, &mut g2l);
+                    push_pt(
+                        gi,
+                        project2(points[gi], drop),
+                        &mut loc2,
+                        &mut gidx,
+                        &mut g2l,
+                    );
                 }
             }
         }
@@ -448,7 +483,11 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
             |uv: [f64; 2]| point_in_patch(plc, patch, &Point3::Explicit(lift3(uv, drop, p0, n)));
         let step = SURFACE_OVERSAMPLE * domain.finest();
         let target = |uv: [f64; 2]| {
-            SURFACE_OVERSAMPLE * domain.h_at(lift3(uv, drop, p0, n)).min(params.surf_cap()).max(params.min_h_surf)
+            SURFACE_OVERSAMPLE
+                * domain
+                    .h_at(lift3(uv, drop, p0, n))
+                    .min(params.surf_cap())
+                    .max(params.min_h_surf)
         };
         // Pure Ruppert from the boundary when refining (it grades to the field
         // itself); otherwise the Lloyd scatter. Mixing Lloyd points with refinement
@@ -458,8 +497,16 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // -> size-only refinement on a protected, edge-cleared boundary; >0
         // (surface product) -> full Ruppert. The boundary stays first in `all2`.
         let (all2, tris) = crate::surf2d::mesh_constrained(
-            loc2[..nb].to_vec(), bsegs, target, inside2, step,
-            params.surf_min_angle, patch_budget[li], SURF_LLOYD_ITERS, 60, |_, _| {},
+            loc2[..nb].to_vec(),
+            bsegs,
+            target,
+            inside2,
+            step,
+            params.surf_min_angle,
+            patch_budget[li],
+            SURF_LLOYD_ITERS,
+            60,
+            |_, _| {},
         );
         for &uv in &all2[nb..] {
             points.push(lift3(uv, drop, p0, n));
@@ -505,11 +552,19 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         // Chart frame from the group's (on-surface) vertices.
         let mut gverts: Vec<usize> = members
             .iter()
-            .flat_map(|&fi| plc.triangles[fi].iter().map(|&v| v as usize).collect::<Vec<_>>())
+            .flat_map(|&fi| {
+                plc.triangles[fi]
+                    .iter()
+                    .map(|&v| v as usize)
+                    .collect::<Vec<_>>()
+            })
             .collect();
         gverts.sort_unstable();
         gverts.dedup();
-        let chart = match build_chart(&kind, &gverts.iter().map(|&v| points[v]).collect::<Vec<_>>()) {
+        let chart = match build_chart(
+            &kind,
+            &gverts.iter().map(|&v| points[v]).collect::<Vec<_>>(),
+        ) {
             Some(c) => c,
             None => {
                 emit_input(&mut faces);
@@ -578,9 +633,23 @@ pub fn surface_mesh(plc: &TaggedPlc, params: &MeshParams) -> SurfaceMesh {
         let target = |uv: [f64; 2]| {
             let xyz = chart.to_xyz(uv);
             let hc = chart.curvature_radius(uv) * chord;
-            SURFACE_OVERSAMPLE * domain.h_at(xyz).min(hc).min(params.surf_cap()).max(params.min_h_surf)
+            SURFACE_OVERSAMPLE
+                * domain
+                    .h_at(xyz)
+                    .min(hc)
+                    .min(params.surf_cap())
+                    .max(params.min_h_surf)
         };
-        for uv in cvt_fill(&loc2[..nb], lo2, hi2, step, target, SURF_LLOYD_ITERS, inside2, params.density_weighted) {
+        for uv in cvt_fill(
+            &loc2[..nb],
+            lo2,
+            hi2,
+            step,
+            target,
+            SURF_LLOYD_ITERS,
+            inside2,
+            params.density_weighted,
+        ) {
             points.push(chart.to_xyz(uv));
             loc2.push(uv);
             gidx.push(points.len() - 1);
@@ -627,8 +696,18 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
         let plc = scene.assemble();
-        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.8, ..Default::default() });
-        assert!(sm.faces.len() > 12, "box surface should be tessellated, got {}", sm.faces.len());
+        let sm = surface_mesh(
+            &plc,
+            &MeshParams {
+                maxh: 0.8,
+                ..Default::default()
+            },
+        );
+        assert!(
+            sm.faces.len() > 12,
+            "box surface should be tessellated, got {}",
+            sm.faces.len()
+        );
         let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
         for f in &sm.faces {
             for e in 0..3 {
@@ -636,7 +715,10 @@ mod tests {
                 *edges.entry((a.min(b), a.max(b))).or_default() += 1;
             }
         }
-        assert!(edges.values().all(|&c| c == 2), "closed manifold: every edge in exactly 2 faces");
+        assert!(
+            edges.values().all(|&c| c == 2),
+            "closed manifold: every edge in exactly 2 faces"
+        );
     }
 
     #[test]
@@ -650,7 +732,13 @@ mod tests {
         scene.add_solid(icosphere([1.2, 0.0, 0.0], 1.0, 2));
         let plc = scene.assemble();
         let n_plc = plc.vertices.len();
-        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.5, ..Default::default() });
+        let sm = surface_mesh(
+            &plc,
+            &MeshParams {
+                maxh: 0.5,
+                ..Default::default()
+            },
+        );
 
         // Curved Lloyd added interior points; those the chart placed lie EXACTLY
         // on the analytic sphere. Boundary points sit on the chord-approximated
@@ -677,19 +765,33 @@ mod tests {
             }
         }
         assert!(curved_faces > 0, "expected curved faces");
-        assert!(exact_on > 0, "curved Lloyd should place interior points exactly on the sphere");
-        assert!(max_dev < 0.05, "no vertex grossly off the sphere, max_dev {max_dev}");
+        assert!(
+            exact_on > 0,
+            "curved Lloyd should place interior points exactly on the sphere"
+        );
+        assert!(
+            max_dev < 0.05,
+            "no vertex grossly off the sphere, max_dev {max_dev}"
+        );
 
         // Per-region closure: the boundary of each region is a closed 2-manifold
         // (every edge shared by exactly two of that region's faces). Edges on the
         // triple curve where three regions meet are manifold within each region
         // but carry three faces overall, which a global 2-manifold test rejects.
-        let mut regions: Vec<u32> = sm.faces.iter().flat_map(|f| [f.regions[0].0, f.regions[1].0]).collect();
+        let mut regions: Vec<u32> = sm
+            .faces
+            .iter()
+            .flat_map(|f| [f.regions[0].0, f.regions[1].0])
+            .collect();
         regions.sort_unstable();
         regions.dedup();
         for r in regions.into_iter().filter(|&r| r != 0) {
             let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
-            for f in sm.faces.iter().filter(|f| f.regions[0].0 == r || f.regions[1].0 == r) {
+            for f in sm
+                .faces
+                .iter()
+                .filter(|f| f.regions[0].0 == r || f.regions[1].0 == r)
+            {
                 for e in 0..3 {
                     let (a, b) = (f.tri[e], f.tri[(e + 1) % 3]);
                     *edges.entry((a.min(b), a.max(b))).or_default() += 1;
@@ -726,13 +828,22 @@ mod tests {
         scene.add_solid(solid);
         let plc = scene.assemble();
         let n_plc = plc.vertices.len();
-        let sm = surface_mesh(&plc, &MeshParams { maxh: 0.4, ..Default::default() });
+        let sm = surface_mesh(
+            &plc,
+            &MeshParams {
+                maxh: 0.4,
+                ..Default::default()
+            },
+        );
 
         let mut curved = 0usize;
         let mut exact_on = 0usize;
         let mut max_dev = 0.0_f64;
         for f in &sm.faces {
-            if matches!(sm.surfaces[f.surface as usize], SurfaceKind::Extruded { .. }) {
+            if matches!(
+                sm.surfaces[f.surface as usize],
+                SurfaceKind::Extruded { .. }
+            ) {
                 curved += 1;
                 for &vtx in &f.tri {
                     let p = sm.points[vtx];
@@ -746,8 +857,14 @@ mod tests {
             }
         }
         assert!(curved > 0, "expected extruded curved faces");
-        assert!(exact_on > 0, "curved Lloyd should place interior points on the cylinder");
-        assert!(max_dev < 0.02, "no curved vertex grossly off radius, max_dev {max_dev}");
+        assert!(
+            exact_on > 0,
+            "curved Lloyd should place interior points on the cylinder"
+        );
+        assert!(
+            max_dev < 0.02,
+            "no curved vertex grossly off radius, max_dev {max_dev}"
+        );
 
         // Per-region closure (single solid: region 1 boundary closed).
         let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
@@ -760,5 +877,4 @@ mod tests {
         let bad = edges.values().filter(|&&c| c != 2).count();
         assert_eq!(bad, 0, "closed manifold, {bad} non-manifold edges");
     }
-
 }

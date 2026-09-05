@@ -65,6 +65,10 @@ impl TetSource for Tets<'_> {
 impl<'a> Tris<'a> {
     /// Convenience constructor when there are no tags.
     pub fn untagged(tris: &'a [[u32; 3]], n_verts: usize) -> Self {
-        Tris { tris, tags: &[], n_verts }
+        Tris {
+            tris,
+            tags: &[],
+            n_verts,
+        }
     }
 }

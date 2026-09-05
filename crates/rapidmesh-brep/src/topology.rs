@@ -6,7 +6,7 @@
 //! incidence (region -> faces -> edges) so a scope can walk down the hierarchy.
 
 use crate::{Brep, Curve};
-use rapidmesh_geom::vec3::{V3, sub, cross, len as norm};
+use rapidmesh_geom::vec3::{cross, len as norm, sub, V3};
 use rapidmesh_geom::TaggedPlc;
 
 /// Analytic curve kind of an edge, as a small code (for the Python selector to
@@ -205,12 +205,19 @@ impl Topology {
             .filter(|&eid| {
                 let e = &self.edges[eid as usize];
                 if region.is_some()
-                    && !e.faces.iter().any(|&fid| Self::region_ok(&self.faces[fid as usize], region))
+                    && !e
+                        .faces
+                        .iter()
+                        .any(|&fid| Self::region_ok(&self.faces[fid as usize], region))
                 {
                     return false;
                 }
                 if let Some(ff) = face {
-                    if !e.faces.iter().any(|&fid| Self::face_ok(fid, &self.faces[fid as usize], ff)) {
+                    if !e
+                        .faces
+                        .iter()
+                        .any(|&fid| Self::face_ok(fid, &self.faces[fid as usize], ff))
+                    {
                         return false;
                     }
                 }
@@ -237,7 +244,11 @@ pub fn extract_topology(plc: &TaggedPlc, brep: &Brep) -> Topology {
             let n = cross(sub(b, a), sub(c, a));
             let ar = 0.5 * norm(n);
             area += ar;
-            let g = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
+            let g = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
             for k in 0..3 {
                 cen[k] += ar * g[k];
                 nrm[k] += 0.5 * n[k]; // area-weighted (|n| = 2*area)
@@ -287,7 +298,11 @@ pub fn extract_topology(plc: &TaggedPlc, brep: &Brep) -> Topology {
             let seg = norm(sub(w[1], w[0]));
             if acc + seg >= 0.5 * length && seg > 0.0 {
                 let t = (0.5 * length - acc) / seg;
-                mid = [w[0][0] + t * (w[1][0] - w[0][0]), w[0][1] + t * (w[1][1] - w[0][1]), w[0][2] + t * (w[1][2] - w[0][2])];
+                mid = [
+                    w[0][0] + t * (w[1][0] - w[0][0]),
+                    w[0][1] + t * (w[1][1] - w[0][1]),
+                    w[0][2] + t * (w[1][2] - w[0][2]),
+                ];
                 break;
             }
             acc += seg;
@@ -303,7 +318,14 @@ pub fn extract_topology(plc: &TaggedPlc, brep: &Brep) -> Topology {
         let mut faces_of: Vec<u32> = e.coedges.iter().map(|&c| brep.coedge(c).face.0).collect();
         faces_of.sort_unstable();
         faces_of.dedup();
-        edges.push(EdgeTopo { p0, p1, midpoint: mid, length, kind, faces: faces_of });
+        edges.push(EdgeTopo {
+            p0,
+            p1,
+            midpoint: mid,
+            length,
+            kind,
+            faces: faces_of,
+        });
     }
 
     // Regions: distinct meshed tags (> 0).
@@ -315,7 +337,11 @@ pub fn extract_topology(plc: &TaggedPlc, brep: &Brep) -> Topology {
     regions.sort_unstable();
     regions.dedup();
 
-    Topology { regions, faces, edges }
+    Topology {
+        regions,
+        faces,
+        edges,
+    }
 }
 
 #[cfg(test)]
@@ -337,14 +363,25 @@ mod tests {
         // Every face is a quad: four boundary edges.
         for (i, f) in topo.faces.iter().enumerate() {
             assert_eq!(f.edges.len(), 4, "face {i} should have 4 edges");
-            assert!([6.0, 8.0, 12.0].iter().any(|&a| (f.area - a).abs() < 1e-9), "box face area {} unexpected", f.area);
-            assert!(f.regions.contains(&1) && f.regions.contains(&0), "outer wall separates region 1 from void 0");
+            assert!(
+                [6.0, 8.0, 12.0].iter().any(|&a| (f.area - a).abs() < 1e-9),
+                "box face area {} unexpected",
+                f.area
+            );
+            assert!(
+                f.regions.contains(&1) && f.regions.contains(&0),
+                "outer wall separates region 1 from void 0"
+            );
         }
         // Every edge is straight (a box) and shared by exactly two faces.
         for (i, e) in topo.edges.iter().enumerate() {
             assert_eq!(e.kind, EdgeKind::Line, "box edge {i} is straight");
             assert_eq!(e.faces.len(), 2, "box edge {i} shared by two faces");
-            assert!([2.0, 3.0, 4.0].iter().any(|&l| (e.length - l).abs() < 1e-9), "box edge length {} unexpected", e.length);
+            assert!(
+                [2.0, 3.0, 4.0].iter().any(|&l| (e.length - l).abs() < 1e-9),
+                "box edge length {} unexpected",
+                e.length
+            );
         }
         // region 1 is bounded by all six faces.
         assert_eq!(topo.region_faces(1).len(), 6);

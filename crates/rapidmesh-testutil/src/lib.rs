@@ -174,16 +174,26 @@ pub fn check_invariants(facet: &Tri, ft: &FacetTriangulation, constraints: &[Con
             &ft.vertices[t[2]],
             ft.axis,
         );
-        assert_eq!(s, Some(ft.orientation), "degenerate or flipped sub-triangle");
+        assert_eq!(
+            s,
+            Some(ft.orientation),
+            "degenerate or flipped sub-triangle"
+        );
     }
 
     // 2. Exact area conservation.
     let verts_rat: Vec<Rv> = ft.vertices.iter().map(affine).collect();
     let total: BigRational = ft.triangles.iter().fold(BigRational::zero(), |acc, t| {
-        acc + area2([&verts_rat[t[0]], &verts_rat[t[1]], &verts_rat[t[2]]], ft.axis)
+        acc + area2(
+            [&verts_rat[t[0]], &verts_rat[t[1]], &verts_rat[t[2]]],
+            ft.axis,
+        )
     });
     let facet_area = area2([&verts_rat[0], &verts_rat[1], &verts_rat[2]], ft.axis);
-    assert_eq!(total, facet_area, "sub-triangle areas must sum to facet area");
+    assert_eq!(
+        total, facet_area,
+        "sub-triangle areas must sum to facet area"
+    );
 
     // 3. Euler: T = 2 * V_interior + V_boundary - 2.
     let corner = [facet.point(0), facet.point(1), facet.point(2)];
@@ -250,8 +260,7 @@ pub fn volume6(vertices: &[Point3], triangles: &[[usize; 3]]) -> BigRational {
     let verts_rat: Vec<Rv> = vertices.iter().map(affine).collect();
     triangles.iter().fold(BigRational::zero(), |acc, t| {
         let (a, b, c) = (&verts_rat[t[0]], &verts_rat[t[1]], &verts_rat[t[2]]);
-        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1])
-            - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
+        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1]) - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
             + &a[2] * (&b[0] * &c[1] - &b[1] * &c[0]);
         acc + det
     })
@@ -308,4 +317,3 @@ pub fn box_tris(min: [f64; 3], max: [f64; 3]) -> Vec<Tri> {
     }
     tris
 }
-

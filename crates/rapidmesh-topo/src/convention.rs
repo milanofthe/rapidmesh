@@ -10,14 +10,12 @@ pub const NONE: u32 = u32::MAX;
 pub const TRI_EDGE_LOCAL: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
 
 /// Local edges of a tetrahedron, as local-vertex index pairs.
-pub const TET_EDGE_LOCAL: [[usize; 2]; 6] =
-    [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+pub const TET_EDGE_LOCAL: [[usize; 2]; 6] = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
 
 /// Local faces of a tetrahedron, as local-vertex index triples. Face `i`
 /// excludes local vertex `i`, ordered so the triangle normal points **outward**
 /// of a positively oriented tet (verified by [`tests::tet_faces_point_outward`]).
-pub const TET_FACE_LOCAL: [[usize; 3]; 4] =
-    [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
+pub const TET_FACE_LOCAL: [[usize; 3]; 4] = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
 
 /// Canonical (min, max) form of an edge plus the sign of the supplied direction:
 /// `+1` if `(a, b)` already runs min→max, `-1` if it is reversed.
@@ -73,7 +71,12 @@ mod tests {
     #[test]
     fn tet_faces_point_outward() {
         // Reference positively oriented tet (orient3d > 0).
-        let v = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let v = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let centroid = [0.25, 0.25, 0.25];
         for (i, f) in TET_FACE_LOCAL.iter().enumerate() {
             let (a, b, c) = (v[f[0]], v[f[1]], v[f[2]]);
@@ -86,8 +89,16 @@ mod tests {
             ];
             // Vector from the tet centroid to the face centroid must agree with
             // the normal -> the normal points away from the body (outward).
-            let fc = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
-            let out = [fc[0] - centroid[0], fc[1] - centroid[1], fc[2] - centroid[2]];
+            let fc = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let out = [
+                fc[0] - centroid[0],
+                fc[1] - centroid[1],
+                fc[2] - centroid[2],
+            ];
             let dot = n[0] * out[0] + n[1] * out[1] + n[2] * out[2];
             assert!(dot > 0.0, "face {i} normal is not outward (dot={dot})");
         }

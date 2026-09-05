@@ -217,9 +217,8 @@ pub fn triangulate_seeded(
     // never flip away another: constraints are non-crossing after pre-split).
     for &(u, v) in &chain_edges {
         assert!(
-            tris.iter().any(|&t| {
-                has_directed_edge(t, u, v) || has_directed_edge(t, v, u)
-            }),
+            tris.iter()
+                .any(|&t| { has_directed_edge(t, u, v) || has_directed_edge(t, v, u) }),
             "constraint edge {u}-{v} missing after recovery"
         );
     }
@@ -302,7 +301,12 @@ fn insert_vertex(
             _ => unreachable!("vertex {k} coincides with a corner; dedup failed"),
         }
     }
-    let dump = |i: usize| pool[i].approx().map(|p| format!("{p:?}")).unwrap_or_default();
+    let dump = |i: usize| {
+        pool[i]
+            .approx()
+            .map(|p| format!("{p:?}"))
+            .unwrap_or_default()
+    };
     panic!(
         "vertex {k} lies outside the facet\n  vertex: {} axis {axis:?} orientation {orientation:?}\n  \
          seed corners: {} | {} | {} ({} tris)",

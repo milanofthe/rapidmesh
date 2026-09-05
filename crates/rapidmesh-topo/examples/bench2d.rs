@@ -47,9 +47,15 @@ fn main() {
     ];
     let groups = [coil, ring];
 
-    println!("{:>8} {:>9} {:>9} {:>10} {:>9}", "budget", "tris", "points", "min_angle", "secs");
+    println!(
+        "{:>8} {:>9} {:>9} {:>10} {:>9}",
+        "budget", "tris", "points", "min_angle", "secs"
+    );
     for &budget in &[5_000usize, 20_000, 60_000] {
-        let opts = Mesh2DOptions { target_count: budget, ..Default::default() };
+        let opts = Mesh2DOptions {
+            target_count: budget,
+            ..Default::default()
+        };
         let t0 = std::time::Instant::now();
         let ms = mesh_layers(&groups, |_p| 0.5, &opts);
         let dt = t0.elapsed().as_secs_f64();

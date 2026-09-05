@@ -47,7 +47,14 @@ const NONE2: usize = usize::MAX;
 /// Walks from triangle `start` to the (CCW) triangle containing `p`, stepping
 /// across any edge that `p` lies strictly to the right of. Falls back to a
 /// linear scan if the walk does not converge (degenerate connectivity).
-fn locate2(start: usize, p: P2, tris: &[[usize; 3]], nbr: &[[usize; 3]], alive: &[bool], pts: &[P2]) -> usize {
+fn locate2(
+    start: usize,
+    p: P2,
+    tris: &[[usize; 3]],
+    nbr: &[[usize; 3]],
+    alive: &[bool],
+    pts: &[P2],
+) -> usize {
     let mut t = start;
     for _ in 0..tris.len() * 2 + 16 {
         let tv = tris[t];
@@ -228,7 +235,14 @@ impl Cdt {
             }
             last = last_new;
         }
-        Cdt { pts, n, tris, nbr, alive, vert_hint }
+        Cdt {
+            pts,
+            n,
+            tris,
+            nbr,
+            alive,
+            vert_hint,
+        }
     }
 
     /// All alive triangles containing `v`, walked through the neighbour
@@ -248,7 +262,10 @@ impl Cdt {
         while head < out.len() {
             let t = out[head];
             head += 1;
-            let i = self.tris[t].iter().position(|&w| w == v).expect("star triangle holds v");
+            let i = self.tris[t]
+                .iter()
+                .position(|&w| w == v)
+                .expect("star triangle holds v");
             // The two edges incident to v: slot i = (v, next), slot i+2 = (prev, v).
             for e in [i, (i + 2) % 3] {
                 let nb = self.nbr[t][e];
@@ -351,7 +368,9 @@ impl Cdt {
         let p = self.tris[t][e];
         let q = self.tris[t][(e + 1) % 3];
         let x = self.tris[t][(e + 2) % 3];
-        let f = self.edge_slot(nn, q, p).expect("shared edge is reversed in the neighbour");
+        let f = self
+            .edge_slot(nn, q, p)
+            .expect("shared edge is reversed in the neighbour");
         let y = self.tris[nn][(f + 2) % 3];
         // Outer neighbours of the quad (read before overwriting).
         let n_qx = self.nbr[t][(e + 1) % 3]; // across (q,x)
@@ -404,8 +423,12 @@ impl Cdt {
         let s2 = orient(pa, pb, pd);
         let s3 = orient(pc, pd, pa);
         let s4 = orient(pc, pd, pb);
-        s1 != Sign::Zero && s2 != Sign::Zero && s1 != s2
-            && s3 != Sign::Zero && s4 != Sign::Zero && s3 != s4
+        s1 != Sign::Zero
+            && s2 != Sign::Zero
+            && s1 != s2
+            && s3 != Sign::Zero
+            && s4 != Sign::Zero
+            && s3 != s4
     }
 
     /// True iff the (undirected) edge `(a,b)` is already an edge of some alive
@@ -430,7 +453,10 @@ impl Cdt {
         }
         let mut start = None;
         for &t in &astar {
-            let k = self.tris[t].iter().position(|&w| w == a).expect("star triangle holds a");
+            let k = self.tris[t]
+                .iter()
+                .position(|&w| w == a)
+                .expect("star triangle holds a");
             let (c, d) = (self.tris[t][(k + 1) % 3], self.tris[t][(k + 2) % 3]);
             if self.proper_cross(a, b, c, d) {
                 start = Some((t, (k + 1) % 3)); // edge (c,d) = slot k+1
@@ -456,8 +482,8 @@ impl Cdt {
             let q = self.tris[t][(e + 1) % 3];
             let f = self.edge_slot(nn, q, p)?;
             let r = tv[(f + 2) % 3]; // apex of nn
-            // Edge (p, r) is slot (f+2)%3 ? In nn=(q,p,r) with entry slot f=(q,p):
-            // slot f+1 = (p,r), slot f+2 = (r,q).
+                                     // Edge (p, r) is slot (f+2)%3 ? In nn=(q,p,r) with entry slot f=(q,p):
+                                     // slot f+1 = (p,r), slot f+2 = (r,q).
             if self.proper_cross(a, b, p, r) {
                 e = (f + 1) % 3;
             } else if self.proper_cross(a, b, r, q) {
@@ -535,19 +561,16 @@ impl Cdt {
     fn on_segment_vertex(&self, a: usize, b: usize) -> Option<usize> {
         let (pa, pb) = (self.pts[a], self.pts[b]);
         (0..self.n).find(|&v| {
-            v != a
-                && v != b
-                && orient(pa, pb, self.pts[v]) == Sign::Zero
-                && {
-                    // strictly between a and b
-                    let (px, py) = (self.pts[v][0], self.pts[v][1]);
-                    let t = if (pb[0] - pa[0]).abs() > (pb[1] - pa[1]).abs() {
-                        (px - pa[0]) / (pb[0] - pa[0])
-                    } else {
-                        (py - pa[1]) / (pb[1] - pa[1])
-                    };
-                    t > 0.0 && t < 1.0
-                }
+            v != a && v != b && orient(pa, pb, self.pts[v]) == Sign::Zero && {
+                // strictly between a and b
+                let (px, py) = (self.pts[v][0], self.pts[v][1]);
+                let t = if (pb[0] - pa[0]).abs() > (pb[1] - pa[1]).abs() {
+                    (px - pa[0]) / (pb[0] - pa[0])
+                } else {
+                    (py - pa[1]) / (pb[1] - pa[1])
+                };
+                t > 0.0 && t < 1.0
+            }
         })
     }
 
@@ -632,7 +655,10 @@ fn tri_angles(a: P2, b: P2, c: P2) -> [f64; 3] {
     let ang = |u: P2, v: P2, w: P2| {
         let (e1, e2) = ([v[0] - u[0], v[1] - u[1]], [w[0] - u[0], w[1] - u[1]]);
         let n = (e1[0] * e1[0] + e1[1] * e1[1]).sqrt() * (e2[0] * e2[0] + e2[1] * e2[1]).sqrt();
-        ((e1[0] * e2[0] + e1[1] * e2[1]) / (n + 1e-30)).clamp(-1.0, 1.0).acos().to_degrees()
+        ((e1[0] * e2[0] + e1[1] * e2[1]) / (n + 1e-30))
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
     };
     [ang(a, b, c), ang(b, c, a), ang(c, a, b)]
 }
@@ -643,7 +669,11 @@ fn circumcenter(a: P2, b: P2, c: P2) -> Option<P2> {
     if d.abs() < 1e-30 {
         return None;
     }
-    let (a2, b2, c2) = (a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1], c[0] * c[0] + c[1] * c[1]);
+    let (a2, b2, c2) = (
+        a[0] * a[0] + a[1] * a[1],
+        b[0] * b[0] + b[1] * b[1],
+        c[0] * c[0] + c[1] * c[1],
+    );
     Some([
         (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
         (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
@@ -729,9 +759,10 @@ pub fn refine_quality_with(
             }
             let (m, h2) = (mid(boundary, u, v), diam2(boundary, u, v));
             if let Some(aps) = apex.get(&(u.min(v), u.max(v))) {
-                if aps.iter().any(|&k| {
-                    k != usize::MAX && k != u && k != v && dist2(all[k], m) < h2 - 1e-12
-                }) {
+                if aps
+                    .iter()
+                    .any(|&k| k != usize::MAX && k != u && k != v && dist2(all[k], m) < h2 - 1e-12)
+                {
                     split.push(si);
                 }
             }
@@ -758,7 +789,12 @@ pub fn refine_quality_with(
                     / segments.len().max(1) as f64;
                 mean.max(1e-12)
             };
-            let skey = |p: P2| ((p[0] / seg_cell).floor() as i64, (p[1] / seg_cell).floor() as i64);
+            let skey = |p: P2| {
+                (
+                    (p[0] / seg_cell).floor() as i64,
+                    (p[1] / seg_cell).floor() as i64,
+                )
+            };
             let mut seg_grid: rustc_hash::FxHashMap<(i64, i64), Vec<u32>> =
                 rustc_hash::FxHashMap::default();
             for (si, &(u, v)) in segments.iter().enumerate() {
@@ -911,7 +947,15 @@ pub fn refine_quality_with(
     // relax the whole mesh (interior freely, the outline sliding) to convergence for
     // near-equilateral, gmsh-grade shape.
     let t_sm = std::time::Instant::now();
-    smooth_mesh(boundary, segments, interior, &inside, &target, min_angle_deg, 50);
+    smooth_mesh(
+        boundary,
+        segments,
+        interior,
+        &inside,
+        &target,
+        min_angle_deg,
+        50,
+    );
     if trace {
         eprintln!("2D smooth: {:.3}s", t_sm.elapsed().as_secs_f64());
     }
@@ -931,8 +975,16 @@ pub fn refine_quality(
     target_count: usize,
 ) {
     refine_quality_with(
-        boundary, segments, refinable, interior, target, inside, min_angle_deg,
-        target_count, 60, |_, _| {},
+        boundary,
+        segments,
+        refinable,
+        interior,
+        target,
+        inside,
+        min_angle_deg,
+        target_count,
+        60,
+        |_, _| {},
     );
 }
 
@@ -961,7 +1013,8 @@ fn smooth_mesh(
     if nb == 0 {
         return;
     }
-    let sarea2 = |a: P2, b: P2, c: P2| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let sarea2 =
+        |a: P2, b: P2, c: P2| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 
     // Contour adjacency of each boundary vertex (its two neighbours along the resampled
     // outline) -> a slide tangent if the outline is locally straight there, else pinned.
@@ -1085,9 +1138,8 @@ fn smooth_mesh(
                 cdt.star(i, &mut star)
                     && star.iter().all(|&ti| {
                         let t = cdt.tris[ti];
-                        let q: [P2; 3] = std::array::from_fn(|j| {
-                            if t[j] == i { cand } else { cdt.point(t[j]) }
-                        });
+                        let q: [P2; 3] =
+                            std::array::from_fn(|j| if t[j] == i { cand } else { cdt.point(t[j]) });
                         orient(q[0], q[1], q[2]) == Sign::Positive
                     })
             };
@@ -1176,9 +1228,10 @@ pub fn cvt_fill(
         for t in &tris {
             let p = [all[t[0]], all[t[1]], all[t[2]]];
             // Float area as a relaxation WEIGHT (not a decision).
-            let area = 0.5 * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
-                - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]))
-                .abs();
+            let area = 0.5
+                * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                    - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]))
+                    .abs();
             let c = [
                 (p[0][0] + p[1][0] + p[2][0]) / 3.0,
                 (p[0][1] + p[1][1] + p[2][1]) / 3.0,
@@ -1277,7 +1330,8 @@ struct PipRows {
 
 impl PipRows {
     fn build(loops: &[Vec<P2>]) -> PipRows {
-        let (mut ylo, mut yhi, mut len_sum, mut n_edges) = (f64::INFINITY, f64::NEG_INFINITY, 0.0, 0usize);
+        let (mut ylo, mut yhi, mut len_sum, mut n_edges) =
+            (f64::INFINITY, f64::NEG_INFINITY, 0.0, 0usize);
         for lp in loops {
             let n = lp.len();
             if n < 3 {
@@ -1292,14 +1346,21 @@ impl PipRows {
             }
         }
         if n_edges == 0 || !(yhi > ylo) {
-            return PipRows { y0: 0.0, cell: 1.0, rows: Vec::new() };
+            return PipRows {
+                y0: 0.0,
+                cell: 1.0,
+                rows: Vec::new(),
+            };
         }
         // Row height ~ the mean edge length: short (h-sized) boundary edges land
         // in one or two rows; the row count stays bounded for huge canvases.
-        let cell = (len_sum / n_edges as f64).max((yhi - ylo) / 4096.0).max(1e-12);
+        let cell = (len_sum / n_edges as f64)
+            .max((yhi - ylo) / 4096.0)
+            .max(1e-12);
         let nrows = (((yhi - ylo) / cell).ceil() as usize + 1).max(1);
         let mut rows: Vec<Vec<(P2, P2)>> = vec![Vec::new(); nrows];
-        let row_of = |y: f64| (((y - ylo) / cell).floor() as i64).clamp(0, nrows as i64 - 1) as usize;
+        let row_of =
+            |y: f64| (((y - ylo) / cell).floor() as i64).clamp(0, nrows as i64 - 1) as usize;
         for lp in loops {
             let n = lp.len();
             if n < 3 {
@@ -1313,7 +1374,11 @@ impl PipRows {
                 }
             }
         }
-        PipRows { y0: ylo, cell, rows }
+        PipRows {
+            y0: ylo,
+            cell,
+            rows,
+        }
     }
 
     /// Even-odd membership of `p` (inside the outer loop, outside the holes).
@@ -1370,7 +1435,13 @@ pub struct PolyMeshParams {
 
 impl Default for PolyMeshParams {
     fn default() -> Self {
-        PolyMeshParams { step: 0.0, min_angle_deg: 28.0, target_count: 0, cvt_iters: 4, max_passes: 12 }
+        PolyMeshParams {
+            step: 0.0,
+            min_angle_deg: 28.0,
+            target_count: 0,
+            cvt_iters: 4,
+            max_passes: 12,
+        }
     }
 }
 
@@ -1410,8 +1481,16 @@ pub fn mesh_polygon(
     }
     let pip = PipRows::build(loops);
     mesh_constrained(
-        boundary, segments, target, |p| pip.inside(p),
-        params.step, params.min_angle_deg, params.target_count, params.cvt_iters, params.max_passes, on_pass,
+        boundary,
+        segments,
+        target,
+        |p| pip.inside(p),
+        params.step,
+        params.min_angle_deg,
+        params.target_count,
+        params.cvt_iters,
+        params.max_passes,
+        on_pass,
     )
 }
 
@@ -1466,7 +1545,12 @@ pub fn mesh_constrained(
                 / segments.len().max(1) as f64;
             mean.max(1e-12)
         };
-        let skey = |p: P2| ((p[0] / seg_cell).floor() as i64, (p[1] / seg_cell).floor() as i64);
+        let skey = |p: P2| {
+            (
+                (p[0] / seg_cell).floor() as i64,
+                (p[1] / seg_cell).floor() as i64,
+            )
+        };
         let mut seg_grid: rustc_hash::FxHashMap<(i64, i64), Vec<u32>> =
             rustc_hash::FxHashMap::default();
         for (si, &(u, v)) in segments.iter().enumerate() {
@@ -1502,8 +1586,16 @@ pub fn mesh_constrained(
     // interior but never re-splits a contour edge, so no boundary spikes.
     let mut refin = vec![false; segments.len()];
     refine_quality_with(
-        &mut boundary, &mut segments, &mut refin, &mut interior,
-        &target, &inside, min_angle_deg, target_count, max_passes, on_pass,
+        &mut boundary,
+        &mut segments,
+        &mut refin,
+        &mut interior,
+        &target,
+        &inside,
+        min_angle_deg,
+        target_count,
+        max_passes,
+        on_pass,
     );
     let mut all = boundary;
     all.extend(interior);
@@ -1568,7 +1660,12 @@ mod tests {
         // convex hull (area 4); the constrained one must cover exactly the L
         // (area 3) and contain every boundary edge.
         let pts: Vec<P2> = vec![
-            [0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0],
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
         ];
         let loops = vec![vec![0, 1, 2, 3, 4, 5]];
         let segs = loops_to_segs(&loops);
@@ -1594,14 +1691,23 @@ mod tests {
         // region is the annulus, area 16 - 4 = 12, and no triangle centroid may
         // fall in the hole.
         let pts: Vec<P2> = vec![
-            [0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], // outer
-            [1.0, 1.0], [1.0, 3.0], [3.0, 3.0], [3.0, 1.0], // hole (CW)
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 4.0],
+            [0.0, 4.0], // outer
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 1.0], // hole (CW)
         ];
         let loops = vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7]];
         let segs = loops_to_segs(&loops);
         let tris = triangulate_constrained(&pts, &segs, |p| pip(p, &loops, &pts));
         let area: f64 = tris.iter().map(|&t| tri_area(t, &pts)).sum();
-        assert!((area - 12.0).abs() < 1e-9, "annulus area should be 12, got {area}");
+        assert!(
+            (area - 12.0).abs() < 1e-9,
+            "annulus area should be 12, got {area}"
+        );
         for &t in &tris {
             let c = [
                 (pts[t[0]][0] + pts[t[1]][0] + pts[t[2]][0]) / 3.0,
@@ -1624,7 +1730,16 @@ mod tests {
             boundary.push([0.0, 1.0 - i as f64 / m as f64]);
         }
         let sq = |p: P2| p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 1.0;
-        let interior = cvt_fill(&boundary, [0.0, 0.0], [1.0, 1.0], 0.2, |_| 0.2, 12, sq, true);
+        let interior = cvt_fill(
+            &boundary,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            0.2,
+            |_| 0.2,
+            12,
+            sq,
+            true,
+        );
         assert!(!interior.is_empty());
         let mut all = boundary.clone();
         all.extend_from_slice(&interior);
@@ -1634,6 +1749,10 @@ mod tests {
                 min_sep2 = min_sep2.min(dist2(all[i], all[j]));
             }
         }
-        assert!(min_sep2.sqrt() >= 0.5 * 0.2, "points too close: {}", min_sep2.sqrt());
+        assert!(
+            min_sep2.sqrt() >= 0.5 * 0.2,
+            "points too close: {}",
+            min_sep2.sqrt()
+        );
     }
 }

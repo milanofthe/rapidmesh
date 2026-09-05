@@ -82,7 +82,11 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
             let w = sub(p, *center);
             Some(normalize(sub(w, scale(a, dot(w, a)))))
         }
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             let a = normalize(*axis);
             let w = sub(p, *apex);
             let rhat = normalize(sub(w, scale(a, dot(w, a))));
@@ -95,7 +99,12 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
                 rhat[2] * cos - a[2] * sin,
             ]))
         }
-        SurfaceKind::Torus { center, axis, major_radius, .. } => {
+        SurfaceKind::Torus {
+            center,
+            axis,
+            major_radius,
+            ..
+        } => {
             let a = normalize(*axis);
             let w = sub(p, *center);
             let rhat = normalize(sub(w, scale(a, dot(w, a))));
@@ -112,11 +121,15 @@ pub fn surface_normal(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 3]> {
 /// Principal curvatures `[κ_max, κ_min]` (1/length) of an analytic surface at a
 /// point. `None` for `Plane` (zero), `Torus`, and `Extruded` (not provided).
 pub fn surface_curvature(kind: &SurfaceKind, p: [f64; 3]) -> Option<[f64; 2]> {
-    use crate::math::{dot, normalize, norm, scale, sub};
+    use crate::math::{dot, norm, normalize, scale, sub};
     match kind {
         SurfaceKind::Sphere { radius, .. } => Some([1.0 / radius, 1.0 / radius]),
         SurfaceKind::Cylinder { radius, .. } => Some([1.0 / radius, 0.0]),
-        SurfaceKind::Cone { apex, axis, tan_half_angle } => {
+        SurfaceKind::Cone {
+            apex,
+            axis,
+            tan_half_angle,
+        } => {
             let a = normalize(*axis);
             let w = sub(p, *apex);
             let rp = norm(sub(w, scale(a, dot(w, a))));
@@ -167,7 +180,10 @@ mod tests {
 
     #[test]
     fn sphere_normal_and_curvature() {
-        let k = SurfaceKind::Sphere { center: [0.0, 0.0, 0.0], radius: 2.0 };
+        let k = SurfaceKind::Sphere {
+            center: [0.0, 0.0, 0.0],
+            radius: 2.0,
+        };
         let n = surface_normal(&k, [2.0, 0.0, 0.0]).unwrap();
         assert!((n[0] - 1.0).abs() < 1e-12 && n[1].abs() < 1e-12 && n[2].abs() < 1e-12);
         assert_eq!(surface_curvature(&k, [2.0, 0.0, 0.0]), Some([0.5, 0.5]));
@@ -175,7 +191,11 @@ mod tests {
 
     #[test]
     fn cylinder_normal_radial() {
-        let k = SurfaceKind::Cylinder { center: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], radius: 3.0 };
+        let k = SurfaceKind::Cylinder {
+            center: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            radius: 3.0,
+        };
         let n = surface_normal(&k, [0.0, 3.0, 5.0]).unwrap();
         assert!(n[0].abs() < 1e-12 && (n[1] - 1.0).abs() < 1e-12 && n[2].abs() < 1e-12);
     }

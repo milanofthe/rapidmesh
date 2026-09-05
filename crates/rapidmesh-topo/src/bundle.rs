@@ -46,7 +46,11 @@ pub struct Region2D {
 impl Region2D {
     /// A region with no holes.
     pub fn new(outer: Vec<[f64; 2]>, tag: i64) -> Self {
-        Region2D { outer, holes: Vec::new(), tag }
+        Region2D {
+            outer,
+            holes: Vec::new(),
+            tag,
+        }
     }
 }
 
@@ -80,7 +84,15 @@ pub struct Mesh2DOptions {
 
 impl Default for Mesh2DOptions {
     fn default() -> Self {
-        Mesh2DOptions { min_angle_deg: 28.0, cvt_iters: 4, max_passes: 12, target_count: 0, minh: 0.0, maxh: 0.0, grading: 0.0 }
+        Mesh2DOptions {
+            min_angle_deg: 28.0,
+            cvt_iters: 4,
+            max_passes: 12,
+            target_count: 0,
+            minh: 0.0,
+            maxh: 0.0,
+            grading: 0.0,
+        }
     }
 }
 
@@ -129,7 +141,14 @@ impl Mesh2D {
 
     /// Port helper: boundary edges whose both endpoints lie on `{axis = value}`
     /// (`axis` 0/1) with the other coordinate in `[lo, hi]`. Returns vertex pairs.
-    pub fn edges_on_line(&self, axis: usize, value: f64, lo: f64, hi: f64, tol: f64) -> Vec<[u32; 2]> {
+    pub fn edges_on_line(
+        &self,
+        axis: usize,
+        value: f64,
+        lo: f64,
+        hi: f64,
+        tol: f64,
+    ) -> Vec<[u32; 2]> {
         let other = if axis == 0 { 1 } else { 0 };
         let on = |vi: u32| {
             let p = self.points[vi as usize];
@@ -147,7 +166,11 @@ impl Mesh2D {
 /// THE 2D endpoint: mesh ONE layer's tagged polygons through the production 2D path
 /// (`surf2d`). A convenience over [`mesh_layers`] for the single-group case (the AMR
 /// remesh, the tests, every existing caller). `target` is the sizing field `h(x)`.
-pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Mesh2D {
+pub fn mesh_2d(
+    regions: &[Region2D],
+    target: impl Fn([f64; 2]) -> f64,
+    opts: &Mesh2DOptions,
+) -> Mesh2D {
     let groups = [regions.to_vec()];
     mesh_layers(&groups, target, opts)
         .into_iter()
@@ -170,7 +193,11 @@ pub fn mesh_2d(regions: &[Region2D], target: impl Fn([f64; 2]) -> f64, opts: &Me
 /// where the geometry needs it — an emergent distribution, not an a-priori per-layer / per-area
 /// split. The mesh is then un-translated back to world coordinates and split per group; tags are
 /// assigned per ORIGINAL region. Returns one [`Mesh2D`] per input group, in input order.
-pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, opts: &Mesh2DOptions) -> Vec<Mesh2D> {
+pub fn mesh_layers(
+    groups: &[Vec<Region2D>],
+    target: impl Fn([f64; 2]) -> f64,
+    opts: &Mesh2DOptions,
+) -> Vec<Mesh2D> {
     // 1. Per group: union into merged, pairwise-disjoint patches (record the owning group).
     struct Patch {
         group: usize,
@@ -182,16 +209,27 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         let merged: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> = if regions.len() > 1 {
             union_regions(regions)
         } else {
-            regions.iter().filter(|r| r.outer.len() >= 3).map(|r| (r.outer.clone(), r.holes.clone())).collect()
+            regions
+                .iter()
+                .filter(|r| r.outer.len() >= 3)
+                .map(|r| (r.outer.clone(), r.holes.clone()))
+                .collect()
         };
         for (outer, holes) in merged {
             if outer.len() >= 3 {
-                patches.push(Patch { group: g, outer, holes });
+                patches.push(Patch {
+                    group: g,
+                    outer,
+                    holes,
+                });
             }
         }
     }
     if patches.is_empty() {
-        return groups.iter().map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts)).collect();
+        return groups
+            .iter()
+            .map(|r| assemble_mesh2d(Vec::new(), Vec::new(), Vec::new(), r, opts))
+            .collect();
     }
 
     // 1b. SAMPLE the sizing field onto a grid (world coords) and GRADIENT-LIMIT it once: an expensive
@@ -203,12 +241,18 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     let mut h_seed = f64::INFINITY;
     for p in &patches {
         for &q in &p.outer {
-            wlo[0] = wlo[0].min(q[0]); wlo[1] = wlo[1].min(q[1]);
-            whi[0] = whi[0].max(q[0]); whi[1] = whi[1].max(q[1]);
+            wlo[0] = wlo[0].min(q[0]);
+            wlo[1] = wlo[1].min(q[1]);
+            whi[0] = whi[0].max(q[0]);
+            whi[1] = whi[1].max(q[1]);
         }
         h_seed = h_seed.min(target(centroid2(&p.outer)).max(1e-12));
     }
-    let finest = if opts.minh > 0.0 { h_seed.min(opts.minh) } else { h_seed };
+    let finest = if opts.minh > 0.0 {
+        h_seed.min(opts.minh)
+    } else {
+        h_seed
+    };
     let grid_cell = (0.5 * finest).max(1e-12); // GradedField caps the grid at MAX_N cells/axis
     let gf = GradedField::from_fn(wlo, whi, grid_cell, opts.grading, |p| target(p).max(1e-12));
     let tfield = |p: [f64; 2]| -> f64 { gf.eval(p) };
@@ -223,7 +267,11 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     //    path (`eff_scale = 1`).
     let budget = opts.target_count;
     let minh = opts.minh.max(0.0);
-    let maxh = if opts.maxh > 0.0 { opts.maxh } else { f64::INFINITY };
+    let maxh = if opts.maxh > 0.0 {
+        opts.maxh
+    } else {
+        f64::INFINITY
+    };
     // Sample the field over the patches — `(value, cell area)` — for the budget scaling. The final
     // size is `h(p) = max(s · f(p), minh)`; the scale `s` is found by bisecting the FLOORED count
     // `K · ∫ 1/h² dA = budget` (closed-form, single pass, no re-meshing). The `minh` floor caps the
@@ -234,8 +282,10 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         for p in &patches {
             let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
             for &q in &p.outer {
-                lo[0] = lo[0].min(q[0]); lo[1] = lo[1].min(q[1]);
-                hi[0] = hi[0].max(q[0]); hi[1] = hi[1].max(q[1]);
+                lo[0] = lo[0].min(q[0]);
+                lo[1] = lo[1].min(q[1]);
+                hi[0] = hi[0].max(q[0]);
+                hi[1] = hi[1].max(q[1]);
             }
             let (w, h) = ((hi[0] - lo[0]).max(1e-30), (hi[1] - lo[1]).max(1e-30));
             let (nx, ny) = if w >= h {
@@ -248,7 +298,8 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
             for i in 0..nx {
                 for j in 0..ny {
                     let q = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
-                    if point_in_ring(q, &p.outer) && !p.holes.iter().any(|hl| point_in_ring(q, hl)) {
+                    if point_in_ring(q, &p.outer) && !p.holes.iter().any(|hl| point_in_ring(q, hl))
+                    {
                         samples.push((tfield(q).max(1e-12), cell_a));
                     }
                 }
@@ -258,14 +309,25 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     // Empirical triangle-count constant for the field-limited CVT+Ruppert.
     const COUNT_K: f64 = 4.0;
     let count_of = |s: f64| -> f64 {
-        COUNT_K * samples.iter().map(|&(t, a)| { let hh = (s * t).clamp(minh, maxh); a / (hh * hh) }).sum::<f64>()
+        COUNT_K
+            * samples
+                .iter()
+                .map(|&(t, a)| {
+                    let hh = (s * t).clamp(minh, maxh);
+                    a / (hh * hh)
+                })
+                .sum::<f64>()
     };
     let s_scale: f64 = if budget > 0 && !samples.is_empty() {
         // count(s) decreases in s; geometric bisection to count(s) = budget.
         let (mut lo, mut hi) = (1e-12f64, 1e12f64);
         for _ in 0..64 {
             let m = (lo * hi).sqrt();
-            if count_of(m) > budget as f64 { lo = m } else { hi = m }
+            if count_of(m) > budget as f64 {
+                lo = m
+            } else {
+                hi = m
+            }
         }
         (lo * hi).sqrt()
     } else {
@@ -273,7 +335,10 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     };
     let field = |p: [f64; 2]| -> f64 { (s_scale * tfield(p)).clamp(minh, maxh) };
     // Finest FINAL size (sets the field-limited CVT seed step under a budget).
-    let f_min = samples.iter().map(|&(t, _)| (s_scale * t).clamp(minh, maxh)).fold(f64::INFINITY, f64::min);
+    let f_min = samples
+        .iter()
+        .map(|&(t, _)| (s_scale * t).clamp(minh, maxh))
+        .fold(f64::INFINITY, f64::min);
 
     // 3. Resample each patch's boundary onto `field` (world coords) — the protected core meshes
     //    against this — and measure its bbox + the finest field sample (the field-driven CVT seed).
@@ -320,7 +385,10 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     let mut all_loops: Vec<Vec<[f64; 2]>> = Vec::new();
     for (i, loops) in rs_loops.iter().enumerate() {
         let (col, row) = (i % ncols, i / ncols);
-        let off = [col as f64 * cell - bbmin[i][0], row as f64 * cell - bbmin[i][1]];
+        let off = [
+            col as f64 * cell - bbmin[i][0],
+            row as f64 * cell - bbmin[i][1],
+        ];
         offset.push(off);
         grid[row * ncols + col] = i as i64;
         for lp in loops {
@@ -336,10 +404,18 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     // Patch content spans `[k·cell, k·cell + extent]` with `extent ≤ cell/2`, so `+cell/4` keeps
     // every content point strictly inside its bin while absorbing fp noise on the low edge.
     let bin_at = |p: [f64; 2]| -> usize {
-        let col = ((p[0] + 0.25 * cell) / cell).floor().clamp(0.0, (ncols - 1) as f64) as usize;
-        let row = ((p[1] + 0.25 * cell) / cell).floor().clamp(0.0, (nrows - 1) as f64) as usize;
+        let col = ((p[0] + 0.25 * cell) / cell)
+            .floor()
+            .clamp(0.0, (ncols - 1) as f64) as usize;
+        let row = ((p[1] + 0.25 * cell) / cell)
+            .floor()
+            .clamp(0.0, (nrows - 1) as f64) as usize;
         let g = grid[row * ncols + col];
-        if g >= 0 { g as usize } else { 0 }
+        if g >= 0 {
+            g as usize
+        } else {
+            0
+        }
     };
 
     // Field on the canvas: un-translate each query to its patch's world frame, then the scaled field.
@@ -362,8 +438,14 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
     //    triangle lies wholly within one patch (cross-gap triangles were filtered by `inside`), so
     //    a triangle's group is the group of its first vertex's patch. Reindex per group.
     let pt_patch: Vec<usize> = cpoints.iter().map(|&p| bin_at(p)).collect();
-    let world: Vec<[f64; 2]> =
-        cpoints.iter().enumerate().map(|(k, &p)| { let o = offset[pt_patch[k]]; [p[0] - o[0], p[1] - o[1]] }).collect();
+    let world: Vec<[f64; 2]> = cpoints
+        .iter()
+        .enumerate()
+        .map(|(k, &p)| {
+            let o = offset[pt_patch[k]];
+            [p[0] - o[0], p[1] - o[1]]
+        })
+        .collect();
 
     let mut out: Vec<Mesh2D> = Vec::with_capacity(groups.len());
     for (g, regions) in groups.iter().enumerate() {
@@ -390,8 +472,15 @@ pub fn mesh_layers(groups: &[Vec<Region2D>], target: impl Fn([f64; 2]) -> f64, o
         } else {
             tris.iter()
                 .map(|t| {
-                    let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]);
-                    tag_at([(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0], regions)
+                    let (a, b, c) = (
+                        points[t[0] as usize],
+                        points[t[1] as usize],
+                        points[t[2] as usize],
+                    );
+                    tag_at(
+                        [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0],
+                        regions,
+                    )
                 })
                 .collect()
         };
@@ -408,9 +497,21 @@ fn assemble_mesh2d(
     regions: &[Region2D],
     opts: &Mesh2DOptions,
 ) -> Mesh2D {
-    let topo = TriTopology::build(&Tris { tris: &tris, tags: &tri_tags, n_verts: points.len() });
+    let topo = TriTopology::build(&Tris {
+        tris: &tris,
+        tags: &tri_tags,
+        n_verts: points.len(),
+    });
     let geom = TriGeometry::build_2d(&topo, &points);
-    Mesh2D { points, tris, tri_tags, topo, geom, regions: regions.to_vec(), opts: *opts }
+    Mesh2D {
+        points,
+        tris,
+        tri_tags,
+        topo,
+        geom,
+        regions: regions.to_vec(),
+        opts: *opts,
+    }
 }
 
 /// Robust 2D union of all region polygons into connected shapes (i_overlay, MIT). Overlapping or
@@ -472,7 +573,9 @@ fn point_in_ring(p: [f64; 2], ring: &[[f64; 2]]) -> bool {
     let mut j = n - 1;
     for i in 0..n {
         let (a, b) = (ring[i], ring[j]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
             inside = !inside;
         }
         j = i;
@@ -544,7 +647,11 @@ fn resample_loop(lp: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64
         // ha·(hb/ha)^frac ⇒ arc position t; first segment ≈ ha, last ≈ hb).
         let pt = |k: usize| -> [f64; 2] {
             let frac = k as f64 / segs as f64;
-            let t = if uniform { frac } else { (ha * (hb / ha).powf(frac) - ha) / (hb - ha) };
+            let t = if uniform {
+                frac
+            } else {
+                (ha * (hb / ha).powf(frac) - ha) / (hb - ha)
+            };
             [lo[0] + (hi[0] - lo[0]) * t, lo[1] + (hi[1] - lo[1]) * t]
         };
         // Emit the canonical points in the a→b traversal order (reversed if the edge runs hi→lo).
@@ -621,7 +728,8 @@ mod tests {
             let e1 = [v[0] - u[0], v[1] - u[1]];
             let e2 = [w[0] - u[0], w[1] - u[1]];
             let d = (e1[0] * e2[0] + e1[1] * e2[1])
-                / ((e1[0] * e1[0] + e1[1] * e1[1]).sqrt() * (e2[0] * e2[0] + e2[1] * e2[1]).sqrt() + 1e-30);
+                / ((e1[0] * e1[0] + e1[1] * e1[1]).sqrt() * (e2[0] * e2[0] + e2[1] * e2[1]).sqrt()
+                    + 1e-30);
             d.clamp(-1.0, 1.0).acos().to_degrees()
         };
         tris.iter()
@@ -647,10 +755,16 @@ mod tests {
         // QUALITY: the boundary was resampled to h, so no pinned-coarse-edge
         // slivers -- the min angle clears a healthy bound.
         let mn = min_angle_deg(&m.points, &m.tris);
-        assert!(mn > 20.0, "min angle {mn} too low (boundary not resampled?)");
+        assert!(
+            mn > 20.0,
+            "min angle {mn} too low (boundary not resampled?)"
+        );
         // topology + RWG queries are present and consistent.
         assert!(!m.topo.edges.is_empty());
-        assert!(m.rwg_candidate_edges().iter().all(|e| e[2] != NONE && e[3] != NONE));
+        assert!(m
+            .rwg_candidate_edges()
+            .iter()
+            .all(|e| e[2] != NONE && e[3] != NONE));
         assert!(!m.boundary_edges().is_empty());
     }
 
@@ -667,13 +781,19 @@ mod tests {
         }
         for inc in &m.topo.edge_tris {
             if inc[1] != NONE {
-                let (a, b) = (find(&mut parent, inc[0] as usize), find(&mut parent, inc[1] as usize));
+                let (a, b) = (
+                    find(&mut parent, inc[0] as usize),
+                    find(&mut parent, inc[1] as usize),
+                );
                 if a != b {
                     parent[a] = b;
                 }
             }
         }
-        (0..nt).map(|i| find(&mut parent, i)).collect::<std::collections::HashSet<_>>().len()
+        (0..nt)
+            .map(|i| find(&mut parent, i))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
     }
 
     /// THE FIX: two conductor regions sharing a full edge must mesh as ONE connected component
@@ -684,8 +804,15 @@ mod tests {
         let a = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1);
         let b = Region2D::new(vec![[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]], 2);
         let m = mesh_2d(&[a, b], |_p| 0.34, &Mesh2DOptions::default());
-        assert_eq!(n_components(&m), 1, "abutting regions must weld into one component");
-        assert!(m.tri_tags.contains(&1) && m.tri_tags.contains(&2), "both tags kept");
+        assert_eq!(
+            n_components(&m),
+            1,
+            "abutting regions must weld into one component"
+        );
+        assert!(
+            m.tri_tags.contains(&1) && m.tri_tags.contains(&2),
+            "both tags kept"
+        );
         let area: f64 = m.geom.area.iter().sum();
         assert!((area - 2.0).abs() < 1e-6, "area {area}");
     }
@@ -715,11 +842,16 @@ mod tests {
     fn target_count_budgets_the_mesh() {
         let sq = Region2D::new(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], 1);
         for target in [200usize, 800] {
-            let opts = Mesh2DOptions { target_count: target, ..Default::default() };
+            let opts = Mesh2DOptions {
+                target_count: target,
+                ..Default::default()
+            };
             let m = mesh_2d(std::slice::from_ref(&sq), |_p| 5.0, &opts); // coarse field; the budget drives it
             let n = m.tris.len();
-            assert!((n as f64) > 0.6 * target as f64 && (n as f64) < 1.6 * target as f64,
-                    "budget {target}: got {n} triangles");
+            assert!(
+                (n as f64) > 0.6 * target as f64 && (n as f64) < 1.6 * target as f64,
+                "budget {target}: got {n} triangles"
+            );
             let area: f64 = m.geom.area.iter().sum();
             assert!((area - 100.0).abs() < 1e-6, "area {area}");
         }
@@ -735,19 +867,37 @@ mod tests {
         let big = Region2D::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]], 1);
         let small = Region2D::new(vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0], [5.0, 15.0]], 2);
         for &budget in &[2000usize, 8000] {
-            let opts = Mesh2DOptions { target_count: budget, ..Default::default() };
+            let opts = Mesh2DOptions {
+                target_count: budget,
+                ..Default::default()
+            };
             let ms = mesh_layers(&[vec![big.clone()], vec![small.clone()]], |_q| 1.0, &opts);
             assert_eq!(ms.len(), 2, "one mesh per group");
             let n: usize = ms.iter().map(|m| m.tris.len()).sum();
-            assert!((n as f64) > 0.7 * budget as f64 && (n as f64) < 1.4 * budget as f64, "budget {budget}: got {n}");
-            assert!(ms[0].tri_tags.iter().all(|&t| t == 1) && !ms[0].tris.is_empty(), "group 0 tagged 1");
-            assert!(ms[1].tri_tags.iter().all(|&t| t == 2) && !ms[1].tris.is_empty(), "group 1 tagged 2");
+            assert!(
+                (n as f64) > 0.7 * budget as f64 && (n as f64) < 1.4 * budget as f64,
+                "budget {budget}: got {n}"
+            );
+            assert!(
+                ms[0].tri_tags.iter().all(|&t| t == 1) && !ms[0].tris.is_empty(),
+                "group 0 tagged 1"
+            );
+            assert!(
+                ms[1].tri_tags.iter().all(|&t| t == 2) && !ms[1].tris.is_empty(),
+                "group 1 tagged 2"
+            );
             // areas are preserved per group (400 and 100), proving the un-translation round-trips.
             let a0: f64 = ms[0].geom.area.iter().sum();
             let a1: f64 = ms[1].geom.area.iter().sum();
-            assert!((a0 - 400.0).abs() < 1e-3 && (a1 - 100.0).abs() < 1e-3, "areas {a0} {a1}");
+            assert!(
+                (a0 - 400.0).abs() < 1e-3 && (a1 - 100.0).abs() < 1e-3,
+                "areas {a0} {a1}"
+            );
             // bigger layer draws more of the shared budget (area-proportional emergence).
-            assert!(ms[0].tris.len() > ms[1].tris.len(), "big layer takes more budget");
+            assert!(
+                ms[0].tris.len() > ms[1].tris.len(),
+                "big layer takes more budget"
+            );
         }
     }
 
@@ -808,7 +958,12 @@ mod tests {
             .enumerate()
             .map(|(i, &[x0, y0, x1, y1])| {
                 Region2D::new(
-                    vec![[x0 * UM, y0 * UM], [x1 * UM, y0 * UM], [x1 * UM, y1 * UM], [x0 * UM, y1 * UM]],
+                    vec![
+                        [x0 * UM, y0 * UM],
+                        [x1 * UM, y0 * UM],
+                        [x1 * UM, y1 * UM],
+                        [x0 * UM, y1 * UM],
+                    ],
                     i as i64,
                 )
             })
@@ -820,9 +975,16 @@ mod tests {
         let stray: Vec<&[f64; 2]> = m
             .points
             .iter()
-            .filter(|p| p[0] < lo[0] - tol || p[0] > hi[0] + tol || p[1] < lo[1] - tol || p[1] > hi[1] + tol)
+            .filter(|p| {
+                p[0] < lo[0] - tol || p[0] > hi[0] + tol || p[1] < lo[1] - tol || p[1] > hi[1] + tol
+            })
             .collect();
-        assert!(stray.is_empty(), "{} vertices outside the input bbox, e.g. {:?}", stray.len(), stray.first());
+        assert!(
+            stray.is_empty(),
+            "{} vertices outside the input bbox, e.g. {:?}",
+            stray.len(),
+            stray.first()
+        );
     }
 
     #[test]

@@ -60,14 +60,10 @@ fn keep(op: BoolOp, from_a: bool, placement: Placement) -> Option<bool> {
         (BoolOp::Union, Placement::Outside) => Some(false),
         (BoolOp::Union, Placement::Boundary { same_normal: true }) if from_a => Some(false),
         (BoolOp::Intersection, Placement::Inside) => Some(false),
-        (BoolOp::Intersection, Placement::Boundary { same_normal: true }) if from_a => {
-            Some(false)
-        }
+        (BoolOp::Intersection, Placement::Boundary { same_normal: true }) if from_a => Some(false),
         (BoolOp::Difference, Placement::Outside) if from_a => Some(false),
         (BoolOp::Difference, Placement::Inside) if !from_a => Some(true),
-        (BoolOp::Difference, Placement::Boundary { same_normal: false }) if from_a => {
-            Some(false)
-        }
+        (BoolOp::Difference, Placement::Boundary { same_normal: false }) if from_a => Some(false),
         _ => None,
     }
 }

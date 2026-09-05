@@ -1,7 +1,9 @@
 //! Tetrahedral complex: full 0/1/2/3-cell incidence with the orientation signs
 //! a vector-FEM (Nédélec) assembly needs, plus coordinate-aware geometry.
 
-use crate::convention::{canonical_edge, sort3_sign, NONE, TET_EDGE_LOCAL, TET_FACE_LOCAL, TRI_EDGE_LOCAL};
+use crate::convention::{
+    canonical_edge, sort3_sign, NONE, TET_EDGE_LOCAL, TET_FACE_LOCAL, TRI_EDGE_LOCAL,
+};
 use crate::csr::Csr;
 use crate::source::TetSource;
 use std::collections::HashMap;
@@ -163,7 +165,11 @@ impl TetGeometry {
             );
             // T has columns (p1-p0, p2-p0, p3-p0); det(T) = 6 * signed volume.
             let (e1, e2, e3) = (sub(p1, p0), sub(p2, p0), sub(p3, p0));
-            let m = [[e1[0], e2[0], e3[0]], [e1[1], e2[1], e3[1]], [e1[2], e2[2], e3[2]]];
+            let m = [
+                [e1[0], e2[0], e3[0]],
+                [e1[1], e2[1], e3[1]],
+                [e1[2], e2[2], e3[2]],
+            ];
             volume[t] = det3(m).abs() / 6.0;
             if let Some(inv) = inv3(m) {
                 // λ_{1,2,3} = (T^{-1}(x - p0))_{0,1,2} -> ∇λ_i = rows of T^{-1}.
@@ -171,7 +177,11 @@ impl TetGeometry {
                 grad[t][1] = g1;
                 grad[t][2] = g2;
                 grad[t][3] = g3;
-                grad[t][0] = [-(g1[0] + g2[0] + g3[0]), -(g1[1] + g2[1] + g3[1]), -(g1[2] + g2[2] + g3[2])];
+                grad[t][0] = [
+                    -(g1[0] + g2[0] + g3[0]),
+                    -(g1[1] + g2[1] + g3[1]),
+                    -(g1[2] + g2[2] + g3[2]),
+                ];
             }
         }
 
@@ -183,13 +193,21 @@ impl TetGeometry {
         let mut face_centroid = vec![[0.0; 3]; nf];
         for f in 0..nf {
             let [ia, ib, ic] = topo.faces[f];
-            let (a, b, c) = (coords[ia as usize], coords[ib as usize], coords[ic as usize]);
+            let (a, b, c) = (
+                coords[ia as usize],
+                coords[ib as usize],
+                coords[ic as usize],
+            );
             let n = cross(sub(b, a), sub(c, a));
             let len = norm(n);
             face_area[f] = 0.5 * len;
             let centroid = scale(add(add(a, b), c), 1.0 / 3.0);
             face_centroid[f] = centroid;
-            let mut nn = if len > 0.0 { scale(n, 1.0 / len) } else { [0.0; 3] };
+            let mut nn = if len > 0.0 {
+                scale(n, 1.0 / len)
+            } else {
+                [0.0; 3]
+            };
             // Orient away from face_tets[f][0]'s opposite vertex: outward for a
             // boundary face, t0 -> t1 for an interior one.
             let t0 = topo.face_tets[f][0];
@@ -204,7 +222,14 @@ impl TetGeometry {
             face_normal[f] = nn;
         }
 
-        TetGeometry { volume, grad, edge_len, face_area, face_normal, face_centroid }
+        TetGeometry {
+            volume,
+            grad,
+            edge_len,
+            face_area,
+            face_normal,
+            face_centroid,
+        }
     }
 }
 
@@ -215,7 +240,10 @@ mod tests {
 
     #[test]
     fn single_tet() {
-        let topo = TetTopology::build(&Tets { tets: &[[0, 1, 2, 3]], n_verts: 4 });
+        let topo = TetTopology::build(&Tets {
+            tets: &[[0, 1, 2, 3]],
+            n_verts: 4,
+        });
         assert_eq!(topo.edges.len(), 6);
         assert_eq!(topo.faces.len(), 4);
         // ascending vertex labels -> every local edge already runs min→max.
@@ -229,7 +257,10 @@ mod tests {
     #[test]
     fn edge_sign_reversed() {
         // local edge 0 = (tet[0], tet[1]) = (3, 1) -> canonical (1,3), reversed.
-        let topo = TetTopology::build(&Tets { tets: &[[3, 1, 2, 0]], n_verts: 4 });
+        let topo = TetTopology::build(&Tets {
+            tets: &[[3, 1, 2, 0]],
+            n_verts: 4,
+        });
         assert_eq!(topo.tet_edge_sign[0][0], -1);
     }
 
@@ -246,7 +277,10 @@ mod tests {
         assert_eq!(tets, [0, 1]);
         // each tet lists the shared face; the two carry opposite orientation.
         let sign_in = |t: usize| {
-            let k = topo.tet_faces[t].iter().position(|&f| f as usize == shared).unwrap();
+            let k = topo.tet_faces[t]
+                .iter()
+                .position(|&f| f as usize == shared)
+                .unwrap();
             topo.tet_face_sign[t][k]
         };
         assert_eq!(sign_in(0), -sign_in(1));
@@ -254,8 +288,16 @@ mod tests {
 
     #[test]
     fn geometry_unit_tet() {
-        let topo = TetTopology::build(&Tets { tets: &[[0, 1, 2, 3]], n_verts: 4 });
-        let coords = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let topo = TetTopology::build(&Tets {
+            tets: &[[0, 1, 2, 3]],
+            n_verts: 4,
+        });
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let g = TetGeometry::build(&topo, &coords);
         assert!((g.volume[0] - 1.0 / 6.0).abs() < 1e-12);
         // ∇λ_0 = (-1,-1,-1).
@@ -286,8 +328,16 @@ mod tests {
 
     #[test]
     fn geometry_grad_scaled_tet() {
-        let topo = TetTopology::build(&Tets { tets: &[[0, 1, 2, 3]], n_verts: 4 });
-        let coords = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
+        let topo = TetTopology::build(&Tets {
+            tets: &[[0, 1, 2, 3]],
+            n_verts: 4,
+        });
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 0.0, 4.0],
+        ];
         let g = TetGeometry::build(&topo, &coords);
         assert!((g.volume[0] - 4.0).abs() < 1e-12); // (2*3*4)/6
         assert!((g.grad[0][1][0] - 0.5).abs() < 1e-12);

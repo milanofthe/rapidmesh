@@ -28,8 +28,7 @@ fn region_volume6(plc: &TaggedPlc, r: RegionTag) -> BigRational {
             plc.vertices[t[1] as usize].map(rat),
             plc.vertices[t[2] as usize].map(rat),
         );
-        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1])
-            - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
+        let det = &a[0] * (&b[1] * &c[2] - &b[2] * &c[1]) - &a[1] * (&b[0] * &c[2] - &b[2] * &c[0])
             + &a[2] * (&b[0] * &c[1] - &b[1] * &c[0]);
         acc += if sign > 0 { det } else { -det };
     }
@@ -39,8 +38,7 @@ fn region_volume6(plc: &TaggedPlc, r: RegionTag) -> BigRational {
 /// Closure check: the boundary facets of a region, oriented out of it, form
 /// a closed surface.
 fn assert_region_closed(plc: &TaggedPlc, r: RegionTag) {
-    let mut directed: std::collections::HashMap<(u32, u32), i64> =
-        std::collections::HashMap::new();
+    let mut directed: std::collections::HashMap<(u32, u32), i64> = std::collections::HashMap::new();
     for (t, tags) in plc.triangles.iter().zip(&plc.region_tags) {
         // Outward orientation for r: keep as-is if back == r, flip if
         // front == r. Same-region facets (embedded sheets) are interior.
@@ -108,7 +106,10 @@ fn air_dielectric_pec_scene() {
         .zip(&plc.region_tags)
         .filter(|(tag, tags)| **tag == pec && tags.contains(&air) && tags.contains(&diel))
         .count();
-    assert!(merged >= 2, "coincident PEC patch must be merged into the interface");
+    assert!(
+        merged >= 2,
+        "coincident PEC patch must be merged into the interface"
+    );
 
     // The floating sheet: PEC facets fully inside air ([air, air]).
     let floating = plc
@@ -144,6 +145,9 @@ fn overlapping_solids_resolve_by_priority() {
     // The hidden wall of `first` inside `second` must be gone: no facet may
     // separate `second` from `second`.
     for tags in &plc.region_tags {
-        assert_ne!(tags[0], tags[1], "interior facet survived region resolution");
+        assert_ne!(
+            tags[0], tags[1],
+            "interior facet survived region resolution"
+        );
     }
 }

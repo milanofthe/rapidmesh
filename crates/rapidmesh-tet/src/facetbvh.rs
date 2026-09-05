@@ -10,7 +10,7 @@
 //! both queries prune by a node lower bound (branch and bound).
 
 use rapidmesh_csg::Tri;
-use rapidmesh_geom::vec3::{V3, sub, dot};
+use rapidmesh_geom::vec3::{dot, sub, V3};
 
 /// Squared distance from point `p` to triangle `t` (closest-point clamp).
 pub fn point_tri_dist2(p: V3, t: &Tri) -> f64 {
@@ -112,9 +112,22 @@ impl FacetBvh {
         let mut order: Vec<u32> = (0..tris.len() as u32).collect();
         let mut nodes: Vec<Node> = Vec::new();
         if !tris.is_empty() {
-            build_node(&tris, &targets, &centroids, &mut order, 0, tris.len(), &mut nodes);
+            build_node(
+                &tris,
+                &targets,
+                &centroids,
+                &mut order,
+                0,
+                tris.len(),
+                &mut nodes,
+            );
         }
-        FacetBvh { tris, targets, order, nodes }
+        FacetBvh {
+            tris,
+            targets,
+            order,
+            nodes,
+        }
     }
 
     /// Distance from `p` to the nearest facet (INFINITY if empty).
@@ -223,8 +236,10 @@ impl FacetBvh {
             return;
         }
         let (l, r) = (n.left as usize, n.right as usize);
-        let bl = self.nodes[l].min_target + grading * box_dist2(self.nodes[l].lo, self.nodes[l].hi, p).sqrt();
-        let br = self.nodes[r].min_target + grading * box_dist2(self.nodes[r].lo, self.nodes[r].hi, p).sqrt();
+        let bl = self.nodes[l].min_target
+            + grading * box_dist2(self.nodes[l].lo, self.nodes[l].hi, p).sqrt();
+        let br = self.nodes[r].min_target
+            + grading * box_dist2(self.nodes[r].lo, self.nodes[r].hi, p).sqrt();
         if bl <= br {
             self.graded_rec(l, p, grading, best);
             self.graded_rec(r, p, grading, best);
@@ -299,7 +314,15 @@ fn build_node(
         return idx;
     }
     // Reserve this node's slot; children get appended and patched after.
-    nodes.push(Node { lo, hi, min_target, left: 0, right: 0, start: 0, count: 0 });
+    nodes.push(Node {
+        lo,
+        hi,
+        min_target,
+        left: 0,
+        right: 0,
+        start: 0,
+        count: 0,
+    });
     // Widest centroid axis.
     let mut clo = [f64::MAX; 3];
     let mut chi = [f64::MIN; 3];
@@ -309,12 +332,15 @@ fn build_node(
             chi[k] = chi[k].max(centroids[fi as usize][k]);
         }
     }
-    let axis = (0..3).max_by(|&a, &b| (chi[a] - clo[a]).partial_cmp(&(chi[b] - clo[b])).unwrap()).unwrap();
+    let axis = (0..3)
+        .max_by(|&a, &b| (chi[a] - clo[a]).partial_cmp(&(chi[b] - clo[b])).unwrap())
+        .unwrap();
     let mid = start + count / 2;
-    order[start..end]
-        .select_nth_unstable_by(count / 2, |&a, &b| {
-            centroids[a as usize][axis].partial_cmp(&centroids[b as usize][axis]).unwrap()
-        });
+    order[start..end].select_nth_unstable_by(count / 2, |&a, &b| {
+        centroids[a as usize][axis]
+            .partial_cmp(&centroids[b as usize][axis])
+            .unwrap()
+    });
     let left = build_node(tris, targets, centroids, order, start, mid, nodes);
     let right = build_node(tris, targets, centroids, order, mid, end, nodes);
     nodes[idx as usize].left = left;
@@ -331,11 +357,18 @@ mod tests {
     }
 
     fn brute_nearest(facets: &[(Tri, f64)], p: V3) -> f64 {
-        facets.iter().map(|(t, _)| point_tri_dist2(p, t)).fold(f64::MAX, f64::min).sqrt()
+        facets
+            .iter()
+            .map(|(t, _)| point_tri_dist2(p, t))
+            .fold(f64::MAX, f64::min)
+            .sqrt()
     }
 
     fn brute_graded(facets: &[(Tri, f64)], p: V3, g: f64) -> f64 {
-        facets.iter().map(|(t, tg)| tg + g * point_tri_dist2(p, t).sqrt()).fold(f64::MAX, f64::min)
+        facets
+            .iter()
+            .map(|(t, tg)| tg + g * point_tri_dist2(p, t).sqrt())
+            .fold(f64::MAX, f64::min)
     }
 
     fn box_facets() -> Vec<(Tri, f64)> {
@@ -359,10 +392,18 @@ mod tests {
     fn nearest_matches_brute() {
         let f = box_facets();
         let bvh = FacetBvh::build(&f);
-        for p in [[0.5, 0.5, 0.5], [0.1, 0.2, 0.9], [-1.0, 0.5, 0.5], [0.5, 0.5, 2.0]] {
+        for p in [
+            [0.5, 0.5, 0.5],
+            [0.1, 0.2, 0.9],
+            [-1.0, 0.5, 0.5],
+            [0.5, 0.5, 2.0],
+        ] {
             let got = bvh.nearest_dist(p);
             let want = brute_nearest(&f, p);
-            assert!((got - want).abs() < 1e-12, "nearest at {p:?}: {got} vs {want}");
+            assert!(
+                (got - want).abs() < 1e-12,
+                "nearest at {p:?}: {got} vs {want}"
+            );
         }
     }
 
@@ -371,10 +412,18 @@ mod tests {
         let f = box_facets();
         let bvh = FacetBvh::build(&f);
         let g = 0.5;
-        for p in [[0.5, 0.5, 0.5], [0.1, 0.2, 0.9], [0.5, 0.5, 0.05], [0.95, 0.5, 0.5]] {
+        for p in [
+            [0.5, 0.5, 0.5],
+            [0.1, 0.2, 0.9],
+            [0.5, 0.5, 0.05],
+            [0.95, 0.5, 0.5],
+        ] {
             let got = bvh.graded_min(p, g);
             let want = brute_graded(&f, p, g);
-            assert!((got - want).abs() < 1e-12, "graded at {p:?}: {got} vs {want}");
+            assert!(
+                (got - want).abs() < 1e-12,
+                "graded at {p:?}: {got} vs {want}"
+            );
         }
     }
 
@@ -389,7 +438,12 @@ mod tests {
                 let (x, y) = (i as f64 * 0.5, j as f64 * 0.5);
                 let z = 0.1 * (i + j) as f64;
                 let target = 0.05 + 0.02 * ((i * 7 + j) % 5) as f64;
-                f.push(tri([x, y, z], [x + 0.4, y, z], [x, y + 0.4, z + 0.2], target));
+                f.push(tri(
+                    [x, y, z],
+                    [x + 0.4, y, z],
+                    [x, y + 0.4, z + 0.2],
+                    target,
+                ));
             }
         }
         let bvh = FacetBvh::build(&f);
@@ -435,9 +489,15 @@ mod tests {
                         hi[k] = hi[k].max(v[k]);
                     }
                 }
-                let overlaps = hi[1] >= p[1] - m && lo[1] <= p[1] + m && hi[2] >= p[2] - m && lo[2] <= p[2] + m;
+                let overlaps = hi[1] >= p[1] - m
+                    && lo[1] <= p[1] + m
+                    && hi[2] >= p[2] - m
+                    && lo[2] <= p[2] + m;
                 if overlaps {
-                    assert!(got.contains(&(i as u32)), "facet {i} in column missing at {p:?}");
+                    assert!(
+                        got.contains(&(i as u32)),
+                        "facet {i} in column missing at {p:?}"
+                    );
                 }
             }
         }

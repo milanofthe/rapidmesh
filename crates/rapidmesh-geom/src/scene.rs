@@ -351,7 +351,10 @@ impl Scene {
         // Delaunay can never hold apart. Features below 1e-12 of the scene
         // diagonal are therefore welded, input vertices winning over
         // constructed points (inputs lie exactly on their planes).
-        let diag = (0..3).map(|k| (bhi_w(&raw, k) - blo_w(&raw, k)).powi(2)).sum::<f64>().sqrt();
+        let diag = (0..3)
+            .map(|k| (bhi_w(&raw, k) - blo_w(&raw, k)).powi(2))
+            .sum::<f64>()
+            .sqrt();
         fn blo_w(raw: &[[f64; 3]], k: usize) -> f64 {
             raw.iter().map(|q| q[k]).fold(f64::MAX, f64::min)
         }
@@ -360,16 +363,15 @@ impl Scene {
         }
         let tol = WELD_REL_TOL * diag.max(f64::MIN_POSITIVE);
         let cell = 2.0 * tol;
-        let cell_of = |q: &[f64; 3]| -> [i64; 3] {
-            std::array::from_fn(|k| (q[k] / cell).floor() as i64)
-        };
+        let cell_of =
+            |q: &[f64; 3]| -> [i64; 3] { std::array::from_fn(|k| (q[k] / cell).floor() as i64) };
         let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::default();
         let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(raw.len());
         let mut remap: Vec<u32> = vec![u32::MAX; raw.len()];
         let weld_pass = |explicit_only: bool,
-                             grid: &mut HashMap<[i64; 3], Vec<u32>>,
-                             vertices: &mut Vec<[f64; 3]>,
-                             remap: &mut Vec<u32>| {
+                         grid: &mut HashMap<[i64; 3], Vec<u32>>,
+                         vertices: &mut Vec<[f64; 3]>,
+                         remap: &mut Vec<u32>| {
             for (i, q) in raw.iter().enumerate() {
                 if remap[i] != u32::MAX {
                     continue;
@@ -386,8 +388,7 @@ impl Scene {
                             if let Some(ids) = grid.get(&key) {
                                 for &v in ids {
                                     let p = vertices[v as usize];
-                                    let d2: f64 =
-                                        (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
+                                    let d2: f64 = (0..3).map(|k| (p[k] - q[k]).powi(2)).sum();
                                     if d2 <= tol * tol {
                                         hit = Some(v);
                                         break 'search;

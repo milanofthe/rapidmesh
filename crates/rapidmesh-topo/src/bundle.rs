@@ -25,7 +25,7 @@ use crate::source::Tris;
 use crate::{TetGeometry, TetTopology, TriGeometry, TriTopology};
 use rapidmesh_geom::TaggedPlc;
 use rapidmesh_tet::gradefield::GradedField;
-use rapidmesh_tet::surf2d::{mesh_polygon, PolyMeshParams};
+use rapidmesh_tet::surf2d::{mesh_polygon_with_chains, PolyMeshParams};
 use rapidmesh_tet::{mesh_plc_with, MeshParams, TetMesh};
 
 // ============================== 2D / surface (MoM) ==========================
@@ -41,6 +41,13 @@ pub struct Region2D {
     pub holes: Vec<Vec<[f64; 2]>>,
     /// Conductor / layer tag carried by this region's triangles.
     pub tag: i64,
+    /// CONSTRAINT CHAINS (open polylines, world coordinates) inside this region's layer: their
+    /// segments become element edges, without changing the region's extent. The cross-layer
+    /// alignment hands a layer the outlines of the conductors on the neighbouring layers,
+    /// clipped to it, so the charge edges those conductors induce fall on element edges. A
+    /// chain is attached to the patch that contains it; a chain end on the patch outline is
+    /// made an outline vertex.
+    pub constraints: Vec<Vec<[f64; 2]>>,
 }
 
 impl Region2D {
@@ -50,6 +57,7 @@ impl Region2D {
             outer,
             holes: Vec::new(),
             tag,
+            constraints: Vec::new(),
         }
     }
 }
@@ -203,9 +211,11 @@ pub fn mesh_layers(
         group: usize,
         outer: Vec<[f64; 2]>,
         holes: Vec<Vec<[f64; 2]>>,
+        chains: Vec<Vec<[f64; 2]>>,
     }
     let mut patches: Vec<Patch> = Vec::new();
     for (g, regions) in groups.iter().enumerate() {
+        let first_patch = patches.len();
         let merged: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> = if regions.len() > 1 {
             union_regions(regions)
         } else {
@@ -221,8 +231,31 @@ pub fn mesh_layers(
                     group: g,
                     outer,
                     holes,
+                    chains: Vec::new(),
                 });
             }
+        }
+        // The group's constraint chains go to the patch that contains them; a chain end on
+        // the patch outline becomes an outline vertex (a T-junction is then a shared vertex).
+        for ch in regions.iter().flat_map(|r| r.constraints.iter()) {
+            if ch.len() < 2 {
+                continue;
+            }
+            let mid = chain_midpoint(ch);
+            let Some(pi) = (first_patch..patches.len()).find(|&pi| {
+                let p = &patches[pi];
+                point_in_ring(mid, &p.outer) && !p.holes.iter().any(|h| point_in_ring(mid, h))
+            }) else {
+                continue;
+            };
+            let patch = &mut patches[pi];
+            for &end in [ch[0], ch[ch.len() - 1]].iter() {
+                insert_on_loop(&mut patch.outer, end);
+                for h in &mut patch.holes {
+                    insert_on_loop(h, end);
+                }
+            }
+            patch.chains.push(ch.clone());
         }
     }
     if patches.is_empty() {
@@ -343,6 +376,7 @@ pub fn mesh_layers(
     // 3. Resample each patch's boundary onto `field` (world coords) — the protected core meshes
     //    against this — and measure its bbox + the finest field sample (the field-driven CVT seed).
     let mut rs_loops: Vec<Vec<Vec<[f64; 2]>>> = Vec::with_capacity(patches.len());
+    let mut rs_chains: Vec<Vec<Vec<[f64; 2]>>> = Vec::with_capacity(patches.len());
     let mut bbmin: Vec<[f64; 2]> = Vec::with_capacity(patches.len());
     let mut extent = 0.0f64;
     let mut field_step = f64::INFINITY;
@@ -364,6 +398,7 @@ pub fn mesh_layers(
         extent = extent.max(hi[0] - lo[0]).max(hi[1] - lo[1]);
         field_step = field_step.min(field(centroid2(&p.outer)).max(1e-12));
         rs_loops.push(loops);
+        rs_chains.push(p.chains.iter().map(|c| resample_chain(c, &field)).collect());
         bbmin.push(lo);
     }
     let step = if budget > 0 && f_min.is_finite() {
@@ -383,6 +418,7 @@ pub fn mesh_layers(
     let mut offset: Vec<[f64; 2]> = Vec::with_capacity(patches.len());
     let mut grid: Vec<i64> = vec![-1; ncols * nrows];
     let mut all_loops: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut all_chains: Vec<Vec<[f64; 2]>> = Vec::new();
     for (i, loops) in rs_loops.iter().enumerate() {
         let (col, row) = (i % ncols, i / ncols);
         let off = [
@@ -393,6 +429,9 @@ pub fn mesh_layers(
         grid[row * ncols + col] = i as i64;
         for lp in loops {
             all_loops.push(lp.iter().map(|q| [q[0] + off[0], q[1] + off[1]]).collect());
+        }
+        for ch in &rs_chains[i] {
+            all_chains.push(ch.iter().map(|q| [q[0] + off[0], q[1] + off[1]]).collect());
         }
     }
     // Bin lookup: a canvas point's patch (vertices live in their patch's bin; gap points snap to a
@@ -432,7 +471,8 @@ pub fn mesh_layers(
         cvt_iters: opts.cvt_iters,
         max_passes: opts.max_passes,
     };
-    let (cpoints, ctris) = mesh_polygon(&all_loops, canvas_target, &params, |_, _| {});
+    let (cpoints, ctris) =
+        mesh_polygon_with_chains(&all_loops, &all_chains, canvas_target, &params, |_, _| {});
 
     // 6. Read back: un-translate every vertex, then split the triangles per group. Each emitted
     //    triangle lies wholly within one patch (cross-gap triangles were filtered by `inside`), so
@@ -518,7 +558,7 @@ fn assemble_mesh2d(
 /// abutting regions merge into one shape; separate ones stay separate. Outers are forced CCW and
 /// holes CW so the non-zero fill rule unions correctly regardless of the input orientation. Each
 /// output is `(outer, holes)` in i_overlay's canonical orientation (outer CCW, holes CW).
-fn union_regions(regions: &[Region2D]) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
+pub fn union_regions(regions: &[Region2D]) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
     use i_overlay::core::fill_rule::FillRule;
     use i_overlay::float::simplify::SimplifyShape;
     let mut contours: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -541,6 +581,103 @@ fn union_regions(regions: &[Region2D]) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>
             (outer, it.collect())
         })
         .collect()
+}
+
+/// Boolean overlay of two region sets (i_overlay, non-zero fill): `Intersect`, `Difference`
+/// (subject minus clip), `Union`. Outers CCW, holes CW.
+pub fn overlay_regions(
+    subj: &[Region2D],
+    clip: &[Region2D],
+    rule: i_overlay::core::overlay_rule::OverlayRule,
+) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::float::single::SingleFloatOverlay;
+    let shapes = |rs: &[Region2D]| -> Vec<Vec<Vec<[f64; 2]>>> {
+        rs.iter()
+            .filter(|r| r.outer.len() >= 3)
+            .map(|r| {
+                let mut sh = vec![oriented(&r.outer, true)];
+                sh.extend(
+                    r.holes
+                        .iter()
+                        .filter(|h| h.len() >= 3)
+                        .map(|h| oriented(h, false)),
+                );
+                sh
+            })
+            .collect()
+    };
+    let (a, b) = (shapes(subj), shapes(clip));
+    a.overlay(&b, rule, FillRule::NonZero)
+        .into_iter()
+        .map(|shape| {
+            let mut it = shape.into_iter();
+            let outer = it.next().unwrap_or_default();
+            (outer, it.collect())
+        })
+        .collect()
+}
+
+/// A point on a chain: the midpoint of its middle segment (inside the region for a chain
+/// that lies inside it).
+fn chain_midpoint(ch: &[[f64; 2]]) -> [f64; 2] {
+    let k = (ch.len() - 1) / 2;
+    let (a, b) = (ch[k], ch[k + 1]);
+    [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+}
+
+/// Insert `q` as a vertex of the loop if it lies on one of its edges (and is not a vertex yet).
+fn insert_on_loop(lp: &mut Vec<[f64; 2]>, q: [f64; 2]) {
+    let n = lp.len();
+    if n < 2 {
+        return;
+    }
+    let mut scale = 0.0f64;
+    for p in lp.iter() {
+        scale = scale.max(p[0].abs()).max(p[1].abs());
+    }
+    let eps = 1e-9 * scale.max(1e-30);
+    if lp
+        .iter()
+        .any(|p| (p[0] - q[0]).abs() <= eps && (p[1] - q[1]).abs() <= eps)
+    {
+        return;
+    }
+    for i in 0..n {
+        let (a, b) = (lp[i], lp[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dy * dy;
+        if l2 <= 0.0 {
+            continue;
+        }
+        let t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2;
+        if !(0.0..=1.0).contains(&t) {
+            continue;
+        }
+        let d = (q[0] - a[0] - t * dx).hypot(q[1] - a[1] - t * dy);
+        if d <= eps {
+            lp.insert(i + 1, q);
+            return;
+        }
+    }
+}
+
+/// [`resample_loop`] for an OPEN chain: corners kept, edges graded by the field, canonical
+/// per edge, the last point kept.
+fn resample_chain(ch: &[[f64; 2]], target: &impl Fn([f64; 2]) -> f64) -> Vec<[f64; 2]> {
+    let n = ch.len();
+    if n < 2 {
+        return ch.to_vec();
+    }
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n - 1 {
+        let closed = resample_loop(&[ch[i], ch[i + 1]], target);
+        // A two-point "loop" resamples edge a→b then b→a; keep the first half (a .. before b).
+        let half = closed.len() / 2;
+        out.extend_from_slice(&closed[..half.max(1)]);
+    }
+    out.push(ch[n - 1]);
+    out
 }
 
 /// Signed area (CCW positive).
@@ -815,6 +952,59 @@ mod tests {
         );
         let area: f64 = m.geom.area.iter().sum();
         assert!((area - 2.0).abs() < 1e-6, "area {area}");
+    }
+
+    /// CONSTRAINT CHAINS: an inner square given as a closed chain and an open chain ending on
+    /// the outline are element edges of the one triangulation — corners and chain ends are
+    /// mesh vertices, sampled points on the chains lie on mesh edges, the region stays whole.
+    #[test]
+    fn constraint_chains_are_element_edges() {
+        let inner = vec![[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7], [0.3, 0.3]];
+        let open = vec![[0.0, 0.5], [0.3, 0.5]];
+        let mut r = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1);
+        r.constraints = vec![inner.clone(), open.clone()];
+        let m = mesh_2d(&[r], |_p| 0.15, &Mesh2DOptions::default());
+        assert_eq!(n_components(&m), 1);
+        let area: f64 = m.geom.area.iter().sum();
+        assert!((area - 1.0).abs() < 1e-6, "area {area}");
+        let has_vertex = |q: [f64; 2]| {
+            m.points
+                .iter()
+                .any(|p| (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9)
+        };
+        for q in inner.iter().chain(open.iter()) {
+            assert!(has_vertex(*q), "chain vertex {q:?} missing");
+        }
+        let on_edge = |q: [f64; 2]| -> bool {
+            m.tris.iter().any(|t| {
+                (0..3).any(|k| {
+                    let (a, b) = (m.points[t[k] as usize], m.points[t[(k + 1) % 3] as usize]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let l2 = dx * dx + dy * dy;
+                    let s = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2;
+                    (-1e-9..=1.0 + 1e-9).contains(&s)
+                        && ((q[0] - a[0]) - s * dx).hypot((q[1] - a[1]) - s * dy) < 1e-9
+                })
+            })
+        };
+        for i in 0..10 {
+            let t = 0.3 + 0.4 * (i as f64 + 0.5) / 10.0;
+            assert!(on_edge([t, 0.3]), "chain point ({t}, 0.3) inside a cell");
+            assert!(on_edge([0.7, t]), "chain point (0.7, {t}) inside a cell");
+            assert!(
+                on_edge([0.03 * i as f64, 0.5]),
+                "open chain point inside a cell"
+            );
+        }
+        // The chains do not change membership: no boundary edge strictly inside.
+        for e in m.topo.boundary_edges() {
+            let (a, b) = (m.points[e[0] as usize], m.points[e[1] as usize]);
+            let mid = [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
+            assert!(
+                !(mid[0] > 1e-6 && mid[0] < 1.0 - 1e-6 && mid[1] > 1e-6 && mid[1] < 1.0 - 1e-6),
+                "boundary edge inside the region at {mid:?}"
+            );
+        }
     }
 
     /// Partial-edge abutment (B meets only the middle of A's edge) — the case the old vertex weld

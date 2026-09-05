@@ -1019,9 +1019,14 @@ fn smooth_mesh(
     // Contour adjacency of each boundary vertex (its two neighbours along the resampled
     // outline) -> a slide tangent if the outline is locally straight there, else pinned.
     let mut nbr = vec![[usize::MAX; 2]; nb];
+    // Constraint degree: a vertex where a constraint CHAIN meets the outline (or two chains
+    // meet) has three or more constraint neighbours and stays pinned — sliding it along the
+    // outline would tilt the chain off the line it must hold.
+    let mut deg = vec![0usize; nb];
     for &(u, v) in segments {
         if u < nb && v < nb {
             for (a, b) in [(u, v), (v, u)] {
+                deg[a] += 1;
                 if nbr[a][0] == usize::MAX {
                     nbr[a][0] = b;
                 } else if nbr[a][1] == usize::MAX && nbr[a][0] != b {
@@ -1033,7 +1038,7 @@ fn smooth_mesh(
     let tangent: Vec<Option<[f64; 2]>> = (0..nb)
         .map(|i| {
             let [n0, n1] = nbr[i];
-            if n0 == usize::MAX || n1 == usize::MAX {
+            if n0 == usize::MAX || n1 == usize::MAX || deg[i] != 2 {
                 return None;
             }
             let (a, p, b) = (boundary[n0], boundary[i], boundary[n1]);
@@ -1466,6 +1471,24 @@ pub fn mesh_polygon(
     params: &PolyMeshParams,
     on_pass: impl FnMut(&[P2], &[[usize; 3]]),
 ) -> (Vec<P2>, Vec<[usize; 3]>) {
+    mesh_polygon_with_chains(loops, &[], target, params, on_pass)
+}
+
+/// [`mesh_polygon`] with additional CONSTRAINT CHAINS: open polylines (or closed ones given
+/// with a repeated end point) whose segments are honoured as element edges like the contour
+/// segments — protected from splitting, seeds cleared from them — but which play NO part in
+/// the membership (even-odd over `loops` only). This is how a planar layer is meshed
+/// ALIGNED to the outlines of the conductors on the layers above and below it: the outlines,
+/// clipped to the layer, come in as chains, and every cell boundary the neighbouring
+/// conductor induces in the charge is an element edge. A chain must lie inside the region
+/// (chain end points on a contour must be contour vertices).
+pub fn mesh_polygon_with_chains(
+    loops: &[Vec<P2>],
+    chains: &[Vec<P2>],
+    target: impl Fn(P2) -> f64,
+    params: &PolyMeshParams,
+    on_pass: impl FnMut(&[P2], &[[usize; 3]]),
+) -> (Vec<P2>, Vec<[usize; 3]>) {
     let mut boundary: Vec<P2> = Vec::new();
     let mut segments: Vec<(usize, usize)> = Vec::new();
     for lp in loops {
@@ -1477,6 +1500,31 @@ pub fn mesh_polygon(
         boundary.extend_from_slice(lp);
         for i in 0..n {
             segments.push((base + i, base + (i + 1) % n));
+        }
+    }
+    // Chains: their points are welded onto EXISTING boundary points where they coincide (a
+    // chain end on a contour vertex), so no duplicate vertex enters the triangulation.
+    for ch in chains {
+        if ch.len() < 2 {
+            continue;
+        }
+        let mut idx: Vec<usize> = Vec::with_capacity(ch.len());
+        for &q in ch {
+            let found = boundary
+                .iter()
+                .position(|&b| (b[0] - q[0]).abs() <= 1e-12 && (b[1] - q[1]).abs() <= 1e-12);
+            idx.push(match found {
+                Some(i) => i,
+                None => {
+                    boundary.push(q);
+                    boundary.len() - 1
+                }
+            });
+        }
+        for w in idx.windows(2) {
+            if w[0] != w[1] {
+                segments.push((w[0], w[1]));
+            }
         }
     }
     let pip = PipRows::build(loops);

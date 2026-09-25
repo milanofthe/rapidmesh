@@ -10,4 +10,4 @@ Showcase: https://mesh.rapidpassives.org
 
 ## License
 
-rapidmesh is licensed under the GNU Affero General Public License v3.0 (see LICENSE). Versions up to 0.6.0 were published under the MIT license.
+rapidmesh is dual licensed: under the GNU Affero General Public License v3.0 (see LICENSE), or under a commercial license for use in proprietary products and services without the AGPL obligations (contact https://milanrother.com/consulting/). Versions up to 0.6.0 were published under the MIT license.

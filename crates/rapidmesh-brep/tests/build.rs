@@ -1,0 +1,264 @@
+//! Builder tests: TaggedPlc -> Brep on the canonical shapes.
+
+use rapidmesh_brep::{build::from_plc, Curve, Surface};
+use rapidmesh_geom::{extrude_spline_profile, icosphere, naca0012_profile, solid_box, Scene};
+
+#[test]
+fn hemisphere_recovers_circle_edge() {
+    // a sphere cut by z<0: the equator is a sphere/plane intersection -> a Circle
+    let mut scene = Scene::new();
+    scene.add_solid(icosphere([0.0, 0.0, 0.0], 1.0, 3));
+    scene.add_void(solid_box([-2.0, -2.0, -2.0], [2.0, 2.0, 0.0]));
+    let b = from_plc(&scene.assemble());
+    let r = b
+        .edges
+        .iter()
+        .find_map(|e| match e.curve {
+            Curve::Circle { radius, .. } => Some(radius),
+            _ => None,
+        })
+        .expect("equator recovered as a Circle");
+    assert!((r - 1.0).abs() < 0.06, "circle radius {r} ~ 1.0");
+}
+
+#[test]
+fn box_has_6_faces_12_edges_8_corners() {
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]));
+    let plc = scene.assemble();
+    let b = from_plc(&plc);
+
+    assert_eq!(b.faces.len(), 6, "box has 6 faces");
+    assert_eq!(b.edges.len(), 12, "box has 12 edges");
+    assert_eq!(b.vertices.len(), 8, "box has 8 corners");
+
+    // every face is planar with a single outer loop of 4 edges
+    for f in &b.faces {
+        assert!(matches!(b.surface(f.surface), Surface::Plane { .. }));
+        assert_eq!(f.loops.len(), 1, "a box face has one loop");
+        assert_eq!(
+            f.loops[0].coedges.len(),
+            4,
+            "a box face loop has 4 co-edges"
+        );
+        // one side is a region, the other background (0)
+        let (a, c) = (f.regions[0].0, f.regions[1].0);
+        assert!(
+            (a == 0) ^ (c == 0),
+            "box wall separates region from background"
+        );
+        // the loop maps to a proper 2D region in the face (u,v): a
+        // nonzero-area bounding box, proving the planar chart is well-posed
+        let mut lo = [f64::MAX; 2];
+        let mut hi = [f64::MIN; 2];
+        let surf = b.surface(f.surface);
+        for &cid in &f.loops[0].coedges {
+            let chain = &b.edge(b.coedge(cid).edge).chain;
+            assert!(chain.len() >= 2, "co-edge chain has >= 2 points");
+            for p in chain.iter().map(|&p| surf.project_uv(p)) {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+        }
+        assert!(
+            hi[0] - lo[0] > 1e-9 && hi[1] - lo[1] > 1e-9,
+            "face (u,v) region has area"
+        );
+    }
+    // every edge is a straight line, shared by exactly two co-edges (two faces)
+    for e in &b.edges {
+        assert!(matches!(e.curve, Curve::Line { .. }), "box edge is a Line");
+        assert_eq!(e.coedges.len(), 2, "box edge is used by two faces");
+    }
+}
+
+#[test]
+fn sphere_is_one_closed_face_no_edges() {
+    let mut scene = Scene::new();
+    scene.add_solid(icosphere([0.0, 0.0, 0.0], 1.0, 2));
+    let plc = scene.assemble();
+    let b = from_plc(&plc);
+
+    // one analytic sphere surface, no feature edges, no corners (closed smooth)
+    assert_eq!(b.faces.len(), 1, "sphere is one face");
+    assert!(matches!(
+        b.surface(b.faces[0].surface),
+        Surface::Sphere { .. }
+    ));
+    assert_eq!(b.edges.len(), 0, "closed sphere has no feature edges");
+    assert_eq!(b.vertices.len(), 0, "closed sphere has no corners");
+}
+
+#[test]
+fn airfoil_recovers_extruded_face_and_profile_edges() {
+    let profile = naca0012_profile(1.0, 40);
+    let solid = extrude_spline_profile(
+        profile,
+        80,
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.5],
+    );
+    let mut scene = Scene::new();
+    scene.add_solid(solid);
+    let plc = scene.assemble();
+    let b = from_plc(&plc);
+
+    // mantle (Extruded) + 2 planar caps
+    let n_ext = b
+        .faces
+        .iter()
+        .filter(|f| matches!(b.surface(f.surface), Surface::Extruded { .. }))
+        .count();
+    assert_eq!(n_ext, 1, "one extruded mantle face");
+    assert!(b.faces.len() >= 3, "mantle + caps, got {}", b.faces.len());
+
+    // the mantle's rim edges are recovered as analytic profile curves
+    let n_profile = b
+        .edges
+        .iter()
+        .filter(|e| matches!(e.curve, Curve::Profile { .. }))
+        .count();
+    assert!(n_profile >= 1, "at least one profile edge, got {n_profile}");
+    assert!(!b.edges.is_empty(), "airfoil has feature edges");
+
+    // the extruded mantle face has loops whose edges map into its (t, h)
+    // parameter space: finite, and not all onto one point
+    let mantle = b
+        .faces
+        .iter()
+        .find(|f| matches!(b.surface(f.surface), Surface::Extruded { .. }))
+        .unwrap();
+    let surf = b.surface(mantle.surface);
+    let uv: Vec<[f64; 2]> = mantle
+        .loops
+        .iter()
+        .flat_map(|lp| lp.coedges.iter())
+        .flat_map(|&cid| b.edge(b.coedge(cid).edge).chain.iter())
+        .map(|&p| surf.project_uv(p))
+        .collect();
+    assert!(uv.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+    let n_uv = uv.iter().filter(|p| **p != uv[0]).count();
+    assert!(n_uv > 0, "the mantle loops span its parameter space");
+}
+
+#[test]
+fn oblique_cylinder_cut_recovers_ellipse() {
+    // A tilted cylinder cut by an axis-aligned plane (the void box top at z=0):
+    // the rim is an oblique plane section -> an exact Ellipse (NOT a Polyline).
+    // axis (1,0,2)/sqrt(5): cos(phi) = 2/sqrt(5) ~ 0.894 -- oblique, not a circle.
+    let mut scene = Scene::new();
+    scene.add_solid(rapidmesh_geom::cylinder(
+        [0.0, 0.0, -2.0],
+        [1.0, 0.0, 2.0],
+        0.5,
+        24,
+    ));
+    scene.add_void(solid_box([-3.0, -3.0, 0.0], [3.0, 3.0, 3.0]));
+    let b = from_plc(&scene.assemble());
+    let (a, mi) = b
+        .edges
+        .iter()
+        .find_map(|e| match e.curve {
+            Curve::Ellipse { a, b, .. } => Some((a, b)),
+            _ => None,
+        })
+        .expect("oblique rim recovered as an Ellipse");
+    let cosphi = 2.0 / 5.0f64.sqrt();
+    assert!(
+        (mi - 0.5).abs() < 1e-9,
+        "semi-minor {mi} ~ cylinder radius 0.5"
+    );
+    assert!(
+        (a - 0.5 / cosphi).abs() < 1e-9,
+        "semi-major {a} ~ r/cos(phi)"
+    );
+}
+
+#[test]
+fn crossed_cylinders_recover_intersection_edges() {
+    // A cylinder drilled crosswise by a void cylinder: the hole rim on the barrel
+    // is a cylinder-cylinder intersection curve -- no closed form, so it must be
+    // recovered as Curve::Intersection (POCS-refined downstream), NOT a Polyline.
+    let mut scene = Scene::new();
+    scene.add_solid(rapidmesh_geom::cylinder(
+        [-2.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        0.8,
+        24,
+    ));
+    scene.add_void(rapidmesh_geom::cylinder(
+        [0.0, -2.0, 0.0],
+        [0.0, 4.0, 0.0],
+        0.4,
+        24,
+    ));
+    let b = from_plc(&scene.assemble());
+    let n_isect = b
+        .edges
+        .iter()
+        .filter(|e| matches!(e.curve, Curve::Intersection { .. }))
+        .count();
+    assert!(
+        n_isect >= 1,
+        "cyl-cyl rim recovered as Intersection, got {n_isect}"
+    );
+    // and the two referenced surfaces really are the two cylinders
+    for e in &b.edges {
+        if let Curve::Intersection { a, b: sb } = e.curve {
+            assert!(matches!(b.surface(a), Surface::Cylinder { .. }));
+            assert!(matches!(b.surface(sb), Surface::Cylinder { .. }));
+        }
+    }
+}
+
+/// Two sheets through each other: neither ends on the other, yet the line
+/// where they cross is an edge of both, inside each.
+#[test]
+fn crossing_sheets_share_their_crossing_as_an_edge() {
+    use rapidmesh_geom::{sheet_rect, solid_box, FaceTag, Scene};
+    let mut scene = Scene::new();
+    scene.add_solid(solid_box([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]));
+    scene.add_sheet(
+        sheet_rect([-1.0, -1.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]),
+        FaceTag(1),
+    );
+    scene.add_sheet(
+        sheet_rect([-0.9, 0.0, -1.1], [1.7, 0.0, 0.0], [0.0, 0.0, 2.3]),
+        FaceTag(2),
+    );
+    let brep = rapidmesh_brep::build::from_plc(&scene.assemble());
+    let on_axis = |p: [f64; 3]| p[1].abs() < 1e-12 && p[2].abs() < 1e-12;
+    let crossing: Vec<usize> = brep
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.chain.iter().all(|&p| on_axis(p)))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!crossing.is_empty(), "the crossing is an edge");
+    let len: f64 = crossing
+        .iter()
+        .map(|&i| {
+            let c = &brep.edges[i].chain;
+            (c[c.len() - 1][0] - c[0][0]).abs()
+        })
+        .sum();
+    assert!(
+        (len - 1.7).abs() < 1e-9,
+        "the crossing runs the width of the smaller sheet: {len}"
+    );
+    for &i in &crossing {
+        let mut tags: Vec<u32> = brep.edges[i]
+            .coedges
+            .iter()
+            .map(|&c| brep.faces[brep.coedge(c).face.0 as usize].face_tag.0)
+            .collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags, [1, 2], "edge {i} lies on both sheets");
+    }
+}

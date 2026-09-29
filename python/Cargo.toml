@@ -1,0 +1,28 @@
+[package]
+name = "rapidmesh-python"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "rapidmesh"
+crate-type = ["cdylib"]
+
+[dependencies]
+rapidmesh = { path = "../crates/rapidmesh" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+numpy = "0.22"
+rapidmesh-exact = { path = "../crates/rapidmesh-exact" }
+mimalloc = { version = "0.1", default-features = false }
+
+[features]
+# Counts the heap: every stage records its peak as `mem.<stage>` (MB).
+mem = []
+
+[workspace]
+
+# This file opens its OWN (empty) workspace, so the root workspace's release
+# profile does not apply here -- duplicate it: the binding is what the corpus
+# actually benchmarks.
+[profile.release]
+lto = "thin"
+codegen-units = 1

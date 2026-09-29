@@ -1,0 +1,47 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rapidmesh"
+version = "1.0.0"
+description = "Conforming tetrahedral and surface meshes for electromagnetic FEM and MoM, in Rust with a Python API."
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.10"
+authors = [
+    { name = "Milan Rother", email = "sporkhomat@gmail.com" },
+]
+keywords = ["mesh", "tetrahedral", "fem", "mom", "delaunay", "csg", "step", "cad"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.26",
+]
+
+# Optional window backend for Mesh.show(): a native window via pywebview (the
+# bundled viewer itself ships with the wheel). `pip install rapidmesh[viewer]`.
+[project.optional-dependencies]
+viewer = ["pywebview>=4.0"]
+
+[project.urls]
+Homepage = "https://mesh.rapidpassives.org"
+Repository = "https://github.com/milanofthe/rapidmesh"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "rapidmesh._native"
+python-source = "python_src"
+# Ship the bundled interactive viewer (Mesh.show()) as package data.
+include = ["python_src/rapidmesh/_viewer_dist/**/*"]

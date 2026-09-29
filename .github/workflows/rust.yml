@@ -1,0 +1,50 @@
+name: rust
+
+# Lint and test gate of the Rust workspace: cargo clippy (warnings are
+# errors) and the full test suite. The corpus stays local: it is the
+# benchmark, not a CI gate (run time).
+#
+# One test is skipped: cylinder_coarse_interior_terminates is a wall-clock
+# budget test (30 s on the reference machine), which is no stable signal on
+# shared runners. It runs locally with the normal suite.
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "crates/**"
+      - "python/src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "python/src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --no-fail-fast -- --skip cylinder_coarse_interior_terminates

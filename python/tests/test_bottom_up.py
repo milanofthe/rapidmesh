@@ -17,7 +17,7 @@ def _stack():
 
 
 def test_a_thin_stack_with_a_port_closes():
-    s = _stack().surface_mesh(bottom_up=True)
+    s = _stack().surface_mesh()
     F, R = np.asarray(s.faces), np.asarray(s.face_regions)
     for r in set(R.ravel()) - {0}:
         count = collections.Counter()
@@ -44,7 +44,7 @@ def test_curved_faces_close_without_defects(shape):
         "torus": lambda: g.torus(1.0, 0.3),
         "helix": lambda: g.helix(0.8, 0.5, 2.5, 0.15),
     }[shape]()
-    m = g.mesh(bottom_up=True)
+    m = g.mesh()
     d = m.diagnostics
     assert d["watertight"]
     assert all(x["kind"] == "sliver" for x in d["defects"])
@@ -52,7 +52,7 @@ def test_curved_faces_close_without_defects(shape):
 
 
 def test_a_thin_stack_with_a_port_fills_region_by_region():
-    m = _stack().mesh(bottom_up=True)
+    m = _stack().mesh()
     d = m.diagnostics
     assert d["watertight"]
     assert all(x["kind"] == "sliver" for x in d["defects"])
@@ -67,7 +67,7 @@ def test_a_thin_stack_with_a_port_fills_region_by_region():
 def test_a_box_is_refined_to_its_size_and_improved():
     g = rm.Geometry(maxh=0.2)
     g.box(2, 3, 1)
-    m = g.mesh(bottom_up=True)
+    m = g.mesh()
     d = m.diagnostics
     assert d["watertight"] and not d["defects"]
     assert m.stats["min_dihedral_deg"] > 15.0
@@ -88,7 +88,7 @@ def test_a_contact_wedge_is_filled():
     g.box(3, 3, 2, position=(-1.5, -1.5, 0))
     g.cylinder(0.5, 2, position=(-0.5, 0, 0), maxh=0.12)
     g.cylinder(0.5, 2, position=(0.5, 0, 0), maxh=0.12)
-    m = g.mesh(bottom_up=True)
+    m = g.mesh()
     d = m.diagnostics
     assert d["watertight"]
     assert not [x for x in d["defects"] if x["kind"] != "sliver"]
@@ -102,7 +102,7 @@ def test_a_thin_gap_and_a_trace_keep_their_volumes():
     g.box(2, 2, 0.1, position=(-1, -1, 0.02))
     g.box(2, 2, 0.1, position=(-1, -1, -0.1))
     g.box(1, 0.2, 0.05, position=(-0.5, -0.1, 0.12))
-    m = g.mesh(bottom_up=True)
+    m = g.mesh()
     v = sorted(_volumes(m).values())
     expect = sorted([2 * 2 * 0.1, 2 * 2 * 0.1, 1 * 0.2 * 0.05, 4 * 4 * 2 - 0.8 - 0.01])
     assert np.allclose(v, expect, rtol=1e-9, atol=1e-12)
@@ -114,7 +114,7 @@ def test_periodic_sides_carry_the_same_triangles():
     g.box(2.0, 2.0, 0.5, maxh=0.3)
     g.cylinder(0.3, 3.0, position=(1.0, 1.0, 0.0), maxh=0.2)
     g.periodic(g.surf(normal=(-1, 0, 0)), g.surf(normal=(1, 0, 0)))
-    m = g.mesh(bottom_up=True)
+    m = g.mesh()
     P, F = np.asarray(m.points), np.asarray(m.faces)
 
     def side(x, shift):

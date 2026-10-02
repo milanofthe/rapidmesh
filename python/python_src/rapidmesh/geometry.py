@@ -79,16 +79,32 @@ def _show(viewer_dict: dict, name: str, **kw) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(viewer_dict, f)
-        _viewer.inspect(path, title=f"rapidmesh — {name}", **kw)
+        _viewer.inspect(path, title=f"rapidmesh - {name}", **kw)
     finally:
         with suppress(OSError):
             os.unlink(path)
 
 
-class _Labelled:
-    """The labels a mesh carries from its geometry."""
+class _MeshBase:
+    """What every mesh has: the points and faces with their tags, regions,
+    carriers and patches, the point classes, the labels it carries from its
+    geometry and the run's statistics."""
 
-    def _read_labels(self, native) -> None:
+    def _read(self, native) -> None:
+        self._native = native
+        self.points: np.ndarray = native.points()
+        self.faces: np.ndarray = native.faces()
+        self.face_tags: np.ndarray = native.face_tags()
+        self.face_regions: np.ndarray = native.face_regions()
+        self.face_surfaces: np.ndarray = native.face_surfaces()
+        self.face_patches: np.ndarray = native.face_patches()
+        self.point_class: np.ndarray = native.point_class()
+        self.surface_owners: np.ndarray = native.surface_owners()
+        self.stats: dict = native.stats()
+        #: per-stage wall-clock seconds, pipeline order
+        self.timings: dict = native.timings()
+        #: named statistics of the run
+        self.metrics: dict = native.metrics()
         labels = native.labels()
         #: per input solid (insertion order): {"region": int, "label": str|None}
         self.solids: list[dict] = labels["solids"]
@@ -100,7 +116,7 @@ class _Labelled:
         self.edge_names: dict[str, list[int]] = labels["edge_names"]
 
 
-class Mesh(_Labelled):
+class Mesh(_MeshBase):
     """A finished tetrahedral mesh (numpy views over the native result).
 
     Attributes
@@ -152,23 +168,11 @@ class Mesh(_Labelled):
     """
 
     def __init__(self, native) -> None:
-        self._native = native
-        self._read_labels(native)
-        self.points: np.ndarray = native.points()
+        self._read(native)
         self.tets: np.ndarray = native.tets()
         self.tet_regions: np.ndarray = native.tet_regions()
-        self.faces: np.ndarray = native.faces()
-        self.face_tags: np.ndarray = native.face_tags()
-        self.face_regions: np.ndarray = native.face_regions()
-        self.face_surfaces: np.ndarray = native.face_surfaces()
-        self.face_patches: np.ndarray = native.face_patches()
-        self.point_class: np.ndarray = native.point_class()
         self.periodic_points: np.ndarray = native.periodic_points()
-        self.surface_owners: np.ndarray = native.surface_owners()
         self.edges: np.ndarray = native.edges()
-        self.stats: dict = native.stats()
-        self.timings: dict = native.timings()
-        self.metrics: dict = native.metrics()
         self.log: list[dict] = native.log()
         self.quality: dict = native.quality()
 
@@ -220,13 +224,15 @@ class Mesh(_Labelled):
         """
         return self._native.sets()
 
-    def write_msh(self, path: str | Path) -> Path:
+    def write_msh(self, path: str | Path, order: int = 1) -> Path:
         """Writes the mesh as a gmsh MSH 4.1 file: geometric vertices, edges
         and faces become point, curve and surface entities (tag = id + 1),
         regions volume entities; every node sits in the block of what it is
         classified on. Physical groups: the labelled solid groups (volumes),
-        the named face tags and the named geometric faces and edges."""
-        self._native.write_msh(str(path))
+        the named face tags and the named geometric faces and edges.
+        ``order=2`` writes the second-order mesh (see :meth:`second_order`):
+        lines with three nodes, triangles with six, tets with ten."""
+        self._native.write_msh(str(path), order)
         return Path(path)
 
     def write_vtu(self, path: str | Path) -> Path:
@@ -235,6 +241,50 @@ class Mesh(_Labelled):
         and ``face_tag``."""
         self._native.write_vtu(str(path))
         return Path(path)
+
+    def second_order(self) -> dict:
+        """The second-order mesh: ``points`` (the corners, then the mid-edge
+        nodes), ``tets`` (n, 10) in the node order of Abaqus C3D10 and VTK's
+        quadratic tetra, the surface ``faces`` (m, 6), the exact ``volumes``,
+        and how many mid-edge nodes went onto a curved surface (``curved``)
+        and back on their chord to keep a tet valid (``straightened``)."""
+        return self._native.second_order()
+
+    def write_inp(self, path: str | Path, order: int = 1) -> Path:
+        """Writes a CalculiX / Abaqus input file: C3D4 (``order=1``) or C3D10
+        with the mid-edge nodes on the true geometry (``order=2``); the
+        region groups as element sets, every named face and sheet tag as a
+        node set and, on the boundary, an element-face surface."""
+        self._native.write_inp(str(path), order)
+        return Path(path)
+
+    def write_vtu_second_order(self, path: str | Path) -> Path:
+        """Writes the second-order mesh as a VTK XML unstructured grid
+        (quadratic tetra) with cell data ``region``."""
+        self._native.write_vtu_second_order(str(path))
+        return Path(path)
+
+    def write_foam(self, case: str | Path, polyhedral: bool = False) -> Path:
+        """Writes the mesh as an OpenFOAM ``polyMesh`` into
+        ``<case>/constant/polyMesh``: every tet a cell, or with
+        ``polyhedral`` the median dual (a polyhedral cell per vertex and
+        region group, a third to a quarter as many cells). The boundary patches are
+        the named faces, then the named sheet tags, the rest ``boundary``;
+        the region groups are cell zones, and with tets named faces inside
+        the mesh (sheets, interfaces) face zones. Returns the ``polyMesh``
+        directory."""
+        out = Path(case) / "constant" / "polyMesh"
+        self._native.write_foam(str(out), polyhedral)
+        return out
+
+    def fvm_quality(self, polyhedral: bool = False) -> dict:
+        """The finite volume quality of the cells :meth:`write_foam` writes,
+        as OpenFOAM's ``checkMesh`` measures it: per face
+        ``non_orthogonality`` (degrees) and ``skewness`` (0 on the boundary),
+        with ``max_non_orthogonality``, ``mean_non_orthogonality``,
+        ``max_skewness``, ``severely_non_orthogonal`` (faces above 70
+        degrees), and the ``cells``, ``faces`` and cell ``volumes``."""
+        return self._native.fvm_quality(polyhedral)
 
     @cached_property
     def diagnostics(self) -> dict:
@@ -268,11 +318,6 @@ class Mesh(_Labelled):
         viewer and the showcase site), with the located defects."""
         return json.loads(self._native.viewer_json(name))
 
-    def save_viewer_json(self, name: str, directory: str | Path) -> Path:
-        """Writes ``rapidmesh_<name>.json`` in the viewer schema and
-        refreshes the viewer manifest. Returns the written path."""
-        return Path(self._native.save_viewer_json(name, str(directory)))
-
     def show(self, name: str = "mesh", *, clip: float | None = 0.6,
              clip_axis: int = 1, **kw) -> None:
         """Open this mesh in the interactive viewer and block until the window is
@@ -285,7 +330,7 @@ class Mesh(_Labelled):
         _show(self.to_viewer_dict(name), name, clip=clip, clip_axis=clip_axis, **kw)
 
 
-class SurfaceMesh(_Labelled):
+class SurfaceMesh(_MeshBase):
     """A boundary surface mesh (surface-only export): the conforming surface
     triangulation without any volume tets.
 
@@ -314,27 +359,12 @@ class SurfaceMesh(_Labelled):
     """
 
     def __init__(self, native) -> None:
-        self._native = native
-        self._read_labels(native)
-        self.points: np.ndarray = native.points()
-        self.faces: np.ndarray = native.faces()
-        self.face_tags: np.ndarray = native.face_tags()
-        self.face_regions: np.ndarray = native.face_regions()
-        self.face_surfaces: np.ndarray = native.face_surfaces()
-        self.face_patches: np.ndarray = native.face_patches()
-        self.point_class: np.ndarray = native.point_class()
-        self.surface_owners: np.ndarray = native.surface_owners()
-        self.stats: dict = native.stats()
-        #: per-stage wall-clock seconds, pipeline order
-        self.timings: dict = native.timings()
-        #: named statistics of the run
-        self.metrics: dict = native.metrics()
+        self._read(native)
 
     def __repr__(self) -> str:
         return repr(self._native)
 
-    # ---- MoM/FEM mesh info -------------------------------------------------
-    # The same accessor vocabulary as :class:`Mesh2D`.
+    # ---- solver mesh info --------------------------------------------------
 
     def edge_adjacency(self):
         """Undirected edge -> incident triangles. Returns ``(edges, faces, tags)``,
@@ -423,60 +453,6 @@ class SurfaceMesh(_Labelled):
         _show(self.to_viewer_dict(name), name, clip=clip, tets=False, **kw)
 
 
-@dataclass
-class Region2D:
-    """A tagged 2D region for :func:`mesh_2d`: an outer loop with optional holes,
-    all in the xy plane. ``tag`` flows to every triangle of this region (the
-    conductor / layer id a MoM build reads for same-tag RWG edges)."""
-
-    outer: list[tuple[float, float]]
-    tag: int = 1
-    holes: list[list[tuple[float, float]]] | None = None
-    #: Open polylines INSIDE the region whose segments become element edges, without changing
-    #: the region's extent. Used to put a known feature on the mesh: the outline a conductor
-    #: on a neighbouring layer induces, or the rows of a boundary layer from
-    #: :func:`offset_chains`.
-    constraints: list[list[tuple[float, float]]] | None = None
-
-    def local_width(self, point, inward) -> float:
-        """The width of the region at a boundary `point`, measured along `inward`.
-
-        Twice the radius of the largest ball tangent to the boundary there that is stopped by
-        the wall ACROSS from it; ``inf`` when nothing faces the point. ``local_width / k`` is
-        the sizing field that asks for k elements across the shape wherever it happens to be.
-        """
-        return _native.local_width(
-            [list(p) for p in self.outer],
-            [[list(p) for p in hl] for hl in (self.holes or [])],
-            list(point),
-            list(inward),
-        )
-
-    def offset_chains(self, pitch, scales=(1.0,), minh: float | None = None,
-                      grading: float | None = None):
-        """Inward offsets of the boundary at a distance that VARIES along it.
-
-        `pitch` is either a number (a constant distance, i.e. a plain inward buffer) or a
-        callable mapping the local width at a boundary point to the distance there, so
-        ``lambda w: w / 16`` lays the first row a sixteenth of the local width inside the
-        boundary. `scales` are the multiples to emit, e.g. ``(1, 3, 7)`` for rows of width
-        ``d``, ``2d``, ``4d`` growing away from the boundary.
-
-        `minh` floors the distance. A chain is a CONSTRAINT the mesher must reproduce, so a row
-        finer than the floor cannot be repaired afterwards.
-
-        Returns the chains, ready to assign to :attr:`constraints`.
-        """
-        return _native.offset_chains(
-            [list(p) for p in self.outer],
-            [[list(p) for p in hl] for hl in (self.holes or [])],
-            pitch,
-            [float(s) for s in scales],
-            minh,
-            grading,
-        )
-
-
 def load_msh(path) -> Mesh:
     """The volume mesh in a gmsh MSH file (4.1 or 2.2, ASCII) as it is, no
     remeshing: a volume entity is a region labelled by its first physical
@@ -485,175 +461,22 @@ def load_msh(path) -> Mesh:
     return Mesh(_native.load_msh(str(path)))
 
 
-class Mesh2D:
-    """A 2D mesh from the production 2D path -- the canonical 2D / MoM
-    endpoint.
-
-    Attributes
-    ----------
-    points : (n_points, 2) float64
-        vertex coordinates (2D)
-    tris : (n_tris, 3) uint64
-        triangles (CCW)
-    tri_tags : (n_tris,) int64
-        conductor / layer tag per triangle
-    """
-
-    def __init__(self, native) -> None:
-        self._native = native
-        self.points: np.ndarray = native.points()
-        self.tris: np.ndarray = native.tris()
-        self.tri_tags: np.ndarray = native.tri_tags()
-        self.stats: dict = native.stats()
-
-    def __repr__(self) -> str:
-        s = self.stats
-        return f"Mesh2D({s['n_tris']} tris, {s['n_points']} points, {s['millis']} ms)"
-
-    def edge_adjacency(self):
-        """Undirected edge -> incident triangles, see
-        :meth:`SurfaceMesh.edge_adjacency`."""
-        return self._native.edge_adjacency()
-
-    def rwg_edges(self, connect_tags: bool = False):
-        """RWG basis functions, ``(D, 4)`` int64 ``[v0, v1, tri_plus,
-        tri_minus]`` (see :meth:`SurfaceMesh.rwg_edges`)."""
-        return self._native.rwg_edges(connect_tags)
-
-    def boundary_edges(self):
-        """Conductor outline = edges with a free side or a tag change, ``(B, 3)``
-        int64 ``[v0, v1, tri]``."""
-        return self._native.boundary_edges()
-
-    def edges_on_line(self, axis, value, lo, hi, tol=1e-7):
-        """Port helper: boundary edges on the line ``{axis = value}`` within
-        ``[lo, hi]`` (``axis`` is ``'x'``/``'y'`` or 0/1). ``(k, 2)`` int64."""
-        a = {"x": 0, "y": 1}.get(axis, axis)
-        return self._native.edges_on_line(a, value, lo, hi, tol)
-
-    def areas(self):
-        """Per-triangle area, ``(n_tris,)`` float64."""
-        return self._native.areas()
-
-    def min_angles(self):
-        """Per-triangle minimum interior angle in degrees, ``(n_tris,)`` float64."""
-        return self._native.min_angles()
-
-
-def _norm_regions(regions):
-    """``Region2D`` / tuple input -> the native ``(outer, holes, tag, constraints)`` form."""
+def polygon_union(polygons):
+    """The union of planar polygons into connected shapes: overlapping or
+    abutting ones merge, separate ones stay separate. Each polygon is a list
+    of ``(x, y)`` points or an ``(outer, holes)`` pair, either way round.
+    Returns ``(outer, holes)`` per shape, the outer counter-clockwise and the
+    holes clockwise; the outlines of layout layers whose rectangles overlap,
+    ready for :meth:`Geometry.polygon_plate` or a prism."""
     norm = []
-    for r in regions:
-        if isinstance(r, Region2D):
-            outer, tag, holes = r.outer, r.tag, (r.holes or [])
-            chains = r.constraints or []
+    for p in polygons:
+        if len(p) == 2 and not np.isscalar(p[0][0]):
+            outer, holes = p
         else:
-            outer = r[0]
-            tag = r[1] if len(r) > 1 else 1
-            holes = r[2] if len(r) > 2 else []
-            chains = r[3] if len(r) > 3 else []
-        norm.append((
-            [list(p) for p in outer],
-            [[list(p) for p in hl] for hl in holes],
-            int(tag),
-            [[list(p) for p in ch] for ch in chains],
-        ))
-    return norm
-
-
-def union_regions(regions):
-    """Union of 2D regions: abutting or overlapping ones merge into one shape, separate ones
-    stay separate. Returns ``(outer, holes)`` per shape, outer CCW and holes CW."""
-    return _native.union_regions(_norm_regions(regions))
-
-
-def overlay_regions(subject, clip, rule: str = "union"):
-    """Boolean overlay of two region sets. `rule` is ``"union"``, ``"intersect"`` or
-    ``"difference"`` (subject minus clip). Returns ``(outer, holes)`` per shape."""
-    return _native.overlay_regions(_norm_regions(subject), _norm_regions(clip), rule)
-
-
-def mesh_2d(
-    regions,
-    h: float,
-    *,
-    min_angle_deg: float | None = None,
-    cvt_iters: int | None = None,
-    max_passes: int | None = None,
-    target_count: int | None = None,
-    minh: float | None = None,
-    maxh: float | None = None,
-    grading: float | None = None,
-    band_diagonals: str | None = None,
-    width_size: float | None = None,
-    snap: float | None = None,
-) -> Mesh2D:
-    """THE 2D endpoint: mesh tagged 2D polygons into one bundle, the
-    canonical 2D / MoM path.
-
-    Parameters
-    ----------
-    regions : list[Region2D | tuple]
-        the tagged 2D regions; each a :class:`Region2D`, or an
-        ``(outer, tag, holes)`` tuple (``outer`` a list of ``(x, y)``).
-    h : float
-        target edge length (uniform sizing field).
-    min_angle_deg, cvt_iters, max_passes : optional
-        Ruppert min-angle bound, CVT seed iterations, max refinement passes.
-    target_count : optional
-        triangle BUDGET: ``> 0`` scales the sizing field by one global factor so
-        the mesh lands near this count (0 = field-driven).
-    minh, maxh : optional
-        hard element-size floor / cap, applied after the budget scaling (0 = off).
-    grading : optional
-        Lipschitz slope of the sizing field (0 = off).
-    band_diagonals : optional
-        ``"alternate"`` (default): the diagonals of the edge band's cells
-        alternate from cell to cell; ``"along"``: they all lean one way along
-        the outline.
-    width_size : optional
-        the size at most this share of the local width (the width of a trace
-        at the nearest point of its outline); ``1.0`` gives cells about as
-        long as the trace is wide (0 = off, the default).
-    snap : optional
-        constraint chains snapped together: a chain point closer than this
-        share of the size to another chain or to the outline moves onto it,
-        and pieces running along another are dropped (0 = off, the default;
-        e.g. 0.25 for the outlines of stacked metal layers).
-    """
-    return Mesh2D(_native.mesh_2d(
-        _norm_regions(regions), float(h), min_angle_deg, cvt_iters, max_passes,
-        target_count, minh, maxh, grading, band_diagonals, width_size, snap,
-    ))
-
-
-def mesh_layers(
-    groups,
-    h: float,
-    *,
-    min_angle_deg: float | None = None,
-    cvt_iters: int | None = None,
-    max_passes: int | None = None,
-    target_count: int | None = None,
-    minh: float | None = None,
-    maxh: float | None = None,
-    grading: float | None = None,
-    band_diagonals: str | None = None,
-    width_size: float | None = None,
-    snap: float | None = None,
-) -> list[Mesh2D]:
-    """THE grouped 2D endpoint: each ``group`` is one layer's region list
-    (same forms as :func:`mesh_2d`). WITHIN a group, abutting/overlapping
-    regions weld into one RWG-connected component; regions of different
-    groups never merge; a ``target_count > 0`` is ONE triangle budget shared
-    across every patch of every group. Returns one :class:`Mesh2D` per
-    group, in input order.
-    """
-    native = _native.mesh_layers(
-        [_norm_regions(g) for g in groups], float(h), min_angle_deg, cvt_iters,
-        max_passes, target_count, minh, maxh, grading, band_diagonals, width_size, snap,
-    )
-    return [Mesh2D(m) for m in native]
+            outer, holes = p, []
+        norm.append(([list(map(float, q)) for q in outer],
+                     [[list(map(float, q)) for q in h] for h in holes]))
+    return _native.polygon_union(norm)
 
 
 def _filt(sel, kw):
@@ -722,6 +545,25 @@ class _Scope:
         resolved when the mesh is made; select by origin (``solid=``,
         ``role=``) to keep the same face through later changes."""
         self._g._native.name(self._native(), str(v))
+
+
+def _plain(v):
+    """``v`` with numpy arrays and scalars as Python lists and numbers."""
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    return v
+
+
+def _given(**fields) -> dict:
+    """The fields given, as plain Python: those left at ``None`` take the
+    Rust defaults."""
+    return {k: _plain(v) for k, v in fields.items() if v is not None}
 
 
 def _solid(native, pair) -> Solid:
@@ -824,7 +666,10 @@ class Geometry:
         return _Scope(self, "surf", None, _face_filt(self._native, sel, kw))
 
     def edge(self, sel=None, **kw) -> _Scope:
-        """Scope on edges by ``id=``/``near=``/``between=``/``kind=``, or all."""
+        """Scope on edges by ``id=``/``near=``/``between=``/``kind=``, or all.
+        ``kind`` names the edge's curve: "line", "circle", "ellipse",
+        "spline", "profile" (a swept profile's edge), "intersection" (of two
+        curved surfaces) or "polyline" (no analytic curve)."""
         return _Scope(self, "edge", None, None, _filt(sel, kw))
 
     def _topology(self):
@@ -863,18 +708,27 @@ class Geometry:
         first solid, now representing the merged region."""
         return _solid(self._native, self._native.union([(s.region, s.index) for s in solids]))
 
+    def _add(self, kind: str, maxh, void, **fields) -> Solid:
+        """A solid of ``kind`` from the fields given (the others at the Rust
+        defaults)."""
+        return _solid(self._native, self._native.add_solid(kind, _given(**fields), maxh, void))
+
+    def _sheet(self, kind: str, tag, maxh, **fields) -> "Sheet":
+        """A sheet of ``kind`` from the fields given."""
+        return Sheet(*self._native.add_sheet(kind, _given(**fields), tag, maxh))
+
     # ------------------------------------------------------------ solids
 
     def box(self, width: float, depth: float, height: float,
-            position=(0, 0, 0), *, maxh: float | None = None, void: bool = False) -> Solid:
+            position=None, *, maxh: float | None = None, void: bool = False) -> Solid:
         """Axis-aligned box: extents along x, y, z; ``position`` is the
         lower corner. ``void=True`` carves the volume out of everything
         added before it (the cut boolean; the region tag is then 0 and the
         walls become boundary faces)."""
-        return _solid(self._native, self._native.add_box([width, depth, height], position, maxh, void))
+        return self._add("box", maxh, void, size=[width, depth, height], position=position)
 
-    def cylinder(self, radius: float, height: float, position=(0, 0, 0), axis=(0, 0, 1), *,
-                 segments: int | None = None, uniform: bool = False, rows: int | None = None,
+    def cylinder(self, radius: float, height: float, position=None, axis=None, *,
+                 segments: int | None = None, uniform: bool | None = None, rows: int | None = None,
                  maxh: float | None = None, void: bool = False) -> Solid:
         """Cylinder from the base centre ``position`` along ``axis``. The
         barrel is tessellated with ``segments`` chords (24) but carries the
@@ -883,25 +737,26 @@ class Geometry:
         With ``uniform=True`` the barrel is a structured grid of height
         ``rows`` (auto-chosen for roughly square cells when ``None``) instead of
         full-height strips, for an isotropic surface mesh."""
-        return _solid(self._native, self._native.add_cylinder(
-            radius, height, position, axis, segments, uniform, rows, maxh, void))
+        return self._add("cylinder", maxh, void, radius=radius, height=height, position=position,
+                         axis=axis, segments=segments, uniform=uniform, rows=rows)
 
-    def sphere(self, radius: float, position=(0, 0, 0), *, segments: int | None = None,
+    def sphere(self, radius: float, position=None, *, segments: int | None = None,
                maxh: float | None = None, void: bool = False) -> Solid:
         """Sphere centred at ``position`` (analytic surface, faceted
         geodesically; the facet density follows the target size,
         ``segments`` is a floor)."""
-        return _solid(self._native, self._native.add_sphere(radius, position, segments, maxh, void))
+        return self._add("sphere", maxh, void, radius=radius, position=position, segments=segments)
 
-    def icosphere(self, radius: float, position=(0, 0, 0), *, subdivisions: int | None = None,
+    def icosphere(self, radius: float, position=None, *, subdivisions: int | None = None,
                   maxh: float | None = None, void: bool = False) -> Solid:
         """Geodesic sphere with a fixed facet level: a subdivided icosahedron
         projected onto the analytic sphere, ``20 * 4**subdivisions`` faces
         (3 by default)."""
-        return _solid(self._native, self._native.add_icosphere(radius, position, subdivisions, maxh, void))
+        return self._add("icosphere", maxh, void, radius=radius, position=position,
+                         subdivisions=subdivisions)
 
-    def airfoil_naca0012(self, chord: float, span: float, position=(0, 0, 0),
-                         span_axis=(0, 0, 1), *, n_per_side: int | None = None,
+    def airfoil_naca0012(self, chord: float, span: float, position=None,
+                         span_axis=None, *, n_per_side: int | None = None,
                          n_seg: int | None = None, maxh: float | None = None,
                          void: bool = False) -> Solid:
         """A NACA 0012 airfoil (chord along +x, leading edge at ``position``)
@@ -909,67 +764,66 @@ class Geometry:
         analytic extruded-spline surface; the trailing edge is a flat blunt
         face. ``n_per_side`` (40) controls profile control points, ``n_seg``
         (120) the facet count along the chord."""
-        return _solid(self._native, self._native.add_naca0012(
-            chord, span, position, span_axis, n_per_side, n_seg, maxh, void))
+        return self._add("naca0012", maxh, void, chord=chord, span=span, position=position,
+                         span_axis=span_axis, n_per_side=n_per_side, n_seg=n_seg)
 
-    def cone(self, r1: float, r2: float, height: float, position=(0, 0, 0), axis=(0, 0, 1), *,
-             segments: int | None = None, uniform: bool = False, rows: int | None = None,
+    def cone(self, r1: float, r2: float, height: float, position=None, axis=None, *,
+             segments: int | None = None, uniform: bool | None = None, rows: int | None = None,
              maxh: float | None = None, void: bool = False) -> Solid:
         """Conical frustum: base radius ``r1`` at ``position``, top radius
         ``r2`` (0 for a full cone) at ``position + height * axis``;
         ``uniform`` and ``rows`` as for :meth:`cylinder`."""
-        return _solid(self._native, self._native.add_cone(
-            r1, r2, height, position, axis, segments, uniform, rows, maxh, void))
+        return self._add("cone", maxh, void, r1=r1, r2=r2, height=height, position=position,
+                         axis=axis, segments=segments, uniform=uniform, rows=rows)
 
-    def prism(self, points, height: float, position=(0, 0, 0), *, holes=None,
+    def prism(self, points, height: float, position=None, *, holes=None,
               maxh: float | None = None, void: bool = False) -> Solid:
         """Right prism: the 2D polygon ``points`` (in the xy plane, offset by
         ``position``) extruded by ``height`` along z."""
-        return _solid(self._native, self._native.add_prism(
-            [list(p) for p in points], height, position,
-            [[list(q) for q in h] for h in holes] if holes else None, maxh, void))
+        return self._add("prism", maxh, void, points=points, height=height, position=position,
+                         holes=holes)
 
-    def torus(self, major_radius: float, minor_radius: float, position=(0, 0, 0),
-              axis=(0, 0, 1), *, segments: int | None = None,
+    def torus(self, major_radius: float, minor_radius: float, position=None,
+              axis=None, *, segments: int | None = None,
               tube_segments: int | None = None, maxh: float | None = None,
               void: bool = False) -> Solid:
         """Torus centred at ``position`` with the donut plane normal to
         ``axis`` (analytic surface)."""
-        return _solid(self._native, self._native.add_torus(
-            major_radius, minor_radius, position, axis, segments, tube_segments, maxh, void))
+        return self._add("torus", maxh, void, major_radius=major_radius,
+                         minor_radius=minor_radius, position=position, axis=axis,
+                         segments=segments, tube_segments=tube_segments)
 
-    def wedge(self, dx: float, dy: float, dz: float, position=(0, 0, 0), *,
+    def wedge(self, dx: float, dy: float, dz: float, position=None, *,
               top_x: float | None = None, maxh: float | None = None,
               void: bool = False) -> Solid:
         """Wedge: a ``dx x dy x dz`` box whose top edge is shortened to
         ``top_x`` along x (0, the default, gives a triangular prism); the
         taper runs in the xz plane."""
-        return _solid(self._native, self._native.add_wedge([dx, dy, dz], position, top_x, maxh, void))
+        return self._add("wedge", maxh, void, size=[dx, dy, dz], position=position, top_x=top_x)
 
     def sweep(self, path, radius: float, *, segments: int | None = None,
               maxh: float | None = None, void: bool = False) -> Solid:
         """Tube with a circular cross-section swept along the open polyline
         ``path``. Sample curved paths finely; the tube radius must stay
         below the local curvature radius."""
-        return _solid(self._native, self._native.add_sweep(
-            [list(p) for p in path], radius, segments, maxh, void))
+        return self._add("sweep", maxh, void, path=path, radius=radius, segments=segments)
 
     def helix(self, radius: float, pitch: float, turns: float, wire_radius: float,
-              position=(0, 0, 0), *, points_per_turn: int | None = None,
+              position=None, *, points_per_turn: int | None = None,
               segments: int | None = None, maxh: float | None = None,
               void: bool = False) -> Solid:
         """Helical coil around +z through ``position``: helix ``radius``,
         ``pitch`` advance per turn, round wire of ``wire_radius``."""
-        return _solid(self._native, self._native.add_helix(
-            radius, pitch, turns, wire_radius, position, points_per_turn, segments, maxh, void))
+        return self._add("helix", maxh, void, radius=radius, pitch=pitch, turns=turns,
+                         wire_radius=wire_radius, position=position,
+                         points_per_turn=points_per_turn, segments=segments)
 
     def loft(self, profile_a, profile_b, *, maxh: float | None = None,
              void: bool = False) -> Solid:
         """Ruled loft between two planar profiles with the same vertex
         count, corresponded by index (horn tapers). Profiles must be
         star-shaped about their centroid (convex profiles always are)."""
-        return _solid(self._native, self._native.add_loft(
-            [list(p) for p in profile_a], [list(p) for p in profile_b], maxh, void))
+        return self._add("loft", maxh, void, profile_a=profile_a, profile_b=profile_b)
 
     def mesh_solid(self, verts, tris, *, maxh: float | None = None,
                    void: bool = False) -> Solid:
@@ -981,9 +835,9 @@ class Geometry:
         sample organic shapes finely."""
         v = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
         t = np.asarray(tris, dtype=np.uint32).reshape(-1, 3)
-        return _solid(self._native, self._native.add_triangles(v.tolist(), t.tolist(), maxh, void))
+        return self._add("triangles", maxh, void, verts=v, tris=t)
 
-    def revolve(self, profile, *, position=(0, 0, 0), axis=(0, 0, 1), angle: float = 360.0,
+    def revolve(self, profile, *, position=None, axis=None, angle: float | None = None,
                 segments: int | None = None, maxh: float | None = None,
                 void: bool = False) -> Solid:
         """Solid of revolution: the closed ``profile`` in the half-plane
@@ -998,17 +852,17 @@ class Geometry:
         pts, edges = [], []
         for item in profile:
             if isinstance(item, Spline):
-                if not edges or edges[-1][0] != "line":
+                if not edges or edges[-1] != "line":
                     raise ValueError("a Spline must follow a vertex with a straight edge")
-                edges[-1] = ("spline", 0.0, [list(p) for p in item.points])
+                edges[-1] = {"spline": [list(p) for p in item.points]}
                 continue
             if len(item) not in (2, 3):
                 raise ValueError("a profile vertex is (r, z) or (r, z, bulge)")
             pts.append([float(item[0]), float(item[1])])
             bulge = float(item[2]) if len(item) == 3 else 0.0
-            edges.append(("arc", bulge, []) if bulge else ("line", 0.0, []))
-        return _solid(self._native, self._native.add_revolve(
-            pts, edges, position, axis, float(angle), segments, maxh, void))
+            edges.append({"arc": bulge} if bulge else "line")
+        return self._add("revolve", maxh, void, points=pts, edges=edges, position=position,
+                         axis=axis, angle=angle, segments=segments)
 
     # ------------------------------------------------ placement, copies
 
@@ -1137,20 +991,22 @@ class Geometry:
         facets. The file must describe a closed, consistently oriented
         2-manifold. ``up`` names the file's up axis (``"z"`` by default); a
         ``"y"``-up model is rotated upright."""
-        return _solid(self._native, self._native.add_import(str(path), crease_deg, up, maxh, void))
+        return self._add("import", maxh, void, path=str(path), crease_deg=crease_deg, up=up)
 
     def import_obj(self, path, *, crease_deg: float | None = None, up: str | None = None,
                    maxh: float | None = None, void: bool = False) -> Solid:
         """Solid from a Wavefront OBJ file (``v``/``f`` records; polygons
         are fan-triangulated), with the semantics of :meth:`import_stl`."""
-        return _solid(self._native, self._native.add_import(str(path), crease_deg, up, maxh, void))
+        return self._add("import", maxh, void, path=str(path), crease_deg=crease_deg, up=up)
 
     def import_step(self, path, *, maxh: float | None = None) -> list[Solid]:
         """The solids of a STEP file (AP203/AP214), one per solid body of
         the file, each with its faces on their true surfaces (planes,
         cylinders, cones, spheres, tori, B-splines): the mesh is measured
-        against those, not against a tessellation. Coordinates stay in the
-        file's unit."""
+        against those, not against a tessellation. Each solid is labelled
+        with the name the file gives its part, so the mesh's sets and
+        physical groups carry those names. Coordinates stay in the file's
+        unit."""
         return [_solid(self._native, p) for p in self._native.import_step(str(path), maxh)]
 
     # ------------------------------------------------------------ sheets
@@ -1160,37 +1016,36 @@ class Geometry:
         """Zero-thickness rectangle in an xy plane (a PEC trace, a port
         marker): spans ``width`` along x and ``height`` along y from the
         corner ``position``; conformally embedded with face tag ``tag``."""
-        return Sheet(*self._native.add_sheet_rect(position, [width, 0, 0], [0, height, 0], tag, maxh))
+        return self._sheet("rect", tag, maxh, corner=position, u=[width, 0, 0], v=[0, height, 0])
 
     def xz_plate(self, width: float, height: float, position=(0, 0, 0), *,
                  tag: int = 1, maxh: float | None = None) -> "Sheet":
         """Like :meth:`xy_plate` in an xz plane (width along x, height
         along z)."""
-        return Sheet(*self._native.add_sheet_rect(position, [width, 0, 0], [0, 0, height], tag, maxh))
+        return self._sheet("rect", tag, maxh, corner=position, u=[width, 0, 0], v=[0, 0, height])
 
     def yz_plate(self, width: float, height: float, position=(0, 0, 0), *,
                  tag: int = 1, maxh: float | None = None) -> "Sheet":
         """Like :meth:`xy_plate` in a yz plane (width along y, height
         along z)."""
-        return Sheet(*self._native.add_sheet_rect(position, [0, width, 0], [0, 0, height], tag, maxh))
+        return self._sheet("rect", tag, maxh, corner=position, u=[0, width, 0], v=[0, 0, height])
 
     def plate(self, p0, du, dv, *, tag: int = 1, maxh: float | None = None) -> "Sheet":
         """General parallelogram sheet from corner ``p0`` spanned by the
         edge vectors ``du`` and ``dv``."""
-        return Sheet(*self._native.add_sheet_rect(p0, du, dv, tag, maxh))
+        return self._sheet("rect", tag, maxh, corner=p0, u=du, v=dv)
 
-    def disc(self, radius: float, position=(0, 0, 0), axis=(0, 0, 1), *,
+    def disc(self, radius: float, position=None, axis=None, *,
              segments: int | None = None, tag: int = 1, maxh: float | None = None) -> "Sheet":
         """Disc sheet centred at ``position``, normal to ``axis``."""
-        return Sheet(*self._native.add_sheet_disc(radius, position, axis, tag, segments, maxh))
+        return self._sheet("disc", tag, maxh, radius=radius, center=position, axis=axis,
+                           segments=segments)
 
-    def polygon_plate(self, points, position=(0, 0, 0), *, holes=None, tag: int = 1,
+    def polygon_plate(self, points, position=None, *, holes=None, tag: int = 1,
                       maxh: float | None = None) -> "Sheet":
         """Polygonal sheet in an xy plane at ``position`` (2D coordinates
         are offset by ``position``'s x, y)."""
-        return Sheet(*self._native.add_sheet_polygon(
-            [list(p) for p in points], position, tag,
-            [[list(q) for q in h] for h in holes] if holes else None, maxh))
+        return self._sheet("polygon", tag, maxh, points=points, position=position, holes=holes)
 
     def nurbs_plate(self, ctrl, *, degree=(3, 3), weights=None, knots=None, tag: int = 1,
                     maxh: float | None = None) -> "Sheet":
@@ -1201,9 +1056,10 @@ class Geometry:
         c = np.asarray(ctrl, float)
         if c.ndim != 3 or c.shape[2] != 3:
             raise ValueError("ctrl must have shape (nu, nv, 3)")
-        w = None if weights is None else np.asarray(weights, float).tolist()
+        w = None if weights is None else np.asarray(weights, float)
         k = None if knots is None else [list(map(float, knots[0])), list(map(float, knots[1]))]
-        return Sheet(*self._native.add_sheet_nurbs(c.tolist(), [int(degree[0]), int(degree[1])], tag, w, k, maxh))
+        return self._sheet("nurbs", tag, maxh, ctrl=c, degree=[int(degree[0]), int(degree[1])],
+                           weights=w, knots=k)
 
     # ------------------------------------------------------------ sizing
 
@@ -1230,7 +1086,6 @@ class Geometry:
         self,
         *,
         maxh: float | None = None,
-        radius_edge: float | None = None,
         max_points: int | None = None,
         grading: float | None = None,
         cells_across: float | None = None,
@@ -1239,24 +1094,23 @@ class Geometry:
         maxh_edge: float | None = None,
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
-        optimize: bool | None = None,
-        optimize_passes: int | None = None,
         target_elements: int | None = None,
         min_h_surf: float | None = None,
-        min_h_vol: float | None = None,
-        bottom_up: bool | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
-        sheet, meshes it, and improves the tets.
+        sheet, meshes it bottom-up (edges, then each face on its surface,
+        then each region by its constrained Delaunay tetrahedralization),
+        and improves the tets.
+
+        Raises ``rapidmesh.MeshError`` where the geometry defeats the mesher
+        (features far below the mesh size, gaps, degenerate faces); its
+        message says where and what to repair.
 
         Parameters
         ----------
         maxh : float, optional
             global target edge length (defaults to the geometry's;
             unbounded if neither is given)
-        radius_edge : float, optional
-            Delaunay quality bound (circumradius / shortest edge); the
-            provable refinement regime is >= 2.0
         max_points : int, optional
             best-effort refinement point budget
         grading : float
@@ -1267,10 +1121,9 @@ class Geometry:
             elements across the thickness of each region: inside a region of
             thickness ``t = 2 V / S`` (a plate's thickness, a wire's radius)
             the size is at most ``t / cells_across``, so thin plates and
-            wires get proper tets through them. Default ``None``: off for the
-            bottom-up mesher (stacks of layers far thinner than the size take
-            flat tets through each layer), 1 for the restricted Delaunay one;
-            ``0`` turns it off for both
+            wires get proper tets through them. Default ``None``: off (stacks
+            of layers far thinner than the size take flat tets through each
+            layer)
         tol_edge, tol_surf : float
             relative chord (sagitta) tolerance for curved EDGES and SURFACES: an
             entity of radius ``R`` is sized ``h = R * sqrt(8 * tol)``, so the
@@ -1280,29 +1133,18 @@ class Geometry:
         maxh_edge, maxh_surf, maxh_vol : float
             maximum element edge length per dimension, each combined with
             ``maxh`` as ``min(maxh, maxh_dim)``. Default: the geometry's (inf).
-        optimize : bool, optional
-            also run the legacy quality optimizer after the mesher's own
-            improvement (slower; not with periodic faces)
-        optimize_passes : int, optional
-            cap the number of optimization passes
         target_elements : int, optional
             element (tet) budget: the global size scale is retuned over a few
             remeshes so the tet count lands near it, while the relative
             refinement keeps its shape
-        min_h_surf, min_h_vol : float, optional
-            hard minimum element size on surfaces and in the volume (0 off)
-        bottom_up : bool, optional
-            the mesher. ``None`` (default): bottom-up (each face alone on the
-            shared samples of its edges, then each region by its constrained
-            Delaunay tetrahedralization), falling back to restricted Delaunay
-            refinement where it fails (logged as a warning). ``True``:
-            bottom-up only; ``False``: restricted Delaunay refinement
+        min_h_surf : float, optional
+            hard minimum element size on surfaces (0 off)
         """
-        return Mesh(self._native.mesh(
-            maxh, radius_edge, max_points, grading, cells_across, tol_edge, tol_surf,
-            maxh_edge, maxh_surf, maxh_vol, optimize, optimize_passes, target_elements,
-            min_h_surf, min_h_vol, bottom_up,
-        ))
+        return Mesh(self._native.mesh(_given(
+            maxh=maxh, max_points=max_points, grading=grading, cells_across=cells_across,
+            tol_edge=tol_edge, tol_surf=tol_surf, maxh_edge=maxh_edge, maxh_surf=maxh_surf,
+            maxh_vol=maxh_vol, target_elements=target_elements, min_h_surf=min_h_surf,
+        )))
 
     def surface_mesh(
         self,
@@ -1315,15 +1157,15 @@ class Geometry:
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
         target_triangles: int | None = None,
-        bottom_up: bool | None = None,
     ) -> SurfaceMesh:
         """Surface-only export: assembles the exact arrangement and meshes
         only its surfaces (region interfaces, outer boundary, embedded
         sheets), with the full sizing hierarchy of :meth:`mesh`.
-        ``target_triangles`` is a triangle budget: the refinement stops once
-        it is reached. ``bottom_up`` chooses the mesher as in :meth:`mesh`
-        (a triangle budget falls back to restricted Delaunay refinement)."""
-        return SurfaceMesh(self._native.surface_mesh(
-            maxh, grading, tol_edge, tol_surf, maxh_edge, maxh_surf, maxh_vol, target_triangles,
-            bottom_up,
-        ))
+        Each face is meshed alone on the shared samples of its edges.
+        ``target_triangles`` is a triangle budget: the sizes are coarsened by
+        one factor until the count is at most a little over it."""
+        return SurfaceMesh(self._native.surface_mesh(_given(
+            maxh=maxh, grading=grading, tol_edge=tol_edge, tol_surf=tol_surf,
+            maxh_edge=maxh_edge, maxh_surf=maxh_surf, maxh_vol=maxh_vol,
+            target_triangles=target_triangles,
+        )))

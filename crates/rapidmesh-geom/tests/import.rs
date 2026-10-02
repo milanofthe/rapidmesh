@@ -3,7 +3,7 @@
 //! assembly).
 
 use rapidmesh_geom::{
-    import_obj, import_obj_creased, import_stl, solid_box, validate_closed, ImportError, Scene,
+    import_obj, import_stl, solid_box, validate_closed, ImportError, Scene, CREASE_DEG,
 };
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ fn binary_stl(tris: &[[[f64; 3]; 3]]) -> Vec<u8> {
 #[test]
 fn ascii_stl_roundtrip() {
     let path = temp_file("tet.stl", &ascii_stl(&TET_TRIS));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 4);
     validate_closed(&f).expect("closed");
 }
@@ -62,7 +62,7 @@ fn ascii_stl_roundtrip() {
 #[test]
 fn binary_stl_roundtrip() {
     let path = temp_file("tet_bin.stl", &binary_stl(&TET_TRIS));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 4);
     validate_closed(&f).expect("closed");
 }
@@ -73,7 +73,7 @@ fn binary_stl_with_solid_header_detected() {
     let mut b = binary_stl(&TET_TRIS);
     b[..5].copy_from_slice(b"solid");
     let path = temp_file("tet_trap.stl", &b);
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 4);
 }
 
@@ -83,14 +83,14 @@ fn degenerate_facets_dropped() {
     // Exactly collinear facet.
     tris.push([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]);
     let path = temp_file("tet_degen.stl", &ascii_stl(&tris));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 4);
 }
 
 #[test]
 fn open_surface_rejected() {
     let path = temp_file("open.stl", &ascii_stl(&TET_TRIS[..3]));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert!(matches!(
         validate_closed(&f),
         Err(ImportError::NotClosed(_))
@@ -103,7 +103,7 @@ fn inconsistent_orientation_rejected() {
     // Flip one facet: every edge still has 2 incidences but windings clash.
     tris[3] = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     let path = temp_file("flipped.stl", &ascii_stl(&tris));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     assert!(matches!(
         validate_closed(&f),
         Err(ImportError::NotClosed(_))
@@ -132,12 +132,12 @@ f 3 4 8 7
 f -8/1/1 -4/2/2 -1/3/3 -5/4/4
 ";
     let path = temp_file("cube.obj", obj);
-    let f = import_obj(&path).expect("import");
+    let f = import_obj(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 12);
     validate_closed(&f).expect("closed");
 }
 
-/// REGRESSION: `import_obj_creased` must actually apply the passed crease
+/// REGRESSION: `import_obj` must actually apply the passed crease
 /// threshold (it silently used the 40-degree default before). A cube's edges
 /// turn by 90 degrees: below-threshold (120) they merge into ONE smooth
 /// region, above-threshold (40) they split into one region per face.
@@ -160,8 +160,8 @@ f 3 4 8 7
 f 4 1 5 8
 ";
     let path = temp_file("crease_cube.obj", obj);
-    let sharp = import_obj_creased(&path, 40.0).expect("import");
-    let smooth = import_obj_creased(&path, 120.0).expect("import");
+    let sharp = import_obj(&path, 40.0).expect("import");
+    let smooth = import_obj(&path, 120.0).expect("import");
     assert_eq!(
         smooth.surfaces.len(),
         1,
@@ -180,7 +180,7 @@ fn imported_solid_assembles_as_scene() {
     // An imported tetrahedron inside a primitive box must survive Scene
     // assembly: 4 interface facets + 12 box facets, correct region tags.
     let path = temp_file("tet_scene.stl", &ascii_stl(&TET_TRIS));
-    let f = import_stl(&path).expect("import");
+    let f = import_stl(&path, CREASE_DEG).expect("import");
     validate_closed(&f).expect("closed");
     let mut scene = Scene::new();
     scene.add_solid(solid_box([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0]));

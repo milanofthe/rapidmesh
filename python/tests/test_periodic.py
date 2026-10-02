@@ -39,5 +39,3 @@ def test_refuses_what_does_not_fit():
     with pytest.raises(ValueError):
         g.periodic(g.region(), g.surf(normal=(1, 0, 0)))
     g.periodic(g.surf(normal=(-1, 0, 0)), g.surf(normal=(1, 0, 0)))
-    with pytest.raises(ValueError):
-        g.mesh(optimize=True)

@@ -270,7 +270,7 @@ fn open_import_crease_becomes_an_inner_edge() {
     stl.push_str("endsolid ridge\n");
     let path = std::env::temp_dir().join("rapidmesh_open_ridge.stl");
     std::fs::write(&path, stl).expect("write stl");
-    let shape = rapidmesh_geom::import_stl_creased(&path, 40.0).expect("import");
+    let shape = rapidmesh_geom::import_stl(&path, rapidmesh_geom::CREASE_DEG).expect("import");
     rapidmesh_geom::validate_closed(&shape).expect("closed");
     assert!(
         !shape.features.is_empty(),

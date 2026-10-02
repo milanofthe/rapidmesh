@@ -227,3 +227,55 @@ def test_faces_edges_and_regions_carry_bounding_boxes():
     for e in t.edges():
         lo, hi = e[6]
         assert all(l <= c <= h for l, c, h in zip(lo, e[2], hi))
+
+
+def test_triangle_budget_caps_the_surface_mesh():
+    """``target_triangles`` coarsens the bottom-up surface mesh to its budget."""
+    def faces(target):
+        g = rm.Geometry()
+        g.sphere(1.0)
+        return len(g.surface_mesh(maxh=0.05, target_triangles=target).faces)
+    free = faces(None)
+    assert free > 10_000
+    for target in (2000, 500):
+        assert 0.7 * target < faces(target) <= 1.06 * target
+
+
+def test_dorfler_refines_where_the_indicator_is():
+    """One MARK -> REFINE step: the marked triangles become size points, the
+    remesh is finer there and nowhere else much."""
+    import numpy as np
+    g = rm.Geometry()
+    g.sphere(1.0)
+    m = g.surface_mesh(maxh=0.3)
+    cen = np.array([m.points[f].mean(axis=0) for f in m.faces])
+    eta = np.exp(-20.0 * np.sum((cen - [1.0, 0.0, 0.0]) ** 2, axis=1))
+    assert len(rm.dorfler_mark(eta)) < len(rm.dorfler_mark(eta, theta=0.9))
+    fine = rm.refine_dorfler(g, m, eta, maxh=0.3)
+    near = lambda mesh: sum(1 for f in mesh.faces if mesh.points[f].mean(axis=0)[0] > 0.8)
+    assert near(fine) > 1.5 * near(m)
+    assert len(fine.faces) < 2 * len(m.faces)
+
+
+def test_polygon_union_merges_overlapping_rectangles():
+    rect = lambda x0, x1: [(x0, 0), (x1, 0), (x1, 1), (x0, 1)]
+    merged = rm.polygon_union([rect(0, 2), rect(1, 3), rect(5, 6)])
+    assert len(merged) == 2
+    areas = sorted(abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(o, o[1:] + o[:1]))) / 2 for o, _ in merged)
+    assert areas == [1.0, 3.0]
+
+
+def test_edges_by_kind_name():
+    """``kind=`` selects edges by the name of their curve: a cylinder has two
+    circles and no line; an unknown name says which names there are."""
+    import pytest
+
+    g = rm.Geometry(maxh=0.4)
+    g.cylinder(0.5, 1.0)
+    circles = g._resolve(g.edge(kind="circle"))
+    assert len(circles) == 2
+    assert g._resolve(g.edge(kind="line")) == []
+    kinds = {e[4] for e in g._topology().edges()}
+    assert "circle" in kinds
+    with pytest.raises(ValueError, match="unknown edge kind"):
+        g._resolve(g.edge(kind="arc"))

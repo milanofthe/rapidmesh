@@ -1,5 +1,5 @@
 //! Shared test utilities: rational oracle ring, deterministic RNG, rational
-//! vector helpers. Used as a dev-dependency only — never ships in any
+//! vector helpers. Used as a dev-dependency only -- never ships in any
 //! production crate.
 
 use num_rational::BigRational;

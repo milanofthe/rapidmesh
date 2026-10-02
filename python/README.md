@@ -1,7 +1,7 @@
 # rapidmesh
 
-Conforming tetrahedral and surface meshes for electromagnetic FEM and MoM
-solvers. The mesher is written in Rust; this package is a thin layer over its
+Conforming tetrahedral and surface meshes for finite element and finite
+volume solvers. The mesher is written in Rust; this package is a thin layer over its
 API, so everything here is also available to Rust programs.
 
 - **Primitives, CAD files and exact CSG**: boxes, cylinders, spheres, cones,
@@ -13,8 +13,11 @@ API, so everything here is also available to Rust programs.
   geometric face and geometric edge. Thin layers take flat tets instead of
   being refined to their thickness.
 - **Solver output**: topology with orientation signs, the geometric entity
-  of every face and edge, named sets, periodic point pairs, gmsh MSH 4.1
-  and VTU.
+  of every face and edge, named sets, periodic point pairs, gmsh MSH 4.1,
+  VTU, OpenFOAM polyMesh with tets or polyhedral cells
+  (`mesh.write_foam(case, polyhedral=True)`), CalculiX/Abaqus
+  (`mesh.write_inp(path, order=2)`), second-order tets on the true geometry
+  (`mesh.second_order()`), finite volume quality (`mesh.fvm_quality()`).
 
 ## Install
 
@@ -61,7 +64,9 @@ mesh = g.mesh()                           # faces meshed on their true surfaces
 ```
 
 STEP files (AP203 and AP214) bring planes, cylinders, cones, spheres, tori
-and B-spline surfaces; coordinates stay in the file's unit.
+and B-spline surfaces; coordinates stay in the file's unit. Each solid takes
+the name the file gives its part, so an assembly's mesh has its parts as
+named sets and physical groups.
 
 ### Sizing
 
@@ -75,11 +80,12 @@ g.refine_near_points([(1, 1, 1)], 0.02)    # point size sources
 mesh = g.mesh(target_elements=50_000)      # an element budget
 ```
 
-### Surface meshes and planar meshes
+### Surface meshes
 
 `g.surface_mesh()` meshes only the surfaces (interfaces, outer boundary,
-sheets) and gives RWG edges and the same sets and file output.
-`rm.mesh_2d` and `rm.mesh_layers` mesh tagged 2D polygons for planar MoM.
+sheets) and gives its edge topology and the same sets and file output.
+`rm.polygon_union` merges overlapping layout polygons into outlines for
+sheets and prisms.
 
 ### What happened, how long, and where the quality is worst
 
@@ -93,6 +99,10 @@ mesh.log                 # [{level, stage, message, at}, ...]
 ```
 
 Set `RAPIDMESH_LOG=1` to stream the log to stderr while meshing.
+
+A geometry the mesher cannot mesh raises `rm.MeshError` (a `ValueError`)
+whose message says where and what to repair: features far below the mesh
+size, gaps between solids, degenerate faces.
 
 ## License
 

@@ -76,7 +76,7 @@ fn partially_stacked_boxes() {
 #[test]
 fn box_through_box_tunnel() {
     // A thin bar punched through a larger box: the difference is a tunnel
-    // (genus 1) — exercises classification with multiple crossings per ray.
+    // (genus 1) -- exercises classification with multiple crossings per ray.
     let a = solid([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]);
     let bar = solid([1.0, 1.0, -1.0], [2.0, 2.0, 5.0]);
     // Bar volume inside A: 1*1*4 = 4.

@@ -1,68 +1,34 @@
 //! The geometry of a STEP file: placements, curves and surfaces, each with
 //! its evaluation and the parameter of a point on it.
 
-use crate::part21::{Exchange, Value};
-use rapidmesh_geom::{NurbsSurface, SurfaceKind};
-use std::f64::consts::TAU;
+use rapidmesh_geom::vec3::{add, cross, dist, dot, len, normalize, scale, sub};
+use rapidmesh_geom::{NurbsCurve, NurbsSurface, SurfaceKind};
+use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::Arc;
 
 pub type P3 = [f64; 3];
 
-pub(crate) fn add(a: P3, b: P3) -> P3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-pub(crate) fn sub(a: P3, b: P3) -> P3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-pub(crate) fn scale(a: P3, s: f64) -> P3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-pub(crate) fn dot(a: P3, b: P3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-pub(crate) fn cross(a: P3, b: P3) -> P3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-pub(crate) fn norm(a: P3) -> f64 {
-    dot(a, a).sqrt()
-}
-pub(crate) fn unit(a: P3) -> P3 {
-    let l = norm(a);
-    if l > 0.0 {
-        scale(a, 1.0 / l)
-    } else {
-        a
-    }
-}
-pub(crate) fn dist(a: P3, b: P3) -> f64 {
-    norm(sub(a, b))
-}
-
-/// A right-handed orthonormal frame.
+/// A right-handed orthonormal frame: an axis placement of the file.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Frame {
+pub struct Axes {
     pub o: P3,
     pub x: P3,
     pub y: P3,
     pub z: P3,
 }
 
-impl Frame {
+impl Axes {
     /// The frame at `o` with axis `z` and `x` toward `x_hint` (any
     /// perpendicular direction where there is none).
-    pub fn new(o: P3, z: P3, x_hint: Option<P3>) -> Frame {
-        let z = unit(z);
+    pub fn new(o: P3, z: P3, x_hint: Option<P3>) -> Axes {
+        let z = normalize(z);
         let hint = x_hint.unwrap_or(if z[0].abs() < 0.9 {
             [1.0, 0.0, 0.0]
         } else {
             [0.0, 1.0, 0.0]
         });
-        let x = unit(sub(hint, scale(z, dot(hint, z))));
-        Frame {
+        let x = normalize(sub(hint, scale(z, dot(hint, z))));
+        Axes {
             o,
             x,
             y: cross(z, x),
@@ -83,67 +49,72 @@ impl Frame {
     }
 }
 
-/// A rational B-spline curve in space, with its knots expanded.
+/// A curve in a surface's parameters (a PCURVE of the file).
 #[derive(Clone, Debug)]
-pub struct Spline {
-    pub degree: usize,
-    pub knots: Vec<f64>,
-    pub ctrl: Vec<P3>,
-    pub weights: Vec<f64>,
+pub enum Curve2 {
+    Line {
+        p: [f64; 2],
+        d: [f64; 2],
+    },
+    /// Centre, unit `x` direction (`y` is it turned a quarter), radius.
+    Circle {
+        o: [f64; 2],
+        x: [f64; 2],
+        r: f64,
+    },
+    Ellipse {
+        o: [f64; 2],
+        x: [f64; 2],
+        a: f64,
+        b: f64,
+    },
+    Spline(NurbsCurve<2>),
 }
 
-impl Spline {
-    pub fn domain(&self) -> (f64, f64) {
-        (
-            self.knots[self.degree],
-            self.knots[self.knots.len() - self.degree - 1],
-        )
-    }
-
-    /// De Boor's algorithm in homogeneous coordinates.
-    pub fn eval(&self, t: f64) -> P3 {
-        let p = self.degree;
-        let (lo, hi) = self.domain();
-        let t = t.clamp(lo, hi);
-        let n = self.ctrl.len();
-        let mut k = p;
-        while k + 1 < n && self.knots[k + 1] <= t {
-            k += 1;
+impl Curve2 {
+    pub fn eval(&self, t: f64) -> [f64; 2] {
+        let at = |o: [f64; 2], x: [f64; 2], a: f64, b: f64| {
+            let y = [-x[1], x[0]];
+            let (c, s) = (a * t.cos(), b * t.sin());
+            [o[0] + c * x[0] + s * y[0], o[1] + c * x[1] + s * y[1]]
+        };
+        match self {
+            Curve2::Line { p, d } => [p[0] + t * d[0], p[1] + t * d[1]],
+            Curve2::Circle { o, x, r } => at(*o, *x, *r, *r),
+            Curve2::Ellipse { o, x, a, b } => at(*o, *x, *a, *b),
+            Curve2::Spline(s) => s.eval(t),
         }
-        let mut d: Vec<[f64; 4]> = (0..=p)
-            .map(|j| {
-                let i = k + j - p;
-                let w = self.weights[i];
-                let c = self.ctrl[i];
-                [c[0] * w, c[1] * w, c[2] * w, w]
-            })
-            .collect();
-        for r in 1..=p {
-            for j in (r..=p).rev() {
-                let i = k + j - p;
-                let den = self.knots[i + p + 1 - r] - self.knots[i];
-                let a = if den > 0.0 {
-                    (t - self.knots[i]) / den
-                } else {
-                    0.0
-                };
-                for c in 0..4 {
-                    d[j][c] = (1.0 - a) * d[j - 1][c] + a * d[j][c];
-                }
-            }
-        }
-        let h = d[p];
-        [h[0] / h[3], h[1] / h[3], h[2] / h[3]]
     }
 }
 
 /// A curve of the file.
 #[derive(Clone, Debug)]
 pub enum Curve {
-    Line { p: P3, d: P3 },
-    Circle { f: Frame, r: f64 },
-    Ellipse { f: Frame, a: f64, b: f64 },
-    Spline(Spline),
+    Line {
+        p: P3,
+        d: P3,
+    },
+    Circle {
+        f: Axes,
+        r: f64,
+    },
+    Ellipse {
+        f: Axes,
+        a: f64,
+        b: f64,
+    },
+    /// `a cosh t` along x, `b sinh t` along y.
+    Hyperbola {
+        f: Axes,
+        a: f64,
+        b: f64,
+    },
+    /// `focal t^2` along x, `2 focal t` along y.
+    Parabola {
+        f: Axes,
+        focal: f64,
+    },
+    Spline(NurbsCurve<3>),
 }
 
 impl Curve {
@@ -152,6 +123,8 @@ impl Curve {
             Curve::Line { p, d } => add(*p, scale(*d, t)),
             Curve::Circle { f, r } => f.at(r * t.cos(), r * t.sin(), 0.0),
             Curve::Ellipse { f, a, b } => f.at(a * t.cos(), b * t.sin(), 0.0),
+            Curve::Hyperbola { f, a, b } => f.at(a * t.cosh(), b * t.sinh(), 0.0),
+            Curve::Parabola { f, focal } => f.at(focal * t * t, 2.0 * focal * t, 0.0),
             Curve::Spline(s) => s.eval(t),
         }
     }
@@ -161,13 +134,13 @@ impl Curve {
     pub fn period(&self) -> Option<f64> {
         match self {
             Curve::Circle { .. } | Curve::Ellipse { .. } => Some(TAU),
-            Curve::Line { .. } => None,
+            Curve::Line { .. } | Curve::Hyperbola { .. } | Curve::Parabola { .. } => None,
             Curve::Spline(s) => {
                 let (lo, hi) = s.domain();
                 let size = s
                     .ctrl
                     .iter()
-                    .fold(0.0f64, |m, c| m.max(norm(sub(*c, s.ctrl[0]))))
+                    .fold(0.0f64, |m, c| m.max(len(sub(*c, s.ctrl[0]))))
                     .max(1e-300);
                 (dist(s.eval(lo), s.eval(hi)) <= 1e-9 * size).then_some(hi - lo)
             }
@@ -202,6 +175,25 @@ impl Curve {
                 }
                 t
             }
+            Curve::Hyperbola { f, a, b } => {
+                let l = f.local(q);
+                // From the height, refined by Newton on the distance.
+                newton(
+                    (l[1] / b).asinh(),
+                    |t| [a * t.cosh() - l[0], b * t.sinh() - l[1]],
+                    |t| [a * t.sinh(), b * t.cosh()],
+                    |t| [a * t.cosh(), b * t.sinh()],
+                )
+            }
+            Curve::Parabola { f, focal } => {
+                let l = f.local(q);
+                newton(
+                    l[1] / (2.0 * focal),
+                    |t| [focal * t * t - l[0], 2.0 * focal * t - l[1]],
+                    |t| [2.0 * focal * t, 2.0 * focal],
+                    |_| [2.0 * focal, 0.0],
+                )
+            }
             Curve::Spline(s) => {
                 let (lo, hi) = s.domain();
                 // The best of a sampling, refined by golden section.
@@ -231,18 +223,51 @@ impl Curve {
     }
 }
 
+/// The parameter nearest from `t` of a plane curve whose offset from the
+/// point is `r(t)`, with first and second derivatives `d1`, `d2`: Newton
+/// on half the squared distance.
+fn newton(
+    mut t: f64,
+    r: impl Fn(f64) -> [f64; 2],
+    d1: impl Fn(f64) -> [f64; 2],
+    d2: impl Fn(f64) -> [f64; 2],
+) -> f64 {
+    for _ in 0..30 {
+        let (x, a, b) = (r(t), d1(t), d2(t));
+        let g = x[0] * a[0] + x[1] * a[1];
+        let h = a[0] * a[0] + a[1] * a[1] + x[0] * b[0] + x[1] * b[1];
+        if h <= 1e-300 {
+            break;
+        }
+        let step = g / h;
+        t -= step;
+        if step.abs() < 1e-14 * (1.0 + t.abs()) {
+            break;
+        }
+    }
+    t
+}
+
+/// How a surface bends at a point (see [`Surface::bend`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Bend {
+    pub stretch: [f64; 2],
+    pub bend: [f64; 2],
+    pub twist: f64,
+}
+
 /// A surface of the file.
 #[derive(Clone, Debug)]
 pub enum Surface {
-    Plane(Frame),
+    Plane(Axes),
     /// `(theta, height)`
-    Cylinder(Frame, f64),
+    Cylinder(Axes, f64),
     /// `(theta, height)`, the radius `r + height tan(semi)`.
-    Cone(Frame, f64, f64),
+    Cone(Axes, f64, f64),
     /// `(theta, latitude)`
-    Sphere(Frame, f64),
+    Sphere(Axes, f64),
     /// `(theta, phi)`: major and minor radius.
-    Torus(Frame, f64, f64),
+    Torus(Axes, f64, f64),
     Spline(Arc<NurbsSurface>),
 }
 
@@ -314,7 +339,7 @@ impl Surface {
                 let size = s
                     .ctrl
                     .iter()
-                    .fold(0.0f64, |m, c| m.max(norm(sub(*c, s.ctrl[0]))))
+                    .fold(0.0f64, |m, c| m.max(len(sub(*c, s.ctrl[0]))))
                     .max(1e-300);
                 let closed = |k: usize| {
                     (0..=8).all(|i| {
@@ -337,337 +362,120 @@ impl Surface {
         }
     }
 
-    /// The lengths of the derivatives at `uv` (for spacing in parameters).
-    pub fn stretch(&self, uv: [f64; 2]) -> [f64; 2] {
-        let h = 1e-6;
-        let p = self.eval(uv);
-        [
-            dist(self.eval([uv[0] + h, uv[1]]), p) / h,
-            dist(self.eval([uv[0], uv[1] + h]), p) / h,
-        ]
-        .map(|x| x.max(1e-12))
-    }
-
-    /// The smallest radius of curvature (infinite for a plane).
-    pub fn radius(&self) -> f64 {
+    /// The lines of the parameters that are one point in space: the
+    /// parameter held fixed along one, its value there and the point. The
+    /// poles of a sphere, the apex of a cone, a side of a B-spline drawn
+    /// together into a point.
+    pub fn poles(&self) -> Vec<(usize, f64, P3)> {
         match self {
-            Surface::Plane(_) => f64::INFINITY,
-            Surface::Cylinder(_, r) | Surface::Sphere(_, r) => *r,
-            Surface::Cone(_, r, _) => r.abs().max(1e-9),
-            Surface::Torus(_, _, small) => *small,
-            Surface::Spline(_) => f64::INFINITY,
+            Surface::Sphere(..) => [-FRAC_PI_2, FRAC_PI_2]
+                .map(|v| (1, v, self.eval([0.0, v])))
+                .to_vec(),
+            Surface::Cone(_, r, semi) if semi.tan().abs() > 1e-12 => {
+                let v = -r / semi.tan();
+                vec![(1, v, self.eval([0.0, v]))]
+            }
+            Surface::Spline(s) => {
+                let (du, dv) = s.domain();
+                let size = s
+                    .ctrl
+                    .iter()
+                    .fold(0.0f64, |m, c| m.max(len(sub(*c, s.ctrl[0]))))
+                    .max(1e-300);
+                let mut out = Vec::new();
+                for (k, ends, other) in [(0, du, dv), (1, dv, du)] {
+                    for value in ends {
+                        let at = |t: f64| {
+                            let w = other[0] + t * (other[1] - other[0]);
+                            if k == 0 {
+                                s.eval(value, w)
+                            } else {
+                                s.eval(w, value)
+                            }
+                        };
+                        let p = at(0.0);
+                        if (1..=8).all(|i| dist(at(i as f64 / 8.0), p) <= 1e-9 * size) {
+                            out.push((k, value, p));
+                        }
+                    }
+                }
+                out
+            }
+            _ => Vec::new(),
         }
     }
 
-    /// The smallest radius of curvature at `uv` (a B-spline's own there,
-    /// the constant one of the others).
-    pub fn radius_at(&self, uv: [f64; 2]) -> f64 {
-        match self {
-            Surface::Spline(s) => s
-                .principal_curvatures(uv[0], uv[1])
-                .map_or(f64::INFINITY, |k| {
-                    1.0 / k[0].abs().max(k[1].abs()).max(1e-300)
-                }),
-            _ => self.radius(),
+    /// How the surface bends at `uv`, by differences over `h`: the lengths
+    /// of the first derivatives, the normal parts of the second along each
+    /// parameter and of the mixed one. A step `d` along parameter `k` strays
+    /// from the surface by about `d^2 bend[k] / 8`, one of `du` and `dv`
+    /// across a cell by `du dv twist / 4`.
+    pub fn bend(&self, uv: [f64; 2], h: [f64; 2]) -> Bend {
+        let at = |du: f64, dv: f64| self.eval([uv[0] + du * h[0], uv[1] + dv * h[1]]);
+        let p = at(0.0, 0.0);
+        let (u0, u1, v0, v1) = (at(-1.0, 0.0), at(1.0, 0.0), at(0.0, -1.0), at(0.0, 1.0));
+        let s_u = scale(sub(u1, u0), 0.5 / h[0]);
+        let s_v = scale(sub(v1, v0), 0.5 / h[1]);
+        let s_uu = scale(add(sub(u1, scale(p, 2.0)), u0), 1.0 / (h[0] * h[0]));
+        let s_vv = scale(add(sub(v1, scale(p, 2.0)), v0), 1.0 / (h[1] * h[1]));
+        let s_uv = scale(
+            sub(
+                add(at(1.0, 1.0), at(-1.0, -1.0)),
+                add(at(1.0, -1.0), at(-1.0, 1.0)),
+            ),
+            0.25 / (h[0] * h[1]),
+        );
+        let c = cross(s_u, s_v);
+        // Where the normal is lost (a pole), the whole second derivative.
+        let part = |x: P3| {
+            if len(c) > 1e-12 * len(s_u) * len(s_v) {
+                dot(x, c).abs() / len(c)
+            } else {
+                len(x)
+            }
+        };
+        Bend {
+            stretch: [len(s_u), len(s_v)],
+            bend: [part(s_uu), part(s_vv)],
+            twist: part(s_uv),
         }
     }
 
     /// The carrier for the model.
     pub fn kind(&self) -> SurfaceKind {
         match self {
-            Surface::Plane(_) => SurfaceKind::Plane,
+            Surface::Plane(f) => SurfaceKind::Plane {
+                point: f.o,
+                normal: f.z,
+            },
             Surface::Cylinder(f, r) => SurfaceKind::Cylinder {
                 center: f.o,
                 axis: f.z,
+                x: f.x,
                 radius: *r,
             },
             Surface::Cone(f, r, semi) => SurfaceKind::Cone {
                 apex: add(f.o, scale(f.z, -r / semi.tan())),
                 axis: f.z,
+                x: f.x,
                 tan_half_angle: semi.tan(),
             },
             Surface::Sphere(f, r) => SurfaceKind::Sphere {
                 center: f.o,
+                axis: f.z,
+                x: f.x,
                 radius: *r,
             },
             Surface::Torus(f, big, small) => SurfaceKind::Torus {
                 center: f.o,
                 axis: f.z,
+                x: f.x,
                 major_radius: *big,
                 minor_radius: *small,
             },
             Surface::Spline(s) => SurfaceKind::Nurbs(s.clone()),
         }
     }
-}
-
-/// Reads the geometry of instances of `x`.
-pub struct Decoder<'a> {
-    pub x: &'a Exchange,
-}
-
-fn arg<'v>(args: &'v [Value], i: usize, what: &str, id: u32) -> Result<&'v Value, String> {
-    args.get(i)
-        .ok_or_else(|| format!("#{id} {what}: missing parameter {i}"))
-}
-
-fn num(v: &Value, id: u32) -> Result<f64, String> {
-    v.as_f64()
-        .ok_or_else(|| format!("#{id}: expected a number"))
-}
-
-fn refr(v: &Value, id: u32) -> Result<u32, String> {
-    v.as_ref()
-        .ok_or_else(|| format!("#{id}: expected a reference"))
-}
-
-impl Decoder<'_> {
-    fn simple(&self, id: u32) -> Result<(&str, &[Value]), String> {
-        let rs = self
-            .x
-            .instances
-            .get(&id)
-            .ok_or_else(|| format!("#{id} does not exist"))?;
-        match rs.as_slice() {
-            [r] => Ok((&r.name, &r.args)),
-            _ => Ok(("", &[])),
-        }
-    }
-
-    fn triple(&self, id: u32, name: &str) -> Result<P3, String> {
-        let r = self
-            .x
-            .record(id, name)
-            .ok_or_else(|| format!("#{id} is no {name}"))?;
-        let l = arg(&r.args, 1, name, id)?
-            .as_list()
-            .ok_or_else(|| format!("#{id}: coordinates are no list"))?;
-        let c: Vec<f64> = l.iter().map(|v| num(v, id)).collect::<Result<_, _>>()?;
-        Ok([
-            c.first().copied().unwrap_or(0.0),
-            c.get(1).copied().unwrap_or(0.0),
-            c.get(2).copied().unwrap_or(0.0),
-        ])
-    }
-
-    pub fn point(&self, id: u32) -> Result<P3, String> {
-        self.triple(id, "CARTESIAN_POINT")
-    }
-
-    pub fn direction(&self, id: u32) -> Result<P3, String> {
-        self.triple(id, "DIRECTION")
-    }
-
-    /// AXIS2_PLACEMENT_3D
-    pub fn placement(&self, id: u32) -> Result<Frame, String> {
-        let (name, a) = self.simple(id)?;
-        if name != "AXIS2_PLACEMENT_3D" {
-            return Err(format!("#{id} is no AXIS2_PLACEMENT_3D but {name}"));
-        }
-        let o = self.point(refr(arg(a, 1, name, id)?, id)?)?;
-        let z = match a.get(2).and_then(Value::as_ref) {
-            Some(r) => self.direction(r)?,
-            None => [0.0, 0.0, 1.0],
-        };
-        let x = match a.get(3).and_then(Value::as_ref) {
-            Some(r) => Some(self.direction(r)?),
-            None => None,
-        };
-        Ok(Frame::new(o, z, x))
-    }
-
-    /// The 3D curve of an edge's geometry: through SURFACE_CURVE and
-    /// SEAM_CURVE to their curve, and TRIMMED_CURVE to its basis.
-    pub fn curve(&self, id: u32) -> Result<Curve, String> {
-        if let Some(r) = self.x.record(id, "B_SPLINE_CURVE") {
-            return self.spline_curve(id, r.args.as_slice());
-        }
-        let (name, a) = self.simple(id)?;
-        match name {
-            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
-                self.curve(refr(arg(a, 1, name, id)?, id)?)
-            }
-            "TRIMMED_CURVE" => self.curve(refr(arg(a, 1, name, id)?, id)?),
-            "LINE" => {
-                let p = self.point(refr(arg(a, 1, name, id)?, id)?)?;
-                let v = refr(arg(a, 2, name, id)?, id)?;
-                let vr = self
-                    .x
-                    .record(v, "VECTOR")
-                    .ok_or_else(|| format!("#{v} is no VECTOR"))?;
-                let d = self.direction(refr(arg(&vr.args, 1, "VECTOR", v)?, v)?)?;
-                let m = num(arg(&vr.args, 2, "VECTOR", v)?, v)?;
-                Ok(Curve::Line {
-                    p,
-                    d: scale(unit(d), m),
-                })
-            }
-            "CIRCLE" => Ok(Curve::Circle {
-                f: self.placement(refr(arg(a, 1, name, id)?, id)?)?,
-                r: num(arg(a, 2, name, id)?, id)?,
-            }),
-            "ELLIPSE" => Ok(Curve::Ellipse {
-                f: self.placement(refr(arg(a, 1, name, id)?, id)?)?,
-                a: num(arg(a, 2, name, id)?, id)?,
-                b: num(arg(a, 3, name, id)?, id)?,
-            }),
-            "B_SPLINE_CURVE_WITH_KNOTS" => self.spline_curve(id, a),
-            other => Err(format!("#{id}: curve {other:?} is not read")),
-        }
-    }
-
-    /// A B-spline curve, simple (B_SPLINE_CURVE_WITH_KNOTS) or complex
-    /// (with RATIONAL_B_SPLINE_CURVE).
-    fn spline_curve(&self, id: u32, base: &[Value]) -> Result<Curve, String> {
-        // The simple form carries the curve's and the knots' parameters in
-        // one record: name, degree, points, form, closed, self-intersect,
-        // multiplicities, knots, spec.
-        let simple = self.x.kind(id) == Some("B_SPLINE_CURVE_WITH_KNOTS");
-        let (degree, ctrl_ids) = if simple {
-            (base.get(1), base.get(2))
-        } else {
-            (base.first(), base.get(1))
-        };
-        let degree = degree
-            .and_then(Value::as_int)
-            .ok_or(format!("#{id}: degree"))? as usize;
-        let ctrl: Vec<P3> = ctrl_ids
-            .and_then(Value::as_list)
-            .ok_or(format!("#{id}: control points"))?
-            .iter()
-            .map(|v| self.point(refr(v, id)?))
-            .collect::<Result<_, _>>()?;
-        let knots_args: Vec<Value> = if simple {
-            base[6..].to_vec()
-        } else {
-            self.x
-                .record(id, "B_SPLINE_CURVE_WITH_KNOTS")
-                .ok_or(format!("#{id}: no knots"))?
-                .args
-                .clone()
-        };
-        let knots = expand(&knots_args[0], &knots_args[1], id)?;
-        let weights = match self.x.record(id, "RATIONAL_B_SPLINE_CURVE") {
-            Some(r) => r.args[0]
-                .as_list()
-                .ok_or(format!("#{id}: weights"))?
-                .iter()
-                .map(|v| num(v, id))
-                .collect::<Result<_, _>>()?,
-            None => vec![1.0; ctrl.len()],
-        };
-        if knots.len() != ctrl.len() + degree + 1 {
-            return Err(format!(
-                "#{id}: {} knots for {} points of degree {degree}",
-                knots.len(),
-                ctrl.len()
-            ));
-        }
-        Ok(Curve::Spline(Spline {
-            degree,
-            knots,
-            ctrl,
-            weights,
-        }))
-    }
-
-    pub fn surface(&self, id: u32) -> Result<Surface, String> {
-        if self.x.record(id, "B_SPLINE_SURFACE").is_some()
-            || self.x.kind(id) == Some("B_SPLINE_SURFACE_WITH_KNOTS")
-        {
-            return self.spline_surface(id);
-        }
-        let (name, a) = self.simple(id)?;
-        let frame = || self.placement(refr(arg(a, 1, name, id)?, id)?);
-        match name {
-            "PLANE" => Ok(Surface::Plane(frame()?)),
-            "CYLINDRICAL_SURFACE" => {
-                Ok(Surface::Cylinder(frame()?, num(arg(a, 2, name, id)?, id)?))
-            }
-            "CONICAL_SURFACE" => Ok(Surface::Cone(
-                frame()?,
-                num(arg(a, 2, name, id)?, id)?,
-                num(arg(a, 3, name, id)?, id)?,
-            )),
-            "SPHERICAL_SURFACE" => Ok(Surface::Sphere(frame()?, num(arg(a, 2, name, id)?, id)?)),
-            "TOROIDAL_SURFACE" => Ok(Surface::Torus(
-                frame()?,
-                num(arg(a, 2, name, id)?, id)?,
-                num(arg(a, 3, name, id)?, id)?,
-            )),
-            other => Err(format!("#{id}: surface {other:?} is not read")),
-        }
-    }
-
-    fn spline_surface(&self, id: u32) -> Result<Surface, String> {
-        let simple = self.x.kind(id) == Some("B_SPLINE_SURFACE_WITH_KNOTS");
-        let (base, off) = if simple {
-            (&self.x.instances[&id][0].args, 1)
-        } else {
-            (
-                &self
-                    .x
-                    .record(id, "B_SPLINE_SURFACE")
-                    .ok_or(format!("#{id}: no B_SPLINE_SURFACE"))?
-                    .args,
-                0,
-            )
-        };
-        let du = base[off].as_int().ok_or(format!("#{id}: u degree"))? as usize;
-        let dv = base[off + 1].as_int().ok_or(format!("#{id}: v degree"))? as usize;
-        let rows = base[off + 2]
-            .as_list()
-            .ok_or(format!("#{id}: control net"))?;
-        let mut ctrl = Vec::new();
-        let mut nv = 0;
-        for row in rows {
-            let row = row.as_list().ok_or(format!("#{id}: control row"))?;
-            nv = row.len();
-            for v in row {
-                ctrl.push(self.point(refr(v, id)?)?);
-            }
-        }
-        let nu = rows.len();
-        let k: Vec<Value> = if simple {
-            base[off + 6..].to_vec()
-        } else {
-            self.x
-                .record(id, "B_SPLINE_SURFACE_WITH_KNOTS")
-                .ok_or(format!("#{id}: no knots"))?
-                .args
-                .clone()
-        };
-        let ku = expand(&k[0], &k[2], id)?;
-        let kv = expand(&k[1], &k[3], id)?;
-        let weights: Vec<f64> = match self.x.record(id, "RATIONAL_B_SPLINE_SURFACE") {
-            Some(r) => r.args[0]
-                .as_list()
-                .ok_or(format!("#{id}: weights"))?
-                .iter()
-                .flat_map(|row| row.as_list().unwrap_or(&[]).iter())
-                .map(|v| num(v, id))
-                .collect::<Result<_, _>>()?,
-            None => vec![1.0; ctrl.len()],
-        };
-        NurbsSurface::try_new([du, dv], [ku, kv], [nu, nv], ctrl, weights)
-            .map(|s| Surface::Spline(Arc::new(s)))
-            .map_err(|e| format!("#{id}: {e}"))
-    }
-}
-
-/// Knots from their distinct values and multiplicities.
-fn expand(mults: &Value, values: &Value, id: u32) -> Result<Vec<f64>, String> {
-    let m = mults.as_list().ok_or(format!("#{id}: multiplicities"))?;
-    let k = values.as_list().ok_or(format!("#{id}: knots"))?;
-    let mut out = Vec::new();
-    for (m, k) in m.iter().zip(k) {
-        let (m, k) = (
-            m.as_int().ok_or(format!("#{id}: multiplicity"))?,
-            num(k, id)?,
-        );
-        out.extend(std::iter::repeat_n(k, m.max(0) as usize));
-    }
-    Ok(out)
 }
 
 /// `x` shifted by whole periods into `(ref - period/2, ref + period/2]`.
@@ -679,9 +487,23 @@ pub fn near(x: f64, reference: f64, period: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// A point of a hyperbola or a parabola gives back its parameter.
+    #[test]
+    fn open_conics_give_back_their_parameters() {
+        let f = Axes::new([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], Some([1.0, 0.0, 0.0]));
+        for c in [
+            Curve::Hyperbola { f, a: 2.0, b: 0.5 },
+            Curve::Parabola { f, focal: 0.7 },
+        ] {
+            for t in [-1.5, -0.2, 0.0, 0.9, 2.0] {
+                assert!((c.param(c.eval(t)) - t).abs() < 1e-10, "{c:?} {t}");
+            }
+        }
+    }
+
     #[test]
     fn surfaces_invert_their_parameters() {
-        let f = Frame::new([1.0, 2.0, 3.0], [0.3, -0.2, 1.0], Some([1.0, 0.0, 0.0]));
+        let f = Axes::new([1.0, 2.0, 3.0], [0.3, -0.2, 1.0], Some([1.0, 0.0, 0.0]));
         for s in [
             Surface::Plane(f),
             Surface::Cylinder(f, 2.0),
@@ -702,7 +524,7 @@ mod tests {
     #[test]
     fn a_spline_with_unit_weights_is_polynomial() {
         // A quadratic Bezier arc.
-        let s = Spline {
+        let s = NurbsCurve::<3> {
             degree: 2,
             knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             ctrl: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 0.0, 0.0]],

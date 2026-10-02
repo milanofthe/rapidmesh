@@ -1,8 +1,9 @@
 name: rust
 
 # Lint and test gate of the Rust workspace: cargo clippy (warnings are
-# errors) and the full test suite. The corpus stays local: it is the
-# benchmark, not a CI gate (run time).
+# errors) and the full test suite, and of the Python extension: clippy on
+# python/ and the pytest suite against a release build. The corpus stays
+# local: it is the benchmark, not a CI gate (run time).
 #
 # One test is skipped: cylinder_coarse_interior_terminates is a wall-clock
 # budget test (30 s on the reference machine), which is no stable signal on
@@ -13,14 +14,14 @@ on:
     branches: [master, main]
     paths:
       - "crates/**"
-      - "python/src/**"
+      - "python/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
       - "crates/**"
-      - "python/src/**"
+      - "python/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust.yml"
@@ -48,3 +49,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --no-fail-fast -- --skip cylinder_coarse_interior_terminates
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo clippy --manifest-path python/Cargo.toml --all-targets -- -D warnings
+      - run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin pytest numpy
+          maturin develop --release --manifest-path python/Cargo.toml
+          pytest -q python/tests

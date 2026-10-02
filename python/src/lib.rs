@@ -20,16 +20,13 @@ static ALLOC: rapidmesh_exact::mem::Counting = rapidmesh_exact::mem::Counting;
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
-use pyo3::exceptions::{PyIOError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rapidmesh::shapes::{
-    Cone, Cuboid, Cylinder, Helix, Icosphere, Import, Loft, Naca0012, Prism, ProfileEdge, Revolve,
-    Shape, Sheet, Sphere, Sweep, Torus, Triangles, Wedge,
-};
+use rapidmesh::shapes::{Shape, Sheet};
 use rapidmesh::{
-    EdgeCut, EdgeFilter, EdgePick, Object, SheetRef, Transform, FaceFilter, Level, Mesh2DOptions, MeshOptions, PointClass, Region2D, Scope, Solid,
-    SurfaceFace, SurfaceOptions, TriTopology, NONE,
+    EdgeCut, EdgeFilter, EdgePick, FaceFilter, Level, MeshOptions, Object, PointClass, Scope,
+    SheetRef, Solid, SurfaceFace, SurfaceOptions, Transform, TriTopology, NONE,
 };
 use std::collections::BTreeMap;
 
@@ -42,9 +39,22 @@ type Adjacency<'py> = (
     Bound<'py, PyArray2<i64>>,
 );
 
+mod errors {
+    // The macro checks a pyo3 feature this crate does not declare.
+    #![allow(unexpected_cfgs)]
+    pyo3::create_exception!(
+        rapidmesh,
+        MeshError,
+        pyo3::exceptions::PyValueError,
+        "A geometry the mesher cannot mesh; the message says where and what to repair."
+    );
+}
+use errors::MeshError;
+
 fn py_err(e: rapidmesh::Error) -> PyErr {
     match e {
         rapidmesh::Error::Invalid(m) => PyValueError::new_err(m),
+        rapidmesh::Error::Mesh(m) => MeshError::new_err(m),
         rapidmesh::Error::Io(e) => PyIOError::new_err(e.to_string()),
     }
 }
@@ -115,6 +125,13 @@ fn signed(x: u32) -> i64 {
 fn signed_vec<'py>(py: Python<'py>, v: &[u32]) -> Bound<'py, PyArray1<i64>> {
     v.iter()
         .map(|&x| signed(x))
+        .collect::<Vec<_>>()
+        .into_pyarray_bound(py)
+}
+
+fn u32_vec<'py>(py: Python<'py>, v: &[u32]) -> Bound<'py, PyArray1<i64>> {
+    v.iter()
+        .map(|&x| x as i64)
         .collect::<Vec<_>>()
         .into_pyarray_bound(py)
 }
@@ -233,11 +250,9 @@ fn face_patches<'py>(py: Python<'py>, faces: &[SurfaceFace]) -> Bound<'py, PyArr
 fn point_class<'py>(py: Python<'py>, c: &[PointClass]) -> Bound<'py, PyArray2<u32>> {
     let rows: Vec<[u32; 2]> = c
         .iter()
-        .map(|c| match *c {
-            PointClass::Vertex(i) => [0, i],
-            PointClass::Edge(i) => [1, i],
-            PointClass::Face(i) => [2, i],
-            PointClass::Interior => [3, u32::MAX],
+        .map(|c| {
+            let (dim, id) = c.dim_id();
+            [dim as u32, id]
         })
         .collect();
     arr(py, &rows)
@@ -260,6 +275,12 @@ struct PyScope {
     scope: Scope,
 }
 
+/// A value by name from Python (a dict of fields or options), the ones
+/// not given at their Rust defaults.
+fn options<T: serde::de::DeserializeOwned>(d: &Bound<'_, PyDict>) -> PyResult<T> {
+    pythonize::depythonize(d.as_any()).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 fn get<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, k: &str) -> PyResult<Option<T>> {
     match d.get_item(k)? {
         Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
@@ -280,7 +301,11 @@ fn only(d: &Bound<'_, PyDict>, keys: &[&str], what: &str) -> PyResult<()> {
 }
 
 fn face_filter(d: &Bound<'_, PyDict>) -> PyResult<FaceFilter> {
-    only(d, &["id", "tag", "solid", "role", "normal", "normal_tol", "near"], "surf")?;
+    only(
+        d,
+        &["id", "tag", "solid", "role", "normal", "normal_tol", "near"],
+        "surf",
+    )?;
     let mut f = FaceFilter {
         id: get(d, "id")?,
         tag: get(d, "tag")?,
@@ -300,7 +325,17 @@ fn edge_filter(d: &Bound<'_, PyDict>) -> PyResult<EdgeFilter> {
     only(d, &["id", "kind", "between", "near"], "edge")?;
     Ok(EdgeFilter {
         id: get(d, "id")?,
-        kind: get(d, "kind")?,
+        kind: get::<String>(d, "kind")?
+            .map(|k| {
+                rapidmesh::EdgeKind::parse(&k).ok_or_else(|| {
+                    let names: Vec<&str> =
+                        rapidmesh::EdgeKind::ALL.iter().map(|k| k.name()).collect();
+                    PyValueError::new_err(format!(
+                        "unknown edge kind {k:?} (expected one of {names:?})"
+                    ))
+                })
+            })
+            .transpose()?,
         between: get(d, "between")?,
         near: get(d, "near")?,
     })
@@ -403,17 +438,12 @@ fn transform_of(kind: &str, a: P3, b: P3, angle: f64) -> PyResult<Transform> {
             factors: a,
             center: b,
         },
-        other => return Err(PyValueError::new_err(format!("unknown transform {other:?}"))),
-    })
-}
-
-/// Overrides the fields of a shape the caller gave.
-macro_rules! given {
-    ($s:ident, $($f:ident),*) => {$(
-        if let Some(v) = $f {
-            $s.$f = v;
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown transform {other:?}"
+            )))
         }
-    )*};
+    })
 }
 
 #[pymethods]
@@ -442,263 +472,37 @@ impl PyGeometry {
         self.g.set_tol(tol);
     }
 
-    #[pyo3(signature = (size, position=None, maxh=None, void=false))]
-    fn add_box(
+    /// A solid of kind `kind` (see `rapidmesh::shapes::Shape::of_kind`)
+    /// from its fields by name; the fields not given take the Rust defaults.
+    #[pyo3(signature = (kind, fields, maxh=None, void=false))]
+    fn add_solid(
         &mut self,
-        size: P3,
-        position: Option<P3>,
+        kind: &str,
+        fields: &Bound<'_, PyDict>,
         maxh: Option<f64>,
         void: bool,
     ) -> PyResult<(u32, u32)> {
-        let mut s = Cuboid::new(size);
-        given!(s, position);
-        self.put(s, maxh, void)
+        let mut de = pythonize::Depythonizer::from_object(fields.as_any());
+        let shape = Shape::of_kind(kind, &mut de).map_err(py_err)?;
+        self.put(shape, maxh, void)
     }
 
-    #[pyo3(signature = (radius, height, position=None, axis=None, segments=None, uniform=false, rows=None, maxh=None, void=false))]
-    fn add_cylinder(
+    /// A sheet of kind `kind` (see `rapidmesh::shapes::Sheet::of_kind`)
+    /// from its fields by name.
+    #[pyo3(signature = (kind, fields, tag, maxh=None))]
+    fn add_sheet(
         &mut self,
-        radius: f64,
-        height: f64,
-        position: Option<P3>,
-        axis: Option<P3>,
-        segments: Option<usize>,
-        uniform: bool,
-        rows: Option<usize>,
+        kind: &str,
+        fields: &Bound<'_, PyDict>,
+        tag: u32,
         maxh: Option<f64>,
-        void: bool,
     ) -> PyResult<(u32, u32)> {
-        let mut s = Cylinder {
-            uniform,
-            rows,
-            ..Cylinder::new(radius, height)
-        };
-        given!(s, position, axis, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (radius, position=None, segments=None, maxh=None, void=false))]
-    fn add_sphere(
-        &mut self,
-        radius: f64,
-        position: Option<P3>,
-        segments: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Sphere::new(radius);
-        given!(s, position, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (radius, position=None, subdivisions=None, maxh=None, void=false))]
-    fn add_icosphere(
-        &mut self,
-        radius: f64,
-        position: Option<P3>,
-        subdivisions: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Icosphere::new(radius);
-        given!(s, position, subdivisions);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (chord, span, position=None, span_axis=None, n_per_side=None, n_seg=None, maxh=None, void=false))]
-    fn add_naca0012(
-        &mut self,
-        chord: f64,
-        span: f64,
-        position: Option<P3>,
-        span_axis: Option<P3>,
-        n_per_side: Option<usize>,
-        n_seg: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Naca0012::new(chord, span);
-        given!(s, position, span_axis, n_per_side, n_seg);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (r1, r2, height, position=None, axis=None, segments=None, uniform=false, rows=None, maxh=None, void=false))]
-    fn add_cone(
-        &mut self,
-        r1: f64,
-        r2: f64,
-        height: f64,
-        position: Option<P3>,
-        axis: Option<P3>,
-        segments: Option<usize>,
-        uniform: bool,
-        rows: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Cone {
-            uniform,
-            rows,
-            ..Cone::new(r1, r2, height)
-        };
-        given!(s, position, axis, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (points, height, position=None, holes=None, maxh=None, void=false))]
-    fn add_prism(
-        &mut self,
-        points: Vec<[f64; 2]>,
-        height: f64,
-        position: Option<P3>,
-        holes: Option<Vec<Vec<[f64; 2]>>>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Prism::new(points, height);
-        given!(s, position, holes);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (major_radius, minor_radius, position=None, axis=None, segments=None, tube_segments=None, maxh=None, void=false))]
-    fn add_torus(
-        &mut self,
-        major_radius: f64,
-        minor_radius: f64,
-        position: Option<P3>,
-        axis: Option<P3>,
-        segments: Option<usize>,
-        tube_segments: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Torus::new(major_radius, minor_radius);
-        given!(s, position, axis, segments, tube_segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (size, position=None, top_x=None, maxh=None, void=false))]
-    fn add_wedge(
-        &mut self,
-        size: P3,
-        position: Option<P3>,
-        top_x: Option<f64>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Wedge::new(size);
-        given!(s, position, top_x);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (path, radius, segments=None, maxh=None, void=false))]
-    fn add_sweep(
-        &mut self,
-        path: Vec<P3>,
-        radius: f64,
-        segments: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Sweep::new(path, radius);
-        given!(s, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (radius, pitch, turns, wire_radius, position=None, points_per_turn=None, segments=None, maxh=None, void=false))]
-    fn add_helix(
-        &mut self,
-        radius: f64,
-        pitch: f64,
-        turns: f64,
-        wire_radius: f64,
-        position: Option<P3>,
-        points_per_turn: Option<usize>,
-        segments: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Helix::new(radius, pitch, turns, wire_radius);
-        given!(s, position, points_per_turn, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (profile_a, profile_b, maxh=None, void=false))]
-    fn add_loft(
-        &mut self,
-        profile_a: Vec<P3>,
-        profile_b: Vec<P3>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        self.put(
-            Loft {
-                profile_a,
-                profile_b,
-            },
-            maxh,
-            void,
-        )
-    }
-
-    /// `edges[i]` is `("line", 0, [])`, `("arc", bulge, [])` or
-    /// `("spline", 0, interior points)`.
-    #[pyo3(signature = (points, edges, position=None, axis=None, angle=None, segments=None, maxh=None, void=false))]
-    #[allow(clippy::too_many_arguments)]
-    fn add_revolve(
-        &mut self,
-        points: Vec<[f64; 2]>,
-        edges: Vec<(String, f64, Vec<[f64; 2]>)>,
-        position: Option<P3>,
-        axis: Option<P3>,
-        angle: Option<f64>,
-        segments: Option<usize>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let edges = edges
-            .into_iter()
-            .map(|(kind, bulge, pts)| match kind.as_str() {
-                "line" => Ok(ProfileEdge::Line),
-                "arc" => Ok(ProfileEdge::Arc(bulge)),
-                "spline" => Ok(ProfileEdge::Spline(pts)),
-                other => Err(PyValueError::new_err(format!("unknown profile edge {other:?}"))),
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        let mut s = Revolve {
-            edges,
-            ..Revolve::new(points)
-        };
-        given!(s, position, axis, angle, segments);
-        self.put(s, maxh, void)
-    }
-
-    #[pyo3(signature = (verts, tris, maxh=None, void=false))]
-    fn add_triangles(
-        &mut self,
-        verts: Vec<P3>,
-        tris: Vec<[u32; 3]>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        self.put(Triangles { verts, tris }, maxh, void)
-    }
-
-    #[pyo3(signature = (path, crease_deg=None, up=None, maxh=None, void=false))]
-    fn add_import(
-        &mut self,
-        path: std::path::PathBuf,
-        crease_deg: Option<f64>,
-        up: Option<&str>,
-        maxh: Option<f64>,
-        void: bool,
-    ) -> PyResult<(u32, u32)> {
-        let mut s = Import::new(path);
-        given!(s, crease_deg);
-        if let Some(u) = up {
-            s.up = u.parse().map_err(py_err)?;
-        }
-        self.put(s, maxh, void)
+        let mut de = pythonize::Depythonizer::from_object(fields.as_any());
+        let sheet = Sheet::of_kind(kind, &mut de).map_err(py_err)?;
+        self.g
+            .add_sheet(&sheet, tag, maxh)
+            .map(|r| (r.index, r.tag))
+            .map_err(py_err)
     }
 
     #[pyo3(signature = (path, maxh=None))]
@@ -710,79 +514,6 @@ impl PyGeometry {
         self.g
             .import_step(path, maxh)
             .map(|v| v.into_iter().map(solid).collect())
-            .map_err(py_err)
-    }
-
-    #[pyo3(signature = (corner, u, v, tag, maxh=None))]
-    fn add_sheet_rect(
-        &mut self,
-        corner: P3,
-        u: P3,
-        v: P3,
-        tag: u32,
-        maxh: Option<f64>,
-    ) -> PyResult<(u32, u32)> {
-        self.g
-            .add_sheet(&Sheet::plate(corner, u, v), tag, maxh)
-            .map(|r| (r.index, r.tag))
-            .map_err(py_err)
-    }
-
-    #[pyo3(signature = (radius, center, axis, tag, segments=None, maxh=None))]
-    fn add_sheet_disc(
-        &mut self,
-        radius: f64,
-        center: P3,
-        axis: P3,
-        tag: u32,
-        segments: Option<usize>,
-        maxh: Option<f64>,
-    ) -> PyResult<(u32, u32)> {
-        let mut sheet = Sheet::disc(radius, center, axis);
-        if let (Sheet::Disc { segments: s, .. }, Some(n)) = (&mut sheet, segments) {
-            *s = n;
-        }
-        self.g
-            .add_sheet(&sheet, tag, maxh)
-            .map(|r| (r.index, r.tag))
-            .map_err(py_err)
-    }
-
-    #[pyo3(signature = (points, position, tag, holes=None, maxh=None))]
-    fn add_sheet_polygon(
-        &mut self,
-        points: Vec<[f64; 2]>,
-        position: P3,
-        tag: u32,
-        holes: Option<Vec<Vec<[f64; 2]>>>,
-        maxh: Option<f64>,
-    ) -> PyResult<(u32, u32)> {
-        let sheet = Sheet::Polygon {
-            points,
-            holes: holes.unwrap_or_default(),
-            position,
-        };
-        self.g
-            .add_sheet(&sheet, tag, maxh)
-            .map(|r| (r.index, r.tag))
-            .map_err(py_err)
-    }
-
-    #[pyo3(signature = (ctrl, degree, tag, weights=None, knots=None, maxh=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn add_sheet_nurbs(
-        &mut self,
-        ctrl: Vec<Vec<P3>>,
-        degree: [usize; 2],
-        tag: u32,
-        weights: Option<Vec<Vec<f64>>>,
-        knots: Option<[Vec<f64>; 2]>,
-        maxh: Option<f64>,
-    ) -> PyResult<(u32, u32)> {
-        let sheet = Sheet::nurbs(ctrl, degree, weights, knots).map_err(py_err)?;
-        self.g
-            .add_sheet(&sheet, tag, maxh)
-            .map(|r| (r.index, r.tag))
             .map_err(py_err)
     }
 
@@ -813,7 +544,9 @@ impl PyGeometry {
                 "of" => Ok(EdgePick::Of(a)),
                 "between" => Ok(EdgePick::Between(a, b)),
                 "with" => Ok(EdgePick::With(a, b, c)),
-                other => Err(PyValueError::new_err(format!("unknown edge pick {other:?}"))),
+                other => Err(PyValueError::new_err(format!(
+                    "unknown edge pick {other:?}"
+                ))),
             })
             .collect::<PyResult<Vec<_>>>()?;
         let faces = self
@@ -831,7 +564,14 @@ impl PyGeometry {
     /// through `b`) or stretches (`"stretch"`, factors `a` about `b`) the
     /// object `(is_sheet, first, second)`: a solid `(false, region, index)`
     /// or a sheet `(true, index, tag)`.
-    fn transform(&mut self, obj: (bool, u32, u32), kind: &str, a: P3, b: P3, angle: f64) -> PyResult<()> {
+    fn transform(
+        &mut self,
+        obj: (bool, u32, u32),
+        kind: &str,
+        a: P3,
+        b: P3,
+        angle: f64,
+    ) -> PyResult<()> {
         let t = transform_of(kind, a, b, angle)?;
         self.g.transform(object_of(obj), t).map_err(py_err)
     }
@@ -881,7 +621,12 @@ impl PyGeometry {
 
     /// The solid the sheet (index, tag) sweeps along `vector`.
     #[pyo3(signature = (sheet, vector, maxh=None))]
-    fn extrude(&mut self, sheet: (u32, u32), vector: P3, maxh: Option<f64>) -> PyResult<(u32, u32)> {
+    fn extrude(
+        &mut self,
+        sheet: (u32, u32),
+        vector: P3,
+        maxh: Option<f64>,
+    ) -> PyResult<(u32, u32)> {
         self.g
             .extrude(
                 SheetRef {
@@ -927,15 +672,28 @@ impl PyGeometry {
     }
 
     fn add_size_points(&mut self, points: Vec<P3>, hs: Vec<f64>) -> PyResult<()> {
-        if points.len() != hs.len() {
-            return Err(PyValueError::new_err(
-                "per-point h must match number of points",
-            ));
-        }
-        for (p, h) in points.into_iter().zip(hs) {
-            self.g.add_size_point(p, h);
-        }
-        Ok(())
+        self.g.add_size_points(&points, &hs).map_err(py_err)
+    }
+
+    #[pyo3(signature = (mesh, eta, theta=None, factor=None, h_min=None))]
+    fn mark_dorfler<'py>(
+        &mut self,
+        py: Python<'py>,
+        mesh: &PySurfaceMesh,
+        eta: Vec<f64>,
+        theta: Option<f64>,
+        factor: Option<f64>,
+        h_min: Option<f64>,
+    ) -> PyResult<Bound<'py, PyArray1<i64>>> {
+        let d = rapidmesh::Dorfler::default();
+        let d = rapidmesh::Dorfler {
+            theta: theta.unwrap_or(d.theta),
+            factor: factor.unwrap_or(d.factor),
+            h_min: h_min.unwrap_or(d.h_min),
+        };
+        let marked = self.g.mark_dorfler(&mesh.m, &eta, &d).map_err(py_err)?;
+        let m: Vec<i64> = marked.iter().map(|&i| i as i64).collect();
+        Ok(m.into_pyarray_bound(py))
     }
 
     fn resolve(&self, scope: &PyScope) -> PyResult<Vec<u32>> {
@@ -975,78 +733,18 @@ impl PyGeometry {
         })
     }
 
-    #[pyo3(signature = (maxh=None, radius_edge=None, max_points=None, grading=None, cells_across=None, tol_edge=None, tol_surf=None, maxh_edge=None, maxh_surf=None, maxh_vol=None, optimize=None, optimize_passes=None, target_elements=None, min_h_surf=None, min_h_vol=None, bottom_up=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn mesh(
-        &self,
-        py: Python<'_>,
-        maxh: Option<f64>,
-        radius_edge: Option<f64>,
-        max_points: Option<usize>,
-        grading: Option<f64>,
-        cells_across: Option<f64>,
-        tol_edge: Option<f64>,
-        tol_surf: Option<f64>,
-        maxh_edge: Option<f64>,
-        maxh_surf: Option<f64>,
-        maxh_vol: Option<f64>,
-        optimize: Option<bool>,
-        optimize_passes: Option<usize>,
-        target_elements: Option<usize>,
-        min_h_surf: Option<f64>,
-        min_h_vol: Option<f64>,
-        bottom_up: Option<bool>,
-    ) -> PyResult<PyMesh> {
-        // What is not given takes the Rust default.
-        let d = MeshOptions::default();
-        let opts = MeshOptions {
-            maxh,
-            radius_edge: radius_edge.unwrap_or(d.radius_edge),
-            max_points: max_points.unwrap_or(d.max_points),
-            grading,
-            cells_across,
-            tol_edge,
-            tol_surf,
-            maxh_edge,
-            maxh_surf,
-            maxh_vol,
-            optimize: optimize.unwrap_or(d.optimize),
-            optimize_passes,
-            target_elements,
-            min_h_surf: min_h_surf.unwrap_or(d.min_h_surf),
-            min_h_vol: min_h_vol.unwrap_or(d.min_h_vol),
-            bottom_up,
-        };
+    /// A volume mesh; `opts` holds the `rapidmesh::MeshOptions` by name,
+    /// the ones not given at their Rust defaults.
+    fn mesh(&self, py: Python<'_>, opts: &Bound<'_, PyDict>) -> PyResult<PyMesh> {
+        let opts: MeshOptions = options(opts)?;
         let m = py.allow_threads(|| self.g.mesh(&opts)).map_err(py_err)?;
         Ok(PyMesh { m })
     }
 
-    #[pyo3(signature = (maxh=None, grading=None, tol_edge=None, tol_surf=None, maxh_edge=None, maxh_surf=None, maxh_vol=None, target_triangles=None, bottom_up=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn surface_mesh(
-        &self,
-        py: Python<'_>,
-        maxh: Option<f64>,
-        grading: Option<f64>,
-        tol_edge: Option<f64>,
-        tol_surf: Option<f64>,
-        maxh_edge: Option<f64>,
-        maxh_surf: Option<f64>,
-        maxh_vol: Option<f64>,
-        target_triangles: Option<usize>,
-        bottom_up: Option<bool>,
-    ) -> PyResult<PySurfaceMesh> {
-        let opts = SurfaceOptions {
-            maxh,
-            grading,
-            tol_edge,
-            tol_surf,
-            maxh_edge,
-            maxh_surf,
-            maxh_vol,
-            target_triangles,
-            bottom_up,
-        };
+    /// A surface mesh; `opts` holds the `rapidmesh::SurfaceOptions` by
+    /// name.
+    fn surface_mesh(&self, py: Python<'_>, opts: &Bound<'_, PyDict>) -> PyResult<PySurfaceMesh> {
+        let opts: SurfaceOptions = options(opts)?;
         let m = py
             .allow_threads(|| self.g.surface_mesh(&opts))
             .map_err(py_err)?;
@@ -1076,7 +774,21 @@ impl PyTopology {
     /// Per face: (centroid, normal, area, region_front, region_back, tag,
     /// surface, owner, edge_ids, role, (bbox_min, bbox_max)).
     #[allow(clippy::type_complexity)]
-    fn faces(&self) -> Vec<(P3, P3, f64, u32, u32, u32, u32, u32, Vec<u32>, u32, (P3, P3))> {
+    fn faces(
+        &self,
+    ) -> Vec<(
+        P3,
+        P3,
+        f64,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        Vec<u32>,
+        u32,
+        (P3, P3),
+    )> {
         self.topo
             .faces
             .iter()
@@ -1098,10 +810,10 @@ impl PyTopology {
             .collect()
     }
 
-    /// Per edge: (p0, p1, midpoint, length, kind_code, face_ids,
+    /// Per edge: (p0, p1, midpoint, length, kind name, face_ids,
     /// (bbox_min, bbox_max)).
     #[allow(clippy::type_complexity)]
-    fn edges(&self) -> Vec<(P3, P3, P3, f64, u8, Vec<u32>, (P3, P3))> {
+    fn edges(&self) -> Vec<(P3, P3, P3, f64, &'static str, Vec<u32>, (P3, P3))> {
         self.topo
             .edges
             .iter()
@@ -1111,7 +823,7 @@ impl PyTopology {
                     e.p1,
                     e.midpoint,
                     e.length,
-                    e.kind as u8,
+                    e.kind.name(),
                     e.faces.clone(),
                     (e.bbox[0], e.bbox[1]),
                 )
@@ -1123,16 +835,76 @@ impl PyTopology {
 // ---- volume mesh ---------------------------------------------------------------
 
 /// A tetrahedral mesh (`rapidmesh::Mesh`).
+/// A mesh class with the accessors every mesh has (points, faces and their
+/// tags, regions, carriers and patches, point classes, labels, the run's
+/// timings and metrics, VTU output) and its own `methods`.
+macro_rules! py_mesh {
+    ($ty:ident { $($methods:tt)* }) => {
+        #[pymethods]
+        impl $ty {
+            fn points<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+                view(slf.as_any(), &slf.borrow().m.points)
+            }
+
+            fn faces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
+                arr_u64(py, &tri_rows(&self.m.faces))
+            }
+
+            fn face_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+                face_tags(py, &self.m.faces)
+            }
+
+            fn face_regions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
+                face_regions(py, &self.m.faces)
+            }
+
+            fn face_surfaces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+                face_surfaces(py, &self.m.faces)
+            }
+
+            fn face_patches<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+                face_patches(py, &self.m.faces)
+            }
+
+            fn point_class<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
+                point_class(py, &self.m.point_class)
+            }
+
+            fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
+                self.m.surface_owners.clone().into_pyarray_bound(py)
+            }
+
+            fn labels<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+                labels_of(py, &self.m.labels)
+            }
+
+            fn timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+                pairs(py, &self.m.run.timings)
+            }
+
+            fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+                pairs(py, &self.m.run.metrics)
+            }
+
+            fn __repr__(&self) -> String {
+                self.m.to_string()
+            }
+
+            fn write_vtu(&self, path: &str) -> PyResult<()> {
+                write_to(path, |p| self.m.write_vtu(p))
+            }
+
+            $($methods)*
+        }
+    };
+}
+
 #[pyclass]
 struct PyMesh {
     m: rapidmesh::Mesh,
 }
 
-#[pymethods]
-impl PyMesh {
-    fn points<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        view(slf.as_any(), &slf.borrow().m.points)
-    }
+py_mesh!(PyMesh {
 
     fn tets<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyArray2<u64>>> {
         view_u64(slf.as_any(), &slf.borrow().m.tets)
@@ -1142,40 +914,13 @@ impl PyMesh {
         let m = slf.borrow();
         let regions = &m.m.tet_regions;
         // SAFETY: `RegionTag` is a transparent `u32`.
-        let flat = unsafe { std::slice::from_raw_parts(regions.as_ptr() as *const u32, regions.len()) };
+        let flat =
+            unsafe { std::slice::from_raw_parts(regions.as_ptr() as *const u32, regions.len()) };
         let a = numpy::ndarray::ArrayView1::from(flat);
         // SAFETY: the mesh holds its regions unchanged while the view lives.
         let out = unsafe { PyArray1::borrow_from_array_bound(&a, slf.as_any().clone()) };
         out.getattr("flags")?.setattr("writeable", false)?;
         Ok(out)
-    }
-
-    fn faces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
-        arr_u64(py, &tri_rows(&self.m.faces))
-    }
-
-    fn face_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_tags(py, &self.m.faces)
-    }
-
-    fn face_regions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
-        face_regions(py, &self.m.faces)
-    }
-
-    fn face_surfaces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_surfaces(py, &self.m.faces)
-    }
-
-    fn face_patches<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_patches(py, &self.m.faces)
-    }
-
-    fn point_class<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
-        point_class(py, &self.m.point_class)
-    }
-
-    fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        self.m.surface_owners.clone().into_pyarray_bound(py)
     }
 
     /// Feature (crease) edges of the surface mesh.
@@ -1187,10 +932,6 @@ impl PyMesh {
         arr_u64(py, &self.m.periodic_points)
     }
 
-    fn labels<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        labels_of(py, &self.m.labels)
-    }
-
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let (m, q) = (&self.m, &self.m.quality);
         let d = PyDict::new_bound(py);
@@ -1199,19 +940,11 @@ impl PyMesh {
         d.set_item("n_tets", m.tets.len())?;
         d.set_item("n_faces", m.faces.len())?;
         d.set_item("min_dihedral_deg", q.min_dihedral_deg)?;
-        d.set_item("n_slivers", q.n_slivers)?;
+        d.set_item("n_slivers", q.slivers.len())?;
         d.set_item("max_radius_edge", q.max_radius_edge)?;
         d.set_item("max_edge", q.max_edge)?;
         d.set_item("millis", m.run.millis)?;
         Ok(d)
-    }
-
-    fn timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        pairs(py, &self.m.run.timings)
-    }
-
-    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        pairs(py, &self.m.run.metrics)
     }
 
     fn log<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
@@ -1231,27 +964,23 @@ impl PyMesh {
         self.m.report()
     }
 
-    fn __repr__(&self) -> String {
-        self.m.to_string()
-    }
-
     fn quality<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let q = &self.m.quality;
         let d = PyDict::new_bound(py);
         d.set_item("n_tets", q.n_tets)?;
         d.set_item("min_dihedral_deg", q.min_dihedral_deg)?;
-        d.set_item("n_slivers", q.n_slivers)?;
+        d.set_item("n_slivers", q.slivers.len())?;
         d.set_item("max_radius_edge", q.max_radius_edge)?;
         d.set_item("max_edge", q.max_edge)?;
         d.set_item("worst_tet", q.worst_tet)?;
         d.set_item("worst_location", q.worst_location.to_vec())?;
         d.set_item("worst_region", q.worst_region)?;
         let regions = PyList::empty_bound(py);
-        for &(region, min_dih, n) in &q.per_region {
+        for rq in &q.per_region {
             let r = PyDict::new_bound(py);
-            r.set_item("region", region)?;
-            r.set_item("min_dihedral_deg", min_dih)?;
-            r.set_item("n_tets", n)?;
+            r.set_item("region", rq.region)?;
+            r.set_item("min_dihedral_deg", rq.min_dihedral_deg)?;
+            r.set_item("n_tets", rq.n_tets)?;
             regions.append(r)?;
         }
         d.set_item("regions", regions)?;
@@ -1260,26 +989,26 @@ impl PyMesh {
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dg = py.allow_threads(|| self.m.diagnostics());
-        let q = &dg.mesh;
+        let (q, mq) = (&dg.mesh, &dg.mesh.quality);
         let d = PyDict::new_bound(py);
-        d.set_item("n_tets", q.n_tets)?;
+        d.set_item("n_tets", mq.n_tets)?;
         d.set_item("n_points", q.n_points)?;
         d.set_item("n_faces", q.n_faces)?;
-        d.set_item("min_dihedral_deg", q.min_dihedral_deg)?;
-        d.set_item("mean_min_dihedral_deg", q.mean_min_dihedral_deg)?;
-        d.set_item("dihedral_histogram", q.dihedral_histogram.to_vec())?;
-        d.set_item("n_slivers", q.n_slivers)?;
-        d.set_item("max_radius_edge", q.max_radius_edge)?;
+        d.set_item("min_dihedral_deg", mq.min_dihedral_deg)?;
+        d.set_item("mean_min_dihedral_deg", mq.mean_min_dihedral_deg)?;
+        d.set_item("dihedral_histogram", mq.dihedral_histogram.to_vec())?;
+        d.set_item("n_slivers", mq.slivers.len())?;
+        d.set_item("max_radius_edge", mq.max_radius_edge)?;
         d.set_item("watertight", q.watertight)?;
         d.set_item("n_nonmanifold_edges", q.n_nonmanifold_edges)?;
         d.set_item("n_straddlers", q.n_straddlers)?;
         d.set_item("n_bridge_faces", q.n_bridge_faces)?;
         d.set_item("max_surface_deviation", q.max_surface_deviation)?;
         let rv = PyList::empty_bound(py);
-        for &(region, vol) in &q.region_volumes {
+        for rq in &mq.per_region {
             let r = PyDict::new_bound(py);
-            r.set_item("region", region)?;
-            r.set_item("volume", vol)?;
+            r.set_item("region", rq.region)?;
+            r.set_item("volume", rq.volume)?;
             rv.append(r)?;
         }
         d.set_item("region_volumes", rv)?;
@@ -1337,28 +1066,83 @@ impl PyMesh {
         sets_dict(py, &self.m.sets(), true)
     }
 
-    fn write_msh(&self, path: &str) -> PyResult<()> {
-        write_to(path, |p| self.m.write_msh(p))
+    #[pyo3(signature = (path, order=1))]
+    fn write_msh(&self, path: &str, order: u8) -> PyResult<()> {
+        match order {
+            1 => write_to(path, |p| self.m.write_msh(p)),
+            2 => write_to(path, |p| {
+                self.m.write_msh_second_order(&self.m.second_order(), p)
+            }),
+            o => Err(PyValueError::new_err(format!("order {o}, expected 1 or 2"))),
+        }
     }
 
-    fn write_vtu(&self, path: &str) -> PyResult<()> {
-        write_to(path, |p| self.m.write_vtu(p))
+    /// The second-order mesh as arrays, and its writers.
+    fn second_order<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let so = self.m.second_order();
+        let d = PyDict::new_bound(py);
+        d.set_item("points", arr(py, &so.points))?;
+        let tets: Vec<[i64; 10]> = so.tets.iter().map(|t| t.map(|v| v as i64)).collect();
+        let faces: Vec<[i64; 6]> = so.faces.iter().map(|t| t.map(|v| v as i64)).collect();
+        d.set_item("tets", arr(py, &tets))?;
+        d.set_item("faces", arr(py, &faces))?;
+        d.set_item("volumes", so.volumes().into_pyarray_bound(py))?;
+        d.set_item("curved", so.curved)?;
+        d.set_item("straightened", so.straightened)?;
+        Ok(d)
+    }
+
+    #[pyo3(signature = (path, order=1))]
+    fn write_inp(&self, path: &str, order: u8) -> PyResult<()> {
+        let r = match order {
+            1 => self.m.write_inp(path),
+            2 => self.m.write_inp_second_order(&self.m.second_order(), path),
+            o => return Err(PyValueError::new_err(format!("order {o}, expected 1 or 2"))),
+        };
+        r.map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+
+    fn write_vtu_second_order(&self, path: &str) -> PyResult<()> {
+        let regions: Vec<u32> = self.m.tet_regions.iter().map(|r| r.0).collect();
+        self.m
+            .second_order()
+            .write_vtu(&regions, path)
+            .map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+
+    #[pyo3(signature = (dir, polyhedral=false))]
+    fn write_foam(&self, dir: &str, polyhedral: bool) -> PyResult<()> {
+        self.m
+            .write_foam(dir, polyhedral)
+            .map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+
+    #[pyo3(signature = (polyhedral=false))]
+    fn fvm_quality<'py>(&self, py: Python<'py>, polyhedral: bool) -> PyResult<Bound<'py, PyDict>> {
+        let m = self.m.poly_mesh(polyhedral);
+        let q = m.quality();
+        let d = PyDict::new_bound(py);
+        d.set_item("cells", m.n_cells())?;
+        d.set_item("faces", m.faces.len())?;
+        d.set_item(
+            "non_orthogonality",
+            q.non_orthogonality.into_pyarray_bound(py),
+        )?;
+        d.set_item("skewness", q.skewness.into_pyarray_bound(py))?;
+        d.set_item("max_non_orthogonality", q.max_non_orthogonality)?;
+        d.set_item("mean_non_orthogonality", q.mean_non_orthogonality)?;
+        d.set_item("max_skewness", q.max_skewness)?;
+        d.set_item("severely_non_orthogonal", q.severely_non_orthogonal)?;
+        d.set_item("max_openness", q.max_openness)?;
+        let (_, vol) = m.cells();
+        d.set_item("volumes", vol.into_pyarray_bound(py))?;
+        Ok(d)
     }
 
     fn viewer_json(&self, py: Python<'_>, name: &str) -> String {
         py.allow_threads(|| self.m.viewer_json(name))
     }
-
-    fn save_viewer_json(
-        &self,
-        name: &str,
-        directory: std::path::PathBuf,
-    ) -> PyResult<std::path::PathBuf> {
-        self.m
-            .save_viewer_json(name, &directory)
-            .map_err(|e| PyIOError::new_err(e.to_string()))
-    }
-}
+});
 
 // ---- surface mesh --------------------------------------------------------------
 
@@ -1368,43 +1152,7 @@ struct PySurfaceMesh {
     m: rapidmesh::SurfaceMesh,
 }
 
-#[pymethods]
-impl PySurfaceMesh {
-    fn points<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        arr(py, &self.m.points)
-    }
-
-    fn faces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
-        arr_u64(py, &tri_rows(&self.m.faces))
-    }
-
-    fn face_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_tags(py, &self.m.faces)
-    }
-
-    fn face_regions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
-        face_regions(py, &self.m.faces)
-    }
-
-    fn face_surfaces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_surfaces(py, &self.m.faces)
-    }
-
-    fn face_patches<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        face_patches(py, &self.m.faces)
-    }
-
-    fn point_class<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u32>> {
-        point_class(py, &self.m.point_class)
-    }
-
-    fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
-        self.m.surface_owners.clone().into_pyarray_bound(py)
-    }
-
-    fn labels<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        labels_of(py, &self.m.labels)
-    }
+py_mesh!(PySurfaceMesh {
 
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new_bound(py);
@@ -1412,18 +1160,6 @@ impl PySurfaceMesh {
         d.set_item("n_faces", self.m.faces.len())?;
         d.set_item("millis", self.m.run.millis)?;
         Ok(d)
-    }
-
-    fn timings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        pairs(py, &self.m.run.timings)
-    }
-
-    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        pairs(py, &self.m.run.metrics)
-    }
-
-    fn __repr__(&self) -> String {
-        self.m.to_string()
     }
 
     fn edge_adjacency<'py>(&self, py: Python<'py>) -> Adjacency<'py> {
@@ -1445,13 +1181,9 @@ impl PySurfaceMesh {
         d.set_item("tri_edges", arr(py, &t.tri_edges))?;
         d.set_item("tri_edge_sign", arr(py, &t.tri_edge_sign))?;
         d.set_item("tri_tags", t.tri_tags.clone().into_pyarray_bound(py))?;
-        let (mut offsets, mut index) = (vec![0i64], Vec::new());
-        for e in 0..t.edges.len() {
-            index.extend(t.edge_tris_all.row(e).iter().map(|&x| x as i64));
-            offsets.push(index.len() as i64);
-        }
-        d.set_item("edge_tris_offsets", offsets.into_pyarray_bound(py))?;
-        d.set_item("edge_tris", index.into_pyarray_bound(py))?;
+        let (offsets, index) = t.edge_tris_all.parts();
+        d.set_item("edge_tris_offsets", u32_vec(py, offsets))?;
+        d.set_item("edge_tris", u32_vec(py, index))?;
         d.set_item("tri_patch", signed_vec(py, &c.tri_patch))?;
         d.set_item("edge_curve", signed_vec(py, &c.edge_curve))?;
         d.set_item("area", g.area.clone().into_pyarray_bound(py))?;
@@ -1466,10 +1198,6 @@ impl PySurfaceMesh {
 
     fn write_msh(&self, path: &str) -> PyResult<()> {
         write_to(path, |p| self.m.write_msh(p))
-    }
-
-    fn write_vtu(&self, path: &str) -> PyResult<()> {
-        write_to(path, |p| self.m.write_vtu(p))
     }
 
     fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
@@ -1500,35 +1228,17 @@ impl PySurfaceMesh {
     fn viewer_json(&self, name: &str) -> String {
         self.m.viewer_json(name)
     }
-
-    /// Doerfler-marks by per-triangle `eta`: (marked, centroids, sizes).
-    #[pyo3(signature = (eta, theta=0.5, factor=2.0, h_min=0.0))]
-    fn dorfler_size_points<'py>(
-        &self,
-        py: Python<'py>,
-        eta: Vec<f64>,
-        theta: f64,
-        factor: f64,
-        h_min: f64,
-    ) -> (
-        Bound<'py, PyArray1<i64>>,
-        Bound<'py, PyArray2<f64>>,
-        Bound<'py, PyArray1<f64>>,
-    ) {
-        let (marked, cents, hs) = self.m.dorfler_size_points(&eta, theta, factor, h_min);
-        let m: Vec<i64> = marked.iter().map(|&i| i as i64).collect();
-        (
-            m.into_pyarray_bound(py),
-            arr(py, &cents),
-            hs.into_pyarray_bound(py),
-        )
-    }
-}
+});
 
 /// Doerfler bulk marking; returns the marked indices, ascending.
 #[pyfunction]
-#[pyo3(signature = (eta, theta=0.5))]
-fn dorfler_mark<'py>(py: Python<'py>, eta: Vec<f64>, theta: f64) -> Bound<'py, PyArray1<i64>> {
+#[pyo3(signature = (eta, theta=None))]
+fn dorfler_mark<'py>(
+    py: Python<'py>,
+    eta: Vec<f64>,
+    theta: Option<f64>,
+) -> Bound<'py, PyArray1<i64>> {
+    let theta = theta.unwrap_or(rapidmesh::Dorfler::default().theta);
     let m: Vec<i64> = rapidmesh::dorfler_mark(&eta, theta)
         .iter()
         .map(|&i| i as i64)
@@ -1536,8 +1246,6 @@ fn dorfler_mark<'py>(py: Python<'py>, eta: Vec<f64>, theta: f64) -> Bound<'py, P
     m.into_pyarray_bound(py)
 }
 
-/// The level from which the meshing log prints live: "debug", "info",
-/// "warn" or "error"; anything else (or `None`) silences it.
 /// The volume mesh in a gmsh MSH file (4.1 or 2.2, ASCII), its physical
 /// groups as the names; no remeshing.
 #[pyfunction]
@@ -1547,326 +1255,33 @@ fn load_msh(path: &str) -> PyResult<PyMesh> {
         .map_err(py_err)
 }
 
+/// The level from which the meshing log prints live: "debug", "info",
+/// "warn" or "error"; anything else (or `None`) silences it.
 #[pyfunction]
 #[pyo3(signature = (level=None))]
 fn set_log_level(level: Option<&str>) {
     rapidmesh::set_log_level(level.and_then(rapidmesh::LogLevel::parse));
 }
 
-// ---- planar meshes -----------------------------------------------------------
-
-/// A planar mesh (`rapidmesh::Mesh2D`).
-#[pyclass]
-struct PyMesh2D {
-    inner: rapidmesh::Mesh2D,
-    millis: u64,
-}
-
-#[pymethods]
-impl PyMesh2D {
-    fn points<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        arr(py, &self.inner.points)
-    }
-
-    fn tris<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
-        let rows: Vec<[u64; 3]> = self
-            .inner
-            .tris
-            .iter()
-            .map(|t| t.map(|v| v as u64))
-            .collect();
-        arr(py, &rows)
-    }
-
-    fn tri_tags<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i64>> {
-        self.inner.tri_tags.clone().into_pyarray_bound(py)
-    }
-
-    #[pyo3(signature = (connect_tags=false))]
-    fn rwg_edges<'py>(&self, py: Python<'py>, connect_tags: bool) -> Bound<'py, PyArray2<i64>> {
-        let t = &self.inner.topo;
-        arr_i64(py, &t.rwg_edges(&t.tri_tags, connect_tags))
-    }
-
-    fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
-        arr_i64(py, &self.inner.boundary_edges())
-    }
-
-    #[pyo3(signature = (axis, value, lo, hi, tol=1e-7))]
-    fn edges_on_line<'py>(
-        &self,
-        py: Python<'py>,
-        axis: usize,
-        value: f64,
-        lo: f64,
-        hi: f64,
-        tol: f64,
-    ) -> Bound<'py, PyArray2<i64>> {
-        arr_i64(py, &self.inner.edges_on_line(axis, value, lo, hi, tol))
-    }
-
-    fn edge_adjacency<'py>(&self, py: Python<'py>) -> Adjacency<'py> {
-        edge_adjacency(py, &self.inner.topo)
-    }
-
-    fn areas<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.inner.geom.area.clone().into_pyarray_bound(py)
-    }
-
-    fn min_angles<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.inner.geom.min_angle.clone().into_pyarray_bound(py)
-    }
-
-    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let d = PyDict::new_bound(py);
-        d.set_item("n_points", self.inner.points.len())?;
-        d.set_item("n_tris", self.inner.tris.len())?;
-        d.set_item("millis", self.millis)?;
-        Ok(d)
-    }
-}
-
-/// A region as Python hands it over: `(outer, holes, tag, constraints)`.
-type Region2DTuple = (Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>, i64, Vec<Vec<[f64; 2]>>);
-
-fn regions_of(regions: Vec<Region2DTuple>) -> Vec<Region2D> {
-    regions
-        .into_iter()
-        .map(|(outer, holes, tag, constraints)| Region2D {
-            outer,
-            holes,
-            tag,
-            constraints,
-        })
-        .collect()
-}
-
-fn region_of(outer: Vec<[f64; 2]>, holes: Vec<Vec<[f64; 2]>>) -> Region2D {
-    Region2D {
-        outer,
-        holes,
-        tag: 0,
-        constraints: Vec::new(),
-    }
-}
-
-/// The width of a region at a boundary point, along `inward`.
+/// The union of planar polygons, each `(outer, holes)`, into connected shapes
+/// `(outer, holes)` (outer counter-clockwise, holes clockwise).
 #[pyfunction]
-fn local_width(
-    outer: Vec<[f64; 2]>,
-    holes: Vec<Vec<[f64; 2]>>,
-    point: [f64; 2],
-    inward: [f64; 2],
-) -> f64 {
-    region_of(outer, holes).local_width(point, inward)
-}
-
-/// Inward offsets of a region's boundary at `scales` multiples of a
-/// distance: a number, or a callable of the local width.
-#[pyfunction]
-#[pyo3(signature = (outer, holes, pitch, scales, minh=None, grading=None))]
-fn offset_chains(
-    outer: Vec<[f64; 2]>,
-    holes: Vec<Vec<[f64; 2]>>,
-    pitch: &Bound<'_, PyAny>,
-    scales: Vec<f64>,
-    minh: Option<f64>,
-    grading: Option<f64>,
-) -> PyResult<Vec<Vec<[f64; 2]>>> {
-    let opts = Mesh2DOptions {
-        minh: minh.unwrap_or(Mesh2DOptions::default().minh),
-        grading: grading.unwrap_or(rapidmesh::OFFSET_GRADING),
-        ..Default::default()
-    };
-    let region = region_of(outer, holes);
-    if let Ok(d) = pitch.extract::<f64>() {
-        return Ok(region.offset_chains(|_w| d, &scales, &opts));
-    }
-    if !pitch.is_callable() {
-        return Err(PyTypeError::new_err(
-            "pitch must be a number or a callable taking the local width",
-        ));
-    }
-    // The first error of the callable is carried out; an infinite pitch
-    // drops the row the way an unmeasurable width does.
-    let err: std::cell::RefCell<Option<PyErr>> = std::cell::RefCell::new(None);
-    let chains = region.offset_chains(
-        |w| match pitch.call1((w,)).and_then(|v| v.extract::<f64>()) {
-            Ok(d) => d,
-            Err(e) => {
-                if err.borrow().is_none() {
-                    *err.borrow_mut() = Some(e);
-                }
-                f64::INFINITY
-            }
-        },
-        &scales,
-        &opts,
-    );
-    match err.into_inner() {
-        Some(e) => Err(e),
-        None => Ok(chains),
-    }
-}
-
-/// Union of 2D regions: `(outer, holes)` per shape.
-#[pyfunction]
-fn union_regions(regions: Vec<Region2DTuple>) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
-    rapidmesh::union_regions(&regions_of(regions))
-}
-
-/// Boolean overlay of two region sets by `rule`: "union", "intersect" or
-/// "difference".
-#[pyfunction]
-fn overlay_regions(
-    subject: Vec<Region2DTuple>,
-    clip: Vec<Region2DTuple>,
-    rule: &str,
-) -> PyResult<Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)>> {
-    let r = match rule {
-        "union" => rapidmesh::OverlayRule::Union,
-        "intersect" => rapidmesh::OverlayRule::Intersect,
-        "difference" => rapidmesh::OverlayRule::Difference,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "unknown rule {other:?}, expected union, intersect or difference"
-            )))
-        }
-    };
-    Ok(rapidmesh::overlay_regions(
-        &regions_of(subject),
-        &regions_of(clip),
-        r,
-    ))
-}
-
-/// The 2D options, each not given at its Rust default.
-#[allow(clippy::too_many_arguments)]
-fn mesh2d_opts(
-    min_angle_deg: Option<f64>,
-    cvt_iters: Option<usize>,
-    max_passes: Option<usize>,
-    target_count: Option<usize>,
-    minh: Option<f64>,
-    maxh: Option<f64>,
-    grading: Option<f64>,
-    band_diagonals: Option<&str>,
-    width_size: Option<f64>,
-    snap: Option<f64>,
-) -> PyResult<Mesh2DOptions> {
-    let d = Mesh2DOptions::default();
-    Ok(Mesh2DOptions {
-        min_angle_deg: min_angle_deg.unwrap_or(d.min_angle_deg),
-        cvt_iters: cvt_iters.unwrap_or(d.cvt_iters),
-        max_passes: max_passes.unwrap_or(d.max_passes),
-        target_count: target_count.unwrap_or(d.target_count),
-        minh: minh.unwrap_or(d.minh),
-        maxh: maxh.unwrap_or(d.maxh),
-        grading: grading.unwrap_or(d.grading),
-        band_diagonals: match band_diagonals {
-            Some(s) => s.parse().map_err(PyValueError::new_err)?,
-            None => d.band_diagonals,
-        },
-        width_size: width_size.unwrap_or(d.width_size),
-        snap: snap.unwrap_or(d.snap),
-    })
-}
-
-/// Meshes tagged 2D regions at target size `h`.
-#[pyfunction]
-#[pyo3(signature = (regions, h, min_angle_deg=None, cvt_iters=None, max_passes=None, target_count=None, minh=None, maxh=None, grading=None, band_diagonals=None, width_size=None, snap=None))]
-fn mesh_2d(
-    py: Python<'_>,
-    regions: Vec<Region2DTuple>,
-    h: f64,
-    min_angle_deg: Option<f64>,
-    cvt_iters: Option<usize>,
-    max_passes: Option<usize>,
-    target_count: Option<usize>,
-    minh: Option<f64>,
-    maxh: Option<f64>,
-    grading: Option<f64>,
-    band_diagonals: Option<&str>,
-    width_size: Option<f64>,
-    snap: Option<f64>,
-) -> PyResult<PyMesh2D> {
-    let t0 = std::time::Instant::now();
-    let regs = regions_of(regions);
-    let opts = mesh2d_opts(
-        min_angle_deg,
-        cvt_iters,
-        max_passes,
-        target_count,
-        minh,
-        maxh,
-        grading,
-        band_diagonals,
-        width_size,
-        snap,
-    )?;
-    let inner = py.allow_threads(|| rapidmesh::mesh_2d(&regs, |_p| h, &opts));
-    Ok(PyMesh2D {
-        inner,
-        millis: t0.elapsed().as_millis() as u64,
-    })
-}
-
-/// Meshes groups of tagged 2D regions (one mesh per group) under one
-/// triangle budget.
-#[pyfunction]
-#[pyo3(signature = (groups, h, min_angle_deg=None, cvt_iters=None, max_passes=None, target_count=None, minh=None, maxh=None, grading=None, band_diagonals=None, width_size=None, snap=None))]
-fn mesh_layers(
-    py: Python<'_>,
-    groups: Vec<Vec<Region2DTuple>>,
-    h: f64,
-    min_angle_deg: Option<f64>,
-    cvt_iters: Option<usize>,
-    max_passes: Option<usize>,
-    target_count: Option<usize>,
-    minh: Option<f64>,
-    maxh: Option<f64>,
-    grading: Option<f64>,
-    band_diagonals: Option<&str>,
-    width_size: Option<f64>,
-    snap: Option<f64>,
-) -> PyResult<Vec<PyMesh2D>> {
-    let t0 = std::time::Instant::now();
-    let groups: Vec<Vec<Region2D>> = groups.into_iter().map(regions_of).collect();
-    let opts = mesh2d_opts(
-        min_angle_deg,
-        cvt_iters,
-        max_passes,
-        target_count,
-        minh,
-        maxh,
-        grading,
-        band_diagonals,
-        width_size,
-        snap,
-    )?;
-    let inner = py.allow_threads(|| rapidmesh::mesh_layers(&groups, |_p| h, &opts));
-    let millis = t0.elapsed().as_millis() as u64;
-    Ok(inner
-        .into_iter()
-        .map(|m| PyMesh2D { inner: m, millis })
-        .collect())
+fn polygon_union(
+    polygons: Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)>,
+) -> Vec<(Vec<[f64; 2]>, Vec<Vec<[f64; 2]>>)> {
+    rapidmesh::polygon_union(&polygons)
 }
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("MeshError", m.py().get_type_bound::<MeshError>())?;
     m.add_class::<PyGeometry>()?;
     m.add_class::<PyScope>()?;
     m.add_class::<PyTopology>()?;
     m.add_class::<PyMesh>()?;
     m.add_class::<PySurfaceMesh>()?;
-    m.add_class::<PyMesh2D>()?;
-    m.add_function(wrap_pyfunction!(mesh_2d, m)?)?;
     m.add_function(wrap_pyfunction!(load_msh, m)?)?;
-    m.add_function(wrap_pyfunction!(mesh_layers, m)?)?;
-    m.add_function(wrap_pyfunction!(local_width, m)?)?;
-    m.add_function(wrap_pyfunction!(offset_chains, m)?)?;
-    m.add_function(wrap_pyfunction!(union_regions, m)?)?;
-    m.add_function(wrap_pyfunction!(overlay_regions, m)?)?;
+    m.add_function(wrap_pyfunction!(polygon_union, m)?)?;
     m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
     m.add_function(wrap_pyfunction!(set_log_level, m)?)?;
     Ok(())

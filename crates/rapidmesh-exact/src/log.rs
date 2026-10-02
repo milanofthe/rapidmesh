@@ -1,17 +1,17 @@
 //! Thread-local meshing log: stage timings, statistics, and leveled events.
 //!
-//! The meshing pipeline (scene assembly -> PLC -> tet mesh -> optimize) runs
-//! its stages sequentially on one thread (rayon fan-out happens inside a stage,
+//! The meshing pipeline (assembly, B-rep, faces, volume, finish) runs its
+//! stages sequentially on one thread (rayon fan-out happens inside a stage,
 //! whose total is recorded on the calling thread). Each stage records its
 //! wall-clock duration, key counts, and human-readable events here; the Python
 //! binding clears the collector before a mesh and takes the ordered records
 //! after, exposing them as `mesh.timings` / `mesh.stats` / `mesh.log`.
 //!
 //! Events are also printed live to stderr (with an elapsed-time prefix) when the
-//! log level is at or below their severity. The level is a fastsim-style
+//! log level is at or below their severity. The level is a
 //! threshold (`Debug < Info < Warn < Error`): set `RAPIDMESH_LOG` to
 //! `debug`/`info`/`warn`/`error` (or `1`/`true` = info, unset/`0`/`off` = silent),
-//! or call [`set_level`] / [`set_verbose`] from the host. So a user can watch the
+//! or call [`set_level`] from the host. So a user can watch the
 //! mesher's stages, metrics, and warnings as they happen -- not just a summary
 //! after it finishes.
 
@@ -84,9 +84,12 @@ thread_local! {
     static STATS: RefCell<Vec<(String, f64)>> = const { RefCell::new(Vec::new()) };
     static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
     static START: RefCell<Option<Instant>> = const { RefCell::new(None) };
-    /// Minimum level to print live; `None` = silent (records still collected).
-    static THRESHOLD: RefCell<Option<Level>> = const { RefCell::new(None) };
 }
+
+/// Minimum level to print live, for the whole process (the worker threads
+/// of a mesh print too): 0 silent, else the level's rank plus one. The
+/// records stay per thread.
+static THRESHOLD: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Clears all collectors and (re)starts the run clock. The live-print threshold
 /// is taken from `RAPIDMESH_LOG` (unless already set higher via [`set_level`]).
@@ -103,22 +106,19 @@ pub fn clear() {
 /// Sets the live-print threshold: `Some(level)` prints events at or above
 /// `level`; `None` is silent.
 pub fn set_level(level: Option<Level>) {
-    THRESHOLD.with(|t| *t.borrow_mut() = level);
+    let rank = level.map_or(0, |l| l as u8 + 1);
+    THRESHOLD.store(rank, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The current live-print threshold (`None` = silent).
 pub fn level() -> Option<Level> {
-    THRESHOLD.with(|t| *t.borrow())
-}
-
-/// Back-compat toggle: `true` = [`Level::Info`], `false` = silent.
-pub fn set_verbose(on: bool) {
-    set_level(on.then_some(Level::Info));
-}
-
-/// True if any live printing is on.
-pub fn is_verbose() -> bool {
-    level().is_some()
+    match THRESHOLD.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(Level::Debug),
+        2 => Some(Level::Info),
+        3 => Some(Level::Warn),
+        4 => Some(Level::Error),
+        _ => None,
+    }
 }
 
 fn elapsed() -> f64 {
@@ -129,7 +129,7 @@ fn elapsed() -> f64 {
 pub fn event(level: Level, stage: &str, message: impl Into<String>) {
     let message = message.into();
     let at = elapsed();
-    if THRESHOLD.with(|t| t.borrow().is_some_and(|thr| level >= thr)) {
+    if self::level().is_some_and(|thr| level >= thr) {
         eprintln!("[{at:8.3}s {:>5} {stage}] {message}", level.tag());
     }
     EVENTS.with(|e| {
@@ -155,11 +155,6 @@ pub fn info(stage: &str, message: impl Into<String>) {
 /// Warning-level event.
 pub fn warn(stage: &str, message: impl Into<String>) {
     event(Level::Warn, stage, message);
-}
-
-/// Error-level event (record before a panic so the log explains the abort).
-pub fn error(stage: &str, message: impl Into<String>) {
-    event(Level::Error, stage, message);
 }
 
 /// Records a stage's wall-clock duration in seconds and emits an info event
@@ -212,18 +207,6 @@ pub fn stat(name: &str, value: f64) {
     STATS.with(|s| s.borrow_mut().push((name.to_string(), value)));
 }
 
-/// Records a mesh metric BOTH as a machine-readable stat (`stage.name`) and a
-/// human-readable info line (`name = value unit`), so the important numbers show
-/// up live and in `mesh.stats`.
-pub fn metric(stage_name: &str, name: &str, value: f64, unit: &str) {
-    stat(&format!("{stage_name}.{name}"), value);
-    if unit.is_empty() {
-        info(stage_name, format!("{name} = {value:.4}"));
-    } else {
-        info(stage_name, format!("{name} = {value:.4} {unit}"));
-    }
-}
-
 /// Drains and returns the collected (timings, stats, events), each ordered by
 /// (first) record time.
 pub fn take() -> (Vec<(String, f64)>, Vec<(String, f64)>, Vec<Event>) {
@@ -257,16 +240,15 @@ mod tests {
         stage("mesh.x", 0.5);
         stage("mesh.y", 0.25);
         stage("mesh.x", 0.25);
-        metric("metrics", "tets", 1234.0, "");
         warn("metrics", "a sliver survived");
         let (timings, stats, events) = take();
         assert_eq!(
             timings,
             vec![("mesh.x".to_string(), 0.75), ("mesh.y".to_string(), 0.25)]
         );
-        assert_eq!(stats, vec![("metrics.tets".to_string(), 1234.0)]);
-        // All three events are collected regardless of the print threshold.
-        assert_eq!(events.len(), 5);
-        assert_eq!(events[4].level, Level::Warn);
+        assert!(stats.is_empty());
+        // All events are collected regardless of the print threshold.
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[3].level, Level::Warn);
     }
 }

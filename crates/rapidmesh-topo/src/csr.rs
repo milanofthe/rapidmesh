@@ -1,5 +1,5 @@
 //! A compact compressed-row adjacency for the variable-degree stars
-//! (vertex→tris, vertex→tets, vertex→edges). Offsets + flat data, no per-row
+//! (vertex->tris, vertex->tets, vertex->edges). Offsets + flat data, no per-row
 //! allocation, cache-friendly iteration.
 
 /// Compressed adjacency: `row(k)` is the slice of values associated with key `k`.
@@ -32,6 +32,11 @@ impl Csr {
 
     /// The values for key `k`.
     #[inline]
+    /// The row starts (one more than rows) and the values, row after row.
+    pub fn parts(&self) -> (&[u32], &[u32]) {
+        (&self.offsets, &self.data)
+    }
+
     pub fn row(&self, k: usize) -> &[u32] {
         &self.data[self.offsets[k] as usize..self.offsets[k + 1] as usize]
     }

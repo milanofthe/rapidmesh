@@ -16,9 +16,10 @@ use crate::shapes::{Shape, Sheet};
 use crate::{Error, Result};
 use rapidmesh_brep::{EdgeFilter, FaceFilter, Model, Topology};
 use rapidmesh_exact::clock::Instant;
+use rapidmesh_geom::vec3::len;
 use rapidmesh_geom::{FaceTag, RegionTag, Scene};
-use rapidmesh_tet::mesh3::PeriodicPair;
-use rapidmesh_tet::{mesh_budgeted, quality_stats, surface_mesh, MeshParams, OptimizeParams};
+use rapidmesh_tet::PeriodicPair;
+use rapidmesh_tet::{quality_stats, MeshParams};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -153,16 +154,13 @@ impl Default for Sizing {
     }
 }
 
-/// Elements across the thickness of a region by default.
-pub const DEFAULT_CELLS_ACROSS: f64 = 1.0;
-
 /// Options of [`Geometry::mesh`]; a `None` falls back to the geometry.
-#[derive(Clone, Debug)]
+/// By name from serde (the Python binding's path), every field optional.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct MeshOptions {
     /// Target edge length (the geometry's if `None`, unbounded if neither).
     pub maxh: Option<f64>,
-    /// Delaunay quality bound, circumradius over shortest edge.
-    pub radius_edge: f64,
     /// Refinement point budget.
     pub max_points: usize,
     /// Size grading: the target grows by at most this much per unit
@@ -171,17 +169,9 @@ pub struct MeshOptions {
     /// Elements across the thickness of each region (see
     /// [`MeshParams::cells_across`]): the size inside a region is at most
     /// its thickness over this, so a thin plate or wire gets proper tets
-    /// through it. `None` (the default) leaves it off for the bottom-up
-    /// mesher (stacks of layers far thinner than the size take flat tets
-    /// through each layer) and takes [`DEFAULT_CELLS_ACROSS`] for the
-    /// restricted Delaunay one; `Some(0.0)` turns it off for both.
+    /// through it. `None` (the default) leaves it off: stacks of layers far
+    /// thinner than the size take flat tets through each layer.
     pub cells_across: Option<f64>,
-    /// The mesher: `None` (the default) meshes bottom-up (each face alone
-    /// on the shared samples of its edges, then each region by its
-    /// constrained Delaunay tetrahedralization, refined and improved) and
-    /// falls back to the restricted Delaunay mesher where bottom-up fails; `Some(true)` meshes
-    /// bottom-up only, `Some(false)` with the restricted Delaunay mesher.
-    pub bottom_up: Option<bool>,
     /// Relative chord tolerances of curved edges and surfaces.
     pub tol_edge: Option<f64>,
     pub tol_surf: Option<f64>,
@@ -189,43 +179,34 @@ pub struct MeshOptions {
     pub maxh_edge: Option<f64>,
     pub maxh_surf: Option<f64>,
     pub maxh_vol: Option<f64>,
-    /// Also run the quality optimizer (it moves boundary points, so not
-    /// with periodic faces).
-    pub optimize: bool,
-    pub optimize_passes: Option<usize>,
     /// Tet budget: the global size is scaled over a few remeshes to land
     /// near it.
     pub target_elements: Option<usize>,
-    /// Smallest element size on surfaces and in the volume (0 off).
+    /// Smallest element size on surfaces (0 off).
     pub min_h_surf: f64,
-    pub min_h_vol: f64,
 }
 
 impl Default for MeshOptions {
     fn default() -> MeshOptions {
         MeshOptions {
             maxh: None,
-            radius_edge: 2.0,
             max_points: 500_000,
             grading: None,
             cells_across: None,
-            bottom_up: None,
             tol_edge: None,
             tol_surf: None,
             maxh_edge: None,
             maxh_surf: None,
             maxh_vol: None,
-            optimize: false,
-            optimize_passes: None,
             target_elements: None,
             min_h_surf: 0.0,
-            min_h_vol: 0.0,
         }
     }
 }
 
 /// Options of [`Geometry::surface_mesh`] (see [`MeshOptions`]).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SurfaceOptions {
     pub maxh: Option<f64>,
     pub grading: Option<f64>,
@@ -234,11 +215,9 @@ pub struct SurfaceOptions {
     pub maxh_edge: Option<f64>,
     pub maxh_surf: Option<f64>,
     pub maxh_vol: Option<f64>,
-    /// Triangle budget: the refinement stops once it is reached.
+    /// Triangle budget: the sizes are coarsened by one factor until the
+    /// count is at most a little over it.
     pub target_triangles: Option<usize>,
-    /// The mesher, as in [`MeshOptions::bottom_up`] (a triangle budget
-    /// falls back to restricted Delaunay refinement).
-    pub bottom_up: Option<bool>,
 }
 
 /// The geometry builder.
@@ -410,8 +389,8 @@ impl Geometry {
 
     /// The solids of the STEP file at `path` (AP203/AP214), each with its
     /// faces on their true surfaces (planes, quadrics, tori, B-splines), with
-    /// target size `maxh` in their regions. Coordinates stay in the file's
-    /// unit.
+    /// target size `maxh` in their regions, and labelled with the names the
+    /// file gives its parts. Coordinates stay in the file's unit.
     pub fn import_step(
         &mut self,
         path: impl AsRef<std::path::Path>,
@@ -422,10 +401,19 @@ impl Geometry {
             .map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))?;
         let step = rapidmesh_step::read(&text, rapidmesh_step::Tolerance::default())
             .map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))?;
+        // Each body named as the file names it (its product), so the mesh
+        // sets and physical groups carry the names of the parts.
         Ok(step
             .bodies
             .into_iter()
-            .map(|b| self.add_faceted(b.solid, Vec::new(), maxh, false))
+            .map(|b| {
+                let s = self.add_faceted(b.solid, Vec::new(), maxh, false);
+                let name = b.name.trim();
+                if !name.is_empty() {
+                    self.label_solid(s, name);
+                }
+                s
+            })
             .collect())
     }
 
@@ -636,6 +624,42 @@ impl Geometry {
         self.size_points.push((p, h));
     }
 
+    /// [`Geometry::add_size_point`] for each point with its own size.
+    pub fn add_size_points(&mut self, points: &[P3], hs: &[f64]) -> Result<()> {
+        if points.len() != hs.len() {
+            return Err(Error::Invalid(format!(
+                "{} points but {} sizes",
+                points.len(),
+                hs.len()
+            )));
+        }
+        self.size_points
+            .extend(points.iter().copied().zip(hs.iter().copied()));
+        Ok(())
+    }
+
+    /// The MARK -> REFINE half of an adaptive loop: Dörfler-marks the
+    /// triangles of `mesh` by their indicators `eta` and adds each marked one
+    /// as a size point at its centroid, its local size over `d.factor`.
+    /// Returns the marked triangles; mesh again to refine.
+    pub fn mark_dorfler(
+        &mut self,
+        mesh: &rapidmesh_tet::SurfaceMesh,
+        eta: &[f64],
+        d: &rapidmesh_tet::Dorfler,
+    ) -> Result<Vec<u32>> {
+        if eta.len() != mesh.faces.len() {
+            return Err(Error::Invalid(format!(
+                "{} indicators for {} triangles",
+                eta.len(),
+                mesh.faces.len()
+            )));
+        }
+        let (marked, points, hs) = mesh.dorfler_size_points(eta, d.theta, d.factor, d.h_min);
+        self.add_size_points(&points, &hs)?;
+        Ok(marked)
+    }
+
     /// The ids `scope` selects in the current model.
     pub fn resolve(&self, scope: &Scope) -> Result<Vec<u32>> {
         let topo = self.topology()?;
@@ -775,7 +799,7 @@ impl Geometry {
                 ci[1] + t[1] - cj[1],
                 ci[2] + t[2] - cj[2],
             ];
-            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            len(d)
         };
         // The image of a face by centroid and area: faces of one side can
         // share a centroid (a side with a hole and the disc in it).
@@ -869,9 +893,7 @@ impl Geometry {
         Ok(MeshParams {
             maxh: maxh.or(self.maxh).unwrap_or(f64::INFINITY),
             region_maxh: self.region_maxh(&r),
-            radius_edge_bound: 0.0,
             min_h_surf: 0.0,
-            min_h_vol: 0.0,
             surf_min_angle: 0.0,
             surf_target_count: 0,
             max_points: usize::MAX,
@@ -896,11 +918,6 @@ impl Geometry {
     /// Assembles every solid and sheet exactly, meshes the arrangement with
     /// tetrahedra and improves them.
     pub fn mesh(&self, opts: &MeshOptions) -> Result<Mesh> {
-        if opts.optimize && !self.periodic.is_empty() {
-            return Err(Error::Invalid(
-                "optimize moves boundary vertices; not with periodic faces".into(),
-            ));
-        }
         let t0 = Instant::now();
         rapidmesh_exact::log::clear();
         let ta = Instant::now();
@@ -908,9 +925,7 @@ impl Geometry {
         let t_assemble = ta.elapsed();
         rapidmesh_exact::log::stage("assemble.total", t_assemble.as_secs_f64());
         let params = MeshParams {
-            radius_edge_bound: opts.radius_edge,
             min_h_surf: opts.min_h_surf,
-            min_h_vol: opts.min_h_vol,
             max_points: opts.max_points,
             cells_across: opts.cells_across.unwrap_or(0.0),
             periodic: self.periodic_pairs()?,
@@ -921,53 +936,29 @@ impl Geometry {
                 [opts.maxh_edge, opts.maxh_surf, opts.maxh_vol],
             )?
         };
-        let passes = opts.optimize.then(|| {
-            opts.optimize_passes
-                .unwrap_or(OptimizeParams::default().passes)
-        });
         let tm = Instant::now();
-        let legacy = || {
-            let params = MeshParams {
-                cells_across: opts.cells_across.unwrap_or(DEFAULT_CELLS_ACROSS),
-                ..params.clone()
-            };
-            mesh_budgeted(&model, &params, opts.target_elements, passes).0
-        };
-        let bottom_up = || {
-            rapidmesh_tet::budgeted(&model, &params, opts.target_elements, passes, &|p| {
-                rapidmesh_tet::bottomup::mesh_scene(&self.scene, &model, p)
+        // Bottom-up or not at all: where the geometry defeats it, the
+        // error says where and what to repair (a panic inside it too, as an
+        // error rather than an abort).
+        let meshed = catch(|| {
+            rapidmesh_tet::budgeted(&model, &params, opts.target_elements, &|p| {
+                rapidmesh_tet::mesh_scene(&self.scene, &model, p)
             })
-            .map(|x| x.0)
-        };
-        let mesh = match opts.bottom_up {
-            Some(false) => legacy(),
-            Some(true) => {
-                bottom_up().map_err(|e| Error::Invalid(format!("bottom-up mesh: {e}")))?
+        });
+        let mesh = match meshed {
+            Ok(Ok((m, _))) => m,
+            Ok(Err(e)) => return Err(Error::Mesh(e.explain(&model))),
+            Err(panic) => {
+                return Err(Error::Mesh(format!(
+                    "cannot mesh: the mesher failed inside ({panic}), an internal error; \
+                     please report it with the input"
+                )))
             }
-            None => match bottom_up_or_why(bottom_up) {
-                Ok(m) => m,
-                Err(why) => {
-                    rapidmesh_exact::log::warn(
-                        "mesh.mesher",
-                        format!("bottom-up failed ({why}); restricted Delaunay instead"),
-                    );
-                    rapidmesh_exact::log::stat("mesh.fallback", 1.0);
-                    legacy()
-                }
-            },
         };
         let t_mesh = tm.elapsed();
         rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
         let quality = quality_stats(&mesh);
         rapidmesh_tet::log_metrics(&quality, mesh.points.len());
-        if std::env::var_os("RAPIDMESH_TIMING").is_some() {
-            eprintln!(
-                "stages: assemble {:?} ({} plc facets), mesh+optimize {:?}",
-                t_assemble,
-                model.plc.triangles.len(),
-                t_mesh,
-            );
-        }
         Ok(Mesh::new(
             mesh,
             quality,
@@ -993,43 +984,21 @@ impl Geometry {
                 [opts.maxh_edge, opts.maxh_surf, opts.maxh_vol],
             )?
         };
-        let mesh = match (opts.bottom_up, opts.target_triangles) {
-            (Some(false), _) | (None, Some(_)) => surface_mesh(&model, &params),
-            (Some(true), _) => rapidmesh_tet::bottomup::surface_mesh(&model, &params)
-                .map_err(|e| Error::Invalid(format!("bottom-up surface mesh: {e}")))?,
-            (None, None) => {
-                match bottom_up_or_why(|| rapidmesh_tet::bottomup::surface_mesh(&model, &params)) {
-                    Ok(m) => m,
-                    Err(why) => {
-                        rapidmesh_exact::log::warn(
-                            "mesh.mesher",
-                            format!("bottom-up failed ({why}); restricted Delaunay instead"),
-                        );
-                        rapidmesh_exact::log::stat("mesh.fallback", 1.0);
-                        surface_mesh(&model, &params)
-                    }
-                }
-            }
-        };
+        let mesh = rapidmesh_tet::surface_mesh(&model, &params)
+            .map_err(|e| Error::Mesh(rapidmesh_tet::MeshError::from(e).explain(&model)))?;
         rapidmesh_tet::log_surface_metrics(&mesh);
         Ok(SurfaceMesh::new(mesh, self.labels()?, Run::finish(t0)))
     }
 }
 
-/// The bottom-up mesh, or why there is none: its error, or the message of a
-/// panic inside it (so the caller can fall back rather than abort).
-fn bottom_up_or_why<T, E: std::fmt::Display>(
-    f: impl FnOnce() -> std::result::Result<T, E>,
-) -> std::result::Result<T, String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(Ok(m)) => Ok(m),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(p) => Err(p
-            .downcast_ref::<String>()
+/// The result of `f`, or the message of a panic inside it.
+fn catch<T>(f: impl FnOnce() -> T) -> std::result::Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
+        p.downcast_ref::<String>()
             .cloned()
             .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_else(|| "panic".into())),
-    }
+            .unwrap_or_else(|| "panic".into())
+    })
 }
 
 /// Names role `at` in `roles`, with empty names for the roles before it

@@ -150,10 +150,10 @@ fn fan_facet_pierced_conformally_no_sliver() {
     };
     let a = find([0.0, -1.0, 0.0]);
     let b = find([0.0, 1.0, 0.0]);
-    assert!(
-        cap_ft.has_edge(a, b),
-        "merged cut constraint must be an edge"
-    );
+    let has_edge = cap_ft.triangles.iter().any(|t| {
+        (0..3).any(|e| [t[e], t[(e + 1) % 3]] == [a, b] || [t[e], t[(e + 1) % 3]] == [b, a])
+    });
+    assert!(has_edge, "merged cut constraint must be an edge");
     // No sliver: every sub-triangle has a healthy area.
     for &t in &cap_ft.triangles {
         assert!(

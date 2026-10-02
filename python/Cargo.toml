@@ -1,6 +1,6 @@
 [package]
 name = "rapidmesh-python"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 
 [lib]
@@ -11,6 +11,8 @@ crate-type = ["cdylib"]
 rapidmesh = { path = "../crates/rapidmesh" }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 numpy = "0.22"
+serde = "1"
+pythonize = "0.22"
 rapidmesh-exact = { path = "../crates/rapidmesh-exact" }
 mimalloc = { version = "0.1", default-features = false }
 

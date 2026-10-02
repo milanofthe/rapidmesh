@@ -361,13 +361,13 @@ fn scaled_volume_and_surface_degradation() {
         s,
         rapidmesh_geom::SurfaceKind::Cylinder { radius, .. } if (*radius - 2.0).abs() < 1e-12
     )));
-    // Non-uniform: volume x fx fy fz, curved kinds degrade to Plane.
+    // Non-uniform: volume x fx fy fz, curved kinds degrade to their facets.
     let n = f.scaled([2.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
     assert_eq!(solid_volume6(&n), v0 * rat(2.0));
-    assert!(n
-        .surfaces
-        .iter()
-        .all(|s| matches!(s, rapidmesh_geom::SurfaceKind::Plane)));
+    assert!(n.surfaces.iter().all(|s| matches!(
+        s,
+        rapidmesh_geom::SurfaceKind::Plane { .. } | rapidmesh_geom::SurfaceKind::Facets
+    )));
     // Negative single factor flips orientation; winding is corrected.
     let r = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
     assert!(solid_volume6(&r) > BigRational::zero());
@@ -588,7 +588,8 @@ fn kinds(f: &Faceted) -> Vec<&'static str> {
     f.surfaces
         .iter()
         .map(|k| match k {
-            SurfaceKind::Plane => "plane",
+            SurfaceKind::Plane { .. } => "plane",
+            SurfaceKind::Facets => "facets",
             SurfaceKind::Cylinder { .. } => "cylinder",
             SurfaceKind::Cone { .. } => "cone",
             SurfaceKind::Sphere { .. } => "sphere",
@@ -654,7 +655,7 @@ fn revolved_half_disc_is_a_ball_and_a_trapezoid_a_frustum_ring() {
         64,
     )
     .unwrap();
-    assert_eq!(kinds(&f), ["sphere", "plane"]);
+    assert_eq!(kinds(&f), ["sphere", "facets"]);
     let v = volume(&f);
     assert!((v - 4.0 / 3.0 * PI).abs() < 0.01 * v, "{v}");
     // A trapezoid off the axis: cone, plane, cylinder, and an arc top.
@@ -697,7 +698,7 @@ fn revolved_spline_has_a_revolved_carrier() {
         48,
     )
     .unwrap();
-    assert_eq!(kinds(&f), ["plane", "revolved", "plane", "plane"]);
+    assert_eq!(kinds(&f), ["plane", "revolved", "plane", "facets"]);
     assert!(volume(&f) > 0.0);
 }
 

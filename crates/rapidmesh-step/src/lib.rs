@@ -3,10 +3,12 @@
 //! quadrics, tori, B-splines), so the arrangement, the B-rep and the mesher
 //! take it like any other shape and measure against the true surfaces.
 
+pub mod entities;
 pub mod geometry;
 pub mod part21;
 pub mod tessellate;
 
+pub use entities::{Model, StepError};
 pub use tessellate::{Body, Tolerance};
 
 /// A STEP file read: its solids and the length of its unit in metres.
@@ -18,47 +20,15 @@ pub struct Step {
 /// Reads the solids of the STEP file `text`.
 pub fn read(text: &str, tol: Tolerance) -> Result<Step, String> {
     let x = part21::parse(text).map_err(|e| e.to_string())?;
-    let bodies = tessellate::bodies(&x, tol)?;
-    if bodies.is_empty() {
+    let m = entities::decode(&x).map_err(|e| e.to_string())?;
+    if m.solids.is_empty() {
         return Err("no solid (MANIFOLD_SOLID_BREP) in the file".into());
     }
+    let bodies = tessellate::bodies(&m, tol).map_err(|e| e.to_string())?;
     Ok(Step {
         bodies,
-        metres_per_unit: length_unit(&x),
+        metres_per_unit: m.metres_per_unit,
     })
-}
-
-/// The length unit of `x` in metres (millimetres where it names none).
-fn length_unit(x: &part21::Exchange) -> f64 {
-    for id in x.all("LENGTH_UNIT") {
-        if let Some(si) = x.record(id, "SI_UNIT") {
-            let prefix = si.args.first().and_then(|v| v.as_enum()).unwrap_or("");
-            return match prefix {
-                "MILLI" => 1e-3,
-                "CENTI" => 1e-2,
-                "MICRO" => 1e-6,
-                "NANO" => 1e-9,
-                "KILO" => 1e3,
-                _ => 1.0,
-            };
-        }
-        if let Some(c) = x.record(id, "CONVERSION_BASED_UNIT") {
-            // INCH, FOOT: the factor in its measure, of millimetres.
-            let name = c
-                .args
-                .first()
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_uppercase();
-            if name.contains("INCH") {
-                return 0.0254;
-            }
-            if name.contains("FOOT") {
-                return 0.3048;
-            }
-        }
-    }
-    1e-3
 }
 
 #[cfg(test)]

@@ -22,8 +22,7 @@ um = 1e-6
 def rects_outline(rects, tag=1):
     """The union of axis-aligned rectangles (x0, y0, x1, y1) as sheet
     outlines: (outer, holes) per piece."""
-    regs = [rm.Region2D([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], tag) for x0, y0, x1, y1 in rects]
-    return rm.union_regions(regs)
+    return rm.polygon_union([[(x0, y0), (x1, y0), (x1, y1), (x0, y1)] for x0, y0, x1, y1 in rects])
 
 
 def sheets(g, rects, z, tag, maxh=None):

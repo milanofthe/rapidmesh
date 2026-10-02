@@ -4,15 +4,15 @@ build-backend = "maturin"
 
 [project]
 name = "rapidmesh"
-version = "1.0.0"
-description = "Conforming tetrahedral and surface meshes for electromagnetic FEM and MoM, in Rust with a Python API."
+version = "2.0.0"
+description = "Conforming tetrahedral and surface meshes for finite element and finite volume solvers, in Rust with a Python API."
 readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.10"
 authors = [
     { name = "Milan Rother", email = "sporkhomat@gmail.com" },
 ]
-keywords = ["mesh", "tetrahedral", "fem", "mom", "delaunay", "csg", "step", "cad"]
+keywords = ["mesh", "tetrahedral", "fem", "fvm", "delaunay", "csg", "step", "cad"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",

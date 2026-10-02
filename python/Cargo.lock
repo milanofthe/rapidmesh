@@ -342,6 +342,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pythonize"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90fcf491425978bd889015d5430f6473d91bdfa2097262f1e731aadcf6c2113e"
+dependencies = [
+ "pyo3",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -352,10 +362,9 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "rapidmesh-brep",
- "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",
  "rapidmesh-step",
@@ -367,17 +376,18 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-brep"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",
+ "rayon",
  "rustc-hash 2.1.2",
 ]
 
 [[package]]
 name = "rapidmesh-csg"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-exact",
@@ -387,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-exact"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "geometry-predicates",
  "num-bigint",
@@ -397,8 +407,9 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-geom"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
+ "i_overlay",
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rayon",
@@ -407,28 +418,31 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-python"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "mimalloc",
  "numpy",
  "pyo3",
+ "pythonize",
  "rapidmesh",
  "rapidmesh-exact",
+ "serde",
 ]
 
 [[package]]
 name = "rapidmesh-step"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "rapidmesh-csg",
  "rapidmesh-exact",
  "rapidmesh-geom",
+ "rayon",
  "rustc-hash 2.1.2",
 ]
 
 [[package]]
 name = "rapidmesh-tet"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "geometry-predicates",
  "rapidmesh-brep",
@@ -442,10 +456,8 @@ dependencies = [
 
 [[package]]
 name = "rapidmesh-topo"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
- "i_overlay",
- "rapidmesh-brep",
  "rapidmesh-geom",
  "rapidmesh-tet",
 ]

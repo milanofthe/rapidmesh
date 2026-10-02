@@ -21,28 +21,26 @@ import numpy as np
 from . import _native
 
 
-def dorfler_mark(eta, theta=0.5):
+def dorfler_mark(eta, theta=None):
     """Doerfler (bulk) marking. Returns the indices of the smallest element set
     whose summed SQUARED indicator reaches ``theta`` of the total
-    (``theta`` in (0, 1]; 0.5 is the common choice). The squared convention
-    treats ``eta`` as an energy-norm error contribution per element."""
+    (``theta`` in (0, 1], default 0.5). The squared convention treats ``eta``
+    as an energy-norm error contribution per element."""
     return _native.dorfler_mark(np.asarray(eta, dtype=float).ravel().tolist(), theta)
 
 
-def mark_size_field(geom, mesh, eta, *, theta=0.5, factor=2.0, h_min=0.0):
+def mark_size_field(geom, mesh, eta, *, theta=None, factor=None, h_min=None):
     """Doerfler-mark by ``eta`` and register the marked elements as point size
-    sources at ``local_h / factor`` (clamped to ``h_min`` if > 0). Mutates the
-    geometry's size field and returns the marked element indices; re-mesh
-    afterwards (e.g. ``geom.surface_mesh(...)``) to realise the refinement."""
-    marked, centroids, hs = mesh._native.dorfler_size_points(
-        np.asarray(eta, dtype=float).ravel().tolist(), theta, factor, h_min
+    sources at ``local_h / factor`` (default 2, clamped to ``h_min`` if > 0).
+    Mutates the geometry's size field and returns the marked element indices;
+    re-mesh afterwards (e.g. ``geom.surface_mesh(...)``) to realise the
+    refinement."""
+    return geom._native.mark_dorfler(
+        mesh._native, np.asarray(eta, dtype=float).ravel().tolist(), theta, factor, h_min
     )
-    if marked.size:
-        geom.refine_near_points([tuple(c) for c in centroids], hs.tolist())
-    return marked
 
 
-def refine_dorfler(geom, mesh, eta, *, theta=0.5, factor=2.0, h_min=0.0, **mesh_kw):
+def refine_dorfler(geom, mesh, eta, *, theta=None, factor=None, h_min=None, **mesh_kw):
     """One ESTIMATE -> MARK -> REFINE step: Doerfler-mark, build the background
     size field, and return the remeshed surface. ``mesh_kw`` is forwarded to
     :meth:`Geometry.surface_mesh` (e.g. ``maxh``, ``grading``,

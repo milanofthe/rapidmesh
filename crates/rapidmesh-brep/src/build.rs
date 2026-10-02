@@ -15,8 +15,8 @@ use crate::{
     Brep, CoEdge, CoEdgeId, Curve, Edge, EdgeId, Face, FaceId, Loop, Surface, SurfaceId, Vertex,
     VertexId,
 };
-use rapidmesh_geom::vec3::{add, cross, dist, dot, normalize as norm, scale, sub, V3};
-use rapidmesh_geom::{NurbsCurve, SurfaceKind, TaggedPlc};
+use rapidmesh_geom::vec3::{add, bbox, cross, dist, dot, normalize as norm, scale, sub, V3};
+use rapidmesh_geom::{CurveKind, NurbsCurve, SurfaceKind, TaggedPlc};
 use std::sync::Arc;
 // Deterministic (seedless) hashers: from_plc's map ITERATION order sets the
 // B-rep edge / face / vertex order, which flows into the surface point order and
@@ -62,13 +62,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     let n_tri = plc.triangles.len();
     let mut diag = 0.0f64;
     {
-        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
-        for p in pos {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
+        let (lo, hi) = bbox(pos);
         for k in 0..3 {
             diag = diag.max(hi[k] - lo[k]);
         }
@@ -306,6 +300,16 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         })
     };
 
+    // The curves the shapes declare, each with the box of its points.
+    let declared: Vec<(&rapidmesh_geom::EdgeCurve, V3, V3)> = plc
+        .curves
+        .iter()
+        .map(|c| {
+            let (lo, hi) = bbox(&c.points);
+            (c, lo, hi)
+        })
+        .collect();
+
     // ---- B3 cont.: build Edge records (curve recovery), keep radial faces ----
     let mut edges: Vec<Edge> = Vec::new();
     let mut edge_faces: Vec<Vec<FaceId>> = Vec::new();
@@ -324,7 +328,8 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
             .map(|&f| FaceId(f as u32))
             .collect();
         rad.sort_unstable();
-        let curve = recover_curve(&chain_pts, &rad, &faces, plc, tol);
+        let curve = declared_curve(&chain_pts, &declared, tol)
+            .unwrap_or_else(|| recover_curve(&chain_pts, &rad, &faces, plc, tol));
         edges.push(Edge {
             ends: [va, vb],
             chain: chain_pts,
@@ -352,10 +357,9 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     let mut coedges: Vec<CoEdge> = Vec::new();
     for fid in 0..faces.len() {
         let signed = order_loops(&face_edges[fid], &edges);
-        // Frame for the surface. For a plane this must be EXACT (so on-plane
-        // carriers stay bit-exact on the PLC plane -> exact region volumes): use an
-        // originating facet triangle (exact PLC vertices, cross-product normal),
-        // not the float edge points. Other kinds ignore the frame (self-contained).
+        // Where a plane's frame starts and points: an originating facet
+        // (exact PLC vertices), so chart coordinates stay small. The normal
+        // is the plane's own; other kinds ignore the frame.
         let frame_pts: Vec<V3> = if let Some(&tfi) = faces[fid].facets.first() {
             let t = plc.triangles[tfi as usize];
             vec![
@@ -370,14 +374,30 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
                 .unwrap_or_default()
         };
         let mut kind = plc.surfaces[faces[fid].surface.0 as usize].clone();
-        // A `Plane` kind whose facets are NOT coplanar is a faceted CURVED
-        // face without an analytic recovery -- loft mantles, swept tubes,
-        // helix coils all tag their whole side wall as one Plane surface. A
-        // plane fit through such a face is a garbage carrier (the refinement
-        // core projects and classifies against it, shredding the mesh into
-        // fragments). Carry it as a DISCRETE patch of its own facets instead:
-        // the same closest-point oracle that remeshes STL imports.
-        if matches!(kind, SurfaceKind::Plane) && !face_facets_coplanar(&faces[fid], plc, tol) {
+        // A face whose facets are its carrier (a loft mantle, a swept wall)
+        // is a DISCRETE patch of its own facets, the same closest-point
+        // carrier an STL import gets; one that happens to be flat is
+        // the plane of its facets. A plane whose facets leave it (which the
+        // geometry should never produce) is carried by its facets too.
+        let flat = match kind {
+            SurfaceKind::Facets if faces[fid].facets.is_empty() => {
+                Some(SurfaceKind::plane_of(&frame_pts).plane())
+            }
+            SurfaceKind::Plane { .. } | SurfaceKind::Facets => {
+                Some(facets_plane(&faces[fid], &kind, plc, tol))
+            }
+            _ => None,
+        };
+        if let Some(Some((point, normal))) = flat {
+            kind = SurfaceKind::Plane { point, normal };
+        }
+        if let Some(None) = flat {
+            if kind.is_plane() {
+                rapidmesh_exact::log::debug(
+                    "brep.plane",
+                    format!("face {fid} leaves its plane, carried by its facets"),
+                );
+            }
             let mut vmap: HashMap<usize, u32> = HashMap::default();
             let mut dpoints: Vec<V3> = Vec::new();
             let mut dtris: Vec<[u32; 3]> = Vec::new();
@@ -498,13 +518,7 @@ fn canonicalize(b: &mut Brep, plc: &TaggedPlc) {
     }
     // Where a point lies in the frame of solid `owner`, on a grid of a
     // billionth of the model, so rounding does not reorder.
-    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
-    for p in &plc.vertices {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
-        }
-    }
+    let (lo, hi) = bbox(&plc.vertices);
     let grid = 1e-9
         * (0..3)
             .map(|k| hi[k] - lo[k])
@@ -747,6 +761,104 @@ fn arc_len(chain: &[V3]) -> f64 {
     chain.windows(2).map(|w| dist(w[0], w[1])).sum()
 }
 
+/// The declared curve the chain lies on (every point within `tol` of the
+/// curve's points' polyline), a B-spline over the parameters of the chain's
+/// ends; `None` where none holds it or a B-spline's parameters do not run
+/// monotonically along it (a piece across the seam of a closed curve).
+fn declared_curve(
+    chain: &[V3],
+    declared: &[(&rapidmesh_geom::EdgeCurve, V3, V3)],
+    tol: f64,
+) -> Option<Curve> {
+    if chain.len() < 2 {
+        return None;
+    }
+    let on_polyline = |pts: &[V3], q: V3| {
+        pts.windows(2).any(|w| {
+            let d = sub(w[1], w[0]);
+            let dd = dot(d, d);
+            let t = if dd > 0.0 {
+                (dot(sub(q, w[0]), d) / dd).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            dist(q, std::array::from_fn(|k| w[0][k] + t * d[k])) <= tol
+        })
+    };
+    let (c, _, _) = declared.iter().find(|(c, lo, hi)| {
+        chain
+            .iter()
+            .all(|q| (0..3).all(|k| q[k] >= lo[k] - tol && q[k] <= hi[k] + tol))
+            && chain.iter().all(|&q| on_polyline(&c.points, q))
+    })?;
+    // The conics and lines span what their chain spans; a B-spline is
+    // evaluated in its own parameter, over the range of the chain's ends.
+    let curve = match &c.kind {
+        CurveKind::Line { p0, dir } => return Some(Curve::Line { p0: *p0, dir: *dir }),
+        CurveKind::Circle {
+            center,
+            axis,
+            x,
+            radius,
+        } => {
+            return Some(Curve::Circle {
+                center: *center,
+                axis: *axis,
+                radius: *radius,
+                x: *x,
+            })
+        }
+        CurveKind::Ellipse {
+            center,
+            major,
+            minor,
+            a,
+            b,
+        } => {
+            return Some(Curve::Ellipse {
+                center: *center,
+                major: *major,
+                minor: *minor,
+                a: *a,
+                b: *b,
+            })
+        }
+        CurveKind::Nurbs(curve) => curve,
+    };
+    let param = |q: V3| curve.closest_param(q);
+    let (lo, hi) = curve.domain();
+    let n = chain.len() - 1;
+    let closed = dist(chain[0], chain[n]) <= tol;
+    let t: [f64; 2] = if closed {
+        // The whole curve, the way the chain runs.
+        let (t0, t1) = (param(chain[0]), param(chain[1]));
+        let at_lo = (t0 - lo).abs() <= (hi - t0).abs();
+        match (at_lo, t1 > t0) {
+            (true, true) | (false, true) => [lo, hi],
+            _ => [hi, lo],
+        }
+    } else {
+        [param(chain[0]), param(chain[n])]
+    };
+    if t[0] == t[1] {
+        return None;
+    }
+    // The inner points in order along the range.
+    let along = |q: V3| (param(q) - t[0]) / (t[1] - t[0]);
+    let mut last = 0.0;
+    for &q in &chain[1..n] {
+        let s = along(q);
+        if !(s > last && s < 1.0) {
+            return None;
+        }
+        last = s;
+    }
+    Some(Curve::Nurbs {
+        curve: curve.clone(),
+        t,
+    })
+}
+
 /// Recovers the analytic curve of an edge from its vertex chain and the surfaces
 /// of its radial faces. Handles the forms our scenes use; everything else falls
 /// back to the faceted polyline (`Curve::Polyline`).
@@ -791,10 +903,10 @@ fn recover_curve(chain: &[V3], rad: &[FaceId], faces: &[Face], plc: &TaggedPlc, 
         .filter(|f| {
             matches!(
                 plc.surfaces[faces[f.0 as usize].plc_surface as usize],
-                SurfaceKind::Plane
+                SurfaceKind::Plane { .. }
             )
         })
-        .filter_map(|f| exact_face_plane(&faces[f.0 as usize], plc))
+        .filter_map(|f| plc.surfaces[faces[f.0 as usize].plc_surface as usize].plane())
         .collect();
     for f in rad {
         let kind = &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
@@ -802,6 +914,7 @@ fn recover_curve(chain: &[V3], rad: &[FaceId], faces: &[Face], plc: &TaggedPlc, 
             center,
             axis,
             radius,
+            ..
         } = kind
         {
             for &(po, pn) in &planes {
@@ -860,7 +973,10 @@ fn recover_curve(chain: &[V3], rad: &[FaceId], faces: &[Face], plc: &TaggedPlc, 
             .map(|&f| {
                 let sid = faces[f.0 as usize].plc_surface;
                 (
-                    matches!(plc.surfaces[sid as usize], SurfaceKind::Plane),
+                    matches!(
+                        plc.surfaces[sid as usize],
+                        SurfaceKind::Plane { .. } | SurfaceKind::Facets
+                    ),
                     sid,
                     f,
                 )
@@ -884,19 +1000,23 @@ fn recover_curve(chain: &[V3], rad: &[FaceId], faces: &[Face], plc: &TaggedPlc, 
     Curve::Polyline
 }
 
-/// The analytic carrier of a face; none for a discrete patch or a curved
-/// wall tagged plane.
+/// The analytic carrier of a face; none for a discrete patch or a face
+/// whose facets are not flat but carry it.
 fn face_carrier(f: &Face, plc: &TaggedPlc, tol: f64) -> Option<Surface> {
     let kind = &plc.surfaces[f.surface.0 as usize];
-    if matches!(kind, SurfaceKind::Discrete(_)) {
-        return None;
-    }
-    if matches!(kind, SurfaceKind::Plane) && !face_facets_coplanar(f, plc, tol) {
-        return None;
-    }
     let t = plc.triangles[*f.facets.first()? as usize];
     let frame: Vec<V3> = t.iter().map(|&v| plc.vertices[v as usize]).collect();
-    Some(Surface::from_kind(kind, &frame))
+    match kind {
+        SurfaceKind::Discrete(_) => None,
+        SurfaceKind::Plane { .. } | SurfaceKind::Facets => {
+            let (point, normal) = facets_plane(f, kind, plc, tol)?;
+            Some(Surface::from_kind(
+                &SurfaceKind::Plane { point, normal },
+                &frame,
+            ))
+        }
+        _ => Some(Surface::from_kind(kind, &frame)),
+    }
 }
 
 /// Carriers whose normals are this close to parallel (cos 10 deg) touch
@@ -936,19 +1056,27 @@ fn absorb_thin_faces(
             .as_ref()
             .map_or(f64::INFINITY, |s| dist(s.closest(p).0, p))
     };
-    let facet_err = |f: usize, t: u32| -> f64 {
-        if carrier[f].is_none() {
-            return 0.0;
-        }
-        let q = tri_pts(t);
-        off(f, scale(add(add(q[0], q[1]), q[2]), 1.0 / 3.0))
+    // Per facet, once and in parallel: a projection is the costly part.
+    let facet_err: Vec<f64> = {
+        use rayon::prelude::*;
+        (0..tri_face.len())
+            .into_par_iter()
+            .map(|t| {
+                let f = tri_face[t];
+                if carrier[f].is_none() {
+                    return 0.0;
+                }
+                let q = tri_pts(t as u32);
+                off(f, scale(add(add(q[0], q[1]), q[2]), 1.0 / 3.0))
+            })
+            .collect()
     };
     let err: Vec<f64> = (0..nf)
         .map(|f| {
             faces[f]
                 .facets
                 .iter()
-                .map(|&t| facet_err(f, t))
+                .map(|&t| facet_err[t as usize])
                 .fold(0.0, f64::max)
         })
         .collect();
@@ -979,7 +1107,7 @@ fn absorb_thin_faces(
             let l = dist(pos[a], pos[b]);
             perim[f] += l;
             for (g, u) in others {
-                let e = facet_err(g, u);
+                let e = facet_err[u as usize];
                 let s = shared[f].entry(g).or_insert((0.0, Vec::new(), 0.0));
                 s.0 += l;
                 s.1.extend([a, b]);
@@ -1021,22 +1149,60 @@ fn absorb_thin_faces(
             if pair(&faces[g]) != pair(&faces[f]) || carrier[g].is_none() {
                 return false;
             }
+            // On g's carrier: a plane takes coplanar facets only, a curved
+            // carrier those its faceting errors explain (the strip a
+            // sagitta wide), not a face of another surface beside it.
             let plane = matches!(
                 plc.surfaces[faces[g].surface.0 as usize],
-                SurfaceKind::Plane
+                SurfaceKind::Plane { .. } | SurfaceKind::Facets
             );
-            !plane
-                || faces[f]
-                    .facets
-                    .iter()
-                    .all(|&t| tri_pts(t).iter().all(|&p| off(g, p) <= tol))
+            let reach = if plane { tol } else { tol.max(explained) };
+            let worst = faces[f]
+                .facets
+                .iter()
+                .flat_map(|&t| tri_pts(t))
+                .map(|p| off(g, p))
+                .fold(0.0f64, f64::max);
+            if worst > reach {
+                rapidmesh_exact::log::debug(
+                    "brep.absorb",
+                    format!("face {f} kept from face {g}: {worst:.3e} off its carrier, {reach:.3e} explained"),
+                );
+            }
+            worst <= reach
         };
         let target = nbrs
             .iter()
             .map(|&(g, _)| g)
             .filter(|&g| fits(g))
             .max_by(|&a, &b| mismatch(a).total_cmp(&mismatch(b)).then(b.cmp(&a)));
+        if target.is_none() {
+            rapidmesh_exact::log::debug(
+                "brep.absorb",
+                format!(
+                    "face {f} (width {:.3e}, faceting errors {:.3e}) taken by no neighbour of {:?}",
+                    width(f),
+                    explained,
+                    nbrs.iter()
+                        .map(|&(g, _)| (
+                            g,
+                            pair(&faces[g]) == pair(&faces[f]),
+                            carrier[g].is_some()
+                        ))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
         if let Some(g) = target {
+            rapidmesh_exact::log::debug(
+                "brep.absorb",
+                format!(
+                    "face {f} ({} facets, width {:.3e}, faceting errors {:.3e}) into face {g}",
+                    faces[f].facets.len(),
+                    width(f),
+                    explained
+                ),
+            );
             let (rf, rg) = (uf_find(&mut rep, f), uf_find(&mut rep, g));
             if rf != rg {
                 rep[rf] = rg;
@@ -1076,35 +1242,23 @@ fn absorb_thin_faces(
     *faces = out;
 }
 
-/// True if every facet vertex of the face lies on the plane of its FIRST
-/// facet (within `tol`): the gate that separates a real planar face from a
-/// faceted curved side wall mis-tagged as `Plane`.
-fn face_facets_coplanar(face: &Face, plc: &TaggedPlc, tol: f64) -> bool {
-    let Some((o, n)) = exact_face_plane(face, plc) else {
-        return true;
+/// The plane `(point, unit normal)` all facets of a face lie on (within
+/// `tol`): a plane's own, or for faceted kind the plane of its first proper
+/// facet. None where they leave it.
+fn facets_plane(face: &Face, kind: &SurfaceKind, plc: &TaggedPlc, tol: f64) -> Option<(V3, V3)> {
+    let corners = |tfi: &u32| plc.triangles[*tfi as usize].map(|v| plc.vertices[v as usize]);
+    let (o, n) = match kind.plane() {
+        Some(p) => p,
+        None => face.facets.iter().map(corners).find_map(|[a, b, c]| {
+            let n = cross(sub(b, a), sub(c, a));
+            (dot(n, n) >= 1e-24).then(|| (a, norm(n)))
+        })?,
     };
-    face.facets.iter().all(|&tfi| {
-        let t = plc.triangles[tfi as usize];
-        (0..3).all(|k| dot(sub(plc.vertices[t[k] as usize], o), n).abs() <= tol)
-    })
-}
-
-/// The EXACT carrier plane of a planar face `(origin, unit normal)`, from its
-/// first originating PLC facet (exact vertices, cross-product normal) -- not a
-/// Newell fit to float edge points.
-fn exact_face_plane(face: &Face, plc: &TaggedPlc) -> Option<(V3, V3)> {
-    let &tfi = face.facets.first()?;
-    let t = plc.triangles[tfi as usize];
-    let (a, b, c) = (
-        plc.vertices[t[0] as usize],
-        plc.vertices[t[1] as usize],
-        plc.vertices[t[2] as usize],
-    );
-    let n = cross(sub(b, a), sub(c, a));
-    if dot(n, n) < 1e-24 {
-        return None;
-    }
-    Some((a, norm(n)))
+    face.facets
+        .iter()
+        .flat_map(corners)
+        .all(|p| dot(sub(p, o), n).abs() <= tol)
+        .then_some((o, n))
 }
 
 /// How close to square (or to parallel) a plane must meet an axis for the
@@ -1171,10 +1325,10 @@ fn own_axis(k: &SurfaceKind) -> Option<(V3, V3)> {
     }
 }
 
-/// The meridian of carrier `k` (with `plane`, the exact geometry of a plane
-/// face) about the axis `(o, a)`, if it is a surface of revolution about it.
-/// `size` scales the tolerance for a centre on the axis.
-fn meridian(k: &SurfaceKind, plane: Option<(V3, V3)>, o: V3, a: V3, size: f64) -> Option<Meridian> {
+/// The meridian of carrier `k` about the axis `(o, a)`, if it is a surface
+/// of revolution about it. `size` scales the tolerance for a centre on the
+/// axis.
+fn meridian(k: &SurfaceKind, o: V3, a: V3, size: f64) -> Option<Meridian> {
     let on_axis = |c: V3| {
         let d = sub(c, o);
         let off = sub(d, scale(a, dot(d, a)));
@@ -1183,21 +1337,21 @@ fn meridian(k: &SurfaceKind, plane: Option<(V3, V3)>, o: V3, a: V3, size: f64) -
     let along = |b: V3| dot(norm(b), a).abs() >= 1.0 - SQUARE_TOL;
     let z = |c: V3| dot(sub(c, o), a);
     match k {
-        SurfaceKind::Plane => {
-            let (po, pn) = plane?;
-            along(pn).then_some(Meridian::Line {
-                p: [0.0, z(po)],
-                d: [1.0, 0.0],
+        SurfaceKind::Plane { point, normal } => along(*normal).then_some(Meridian::Line {
+            p: [0.0, z(*point)],
+            d: [1.0, 0.0],
+        }),
+        SurfaceKind::Sphere { center, radius, .. } => {
+            on_axis(*center).then_some(Meridian::Circle {
+                c: [0.0, z(*center)],
+                r: *radius,
             })
         }
-        SurfaceKind::Sphere { center, radius } => on_axis(*center).then_some(Meridian::Circle {
-            c: [0.0, z(*center)],
-            r: *radius,
-        }),
         SurfaceKind::Cylinder {
             center,
             axis,
             radius,
+            ..
         } => (along(*axis) && on_axis(*center)).then_some(Meridian::Line {
             p: [*radius, 0.0],
             d: [0.0, 1.0],
@@ -1206,6 +1360,7 @@ fn meridian(k: &SurfaceKind, plane: Option<(V3, V3)>, o: V3, a: V3, size: f64) -
             apex,
             axis,
             tan_half_angle,
+            ..
         } => (along(*axis) && on_axis(*apex)).then(|| {
             // The generator leaves the apex into the nappe, whichever way
             // the axis runs.
@@ -1221,6 +1376,7 @@ fn meridian(k: &SurfaceKind, plane: Option<(V3, V3)>, o: V3, a: V3, size: f64) -
             axis,
             major_radius,
             minor_radius,
+            ..
         } => (along(*axis) && on_axis(*center)).then_some(Meridian::Circle {
             c: [*major_radius, z(*center)],
             r: *minor_radius,
@@ -1305,21 +1461,15 @@ fn revolution_circle(
 ) -> Option<(V3, V3, f64, V3)> {
     let size = arc_len(chain).max(f64::MIN_POSITIVE);
     let kind = |f: &FaceId| &plc.surfaces[faces[f.0 as usize].plc_surface as usize];
-    let plane = |f: &FaceId| {
-        matches!(kind(f), SurfaceKind::Plane)
-            .then(|| exact_face_plane(&faces[f.0 as usize], plc))
-            .flatten()
-    };
     for (i, f) in rad.iter().enumerate() {
         for g in &rad[i + 1..] {
             let (kf, kg) = (kind(f), kind(g));
             let axis = own_axis(kf)
                 .or_else(|| own_axis(kg))
                 .or_else(|| match (kf, kg) {
-                    (SurfaceKind::Sphere { center, .. }, SurfaceKind::Plane)
-                    | (SurfaceKind::Plane, SurfaceKind::Sphere { center, .. }) => {
-                        let (_, n) = plane(f).or_else(|| plane(g))?;
-                        Some((*center, n))
+                    (SurfaceKind::Sphere { center, .. }, p @ SurfaceKind::Plane { .. })
+                    | (p @ SurfaceKind::Plane { .. }, SurfaceKind::Sphere { center, .. }) => {
+                        Some((*center, p.plane()?.1))
                     }
                     (
                         SurfaceKind::Sphere { center: c1, .. },
@@ -1331,10 +1481,7 @@ fn revolution_circle(
                     _ => None,
                 });
             let Some((o, a)) = axis else { continue };
-            let (Some(mf), Some(mg)) = (
-                meridian(kf, plane(f), o, a, size),
-                meridian(kg, plane(g), o, a, size),
-            ) else {
+            let (Some(mf), Some(mg)) = (meridian(kf, o, a, size), meridian(kg, o, a, size)) else {
                 continue;
             };
             // Start from the chain's mean radius and height.
@@ -1360,10 +1507,10 @@ fn revolution_circle(
     None
 }
 
-/// The exact ellipse of an oblique plane∩cylinder section. Plane `(po, pn)`,
+/// The exact ellipse of an oblique plane-cylinder section. Plane `(po, pn)`,
 /// cylinder `(center c, unit axis ca, radius r)`: the section is an ellipse
 /// with center on the cylinder axis, semi-minor `r` along `ca x pn`,
-/// semi-major `r/|ca·pn|` along the axis' in-plane projection. `None` when
+/// semi-major `r/|ca*pn|` along the axis' in-plane projection. `None` when
 /// near-perpendicular (a circle, handled elsewhere) or near-parallel (no
 /// bounded section).
 fn plane_cylinder_ellipse(

@@ -2,7 +2,7 @@
 //! meshing and what a solver reads off the result.
 
 use rapidmesh::shapes::{Cuboid, Cylinder, Sheet, Sphere};
-use rapidmesh::{EdgeFilter, Error, FaceFilter, Geometry, MeshOptions, Scope, SurfaceOptions};
+use rapidmesh::{EdgeFilter, FaceFilter, Geometry, MeshOptions, Scope, SurfaceOptions};
 
 fn side(n: [f64; 3]) -> Scope {
     Scope::surf(Some(FaceFilter::normal(n)))
@@ -45,12 +45,6 @@ fn periodic_sides_carry_the_same_points() {
     let d = m.diagnostics();
     assert!(d.mesh.watertight);
     assert_eq!(d.defects().count(), 0);
-    // optimize moves boundary points: refused with periodic faces
-    let opts = MeshOptions {
-        optimize: true,
-        ..Default::default()
-    };
-    assert!(matches!(g.mesh(&opts), Err(Error::Invalid(_))));
 }
 
 #[test]
@@ -866,72 +860,6 @@ fn msh_2_2_files_and_refusals() {
     assert!(rapidmesh::read_msh("hello".as_bytes()).is_err());
 }
 
-#[test]
-fn a_layer_stack_with_sheets_meshes_layered() {
-    // A thin metal layer in air, a vertical port under it and an L shaped
-    // sheet above it: without the thickness bound the stack takes the
-    // layered path, and every sheet
-    // is covered by faces of its tag.
-    let mut g = Geometry::new(Some(20.0));
-    g.add(Cuboid::new([100.0, 100.0, 40.0]).at([-50.0, -50.0, 0.0]))
-        .unwrap();
-    g.add_solid(
-        Cuboid::new([40.0, 10.0, 0.2]).at([-20.0, -5.0, 10.0]),
-        Some(5.0),
-        false,
-    )
-    .unwrap();
-    g.add_sheet(&Sheet::yz(10.0, 10.0, [-20.0, -5.0, 0.0]), 5, Some(4.0))
-        .unwrap();
-    let l = vec![
-        [0.0, 0.0],
-        [30.0, 0.0],
-        [30.0, 10.0],
-        [10.0, 10.0],
-        [10.0, 30.0],
-        [0.0, 30.0],
-    ];
-    g.add_sheet(&Sheet::polygon(l, [-10.0, -10.0, 30.0]), 6, None)
-        .unwrap();
-    // The layered path of the restricted Delaunay mesher.
-    let opts = MeshOptions {
-        cells_across: Some(0.0),
-        bottom_up: Some(false),
-        ..Default::default()
-    };
-    let m = g.mesh(&opts).unwrap();
-    let layered = m.run.metrics.iter().find(|(k, _)| k == "mesh3.layered");
-    assert_eq!(layered.map(|x| x.1), Some(1.0));
-    let d = m.diagnostics();
-    assert!(d.mesh.watertight);
-    assert!(
-        d.defects().all(|x| x.kind.name() == "sliver"),
-        "{:?}",
-        d.defects().find(|x| x.kind.name() != "sliver")
-    );
-    let area = |tag: u32| -> f64 {
-        m.faces
-            .iter()
-            .filter(|f| f.face_tag.0 == tag)
-            .map(|f| {
-                let [a, b, c] = f.tri.map(|v| m.points[v]);
-                let (u, v) = (
-                    [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-                    [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
-                );
-                let n = [
-                    u[1] * v[2] - u[2] * v[1],
-                    u[2] * v[0] - u[0] * v[2],
-                    u[0] * v[1] - u[1] * v[0],
-                ];
-                0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
-            })
-            .sum()
-    };
-    assert!((area(5) - 100.0).abs() < 1e-9, "port {}", area(5));
-    assert!((area(6) - 500.0).abs() < 1e-9, "sheet {}", area(6));
-}
-
 /// CAD parts from STEP files mesh bottom-up: every solid a region of its
 /// own, watertight, no defect and no poor tet.
 #[test]
@@ -956,13 +884,40 @@ fn step_parts_mesh_clean() {
             &d.mesh.defects[..3.min(d.mesh.defects.len())]
         );
         assert!(
-            d.mesh.min_dihedral_deg > 15.0,
+            d.mesh.quality.min_dihedral_deg > 15.0,
             "{name}: {}",
-            d.mesh.min_dihedral_deg
+            d.mesh.quality.min_dihedral_deg
         );
         let mut regions: Vec<u32> = m.tet_regions.iter().map(|r| r.0).collect();
         regions.sort_unstable();
         regions.dedup();
         assert_eq!(regions.len(), solids, "{name}");
+    }
+}
+
+/// The bodies of a STEP file are named as the file names them, so the
+/// mesh's sets and physical groups carry the names of the parts.
+#[test]
+fn step_bodies_take_their_names() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rapidmesh-step/fixtures");
+    let mut g = Geometry::new(Some(1.5));
+    let solids = g.import_step(dir.join("assembly.step"), None).unwrap();
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    let groups = m.labels.region_groups();
+    assert_eq!(groups.len(), solids.len());
+    // Each name on the part it names: the plate in 0..5, the boss above
+    // it, the base below.
+    for (name, z) in [("plate", 2.5), ("boss", 11.0), ("base", -2.0)] {
+        let (_, regions) = groups.iter().find(|(n, _)| n == name).expect(name);
+        assert_eq!(regions.len(), 1, "{name}");
+        let at = m
+            .tets
+            .iter()
+            .zip(&m.tet_regions)
+            .filter(|(_, r)| r.0 == regions[0])
+            .map(|(t, _)| t.iter().map(|&v| m.points[v][2]).sum::<f64>() / 4.0)
+            .sum::<f64>()
+            / m.tet_regions.iter().filter(|r| r.0 == regions[0]).count() as f64;
+        assert!((at - z).abs() < 1.5, "{name} at height {at}");
     }
 }

@@ -1,7 +1,7 @@
 # rapidmesh
 
-Conforming tetrahedral and surface meshes for electromagnetic FEM and MoM
-solvers, written in Rust. Solid primitives, STEP and STL/OBJ imports and
+Conforming tetrahedral and surface meshes for finite element and finite
+volume solvers, written in Rust. Solid primitives, STEP and STL/OBJ imports and
 exact CSG booleans build a non-manifold B-rep, which is meshed bottom-up:
 edges, then each face on its true surface, then each region on its own.
 Every material interface conforms by construction, thin layers cost only
@@ -12,7 +12,11 @@ package is a thin layer over the same API.
 What a field solver needs comes with the mesh: edge and face topology with
 orientation signs, the geometric face or edge every mesh entity lies on,
 named sets for ports and boundary conditions, periodic point pairs for unit
-cells, and gmsh MSH 4.1 and VTU output.
+cells, gmsh MSH 4.1, VTU, OpenFOAM polyMesh (tets or polyhedral cells)
+and CalculiX/Abaqus output,
+second-order tets with their mid-edge nodes on the true geometry, and the
+finite volume quality (non-orthogonality, skewness) as `checkMesh` measures
+it.
 
 ![Cutaways from the validation corpus: boolean difference, two-region via, nested regions, torus, cylinder union, capsule](docs/figures/gallery.png)
 
@@ -23,19 +27,21 @@ More at [mesh.rapidpassives.org](https://mesh.rapidpassives.org).
 **Against gmsh.** Both mesh the same 27 geometries (primitives, booleans,
 multi-region assemblies and four CAD parts read from STEP files) at the same
 target size, gmsh with its default 3D algorithm and OpenCASCADE. rapidmesh
-has the larger smallest dihedral angle on all 27 (median 25 against 13.4
-degrees) and a tet below 10 degrees on one of them, gmsh on six. It is
-faster on 21, with a median meshing time of 0.44 times that of gmsh, and
+has the larger smallest dihedral angle on 26 of the 27 (median 25 against
+13.4 degrees) and a tet below 10 degrees on two of them, gmsh on six. It is
+faster on 22, with a median meshing time of 0.5 times that of gmsh, and
 spends about 1.2 times as many tets.
 
 ![rapidmesh against gmsh: smallest dihedral angle, meshing time and tet count per geometry](docs/figures/vs_gmsh.svg)
 
-**Validation corpus.** 200 geometries, 176 of them volume meshes, from single
-primitives to RF assemblies, CAD parts, scans and chip layouts. All of them
-mesh, 175 of the volume meshes are watertight and 161 free of defects
-(slivers, gaps, faces off the input). The nine below 10 degrees are stacks
-of layers far thinner than the size, curved edges where two faces meet at a
-shallow angle, and a sharp wedge.
+**Validation corpus.** 223 geometries, 199 of them volume meshes, from single
+primitives to RF assemblies, CAD parts from STEP files, scans and chip
+layouts. 221 mesh; the other two (a scan and a CAD part with features far
+below the size) stop with a `MeshError` that says where. 196 of the volume
+meshes are watertight and 168 free of defects (slivers, gaps, faces off the
+input). The 18 below 10 degrees are stacks of layers far thinner than the
+size, CAD parts with features far below the size, curved edges where two
+faces meet at a shallow angle, and sharp wedges.
 
 ![meshing time over tet count and the smallest dihedral angle per mesh](docs/figures/corpus.svg)
 
@@ -76,7 +82,8 @@ cargo run --release -p rapidmesh --example unit_cell
 ```
 
 A CAD part comes in with `g.import_step("part.step", None)?`, one solid per
-body of the file, each face on its true surface.
+body of the file, each face on its true surface and each solid named as the
+file names its part.
 
 Sizing is hierarchical. A scope selects regions, geometric faces or
 geometric edges (by id, tag, normal, position or the regions they separate),
@@ -107,22 +114,6 @@ mesh.sets()        # named cells, faces and edges
 
 See [python/README.md](python/README.md) for the Python API.
 
-## Planar meshes for MoM
-
-The core that meshes every surface patch in 3D also meshes tagged 2D
-polygons with holes: graded, with a minimum angle bound, with RWG edges and
-boundary edges derived. Within a group, overlapping or abutting regions weld
-into one conforming component; separate groups (metal layers) never merge. A
-triangle budget can be shared across all layers.
-
-```rust
-use rapidmesh::{mesh_2d, Mesh2DOptions, Region2D};
-
-let square = Region2D::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 7);
-let m = mesh_2d(&[square], |_p| 0.05, &Mesh2DOptions::default());
-let rwg = m.topo.rwg_edges(&m.topo.tri_tags, false);
-```
-
 ## Pipeline
 
 1. **Geometry**: primitives (box, cylinder, sphere, cone, torus, prism,
@@ -150,8 +141,9 @@ let rwg = m.topo.rwg_edges(&m.topo.tri_tags, false);
    boundary aimed at the smallest dihedral angle, then a relaxation of the
    surface.
 
-The restricted Delaunay mesher of earlier versions remains as a fallback
-(`bottom_up=False`, and wherever bottom-up fails, with a warning).
+Where the geometry defeats the mesher (features far below the mesh size,
+gaps, degenerate faces), it stops with a `MeshError` that says where and
+what to repair, instead of handing out a poor mesh.
 
 ## Workspace
 
@@ -163,9 +155,8 @@ The restricted Delaunay mesher of earlier versions remains as a fallback
 | `rapidmesh-csg` | Exact mesh arrangements, boolean expressions |
 | `rapidmesh-brep` | Non-manifold B-rep between CSG and the mesher |
 | `rapidmesh-step` | STEP files onto the model: Part 21 reader, geometry, topology |
-| `rapidmesh-tet` | The mesher: surface and volume stages, 2D core, sizing fields, improvement |
-| `rapidmesh-topo` | Mesh topology, element geometry, classification, MSH and VTU output |
-| `rapidmesh-wasm` | The 2D mesher in the browser (the site's live background) |
+| `rapidmesh-tet` | The mesher: surface and volume stages, sizing fields, improvement |
+| `rapidmesh-topo` | Mesh topology, element geometry, classification, MSH, VTU and OpenFOAM output |
 
 The Python extension lives in `python/` (PyO3 and maturin).
 

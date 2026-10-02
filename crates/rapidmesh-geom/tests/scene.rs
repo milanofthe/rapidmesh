@@ -4,7 +4,9 @@
 
 use num_rational::BigRational;
 use num_traits::Zero;
-use rapidmesh_geom::{sheet_rect, solid_box, FaceTag, RegionTag, Scene, TaggedPlc};
+use rapidmesh_geom::{
+    sheet_rect, solid_box, FaceTag, Faceted, FlatFacet, RegionTag, Scene, TaggedPlc,
+};
 use rapidmesh_testutil::rat;
 
 /// Exact 6x volume of a region from its interface facets (normals point into
@@ -120,7 +122,7 @@ fn air_dielectric_pec_scene() {
         .count();
     assert!(floating >= 2, "floating PEC sheet must be present in air");
 
-    // Sanity: total interface area of the dielectric box is fully present —
+    // Sanity: total interface area of the dielectric box is fully present --
     // count facets touching diel.
     assert!(
         plc.region_tags.iter().filter(|t| t.contains(&diel)).count() >= 12,
@@ -152,21 +154,43 @@ fn overlapping_solids_resolve_by_priority() {
     }
 }
 
+/// Two shapes as one with two shells, surface and triangle indices re-based.
+fn two_shells(mut a: Faceted, b: Faceted) -> Faceted {
+    let surf_base = a.surfaces.len() as u32;
+    let tri_base = a.tris.len();
+    a.surfaces.extend(b.surfaces);
+    a.tris.extend(b.tris);
+    a.face_surface
+        .extend(b.face_surface.iter().map(|&s| s + surf_base));
+    a.flats.extend(b.flats.into_iter().map(|fl| FlatFacet {
+        surface: fl.surface + surf_base,
+        tris: (fl.tris.start + tri_base)..(fl.tris.end + tri_base),
+        ..fl
+    }));
+    a.features.extend(b.features);
+    a.curves.extend(b.curves);
+    a
+}
+
 /// One solid made of two overlapping shells (an import with several shells,
 /// a sweep crossing itself): labelled by the winding number, the walls
 /// inside the overlap drop and the region is the union, 3 x 1 x 1.
 #[test]
 fn self_overlapping_solid_is_its_union() {
-    let mut shells = solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
-    shells.append(&solid_box([1.0, 0.0, 0.0], [3.0, 1.0, 1.0]));
+    let shells = two_shells(
+        solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]),
+        solid_box([1.0, 0.0, 0.0], [3.0, 1.0, 1.0]),
+    );
     let mut scene = Scene::new();
     let r = scene.add_solid(shells);
     let plc = scene.assemble();
     assert_region_closed(&plc, r);
     assert_eq!(region_volume6(&plc, r), rat(18.0), "the union's volume");
     // A second solid inside the overlap lies inside the first one too.
-    let mut shells = solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
-    shells.append(&solid_box([1.0, 0.0, 0.0], [3.0, 1.0, 1.0]));
+    let shells = two_shells(
+        solid_box([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]),
+        solid_box([1.0, 0.0, 0.0], [3.0, 1.0, 1.0]),
+    );
     let mut scene = Scene::new();
     let outer = scene.add_solid(shells);
     let inner = scene.add_solid(solid_box([1.25, 0.25, 0.25], [1.75, 0.75, 0.75]));
@@ -198,4 +222,27 @@ fn a_flange_flush_by_float_arithmetic_keeps_its_volume() {
         rel.clone() * rel < rat(1e-20),
         "flange volume {v6} against {want}"
     );
+}
+
+/// A cylinder whose axis lies on a face of a box and whose cap is coplanar
+/// with the box's bottom: the two bottoms overlap in half a disk, and a
+/// touch at the cap's center (where the box's side face meets the cap's
+/// input triangles) must reach both, or the overlap triangulates two ways.
+#[test]
+fn a_boss_on_a_box_face_with_coplanar_caps_stays_proper() {
+    for segments in [8, 12, 24, 48] {
+        let mut scene = Scene::new();
+        let a = scene.add_solid(solid_box([0.5, 0.5, 0.5], [1.5, 1.5, 1.5]));
+        let b = scene.add_solid(rapidmesh_geom::cylinder(
+            [1.5, 1.0, 0.5],
+            [0.0, 0.0, 1.0],
+            0.4,
+            segments,
+        ));
+        let plc = scene.assemble();
+        let crossings = rapidmesh_csg::improper_pairs(&plc.vertices, &plc.triangles);
+        assert!(crossings.is_empty(), "{segments}: {:?}", crossings.first());
+        assert_region_closed(&plc, a);
+        assert_region_closed(&plc, b);
+    }
 }

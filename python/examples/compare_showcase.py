@@ -1,82 +1,20 @@
-"""Mesh every comparison geometry with all three meshers and export the data
-the landing page needs.
+"""The comparison geometries of ``compare_geoms.GEOMS`` meshed by rapidmesh, gmsh and
+tetgen at the same target size, for the benchmarks in ``report/bench`` (``vs_gmsh.py``).
 
-For each geometry in ``compare_geoms.GEOMS`` and each of rapidmesh / gmsh /
-tetgen, this builds the same shape at the same target size, times the mesh
-generation, recomputes quality uniformly (``_quality``), and writes a viewer
-JSON in the standard schema to::
-
-    site/static/meshes/compare/<id>.<mesher>.json
-
-plus a ``compare/manifest.json`` indexing the geometries and per-mesher stats.
-
-Honest framing baked into the data: tetgen has no CAD kernel, so it
-tetrahedralizes *gmsh's surface* of the same geometry (recorded as
-``on_surface_of: "gmsh"`` in its stats). rapidmesh and gmsh each run their full
-native pipeline from the geometry spec. Quality is recomputed here for all
-three with identical formulas, so the numbers are apples-to-apples.
-
-Multi-region geometries: gmsh builders use OCC fragment and assign physical
-volume groups (one per material) via the fragment output map, so the physical
-group tag is the material id regardless of how many elementary volumes fragment
-produces. _gmsh_extract reads physical groups instead of raw elementary volume
-indices. tetgen receives region seed points (one per topological sub-volume of
-the PLC) and uses -A (regionattrib) to label each tet; seeds sharing the same
-material_id produce the correct per-material region count.
-
-Run from the repo root:
-
-    python python/examples/compare_showcase.py [ids...]
+tetgen has no CAD kernel, so it tetrahedralizes *gmsh's surface* of the same geometry.
+Multi-region geometries: the gmsh builders use OCC fragment and one physical volume group per
+material, so the physical group tag is the material id; tetgen gets one region seed point per
+sub-volume and labels each tet with ``-A``.
 """
 
 from __future__ import annotations
 
-import json
 import math
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-from _quality import quality
-from compare_geoms import GEOMS, CompareGeom
-
-OUT = Path(__file__).resolve().parents[2] / "site" / "static" / "meshes" / "compare"
-MESHERS = ("rapidmesh", "gmsh", "tetgen")
-
-
-# --------------------------------------------------------------- viewer JSON
-
-
-def _viewer_dict(name: str, mesher: str, points, tets, tet_regions, q: dict,
-                 millis: int, extra: dict | None = None) -> dict:
-    """A mesh in the shared viewer schema. ``faces=[]``: the renderer builds
-    the surface hull (and the internal region interfaces) from the tets +
-    ``tet_regions``."""
-    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    tt = np.asarray(tets, dtype=np.int64).reshape(-1, 4)
-    tr = np.asarray(tet_regions, dtype=np.int64).reshape(-1)
-    stats = {
-        "n_points": q["n_points"],
-        "n_tets": q["n_tets"],
-        "n_regions": int(len(np.unique(tr))) if tr.size else 0,
-        "min_dihedral_deg": q["min_dihedral_deg"],
-        "max_radius_edge": q["max_radius_edge"],
-        "max_edge": q["max_edge"],
-        "millis": int(millis),
-    }
-    if extra:
-        stats.update(extra)
-    return {
-        "name": name,
-        "mesher": mesher,
-        "points": pts.tolist(),
-        "tets": tt.tolist(),
-        "tet_regions": tr.tolist(),
-        "faces": [],
-        "stats": stats,
-    }
+from compare_geoms import CompareGeom
 
 
 # ------------------------------------------------------------------ meshers
@@ -228,85 +166,3 @@ def mesh_tetgen(geom: CompareGeom, surface):
 
 
 # --------------------------------------------------------------------- main
-
-
-def main(argv: list[str]) -> None:
-    wanted = set(argv) if argv else None
-    OUT.mkdir(parents=True, exist_ok=True)
-    manifest_geoms = []
-
-    for geom in GEOMS:
-        if wanted and geom.id not in wanted:
-            continue
-        per_mesher: dict[str, dict] = {}
-        surface = None
-
-        # rapidmesh (a pyo3 PanicException is a BaseException, so catch broadly
-        # to isolate a single geometry's robustness failure from the run)
-        try:
-            pts, tets, tr, ms = mesh_rapidmesh(geom)
-            q = quality(pts, tets)
-            d = _viewer_dict(geom.name, "rapidmesh", pts, tets, tr, q, ms)
-            (OUT / f"{geom.id}.rapidmesh.json").write_text(json.dumps(d))
-            per_mesher["rapidmesh"] = {"file": f"meshes/compare/{geom.id}.rapidmesh.json",
-                                       "stats": d["stats"]}
-            print(f"{geom.id:<14} rapidmesh {q['n_tets']:>7} tets  "
-                  f"min-dih {q['min_dihedral_deg']:5.1f}  {ms:7.0f} ms")
-        except BaseException as e:  # noqa: BLE001
-            msg = str(e).splitlines()[0] if str(e) else ""
-            print(f"{geom.id:<14} rapidmesh FAILED: {type(e).__name__}: {msg}")
-
-        # gmsh (also yields the surface for tetgen)
-        try:
-            pts, tets, tr, ms, surface = mesh_gmsh(geom)
-            q = quality(pts, tets)
-            d = _viewer_dict(geom.name, "gmsh", pts, tets, tr, q, ms)
-            (OUT / f"{geom.id}.gmsh.json").write_text(json.dumps(d))
-            per_mesher["gmsh"] = {"file": f"meshes/compare/{geom.id}.gmsh.json",
-                                  "stats": d["stats"]}
-            print(f"{geom.id:<14} gmsh      {q['n_tets']:>7} tets  "
-                  f"min-dih {q['min_dihedral_deg']:5.1f}  {ms:7.0f} ms")
-        except Exception as e:  # noqa: BLE001
-            print(f"{geom.id:<14} gmsh      FAILED: {type(e).__name__}: {e}")
-
-        # tetgen on gmsh's surface
-        if surface is not None:
-            try:
-                pts, tets, tr, ms = mesh_tetgen(geom, surface)
-                q = quality(pts, tets)
-                d = _viewer_dict(geom.name, "tetgen", pts, tets, tr, q, ms,
-                                 extra={"on_surface_of": "gmsh"})
-                (OUT / f"{geom.id}.tetgen.json").write_text(json.dumps(d))
-                per_mesher["tetgen"] = {"file": f"meshes/compare/{geom.id}.tetgen.json",
-                                        "stats": d["stats"]}
-                print(f"{geom.id:<14} tetgen    {q['n_tets']:>7} tets  "
-                      f"min-dih {q['min_dihedral_deg']:5.1f}  {ms:7.0f} ms")
-            except Exception as e:  # noqa: BLE001
-                print(f"{geom.id:<14} tetgen    FAILED: {type(e).__name__}: {e}")
-
-        if per_mesher:
-            manifest_geoms.append({
-                "id": geom.id,
-                "name": geom.name,
-                "category": geom.category,
-                "target_h": geom.target_h,
-                "meshers": per_mesher,
-            })
-        sys.stdout.flush()
-
-    # rebuild the manifest from whatever JSON is present (so partial runs keep
-    # the site consistent); merge with any geometries we did not touch.
-    existing = {}
-    mpath = OUT / "manifest.json"
-    if mpath.exists() and wanted:
-        for g in json.loads(mpath.read_text()).get("geometries", []):
-            existing[g["id"]] = g
-    for g in manifest_geoms:
-        existing[g["id"]] = g
-    ordered = [existing[gd.id] for gd in GEOMS if gd.id in existing]
-    mpath.write_text(json.dumps({"geometries": ordered}, indent=1))
-    print(f"manifest: {len(ordered)} geometries")
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])

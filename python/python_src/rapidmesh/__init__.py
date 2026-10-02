@@ -1,4 +1,4 @@
-"""rapidmesh: pure-Rust conforming tetrahedral mesher for EM FEM.
+"""rapidmesh: pure-Rust conforming tetrahedral and surface mesher for FEM and FVM.
 
 .. code-block:: python
 
@@ -10,12 +10,11 @@
     mesh = g.mesh()
 """
 
-from .geometry import (Geometry, Mesh, SurfaceMesh, Solid, Sheet, Spline, Mesh2D, Region2D,
-                       load_msh,
-                       mesh_2d, mesh_layers, union_regions, overlay_regions)
+from .geometry import (Geometry, Mesh, SurfaceMesh, Solid, Sheet, Spline, load_msh,
+                       polygon_union)
 from . import adapt
 from .adapt import dorfler_mark, refine_dorfler
-from ._native import set_log_level
+from ._native import MeshError, set_log_level
 
 try:
     from importlib.metadata import version as _version
@@ -30,14 +29,10 @@ __all__ = [
     "Sheet",
     "load_msh",
     "Spline",
-    "mesh_2d",
-    "mesh_layers",
-    "union_regions",
-    "overlay_regions",
-    "Mesh2D",
-    "Region2D",
+    "polygon_union",
     "adapt",
     "dorfler_mark",
     "refine_dorfler",
     "set_log_level",
+    "MeshError",
 ]

@@ -1,7 +1,7 @@
 //! tri_tri_intersection vs an independent rational reference.
 //!
-//! The reference computes T1 ∩ plane(T0) exactly in BigRational and clips the
-//! resulting segment by T0's edge half-planes — a completely independent
+//! The reference computes T1 intersect plane(T0) exactly in BigRational and clips the
+//! resulting segment by T0's edge half-planes -- a completely independent
 //! derivation (no shared code path with the implementation under test).
 
 use num_rational::BigRational;
@@ -40,7 +40,7 @@ fn reference(t0: &Tri, t1: &Tri) -> RefIsect {
         return RefIsect::Empty;
     }
 
-    // T1 ∩ plane(T0): at most two distinct points.
+    // T1 intersect plane(T0): at most two distinct points.
     let mut pts: Vec<Rv> = Vec::new();
     let mut push = |p: Rv| {
         if !pts.contains(&p) {

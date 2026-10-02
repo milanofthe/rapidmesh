@@ -1,19 +1,15 @@
 """RF and EM structures (coax, waveguides, antennas, coils, transformers)
-built with the rapidmesh builder API and exported into the comparison viewer.
+built with the rapidmesh builder API.
 Regions stand for materials through their region tags, PEC traces through
 sheet tags. Run from the repo root:
 
     python python/examples/rf_geometries.py
 """
 
-from pathlib import Path
-
 import rapidmesh as rm
 
 mm = 1e-3
 C0 = 299_792_458.0
-
-VIEWER_DIR = Path(__file__).resolve().parents[2] / "viewer" / "public" / "meshes"
 
 
 def lambda_maxh(f_max: float, er_max: float = 1.0, n: int = 10) -> float:
@@ -237,5 +233,3 @@ if __name__ == "__main__":
             f"min-dih {s['min_dihedral_deg']:5.1f}  r/e {s['max_radius_edge']:6.2f}  "
             f"{s['millis']:5} ms"
         )
-        mesh.save_viewer_json(name, VIEWER_DIR)
-    print(f"-> {VIEWER_DIR}")

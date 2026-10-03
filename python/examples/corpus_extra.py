@@ -597,6 +597,15 @@ def thin_layer():
     return g.mesh()
 
 
+def thin_layer_min_angle():
+    """The thin layer with a smallest dihedral of 15 degrees asked for: the
+    size shrinks where the flat tets through it were."""
+    g = rm.Geometry(maxh=0.3)
+    g.box(3, 3, 2)
+    g.box(3, 3, 0.02, position=(0, 0, 1))
+    return g.mesh(min_angle=15)
+
+
 def needle():
     """A cylinder a hundred times longer than wide."""
     g = rm.Geometry(maxh=0.5)
@@ -777,7 +786,7 @@ def island_in_hole():
 
 
 ROBUST = [
-    tangent_spheres, sphere_touching_box, touching_cylinders, thin_layer, needle, hole_grid_plate,
+    tangent_spheres, sphere_touching_box, touching_cylinders, thin_layer, thin_layer_min_angle, needle, hole_grid_plate,
     shared_partial_face, sheet_t_junction, crossing_sheets, disc_through_sphere, small_feature,
     near_coincident_faces, patch_um, patch_km, many_regions, nested_cylinders, sharp_cone, sharp_wedge,
     tight_helix, thin_torus, rotated_box, star_in_box, island_in_hole,

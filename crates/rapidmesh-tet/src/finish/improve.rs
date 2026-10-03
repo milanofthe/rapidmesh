@@ -86,6 +86,22 @@ const MOVE_STAR_MAX: usize = 512;
 /// smaller star (see [`Improver::hub`]).
 const LARGE_STAR: usize = 256;
 
+/// Of the moves planned for the corners of a bad tet, the one whose star
+/// keeps the largest worst dihedral: the first move that gains anything is
+/// often a surface vertex nudged by a hair, while the free vertex would
+/// lift the tet, and the same nudge then wins every sweep.
+fn best_move(moves: [Option<Plan>; 4]) -> Plan {
+    let worst = |p: &Plan| match p {
+        Plan::Move { star, .. } => star.iter().map(|s| s.1).fold(f64::INFINITY, f64::min),
+        _ => f64::NEG_INFINITY,
+    };
+    moves
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| worst(a).total_cmp(&worst(b)))
+        .unwrap_or(Plan::Fail)
+}
+
 fn sorted3(f: [u32; 3]) -> [u32; 3] {
     let mut s = f;
     s.sort_unstable();
@@ -669,8 +685,8 @@ impl Improver<'_> {
         None
     }
 
-    /// The repair of the bad tet `t`: a flip, else a peel, else a move of
-    /// one of its vertices, the first that raises the local worst dihedral.
+    /// The repair of the bad tet `t`: a flip, else a peel, else the move of
+    /// one of its vertices that leaves the best star (see [`best_move`]).
     fn plan(&self, t: u32, target_deg: f64) -> Plan {
         if !self.alive[t as usize] || self.q[t as usize] >= target_deg {
             return Plan::Skip;
@@ -681,10 +697,7 @@ impl Improver<'_> {
         if self.may_peel(t) {
             return Plan::Peel;
         }
-        let tv = self.c.tets[t as usize];
-        tv.iter()
-            .find_map(|&v| self.plan_move(v))
-            .unwrap_or(Plan::Fail)
+        best_move(self.c.tets[t as usize].map(|v| self.plan_move(v)))
     }
 
     /// True when no vertex move of `v` helped at its last try and its star
@@ -728,10 +741,7 @@ impl Improver<'_> {
             .zip(first)
             .map(|(&t, p)| {
                 p.unwrap_or_else(|| {
-                    self.c.tets[t as usize]
-                        .iter()
-                        .find_map(|v| moves.get(v).cloned())
-                        .unwrap_or(Plan::Fail)
+                    best_move(self.c.tets[t as usize].map(|v| moves.get(&v).cloned()))
                 })
             })
             .collect()
@@ -789,10 +799,13 @@ impl Improver<'_> {
     }
 
     /// [`Improver::place`] near enough to compare candidates (see
-    /// [`Shape::project_near`]).
+    /// [`Shape::project_near`] and [`Shape::project_near_from`]): still a
+    /// point on the curve or carrier, so the chosen one stays as it is.
     fn place_near(&self, v: u32, x: P3) -> Option<P3> {
-        match self.mobility[v as usize] {
-            Mobility::Curve => self.shape?.project_near(self.c.classes[v as usize], x),
+        let kind = self.c.classes[v as usize];
+        match (self.mobility[v as usize], self.uv[v as usize]) {
+            (Mobility::Curve, _) => self.shape?.project_near(kind, x),
+            (Mobility::Surface, Some(uv)) => self.shape?.project_near_from(kind, x, uv),
             _ => self.place(v, x),
         }
     }

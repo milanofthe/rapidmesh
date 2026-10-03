@@ -6,7 +6,7 @@
 use crate::mesh::{SurfaceFace, TetMesh};
 
 use crate::curve::kinds::edge_curve;
-use crate::curve::{closest_arc, Curve, PolylineCurve};
+use crate::curve::{Curve, CurveSamples, PolylineCurve};
 use crate::finish::snap::Shape;
 use crate::finish::P3;
 use crate::finish::{Complex, PointClass};
@@ -20,7 +20,7 @@ pub(crate) struct BrepShape<'a> {
     brep: &'a Brep,
     /// Per B-rep edge: its curve and a dense sample of it (none for an
     /// edge whose chain makes no curve).
-    curves: Vec<Option<(Box<dyn Curve>, Vec<(f64, P3)>)>>,
+    curves: Vec<Option<(Box<dyn Curve>, CurveSamples)>>,
     /// Per B-rep edge: whether it has a smooth curve (not a polyline).
     smooth_curve: Vec<bool>,
 }
@@ -49,7 +49,7 @@ impl<'a> BrepShape<'a> {
                         (s, c.point_at(s))
                     })
                     .collect();
-                Some((c, samples))
+                Some((c, CurveSamples::new(samples)))
             })
             .collect();
         let smooth_curve = brep
@@ -85,7 +85,7 @@ impl Shape for BrepShape<'_> {
             }
             PointClass::Edge(c) => {
                 let (curve, samples) = self.curves.get(c as usize)?.as_ref()?;
-                Some(curve.point_at(closest_arc(curve.as_ref(), samples, p)))
+                Some(curve.point_at(samples.closest_arc(curve.as_ref(), p)))
             }
             PointClass::Vertex(_) | PointClass::Interior => None,
         }
@@ -110,29 +110,37 @@ impl Shape for BrepShape<'_> {
         Some((q, uv))
     }
 
+    fn project_near_from(&self, kind: PointClass, p: P3, uv: [f64; 2]) -> Option<P3> {
+        let PointClass::Face(f) = kind else {
+            return self.project_from(kind, p, uv).map(|r| r.0);
+        };
+        let face = self.brep.faces.get(f as usize)?;
+        Some(self.brep.surface(face.surface).toward(p, uv))
+    }
+
     fn project_near(&self, kind: PointClass, p: P3) -> Option<P3> {
         let PointClass::Edge(c) = kind else {
             return self.project(kind, p);
         };
         // The nearest point of the polyline through the dense samples.
         let (_, samples) = self.curves.get(c as usize)?.as_ref()?;
-        samples
-            .windows(2)
-            .map(|w| {
-                let (a, b) = (w[0].1, w[1].1);
-                let d: P3 = std::array::from_fn(|k| b[k] - a[k]);
-                let dd: f64 = d.iter().map(|x| x * x).sum();
-                let t = if dd > 0.0 {
-                    ((0..3).map(|k| (p[k] - a[k]) * d[k]).sum::<f64>() / dd).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let q: P3 = std::array::from_fn(|k| a[k] + t * d[k]);
-                let e: f64 = (0..3).map(|k| (q[k] - p[k]).powi(2)).sum();
-                (e, q)
-            })
-            .min_by(|x, y| x.0.total_cmp(&y.0))
-            .map(|x| x.1)
+        samples.nearest_on_polyline(p)
+    }
+}
+
+/// The points of the smooth B-rep edges of `brep`: `p` onto edge `edge`'s
+/// exact curve (`None` for a polyline or no curve). Built once, asked per
+/// point (the second-order mesh puts the mid-edge nodes of curved edges
+/// there).
+pub fn edge_projection(brep: &Brep) -> impl Fn(u32, P3) -> Option<P3> + '_ {
+    let shape = BrepShape::new(brep);
+    move |edge, p| {
+        let kind = PointClass::Edge(edge);
+        if shape.smooth(kind) {
+            shape.project(kind, p)
+        } else {
+            None
+        }
     }
 }
 
@@ -142,7 +150,7 @@ const SNAP_ROUNDS: usize = 2;
 /// Tets with a smaller dihedral (degrees) are improved locally after
 /// snapping, over at most this many sweeps.
 const IMPROVE_BELOW_DEG: f64 = 25.0;
-const IMPROVE_PASSES: usize = 4;
+const IMPROVE_PASSES: usize = 8;
 
 /// A raw bottom-up mesh snapped onto the shape of `model`, repaired and
 /// relaxed, and returned as a [`TetMesh`].

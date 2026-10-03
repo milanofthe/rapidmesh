@@ -921,3 +921,53 @@ fn step_bodies_take_their_names() {
         assert!((at - z).abs() < 1.5, "{name} at height {at}");
     }
 }
+
+#[test]
+fn only_tets_on_a_curved_surface_are_curved() {
+    // A cylinder: tets with an edge on its mantle are curved, every other
+    // tet keeps its mid-edge nodes in the middle of its edges, and the two
+    // kinds meet on straight faces only.
+    let mut g = Geometry::new(Some(0.3));
+    g.add(Cylinder::new(1.0, 1.0)).unwrap();
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    let so = m.second_order();
+    assert_eq!(so.curved_tets.len(), so.tets.len());
+    let n = so.curved_tets.iter().filter(|&&c| c).count();
+    assert!(n > 0 && n < so.tets.len());
+    let mid = |t: &[u32; 10], e: usize| {
+        let [i, j] = rapidmesh::TET10_EDGES[e];
+        let (a, b) = (so.points[t[i] as usize], so.points[t[j] as usize]);
+        std::array::from_fn::<f64, 3, _>(|k| 0.5 * (a[k] + b[k]))
+    };
+    let mut face_kinds: std::collections::HashMap<[u32; 3], Vec<bool>> = Default::default();
+    for (t, &c) in so.tets.iter().zip(&so.curved_tets) {
+        let straight = (0..6).all(|e| so.points[t[4 + e] as usize] == mid(t, e));
+        assert_eq!(straight, !c);
+        for f in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
+            let mut k = f.map(|i| t[i]);
+            k.sort_unstable();
+            face_kinds.entry(k).or_default().push(c);
+        }
+    }
+    // A face between a curved and a straight tet is straight: its three
+    // mid-edge nodes in the middle of its edges.
+    for (t, &c) in so.tets.iter().zip(&so.curved_tets) {
+        if !c {
+            continue;
+        }
+        for (f, edges) in [
+            ([0, 1, 2], [0, 1, 2]),
+            ([0, 1, 3], [0, 4, 3]),
+            ([0, 2, 3], [2, 5, 3]),
+            ([1, 2, 3], [1, 5, 4]),
+        ] {
+            let mut k = f.map(|i| t[i]);
+            k.sort_unstable();
+            if face_kinds[&k].contains(&false) {
+                assert!(edges
+                    .iter()
+                    .all(|&e| so.points[t[4 + e] as usize] == mid(t, e)));
+            }
+        }
+    }
+}

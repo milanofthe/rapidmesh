@@ -12,6 +12,10 @@ use crate::predicates::{inside, orient, P3};
 use crate::volume::tets::{Tets, FACE, NONE};
 use rapidmesh_geom::vec3::bbox;
 
+/// Steps of a point location walk per tet before it gives up and scans
+/// (a stochastic walk ends long before; the scan is the guarantee).
+const WALK_STEPS_PER_TET: usize = 4;
+
 /// A Delaunay tetrahedralization. Vertices `0..4` are the corners of the
 /// enclosing tet; point `i` of the input is vertex `i + 4`.
 pub struct Delaunay {
@@ -257,29 +261,49 @@ impl Delaunay {
     }
 
     /// The tet containing vertex `p` (closed), by a visibility walk.
+    /// The tet holding point `p`, by a visibility walk from the last one
+    /// made: across a face `p` lies beyond. The face tried first is drawn
+    /// at random each step (a stochastic walk, which ends with probability
+    /// one in a Delaunay tetrahedralization; a fixed order can cycle around
+    /// degenerate tets for ever). The draws are seeded by `p`, so the result
+    /// does not change between runs; past `WALK_STEPS_PER_TET` steps per tet
+    /// a scan of all tets finds it instead.
     fn locate(&self, p: u32) -> u32 {
         let x = self.pts[p as usize];
         let mut t = self.last;
-        let mut steps = 0usize;
-        'walk: loop {
-            steps += 1;
-            // Rotate the start face with the step count, so degenerate
-            // walks cannot cycle.
+        let mut rng = (p as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let cap = WALK_STEPS_PER_TET * self.t.alive.len().max(16);
+        'walk: for _ in 0..cap {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let first = (rng >> 62) as usize;
             for j in 0..4 {
-                let i = (j + steps) % 4;
+                let i = (j + first) % 4;
                 let f = self.face(t, i).map(|v| self.pts[v as usize]);
                 if orient(f[0], f[1], f[2], x) < 0 {
                     let nb = self.t.nbr[t as usize][i];
                     if nb == NONE {
-                        break 'walk;
+                        return t;
                     }
                     t = nb >> 2;
                     continue 'walk;
                 }
             }
-            break;
+            return t;
         }
-        t
+        self.scan(x).unwrap_or(t)
+    }
+
+    /// A live tet holding `x` (on its faces included), by trying them all.
+    fn scan(&self, x: P3) -> Option<u32> {
+        (0..self.t.alive.len() as u32).find(|&t| {
+            self.t.alive[t as usize]
+                && (0..4).all(|i| {
+                    let f = self.face(t, i).map(|v| self.pts[v as usize]);
+                    orient(f[0], f[1], f[2], x) >= 0
+                })
+        })
     }
 
     fn insert(&mut self, p: u32) {

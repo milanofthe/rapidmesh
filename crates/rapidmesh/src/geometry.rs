@@ -175,6 +175,14 @@ pub struct MeshOptions {
     /// Relative chord tolerances of curved edges and surfaces.
     pub tol_edge: Option<f64>,
     pub tol_surf: Option<f64>,
+    /// Relative geometric error the elements may make, instead of the chord
+    /// tolerances: the volume of every region and the area of every sheet
+    /// within this share of the true ones (see `MeshParams::geom_error`).
+    pub geom_error: Option<f64>,
+    /// The order of the elements that error is measured on: 1 flat
+    /// (default), 2 quadratic (the second-order mesh), which follows a curve
+    /// with far fewer elements.
+    pub order: Option<u8>,
     /// Largest element size per dimension, each with `maxh` as the minimum.
     pub maxh_edge: Option<f64>,
     pub maxh_surf: Option<f64>,
@@ -184,6 +192,12 @@ pub struct MeshOptions {
     pub target_elements: Option<usize>,
     /// Smallest element size on surfaces (0 off).
     pub min_h_surf: f64,
+    /// Smallest dihedral angle (degrees) to aim at: where tets stay below
+    /// it (flat tets through a layer far thinner than the size, around a
+    /// feature far below it), the size there shrinks over a few remeshes
+    /// (see [`rapidmesh_tet::angled`]). A warning names what stays below.
+    /// `None` (the default) meshes once.
+    pub min_angle: Option<f64>,
 }
 
 impl Default for MeshOptions {
@@ -195,10 +209,13 @@ impl Default for MeshOptions {
             cells_across: None,
             tol_edge: None,
             tol_surf: None,
+            geom_error: None,
+            order: None,
             maxh_edge: None,
             maxh_surf: None,
             maxh_vol: None,
             target_elements: None,
+            min_angle: None,
             min_h_surf: 0.0,
         }
     }
@@ -212,6 +229,9 @@ pub struct SurfaceOptions {
     pub grading: Option<f64>,
     pub tol_edge: Option<f64>,
     pub tol_surf: Option<f64>,
+    /// See [`MeshOptions::geom_error`] and [`MeshOptions::order`].
+    pub geom_error: Option<f64>,
+    pub order: Option<u8>,
     pub maxh_edge: Option<f64>,
     pub maxh_surf: Option<f64>,
     pub maxh_vol: Option<f64>,
@@ -903,6 +923,8 @@ impl Geometry {
             size_points: self.size_points.clone(),
             tol_edge: tol[0].unwrap_or(s.tol_edge),
             tol_surf: tol[1].unwrap_or(s.tol_surf),
+            geom_error: 0.0,
+            order: 1,
             cap_edge: caps[0].unwrap_or(s.maxh_edge),
             cap_surf: caps[1].unwrap_or(s.maxh_surf),
             cap_vol: caps[2].unwrap_or(s.maxh_vol),
@@ -928,6 +950,8 @@ impl Geometry {
             min_h_surf: opts.min_h_surf,
             max_points: opts.max_points,
             cells_across: opts.cells_across.unwrap_or(0.0),
+            geom_error: opts.geom_error.unwrap_or(0.0),
+            order: opts.order.unwrap_or(1),
             periodic: self.periodic_pairs()?,
             ..self.params(
                 opts.maxh,
@@ -941,9 +965,13 @@ impl Geometry {
         // error says where and what to repair (a panic inside it too, as an
         // error rather than an abort).
         let meshed = catch(|| {
-            rapidmesh_tet::budgeted(&model, &params, opts.target_elements, &|p| {
-                rapidmesh_tet::mesh_scene(&self.scene, &model, p)
-            })
+            rapidmesh_tet::angled(
+                &model,
+                &params,
+                opts.target_elements,
+                opts.min_angle,
+                &|p| rapidmesh_tet::mesh_scene(&self.scene, &model, p),
+            )
         });
         let mesh = match meshed {
             Ok(Ok((m, _))) => m,
@@ -977,6 +1005,8 @@ impl Geometry {
         let params = MeshParams {
             surf_min_angle: 20.0,
             surf_target_count: opts.target_triangles.unwrap_or(0),
+            geom_error: opts.geom_error.unwrap_or(0.0),
+            order: opts.order.unwrap_or(1),
             ..self.params(
                 opts.maxh,
                 opts.grading,

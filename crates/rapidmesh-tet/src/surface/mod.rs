@@ -12,7 +12,7 @@ pub(crate) mod stereo;
 pub(crate) mod topology;
 pub(crate) mod unroll;
 
-use crate::curve::{distribute_floored, Curve, PolylineCurve};
+use crate::curve::{distribute_floored, Curve, PolylineCurve, WithRadius};
 use crate::params::MeshParams;
 use crate::sizing::tree::DomainTree;
 use crate::surface::planar::{mesh_constrained, PipRows};
@@ -367,6 +367,7 @@ impl<'m> Rounds<'m> {
         let (lo, hi) = bbox(&plc.vertices);
         let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f64::max).max(1e-12);
         let floor = params.h_floor(extent);
+        let (_, edge_laws) = crate::sizing::curvature_laws(model, params);
         let grading = if params.grading > 0.0 {
             params.grading
         } else {
@@ -396,7 +397,19 @@ impl<'m> Rounds<'m> {
                 let cap = params.edge_maxh_for(ei);
                 let size = |s: f64| domain.h_at_surf(c.point_at(s)).min(cap);
                 let len = c.length();
-                let ss = distribute_floored(c, params.edge_tol_for(ei), &size, grading, floor);
+                // A circle is sampled by its own radius, not the one its
+                // facets suggest: no spike for the floor to stop, so it takes
+                // as many segments per turn as the tolerance asks, however
+                // small it is (a small hole stays round).
+                let law = edge_laws[ei];
+                let bent = |r: f64| law.curve(r);
+                let ss = match e.curve {
+                    rapidmesh_brep::Curve::Circle { radius, .. } => {
+                        let exact = WithRadius { curve: c, radius };
+                        distribute_floored(&exact, &bent, &size, grading, 0.0)
+                    }
+                    _ => distribute_floored(c, &bent, &size, grading, floor),
+                };
                 let mut arcs: Vec<f64> = ss.into_iter().filter(|&s| s > 0.0 && s < len).collect();
                 let (a, b) = (e.ends[0].0, e.ends[1].0);
                 if a == b && arcs.len() < 2 {
@@ -1050,10 +1063,6 @@ const MAX_SPLIT_ROUNDS: usize = 40;
 /// the boundary gives up.
 const DIVERGED_ROUNDS: usize = 3;
 
-/// The boundary with the edges sampled at `arcs` (arc lengths strictly
-/// between the corners), the faces in `dirty` meshed on them afresh and the
-/// others taken from `cache`.
-#[allow(clippy::too_many_arguments)]
 /// The axis and coordinate of a plane normal to an axis (to a rounding of
 /// its normal), if it is one.
 fn axis_plane(s: &rapidmesh_brep::Surface) -> Option<(usize, f64)> {
@@ -1065,6 +1074,10 @@ fn axis_plane(s: &rapidmesh_brep::Surface) -> Option<(usize, f64)> {
     (off <= 1e-12 * normal[k].abs()).then_some((k, o[k]))
 }
 
+/// The boundary with the edges sampled at `arcs` (arc lengths strictly
+/// between the corners), the faces in `dirty` meshed on them afresh and the
+/// others taken from `cache`.
+#[allow(clippy::too_many_arguments)]
 fn faces_on(
     model: &Model,
     curves: &[Option<PolylineCurve>],

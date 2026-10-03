@@ -8,6 +8,7 @@
 
 use crate::params::MeshParams;
 use crate::simplex::circumradius;
+use crate::sizing::CurvatureLaw;
 use rapidmesh_brep::index::{FacetBvh, Targets};
 use rapidmesh_brep::Surface;
 use rapidmesh_csg::classify::{ray_target, segment_crosses_triangle, RAY_TARGETS};
@@ -54,8 +55,9 @@ impl DomainTree {
     /// Builds the domain octree from the PLC and mesh parameters. `facet_surf`
     /// is an optional per-PLC-facet surface size target (the resolved per-FACE
     /// `surf_maxh`, mapped through the brep); empty means "no per-face override".
-    /// `facet_tol` likewise holds the chord tolerance per facet (the per-face
-    /// `surf_tol`, else `tol_surf`); empty means `tol_surf` everywhere.
+    /// `facet_law` likewise holds the curvature law per facet (a per-face
+    /// `surf_tol`, the geometric error, else `tol_surf`; see
+    /// [`CurvatureLaw`]); empty means `tol_surf` everywhere.
     /// Both feed the volume field too, so a finely sized face refines the
     /// volume behind it.
     pub fn build(
@@ -63,7 +65,7 @@ impl DomainTree {
         index: Arc<FacetBvh>,
         params: &MeshParams,
         facet_surf: &[f64],
-        facet_tol: &[f64],
+        facet_law: &[CurvatureLaw],
     ) -> DomainTree {
         let mut lo = [f64::MAX; 3];
         let mut hi = [f64::MIN; 3];
@@ -130,11 +132,17 @@ impl DomainTree {
         // refines the VOLUME near tightly curved boundaries (an airfoil nose), so
         // the surrounding region holds the fine on-surface nodes; the grading
         // term then coarsens away. A gentle curve (R large) leaves `maxh` intact.
+        let law_of = |i: usize| {
+            facet_law
+                .get(i)
+                .copied()
+                .unwrap_or(CurvatureLaw::Chord(params.tol_surf))
+        };
         let curvature_target = |i: usize| -> f64 {
             let kind = &plc.surfaces[plc.surface_refs[i].0 as usize];
-            let tol = facet_tol.get(i).copied().unwrap_or(params.tol_surf);
-            Surface::curved(kind).map_or(f64::INFINITY, |s| s.curvature_radius(facet_centroid(i)))
-                * (8.0 * tol).sqrt()
+            let r = Surface::curved(kind)
+                .map_or(f64::INFINITY, |s| s.curvature_radius(facet_centroid(i)));
+            law_of(i).surface(r)
         };
 
         // (cap, target) of a facet: the cap is the user's size there (face,
@@ -229,8 +237,20 @@ impl DomainTree {
         // arc length: on a CLOSED rim loop (a cylinder rim, where every vertex
         // has exactly two neighbours and no junction ever breaks the walk) it
         // circles forever.
+        // With a geometric error an edge takes the finest law of its facets,
+        // else the chord tolerance of the edges.
+        let edge_law = |facets: &[u32], r: f64| -> f64 {
+            if params.geom_error > 0.0 {
+                facets
+                    .iter()
+                    .map(|&f| law_of(f as usize).curve(r))
+                    .fold(f64::INFINITY, f64::min)
+            } else {
+                CurvatureLaw::Chord(params.tol_edge).curve(r)
+            }
+        };
         let edge_segments: Vec<(Tri, f64)> =
-            edge_sizing_segments(plc, params.tol_edge, params.edge_cap().min(maxh));
+            edge_sizing_segments(plc, &edge_law, params.edge_cap().min(maxh));
         let edge_bvh = FacetBvh::build(&edge_segments.iter().map(|e| e.0).collect::<Vec<_>>());
         let edge_targets = Targets::new(&edge_bvh, edge_segments.iter().map(|e| e.1).collect());
 
@@ -318,9 +338,12 @@ impl DomainTree {
 /// deflection)` (a segment is a degenerate triangle for the `FacetBvh`).
 /// Where the edge bends no tighter than its surface, the facet target
 /// already wins.
-fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri, f64)> {
+fn edge_sizing_segments(
+    plc: &TaggedPlc,
+    law: &dyn Fn(&[u32], f64) -> f64,
+    maxh: f64,
+) -> Vec<(Tri, f64)> {
     use rustc_hash::FxHashMap;
-    let chord = (8.0 * deflection).sqrt();
     let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
     let is_curved = |sid: u32| {
         !matches!(
@@ -329,8 +352,10 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
         )
     };
 
-    // Distinct analytic surfaces meeting along each undirected edge.
+    // Distinct analytic surfaces meeting along each undirected edge, and
+    // the triangles on it.
     let mut edge_surf: FxHashMap<(u32, u32), Vec<u32>> = FxHashMap::default();
+    let mut edge_tris: FxHashMap<(u32, u32), Vec<u32>> = FxHashMap::default();
     for (fi, t) in plc.triangles.iter().enumerate() {
         let s = plc.surface_refs[fi].0;
         for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -338,13 +363,18 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
             if !v.contains(&s) {
                 v.push(s);
             }
+            edge_tris.entry(key(a, b)).or_default().push(fi as u32);
         }
     }
-    // Feature edges: two distinct surfaces meet, at least one curved. Sorted so
-    // the downstream segment list (and its BVH) is order-deterministic.
+    // Feature edges: two distinct surfaces meet, at least one curved, or a
+    // sheet ends (one triangle on the edge: the rim of a disc or of a hole
+    // in it bends within its plane). Sorted so the downstream segment list
+    // (and its BVH) is order-deterministic.
     let mut feature: Vec<(u32, u32)> = edge_surf
         .iter()
-        .filter(|(_, s)| s.len() >= 2 && s.iter().any(|&x| is_curved(x)))
+        .filter(|(e, s)| {
+            (s.len() >= 2 && s.iter().any(|&x| is_curved(x))) || edge_tris[*e].len() == 1
+        })
         .map(|(&e, _)| e)
         .collect();
     feature.sort_unstable();
@@ -461,7 +491,7 @@ fn edge_sizing_segments(plc: &TaggedPlc, deflection: f64, maxh: f64) -> Vec<(Tri
             let va = plc.vertices[a as usize];
             let vb = plc.vertices[b as usize];
             // A degenerate tri (va, vb, va) is the segment va-vb for the BVH.
-            out.push((Tri::new(va, vb, va), r * chord));
+            out.push((Tri::new(va, vb, va), law(&edge_tris[&(a, b)], r)));
         }
     }
     out

@@ -279,3 +279,111 @@ def test_edges_by_kind_name():
     assert "circle" in kinds
     with pytest.raises(ValueError, match="unknown edge kind"):
         g._resolve(g.edge(kind="arc"))
+
+
+def test_min_angle_refines_a_thin_layer():
+    """A layer far thinner than the size takes flat tets through it; with
+    ``min_angle`` the size there shrinks until none is below the angle."""
+
+    def layered():
+        g = rm.Geometry(maxh=0.5)
+        g.box(2, 2, 1)
+        g.box(2, 2, 0.02, position=(0, 0, 0.5))
+        return g
+
+    once = layered().mesh()
+    assert once.stats["min_dihedral_deg"] < 15
+    fine = layered().mesh(min_angle=15)
+    assert fine.stats["min_dihedral_deg"] >= 15
+    assert not any("min_angle" in line for line in fine.report().splitlines())
+
+
+def test_a_small_disc_stays_round():
+    """The rim of a disc sheet is its exact circle, sampled by the chord
+    tolerance however small it is against the size: a hole a sixteenth of the
+    size is no triangle, and the mesh in the volume follows its rim."""
+
+    def area(m, tag):
+        p, f = np.asarray(m.points), np.asarray(m.faces, np.int64)
+        f = f[np.asarray(m.face_tags) == tag]
+        return 0.5 * np.linalg.norm(np.cross(p[f[:, 1]] - p[f[:, 0]], p[f[:, 2]] - p[f[:, 0]]), axis=1).sum()
+
+    r = 0.125
+    for tol, err in ((None, 0.08), (1e-3, 0.01)):
+        g = rm.Geometry(maxh=2.0)
+        g.box(4, 4, 2, position=(-2, -2, -1))
+        g.disc(r, tag=2)
+        if tol:
+            g.tol = tol
+        m = g.mesh()
+        assert abs(area(m, 2) / (math.pi * r * r) - 1) < err
+
+
+def test_geom_error_meets_the_volume_with_far_fewer_quadratic_tets():
+    """``geom_error`` bounds the volume error of a sphere on the elements of
+    ``order``: met by flat and by quadratic tets, the quadratic ones with a
+    tenth of the tets or fewer (a large ``maxh``: the curvature sets the
+    size)."""
+
+    def run(order):
+        g = rm.Geometry(maxh=2.0)
+        g.sphere(1.0)
+        m = g.mesh(geom_error=1e-2, order=order)
+        if order == 1:
+            p, t = np.asarray(m.points), np.asarray(m.tets, np.int64)
+            a, b, c, d = (p[t[:, k]] for k in range(4))
+            v = np.abs(np.einsum("ij,ij->i", b - a, np.cross(c - a, d - a))).sum() / 6
+        else:
+            v = m.second_order()["volumes"].sum()
+        return abs(v / (4 / 3 * math.pi) - 1), len(m.tets)
+
+    (e1, n1), (e2, n2) = run(1), run(2)
+    assert e1 < 1e-2 and e2 < 1e-2
+    assert n2 * 10 < n1
+
+
+def test_the_rim_of_a_disc_sheet_is_curved_in_the_second_order_mesh():
+    """A rim between flat faces only takes its mid-edge nodes on its circle."""
+    g = rm.Geometry(maxh=2.0)
+    g.box(4, 4, 2, position=(-2, -2, -1))
+    g.disc(0.5, tag=2)
+    m = g.mesh(geom_error=1e-2, order=2)
+    so = m.second_order()
+    pts, faces = so["points"], so["faces"][np.asarray(m.face_tags) == 2]
+    rim = [v for v in faces[:, 3:].ravel() if abs(np.hypot(*pts[v][:2]) - 0.5) < 1e-9]
+    assert rim
+
+
+def test_geom_error_meets_the_volume_with_far_fewer_quadratic_tets():
+    """``geom_error`` bounds the volume error of a sphere on the elements of
+    ``order``: met by flat and by quadratic tets, the quadratic ones with a
+    tenth of the tets or fewer (a large ``maxh``: the curvature sets the
+    size)."""
+
+    def run(order):
+        g = rm.Geometry(maxh=2.0)
+        g.sphere(1.0)
+        m = g.mesh(geom_error=1e-2, order=order)
+        if order == 1:
+            p, t = np.asarray(m.points), np.asarray(m.tets, np.int64)
+            a, b, c, d = (p[t[:, k]] for k in range(4))
+            v = np.abs(np.einsum("ij,ij->i", b - a, np.cross(c - a, d - a))).sum() / 6
+        else:
+            v = m.second_order()["volumes"].sum()
+        return abs(v / (4 / 3 * math.pi) - 1), len(m.tets)
+
+    (e1, n1), (e2, n2) = run(1), run(2)
+    assert e1 < 1e-2 and e2 < 1e-2
+    assert n2 * 10 < n1
+
+
+def test_the_rim_of_a_disc_sheet_is_curved_in_the_second_order_mesh():
+    """A rim between flat faces only takes its mid-edge nodes on its circle."""
+    g = rm.Geometry(maxh=2.0)
+    g.box(4, 4, 2, position=(-2, -2, -1))
+    g.disc(0.5, tag=2)
+    m = g.mesh(geom_error=1e-2, order=2)
+    so = m.second_order()
+    pts, faces = so["points"], so["faces"][np.asarray(m.face_tags) == 2]
+    rim = [v for v in faces[:, 3:].ravel() if abs(np.hypot(*pts[v][:2]) - 0.5) < 1e-9]
+    assert rim

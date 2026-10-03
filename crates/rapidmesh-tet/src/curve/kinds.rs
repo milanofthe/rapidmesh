@@ -505,6 +505,7 @@ pub fn edge_curve(brep: &Brep, edge: &BEdge) -> Option<Box<dyn Curve>> {
 mod curve_tests {
     use super::*;
     use crate::curve::{closest_arc, distribute_floored};
+    use crate::sizing::CurvatureLaw;
     use rapidmesh_brep::build::from_plc;
     use rapidmesh_geom::{cylinder, solid_box, Scene};
 
@@ -533,7 +534,13 @@ mod curve_tests {
             .find(|e| matches!(e.curve, BCurve::Ellipse { .. }))
             .expect("an ellipse edge");
         let c = edge_curve(&b, e).unwrap();
-        let s = distribute_floored(&*c, 1e-2, &|_| 0.2, 0.5, 0.0);
+        let s = distribute_floored(
+            &*c,
+            &|r| CurvatureLaw::Chord(1e-2).curve(r),
+            &|_| 0.2,
+            0.5,
+            0.0,
+        );
         assert!(s.len() > 4, "several points on the rim");
         for &si in &s {
             let p = c.point_at(si);
@@ -560,7 +567,13 @@ mod curve_tests {
             .find(|e| matches!(e.curve, BCurve::Intersection { .. }))
             .expect("an intersection edge");
         let c = edge_curve(&b, e).unwrap();
-        let s = distribute_floored(&*c, 1e-2, &|_| 0.2, 0.5, 0.0);
+        let s = distribute_floored(
+            &*c,
+            &|r| CurvatureLaw::Chord(1e-2).curve(r),
+            &|_| 0.2,
+            0.5,
+            0.0,
+        );
         assert!(s.len() > 6, "several points on the rim");
         // Interior points (endpoints stay pinned to the chain corners).
         for &si in &s[1..s.len() - 1] {

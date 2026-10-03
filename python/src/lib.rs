@@ -1087,6 +1087,7 @@ py_mesh!(PyMesh {
         d.set_item("tets", arr(py, &tets))?;
         d.set_item("faces", arr(py, &faces))?;
         d.set_item("volumes", so.volumes().into_pyarray_bound(py))?;
+        d.set_item("curved_tets", so.curved_tets.into_pyarray_bound(py))?;
         d.set_item("curved", so.curved)?;
         d.set_item("straightened", so.straightened)?;
         Ok(d)
@@ -1139,8 +1140,15 @@ py_mesh!(PyMesh {
         Ok(d)
     }
 
-    fn viewer_json(&self, py: Python<'_>, name: &str) -> String {
-        py.allow_threads(|| self.m.viewer_json(name))
+    #[pyo3(signature = (name, second_order=false))]
+    fn viewer_json(&self, py: Python<'_>, name: &str, second_order: bool) -> String {
+        py.allow_threads(|| {
+            if second_order {
+                self.m.viewer_json_second_order(name)
+            } else {
+                self.m.viewer_json(name)
+            }
+        })
     }
 });
 

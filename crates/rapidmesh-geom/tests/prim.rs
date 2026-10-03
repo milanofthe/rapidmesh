@@ -554,6 +554,27 @@ fn sheets_and_disk_are_flats() {
 }
 
 #[test]
+fn a_disk_declares_its_rim_circle() {
+    use rapidmesh_geom::CurveKind;
+    let d = sheet_disk([1.0, 2.0, 3.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], 12);
+    assert_eq!(d.curves.len(), 1);
+    let c = &d.curves[0];
+    match c.kind {
+        CurveKind::Circle { center, radius, .. } => {
+            assert_eq!(center, [1.0, 2.0, 3.0]);
+            assert!((radius - 0.5).abs() < 1e-15);
+        }
+        _ => panic!("the rim of a round disk is a circle"),
+    }
+    // closed on its first point, so the last segment is covered too
+    assert_eq!(c.points.len(), 13);
+    assert_eq!(c.points[0], c.points[12]);
+    // radius vectors of different lengths: an ellipse
+    let e = sheet_disk([0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.5, 0.0], 12);
+    assert!(matches!(e.curves[0].kind, CurveKind::Ellipse { .. }));
+}
+
+#[test]
 fn pipe_end_caps_are_flats() {
     let f = pipe(
         &[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],

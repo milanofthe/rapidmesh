@@ -5,7 +5,7 @@
 //! back-references. Solid builders guarantee watertightness and outward
 //! orientation; sheet builders guarantee consistent winding.
 
-use crate::faceted::{Faceted, SurfaceKind};
+use crate::faceted::{CurveKind, EdgeCurve, Faceted, SurfaceKind};
 use crate::nurbs::NurbsCurve;
 use crate::nurbs_surface::NurbsSurface;
 use crate::polygon::{polygon_orientation, triangulate_polygon};
@@ -1159,6 +1159,37 @@ pub fn sheet_disk(center: [f64; 3], e1: [f64; 3], e2: [f64; 3], segments: usize)
     let tris: Vec<Tri> = (0..segments)
         .map(|i| Tri::new(center, ring[i], ring[(i + 1) % segments]))
         .collect();
+    // The rim is the exact circle (or ellipse) the ring samples, closed on
+    // its first point: the B-rep edge takes it as its carrier, so the mesh
+    // samples it by its curvature, not by the ring.
+    let (r1, r2) = (len(e1), len(e2));
+    let axis = scale(cross(e1, e2), 1.0 / (r1 * r2));
+    // (Radius vectors at an angle span an ellipse too, but not on these
+    // axes: that rim stays the ring.)
+    let square = dot(e1, e2).abs() <= 1e-12 * r1 * r2;
+    let kind = if square && (r1 - r2).abs() <= 1e-12 * r1.max(r2) {
+        Some(CurveKind::Circle {
+            center,
+            axis,
+            x: scale(e1, 1.0 / r1),
+            radius: r1,
+        })
+    } else if square {
+        Some(CurveKind::Ellipse {
+            center,
+            major: scale(e1, 1.0 / r1),
+            minor: scale(e2, 1.0 / r2),
+            a: r1,
+            b: r2,
+        })
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        let mut points = ring.clone();
+        points.push(ring[0]);
+        f.curves.push(EdgeCurve { kind, points });
+    }
     f.push_flat(PlanarFacet::new(ring), &tris, s);
     f
 }

@@ -44,6 +44,18 @@ pub struct MeshParams {
     /// sized `h = R*sqrt(8*tol_surf)`. Default 1e-2. (There is no volume
     /// tolerance: the volume size follows from the surface.)
     pub tol_surf: f64,
+    /// Relative geometric error the elements may make (`0` = off, the chord
+    /// tolerances apply): the volume of every region and the area of every
+    /// sheet within this share of the true ones, measured on elements of
+    /// [`MeshParams::order`]. Turned into a gap each curved boundary may
+    /// leave, by the thickness of what it bounds (see
+    /// [`crate::sizing::CurvatureLaw`]); an explicit per-entity tolerance
+    /// still wins.
+    pub geom_error: f64,
+    /// The order of the elements the geometric error is measured on: 1 flat
+    /// (chords), 2 quadratic (mid-edge nodes on the true geometry, see the
+    /// second-order mesh), which follows a curve with far fewer elements.
+    pub order: u8,
     /// Maximum element edge length on EDGES (1-cells), combined with the global
     /// [`MeshParams::maxh`] as `min(maxh, cap_edge)`. `INFINITY` = no extra cap.
     pub cap_edge: f64,
@@ -100,6 +112,8 @@ impl Default for MeshParams {
             size_points: Vec::new(),
             tol_edge: 1e-2,
             tol_surf: 1e-2,
+            geom_error: 0.0,
+            order: 1,
             cap_edge: f64::INFINITY,
             cap_surf: f64::INFINITY,
             cap_vol: f64::INFINITY,
@@ -142,6 +156,10 @@ impl MeshParams {
             size_points: self.size_points.iter().map(|&(p, h)| (p, h * s)).collect(),
             tol_edge: self.tol_edge * s * s,
             tol_surf: self.tol_surf * s * s,
+            // The size grows as the square root of the gap for flat elements,
+            // as its fourth root for quadratic ones.
+            geom_error: self.geom_error * s.powi(if self.order >= 2 { 4 } else { 2 }),
+            order: self.order,
             cap_edge: self.cap_edge * s,
             cap_surf: self.cap_surf * s,
             cap_vol: self.cap_vol * s,

@@ -27,21 +27,26 @@ More at [mesh.rapidpassives.org](https://mesh.rapidpassives.org).
 **Against gmsh.** Both mesh the same 27 geometries (primitives, booleans,
 multi-region assemblies and four CAD parts read from STEP files) at the same
 target size, gmsh with its default 3D algorithm and OpenCASCADE. rapidmesh
-has the larger smallest dihedral angle on 26 of the 27 (median 25 against
-13.4 degrees) and a tet below 10 degrees on two of them, gmsh on six. It is
-faster on 22, with a median meshing time of 0.5 times that of gmsh, and
+has the larger smallest dihedral angle on all 27 (median 25 against 13.4
+degrees) and a tet below 10 degrees on one of them, gmsh on six. It is
+faster on 22, with a median meshing time of 0.44 times that of gmsh, and
 spends about 1.2 times as many tets.
 
 ![rapidmesh against gmsh: smallest dihedral angle, meshing time and tet count per geometry](docs/figures/vs_gmsh.svg)
 
-**Validation corpus.** 223 geometries, 199 of them volume meshes, from single
+**Validation corpus.** 224 geometries, 200 of them volume meshes, from single
 primitives to RF assemblies, CAD parts from STEP files, scans and chip
-layouts. 221 mesh; the other two (a scan and a CAD part with features far
-below the size) stop with a `MeshError` that says where. 196 of the volume
-meshes are watertight and 168 free of defects (slivers, gaps, faces off the
-input). The 18 below 10 degrees are stacks of layers far thinner than the
-size, CAD parts with features far below the size, curved edges where two
-faces meet at a shallow angle, and sharp wedges.
+layouts. 222 mesh; the other two (a scan and a CAD part with features far
+below the size) stop with a `MeshError` that says where. All 198 volume
+meshes are watertight and 178 free of defects (slivers, gaps, faces off the
+input). The 15 below 10 degrees are stacks of layers far thinner than the
+size, CAD parts with features far below the size, and sharp wedges.
+
+**Geometric error.** On the NIST test parts and four CAD parts read from STEP,
+`geom_error=1e-2, order=2` takes about as many tets as the default chord
+tolerance or fewer, and its largest volume error measured against
+OpenCASCADE drops from up to 6 % to 0.2 % at most, mostly a few hundredths of
+a percent; meshing takes the same time or less.
 
 ![meshing time over tet count and the smallest dihedral angle per mesh](docs/figures/corpus.svg)
 
@@ -89,7 +94,12 @@ Sizing is hierarchical. A scope selects regions, geometric faces or
 geometric edges (by id, tag, normal, position or the regions they separate),
 and `set_maxh_on` and `set_tol_on` size what it selects. On top come a
 global size and grading, sizes per solid and per sheet, point size sources,
-an element budget and floors.
+an element budget and floors. A smallest dihedral angle refines the mesh
+where tets stay below it, such as flat tets through a layer far thinner than
+the size. Curved geometry takes a chord tolerance or a geometric error: the
+volume of every region and the area of every sheet within a given share of
+the true ones, on flat or on quadratic elements. The second-order mesh
+puts its mid-edge nodes on the true surfaces and curves.
 
 ## Python
 

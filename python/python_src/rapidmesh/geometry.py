@@ -243,11 +243,21 @@ class Mesh(_MeshBase):
         return Path(path)
 
     def second_order(self) -> dict:
-        """The second-order mesh: ``points`` (the corners, then the mid-edge
+        """The second-order mesh: a node in the middle of every edge, on the
+        true geometry where the edge lies on a curved surface or on a curve
+        (a rim between flat faces too, such as the edge of a disc sheet), in
+        the middle of the edge elsewhere. Meshed with ``order=2`` (see
+        :meth:`Geometry.mesh`) the sizes are made for it.
+
+        Returns ``points`` (the corners, then the mid-edge
         nodes), ``tets`` (n, 10) in the node order of Abaqus C3D10 and VTK's
         quadratic tetra, the surface ``faces`` (m, 6), the exact ``volumes``,
-        and how many mid-edge nodes went onto a curved surface (``curved``)
-        and back on their chord to keep a tet valid (``straightened``)."""
+        per tet whether it is curved (``curved_tets``: a mid-edge node off
+        its chord; every other tet has its mid-edge nodes in the middle of
+        its edges, an affine map like a linear tet, so a solver can map only
+        the curved ones isoparametrically), and how many mid-edge nodes went
+        onto a curved surface (``curved``) and back on their chord to keep a
+        tet valid (``straightened``)."""
         return self._native.second_order()
 
     def write_inp(self, path: str | Path, order: int = 1) -> Path:
@@ -313,21 +323,25 @@ class Mesh(_MeshBase):
         worst-quality location and per-region quality, and any warnings."""
         return self._native.report()
 
-    def to_viewer_dict(self, name: str) -> dict:
+    def to_viewer_dict(self, name: str, *, second_order: bool = False) -> dict:
         """The mesh in the viewer JSON schema (shared by the comparison
-        viewer and the showcase site), with the located defects."""
-        return json.loads(self._native.viewer_json(name))
+        viewer and the showcase site), with the located defects; with
+        ``second_order`` the mid-edge nodes off their chords too, so the
+        viewer draws the curved tets curved (see :meth:`second_order`)."""
+        return json.loads(self._native.viewer_json(name, second_order))
 
     def show(self, name: str = "mesh", *, clip: float | None = 0.6,
-             clip_axis: int = 1, **kw) -> None:
+             clip_axis: int = 1, second_order: bool = False, **kw) -> None:
         """Open this mesh in the interactive viewer and block until the window is
         closed: orbit / zoom / pan, the region legend, the crinkle clip (``clip``
         is the fraction along ``clip_axis``; ``None`` disables it), the
         located-defect overlay, and figure export. Uses a native window
         (``pywebview``) if installed, else a Chromium window. The viewer ships in
         the wheel; a window backend does not -- ``pip install pywebview`` (or
-        ``playwright``)."""
-        _show(self.to_viewer_dict(name), name, clip=clip, clip_axis=clip_axis, **kw)
+        ``playwright``). With ``second_order`` the curved tets of the
+        second-order mesh are drawn curved, their faces shaded smoothly."""
+        _show(self.to_viewer_dict(name, second_order=second_order), name, clip=clip,
+              clip_axis=clip_axis, **kw)
 
 
 class SurfaceMesh(_MeshBase):
@@ -626,6 +640,35 @@ class Geometry:
     grading : float, optional
         default size-grading Lipschitz constant for :meth:`mesh` (see
         there); the default 0.5 grows neighbor elements by roughly 1.5x
+
+    Notes
+    -----
+    How the mesh size is set: the finest of what each of these asks for
+    wins, and the size grows away from fine places by ``grading``.
+
+    - ``maxh``: the element size, global (here or ``g.maxh``) and per
+      region, face, edge or sheet (``g.region(2).maxh = ...``,
+      ``g.surf(...).maxh``, ``g.edge(...).maxh``, ``maxh=`` of a solid or a
+      sheet). This is the size what lives on the mesh needs; it is never
+      exceeded.
+    - curved geometry, by one of two measures:
+
+      - a chord tolerance (``g.tol``, ``g.edge(...).tol``,
+        ``g.surf(...).tol``, ``tol_edge``/``tol_surf`` of :meth:`mesh`): a
+        chord deviates from its curve by at most ``tol`` times the radius,
+        the same number of segments per turn however small the curve (the
+        default 0.05 is about ten segments round a circle);
+      - a geometric error (``geom_error`` and ``order`` of :meth:`mesh`):
+        the volume of every region and the area of every sheet within this
+        share of the true ones, measured on flat elements (``order=1``) or
+        on the quadratic elements of :meth:`Mesh.second_order` (``order=2``),
+        which follow a curve with far fewer elements. An explicit ``tol`` on
+        an entity still wins there.
+    - ``min_angle``: the size shrinks where tets stay below this dihedral
+      angle (layers far thinner than the size, features far below it).
+    - ``target_elements``: one factor scales every size until the tet count
+      lands near it.
+    - point sources: :meth:`refine_near_points`.
     """
 
     def __init__(self, *, maxh: float | None = None, grading: float | None = None) -> None:
@@ -1096,6 +1139,9 @@ class Geometry:
         maxh_vol: float | None = None,
         target_elements: int | None = None,
         min_h_surf: float | None = None,
+        min_angle: float | None = None,
+        geom_error: float | None = None,
+        order: int | None = None,
     ) -> Mesh:
         """Assembles the exact conforming arrangement of every solid and
         sheet, meshes it bottom-up (edges, then each face on its surface,
@@ -1139,11 +1185,44 @@ class Geometry:
             refinement keeps its shape
         min_h_surf : float, optional
             hard minimum element size on surfaces (0 off)
+        geom_error : float, optional
+            relative geometric error the elements may make, instead of the
+            chord tolerances: the volume of every region and the area of every
+            sheet within this share of the true ones (1e-2 is one percent).
+            Each curved boundary is sized by its curvature and by the
+            thickness of what it bounds (a region's volume over its surface, a
+            sheet's area over its perimeter), so a thin pin is meshed finer
+            than a large body of the same curvature. Flat faces are not
+            refined by it; ``maxh`` still caps the size everywhere, and an
+            explicit ``tol`` on an entity still wins. Default ``None``: the
+            chord tolerances
+        order : int, optional
+            the elements ``geom_error`` is measured on: 1 flat (default), 2
+            quadratic, whose mid-edge nodes lie on the true surfaces and curves
+            (:meth:`Mesh.second_order`, ``write_msh(path, order=2)``). Flat
+            elements need many small ones on a tight curve (the error falls
+            with the square of their size); quadratic ones follow it with a
+            few (with the fourth power), so ``geom_error=1e-2, order=2`` meshes
+            most CAD parts with fewer tets than the default tolerance and an
+            error of a few hundredths of a percent. Use the second-order mesh
+            then: its linear corners alone carry the flat error. Example::
+
+                mesh = g.mesh(geom_error=1e-2, order=2)
+                so = mesh.second_order()             # tet10, curved boundary
+                mesh.write_msh("part.msh", order=2)
+        min_angle : float, optional
+            smallest dihedral angle (degrees) to aim at, e.g. 15 for a solver
+            that needs one: where tets stay below it (flat tets through a
+            layer far thinner than the size, around a feature far below it),
+            the size there shrinks over a few remeshes. What stays below (a
+            wedge sharper than the angle) is a warning in ``mesh.report()``.
+            Default ``None``: one mesh
         """
         return Mesh(self._native.mesh(_given(
             maxh=maxh, max_points=max_points, grading=grading, cells_across=cells_across,
             tol_edge=tol_edge, tol_surf=tol_surf, maxh_edge=maxh_edge, maxh_surf=maxh_surf,
             maxh_vol=maxh_vol, target_elements=target_elements, min_h_surf=min_h_surf,
+            min_angle=min_angle, geom_error=geom_error, order=order,
         )))
 
     def surface_mesh(
@@ -1157,15 +1236,18 @@ class Geometry:
         maxh_surf: float | None = None,
         maxh_vol: float | None = None,
         target_triangles: int | None = None,
+        geom_error: float | None = None,
+        order: int | None = None,
     ) -> SurfaceMesh:
         """Surface-only export: assembles the exact arrangement and meshes
         only its surfaces (region interfaces, outer boundary, embedded
         sheets), with the full sizing hierarchy of :meth:`mesh`.
         Each face is meshed alone on the shared samples of its edges.
         ``target_triangles`` is a triangle budget: the sizes are coarsened by
-        one factor until the count is at most a little over it."""
+        one factor until the count is at most a little over it.
+        ``geom_error`` and ``order`` as for :meth:`mesh`."""
         return SurfaceMesh(self._native.surface_mesh(_given(
             maxh=maxh, grading=grading, tol_edge=tol_edge, tol_surf=tol_surf,
             maxh_edge=maxh_edge, maxh_surf=maxh_surf, maxh_vol=maxh_vol,
-            target_triangles=target_triangles,
+            target_triangles=target_triangles, geom_error=geom_error, order=order,
         )))

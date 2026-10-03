@@ -18,6 +18,9 @@ def test_mid_edge_nodes_lie_on_the_sphere_and_the_volume_follows():
     pts, faces = so["points"], so["faces"]
     assert so["tets"].shape == (len(m.tets), 10)
     assert so["curved"] > 0
+    # curved tets are those on the sphere; the inner ones stay affine
+    assert so["curved_tets"].dtype == bool and len(so["curved_tets"]) == len(m.tets)
+    assert 0 < so["curved_tets"].sum() < len(m.tets)
     assert so["straightened"] <= 0.01 * so["curved"]
     # every node of the boundary on the unit sphere (corners and mid-edges)
     r = np.linalg.norm(pts[np.unique(faces)], axis=1)
@@ -71,3 +74,29 @@ def test_gmsh_reads_the_second_order_mesh_with_positive_jacobians(tmp_path):
         assert np.abs(r - 1.0).max() < 1e-9
     finally:
         gmsh.finalize()
+
+
+def test_the_viewer_gets_the_curved_edges_of_the_second_order_mesh():
+    """``to_viewer_dict(second_order=True)`` lists every edge whose mid-edge
+    node lies off its chord, on the sphere; the linear one lists none."""
+    m = _ball()
+    assert "curved_edges" not in m.to_viewer_dict("ball")
+    edges = m.to_viewer_dict("ball", second_order=True)["curved_edges"]
+    assert edges
+    pts = np.asarray(m.points)
+    for a, b, p in edges:
+        assert a < b
+        assert abs(np.linalg.norm(p) - 1.0) < 1e-9
+        assert np.linalg.norm(np.asarray(p) - 0.5 * (pts[a] + pts[b])) > 0
+
+
+def test_a_sheet_outside_the_volume_takes_mid_edge_nodes_too():
+    """A sheet reaching out of every region has faces no tet has; the
+    second-order mesh gives their edges nodes all the same."""
+    g = rm.Geometry(maxh=0.5)
+    g.box(1, 1, 1)
+    g.xy_plate(2, 0.5, position=(0.25, 0.25, 0.5), tag=3)
+    m = g.mesh()
+    so = m.second_order()
+    assert so["faces"].shape == (len(m.faces), 6)
+    assert so["faces"].max() < len(so["points"])

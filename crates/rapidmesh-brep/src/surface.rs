@@ -408,6 +408,20 @@ impl Surface {
         (self.eval_uv(uv), self.normal(uv), uv)
     }
 
+    /// A point of the surface near `p`, cheaper than [`Surface::closest_near`]
+    /// where that searches a spline: one Gauss-Newton step from `uv0` on a
+    /// NURBS carrier (a point on it, not quite the nearest), the nearest
+    /// point elsewhere. For comparing candidate places close to `uv0`.
+    pub fn toward(&self, p: V3, uv0: P2) -> V3 {
+        match self {
+            Surface::Nurbs(s) => {
+                let uv = s.step_toward(p, uv0);
+                s.eval(uv[0], uv[1])
+            }
+            _ => self.closest_near(p, uv0).0,
+        }
+    }
+
     /// Parameter point `(u, v)` -> 3D.
     pub fn eval_uv(&self, p: P2) -> V3 {
         match self {

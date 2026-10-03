@@ -21,7 +21,8 @@
 pub(crate) mod kinds;
 
 use crate::simplex::circumradius;
-use rapidmesh_geom::vec3::{add, dist, dot, normalize, scale, sub, V3};
+use rapidmesh_geom::bvh::Bvh;
+use rapidmesh_geom::vec3::{add, bbox, dist, dist2, dot, normalize, scale, sub, V3};
 /// A general edge curve, parametrized by arc length `s in [0, length()]`.
 /// `Send + Sync` supertraits: curve evaluators are plain data, and the
 /// refiner is shared across rayon workers for its read-only stages.
@@ -58,15 +59,21 @@ pub trait Curve: Send + Sync {
 /// nearest one starts safeguarded Newton steps on `(C(s) - p) . C'(s) = 0`
 /// between its neighbours, each step halved until the distance drops. On a
 /// closed curve (first and last sample one point) both sides of the seam are
-/// searched.
+/// searched. For many queries on one curve, [`CurveSamples`] finds the
+/// nearest sample by its index instead of by a scan.
 pub fn closest_arc(curve: &dyn Curve, samples: &[(f64, V3)], p: V3) -> f64 {
+    let i = (0..samples.len())
+        .min_by(|&a, &b| dist(samples[a].1, p).total_cmp(&dist(samples[b].1, p)))
+        .unwrap_or(0);
+    arc_from(curve, samples, i, p)
+}
+
+/// [`closest_arc`] from the sample `i` nearest `p`.
+fn arc_from(curve: &dyn Curve, samples: &[(f64, V3)], i: usize, p: V3) -> f64 {
     let n = samples.len();
     if n == 0 {
         return 0.0;
     }
-    let i = (0..n)
-        .min_by(|&a, &b| dist(samples[a].1, p).total_cmp(&dist(samples[b].1, p)))
-        .unwrap_or(0);
     let bracket = |j: usize| {
         (
             samples[j].0,
@@ -84,6 +91,69 @@ pub fn closest_arc(curve: &dyn Curve, samples: &[(f64, V3)], p: V3) -> f64 {
         .map(|(s0, lo, hi)| newton_arc(curve, s0, lo, hi, p))
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map_or(0.0, |(s, _)| s)
+}
+
+/// A dense sample of a curve, `(arc length, point)` in ascending order,
+/// with a tree over the segments between consecutive samples: the nearest
+/// sample and the nearest point of the polyline in logarithmic time, for a
+/// curve projected onto again and again (the finish moves its vertices).
+pub struct CurveSamples {
+    pub samples: Vec<(f64, V3)>,
+    bvh: Bvh,
+}
+
+impl CurveSamples {
+    pub fn new(samples: Vec<(f64, V3)>) -> CurveSamples {
+        let segs = || samples.windows(2).map(|w| [w[0].1, w[1].1]);
+        let boxes = segs().map(bbox).collect();
+        let mids: Vec<V3> = segs().map(|[a, b]| scale(add(a, b), 0.5)).collect();
+        let bvh = Bvh::build(boxes, &mids);
+        CurveSamples { samples, bvh }
+    }
+
+    /// The index of the sample nearest `p` (the first on a tie).
+    fn nearest_sample(&self, p: V3) -> usize {
+        if self.samples.len() < 2 {
+            return 0;
+        }
+        let d2 = |i: usize| dist2(self.samples[i].1, p);
+        let near = self.bvh.nearest(p, f64::INFINITY, |j| {
+            let j = j as usize;
+            Some(d2(j).min(d2(j + 1)))
+        });
+        near.map_or(0, |(j, _)| {
+            let j = j as usize;
+            if d2(j + 1) < d2(j) {
+                j + 1
+            } else {
+                j
+            }
+        })
+    }
+
+    /// [`closest_arc`] on these samples of `curve`.
+    pub fn closest_arc(&self, curve: &dyn Curve, p: V3) -> f64 {
+        arc_from(curve, &self.samples, self.nearest_sample(p), p)
+    }
+
+    /// The point of the polyline through the samples nearest `p`.
+    pub fn nearest_on_polyline(&self, p: V3) -> Option<V3> {
+        let foot = |j: u32| {
+            let (a, b) = (self.samples[j as usize].1, self.samples[j as usize + 1].1);
+            let d = sub(b, a);
+            let dd = dot(d, d);
+            let t = if dd > 0.0 {
+                (dot(sub(p, a), d) / dd).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            add(a, scale(d, t))
+        };
+        let (j, _) = self
+            .bvh
+            .nearest(p, f64::INFINITY, |j| Some(dist2(foot(j), p)))?;
+        Some(foot(j))
+    }
 }
 
 /// Safeguarded Newton for the nearest arc length in `[lo, hi]` from `s0`,
@@ -207,18 +277,41 @@ impl Curve for PolylineCurve {
     }
 }
 
+/// `curve` with a known radius of curvature (a circle sampled along the
+/// polyline of its facets): the sampling reads the radius from here, not
+/// from the facets, whose irregular spacing shows spurious small radii.
+pub struct WithRadius<'a> {
+    pub curve: &'a dyn Curve,
+    pub radius: f64,
+}
+
+impl Curve for WithRadius<'_> {
+    fn length(&self) -> f64 {
+        self.curve.length()
+    }
+    fn point_at(&self, s: f64) -> V3 {
+        self.curve.point_at(s)
+    }
+    fn radius_at(&self, _s: f64) -> f64 {
+        self.radius
+    }
+    fn ders_at(&self, s: f64) -> [V3; 3] {
+        self.curve.ders_at(s)
+    }
+}
+
 /// The most a curve turns per segment, floor or not: a third of a turn, as
 /// a closed edge takes three segments at least.
 const MAX_TURN: f64 = std::f64::consts::TAU / 3.0;
 
 /// Arc-length samples of `curve` spaced by the target `size(s)` at arc
-/// length `s`, refined where the curvature needs it for `deflection`, and
-/// graded by `grad`. A hard size FLOOR: a curvature-radius spike (the sharp
-/// turn of an intersection curve, a micro-rim) may not drive the sampling below
-/// `minh`. `0` = off.
+/// length `s`, refined where the curvature needs it (`bent(r)`: the size
+/// at radius of curvature `r`, see `sizing::CurvatureLaw`), and graded by `grad`. A hard size FLOOR: a
+/// curvature-radius spike (the sharp turn of an intersection curve, a
+/// micro-rim) may not drive the sampling below `minh`. `0` = off.
 pub fn distribute_floored(
     curve: &dyn Curve,
-    deflection: f64,
+    bent: &dyn Fn(f64) -> f64,
     size: &dyn Fn(f64) -> f64,
     grad: f64,
     minh: f64,
@@ -231,9 +324,9 @@ pub fn distribute_floored(
     if !(len > 0.0) || !(maxh > 0.0) {
         return vec![0.0];
     }
-    let chord = (8.0 * deflection.max(1e-12)).sqrt();
-    // Fine arc-length samples: enough to resolve the finest target. Cap the count.
-    let m = ((len / (chord * maxh).max(maxh * 0.05)).ceil() as usize * 4).clamp(64, 8192);
+    // Fine arc-length samples: enough to resolve the finest target (and a
+    // bend of radius about that size). Cap the count.
+    let m = ((len / bent(maxh).max(maxh * 0.05)).ceil() as usize * 4).clamp(64, 8192);
     let ds = len / m as f64;
     let mut h = vec![0.0f64; m + 1];
     for i in 0..=m {
@@ -241,7 +334,7 @@ pub fn distribute_floored(
         let r = curve.radius_at(s);
         let target = size(s);
         h[i] = if r.is_finite() {
-            (r * chord).min(target)
+            bent(r).min(target)
         } else {
             target
         }
@@ -310,6 +403,7 @@ pub fn distribute_floored(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sizing::CurvatureLaw;
     use std::f64::consts::PI;
 
     /// A bend below the floor keeps a segment per third of a turn: a rounded
@@ -324,10 +418,22 @@ mod tests {
             })
             .collect();
         let bend = PolylineCurve::new(&arc).unwrap();
-        let ss = distribute_floored(&bend, 0.05, &|_| 50.0, 0.5, 5.0);
+        let ss = distribute_floored(
+            &bend,
+            &|r| CurvatureLaw::Chord(0.05).curve(r),
+            &|_| 50.0,
+            0.5,
+            5.0,
+        );
         assert_eq!(ss.len(), 3, "{ss:?}");
         let line = PolylineCurve::new(&[[0.0, 0.0, 0.0], [6.0, 0.0, 0.0]]).unwrap();
-        let ss = distribute_floored(&line, 0.05, &|_| 50.0, 0.5, 5.0);
+        let ss = distribute_floored(
+            &line,
+            &|r| CurvatureLaw::Chord(0.05).curve(r),
+            &|_| 50.0,
+            0.5,
+            5.0,
+        );
         assert_eq!(ss.len(), 2, "{ss:?}");
     }
 
@@ -355,7 +461,13 @@ mod tests {
         let r = 2.0;
         let delta = 0.02;
         let c = circle(r, 2000);
-        let s = distribute_floored(&c, delta, &|_| 100.0, 0.3, 0.0);
+        let s = distribute_floored(
+            &c,
+            &|r| CurvatureLaw::Chord(delta).curve(r),
+            &|_| 100.0,
+            0.3,
+            0.0,
+        );
         // Expected element length ~ R*sqrt(8*delta); count ~ circumference / h.
         let h = r * (8.0 * delta).sqrt();
         let expect = (2.0 * PI * r / h).round() as usize;
@@ -377,7 +489,13 @@ mod tests {
             .map(|i| [i as f64 / 50.0 * 10.0, 0.0, 0.0])
             .collect();
         let c = PolylineCurve::new(&pts).unwrap();
-        let s = distribute_floored(&c, 0.02, &|_| 1.0, 0.3, 0.0);
+        let s = distribute_floored(
+            &c,
+            &|r| CurvatureLaw::Chord(0.02).curve(r),
+            &|_| 1.0,
+            0.3,
+            0.0,
+        );
         let n = s.len() - 1;
         assert_eq!(n, 10, "10 elements of maxh=1 on a length-10 line, got {n}");
     }
@@ -400,7 +518,13 @@ mod tests {
             pts.push([i as f64 / 100.0 * 5.0, 0.0, 0.0]); // arm away
         }
         let c = PolylineCurve::new(&pts).unwrap();
-        let s = distribute_floored(&c, 0.02, &|_| 1.0, 0.3, 0.0);
+        let s = distribute_floored(
+            &c,
+            &|r| CurvatureLaw::Chord(0.02).curve(r),
+            &|_| 1.0,
+            0.3,
+            0.0,
+        );
         let spc: Vec<f64> = s.windows(2).map(|w| w[1] - w[0]).collect();
         // No adjacent pair jumps by more than ~ (1+grad) plus a sampling margin.
         let mut worst = 1.0f64;

@@ -45,6 +45,14 @@ pub trait Shape: Sync {
         self.project(kind, p).map(|q| (q, uv))
     }
 
+    /// A point of the shape near `p` for comparing candidate places, searched
+    /// from `uv` like [`Shape::project_from`] but only as exact as a
+    /// candidate needs (one step on a spline carrier); the point lies on the
+    /// shape.
+    fn project_near_from(&self, kind: PointClass, p: P3, uv: [f64; 2]) -> Option<P3> {
+        self.project_from(kind, p, uv).map(|r| r.0)
+    }
+
     /// Whether a vertex of `kind` may slide on its carrier or curve for
     /// quality: a smooth one, not a faceted patch or a polyline, whose
     /// facets and kinks a moved vertex would cut.

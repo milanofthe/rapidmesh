@@ -603,6 +603,21 @@ fn surface_once(model: &Model, params: &MeshParams) -> Result<SurfaceMesh, Bound
         );
     }
     let (point_class, curve_edges) = classes(brep, &b);
+    // The samples of a smooth edge onto its exact curve: they were placed
+    // on the polyline of its facets (the volume finish snaps them, a surface
+    // mesh has no finish), so a circle stays round.
+    let mut points = b.points;
+    {
+        use crate::finish::snap::Shape;
+        let shape = crate::finish::brep::BrepShape::new(brep);
+        for (p, &k) in points.iter_mut().zip(&point_class) {
+            if matches!(k, PointClass::Edge(_)) && shape.smooth(k) {
+                if let Some(q) = shape.project(k, *p) {
+                    *p = q;
+                }
+            }
+        }
+    }
     let faces = brep
         .faces
         .iter()
@@ -619,7 +634,7 @@ fn surface_once(model: &Model, params: &MeshParams) -> Result<SurfaceMesh, Bound
         })
         .collect();
     Ok(SurfaceMesh {
-        points: b.points,
+        points,
         faces,
         surfaces: model.plc.surfaces.clone(),
         surface_owners: model.plc.surface_owners.clone(),

@@ -78,7 +78,39 @@ g.edge(near=(0, 0, 1)).maxh = 0.05         # the edge nearest a point
 g.tol = 1e-3                               # chord tolerance of curved entities
 g.refine_near_points([(1, 1, 1)], 0.02)    # point size sources
 mesh = g.mesh(target_elements=50_000)      # an element budget
+mesh = g.mesh(min_angle=15)                # refined where tets stay below 15 degrees
 ```
+
+`maxh` is the size the mesh needs for what lives on it; curved geometry
+takes either a chord tolerance (`g.tol`, about ten segments round a circle
+by default) or a geometric error:
+
+```python
+mesh = g.mesh(geom_error=1e-2, order=2)    # volumes and sheet areas within 1 %
+                                           # on quadratic elements
+```
+
+`geom_error` bounds the error of the volume of every region and the area of
+every sheet, measured on flat elements (`order=1`) or on the quadratic
+elements of the second-order mesh (`order=2`). Quadratic elements follow a
+curve with far fewer of them: on CAD parts read from STEP, one percent at
+`order=2` takes about as many tets as the default tolerance or fewer, with a
+measured error of a few hundredths of a percent.
+
+### Second order
+
+```python
+so = mesh.second_order()       # tet10: points, tets (n, 10), faces (m, 6), volumes
+so["curved_tets"]              # per tet: a mid-edge node off its chord
+mesh.write_msh("part.msh", order=2)
+mesh.write_inp("part.inp", order=2)
+mesh.show(second_order=True)   # curved faces drawn curved
+```
+
+Every edge takes a node in its middle, on the true geometry where the edge
+lies on a curved surface or a curve. Tets with no such node keep their
+mid-edge nodes in the middle of their edges (an affine map, `curved_tets`
+false).
 
 ### Surface meshes
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rapidmesh"
-version = "2.1.0"
+version = "2.2.0"
 description = "Conforming tetrahedral and surface meshes for finite element and finite volume solvers, in Rust with a Python API."
 readme = "README.md"
 license = "AGPL-3.0-only"

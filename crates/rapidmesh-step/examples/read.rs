@@ -55,13 +55,31 @@ fn main() {
                     *edges.entry([p.min(q), p.max(q)]).or_default() += if p < q { 1 } else { -1 };
                 }
             }
-            let open = edges.values().filter(|&&c| c != 0).count();
+            let open: Vec<_> = edges.iter().filter(|(_, &c)| c != 0).collect();
             println!(
-                "  {:<24} {:>7} facets, {open} open edges, most: {}",
+                "  {:<24} {:>7} facets, {} open edges, most: {}",
                 b.name,
                 b.solid.tris.len(),
+                open.len(),
                 top.join("; ")
             );
+            // Where the first of them are.
+            for (e, _) in open.iter().take(6) {
+                let [p, q] = e.map(|v| v.map(f64::from_bits));
+                let on: Vec<String> = (0..b.solid.tris.len())
+                    .filter(|&t| {
+                        let v = b.solid.tris[t].v.map(|x| x.map(f64::to_bits));
+                        v.contains(&e[0]) && v.contains(&e[1])
+                    })
+                    .map(|t| {
+                        format!("{:?}", b.solid.surfaces[b.solid.face_surface[t] as usize])
+                            .chars()
+                            .take(50)
+                            .collect()
+                    })
+                    .collect();
+                println!("    open {p:.4?} to {q:.4?} on {}", on.join(" | "));
+            }
         }
     }
 }

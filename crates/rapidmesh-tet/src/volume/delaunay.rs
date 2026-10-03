@@ -73,15 +73,17 @@ impl Delaunay {
     /// (the perturbation is a property of the points). Returns, for each
     /// point of the new numbering before the added ones, its index before;
     /// `None` (and the tetrahedralization unusable) where an added point
-    /// falls outside the box the enclosing tet was made for, so the caller
-    /// makes it afresh.
+    /// falls outside the box the enclosing tet was made for, or a removal
+    /// cannot close its hole, so the caller makes it afresh.
     pub fn update(&mut self, gone: &[u32], points: &[P3]) -> Option<Vec<u32>> {
         let inside_box = |p: &P3| (0..3).all(|k| p[k] >= self.lo[k] && p[k] <= self.hi[k]);
         if !points.iter().all(inside_box) {
             return None;
         }
         for &g in gone {
-            self.remove(g + 4);
+            if !self.remove(g + 4) {
+                return None;
+            }
         }
         let kept = self.compact(gone);
         let base = self.pts.len();
@@ -98,13 +100,16 @@ impl Delaunay {
     /// Removes vertex `p`: its star goes, and the hole is filled with the
     /// tets of the tetrahedralization of its link whose spheres held `p`,
     /// which are the tets the points without `p` have there (Devillers).
-    fn remove(&mut self, p: u32) {
+    /// That holds where the star is Delaunay; an insertion that took a tet
+    /// behind a face its point lies on (to keep the cavity star-shaped)
+    /// can leave one that is not, and then the fill does not close the
+    /// hole: `false`, nothing changed.
+    fn remove(&mut self, p: u32) -> bool {
         let x = self.pts[p as usize];
         let start = self.locate(p);
-        debug_assert!(
-            self.t.tets[start as usize].contains(&p),
-            "a vertex is in its star"
-        );
+        if !self.t.tets[start as usize].contains(&p) {
+            return false;
+        }
         // The star, through the faces at p; its faces opposite p bound the hole.
         let mut star = vec![start];
         let epoch = self.t.next_epoch();
@@ -145,12 +150,16 @@ impl Delaunay {
             .map(|t| t.map(|v| link[v as usize]))
             .filter(|t| inside(t.map(|v| self.pts[v as usize]), x))
             .collect();
+        if !closes(&fill, &hole) {
+            return false;
+        }
         self.t.kill(&star);
         // The new tets, each face glued to the tet across the hole's side or
         // to the new one sharing it.
         if let Some(last) = self.t.fill(fill, &hole) {
             self.last = last;
         }
+        true
     }
 
     /// Renumbers the input points without those in `gone` (removed),
@@ -361,6 +370,23 @@ impl Delaunay {
     }
 }
 
+/// Whether the tets `fill` close the hole bounded by the faces `hole`
+/// (sorted): each of those taken once, every other face of theirs twice.
+fn closes(fill: &[[u32; 4]], hole: &rustc_hash::FxHashMap<[u32; 3], u32>) -> bool {
+    let mut count: rustc_hash::FxHashMap<[u32; 3], u32> = rustc_hash::FxHashMap::default();
+    for t in fill {
+        for f in FACE {
+            let mut f = f.map(|k| t[k]);
+            f.sort_unstable();
+            *count.entry(f).or_default() += 1;
+        }
+    }
+    hole.keys().all(|f| count.get(f) == Some(&1))
+        && count
+            .iter()
+            .all(|(f, &n)| n == 2 || (n == 1 && hole.contains_key(f)))
+}
+
 /// The Morton code of `p` on a 1024 grid over the box `lo..hi`.
 fn morton_key(p: P3, lo: P3, hi: P3) -> u64 {
     let q = |x: f64, k: usize| {
@@ -400,6 +426,28 @@ mod tests {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// A fill closes a hole when it takes each of the hole's faces once and
+    /// pairs every other face of its own; a missing or an extra tet does not.
+    #[test]
+    fn a_fill_closes_its_hole_or_says_so() {
+        // The hole of a removed apex over the square 0 1 2 3: four faces.
+        let hole: rustc_hash::FxHashMap<[u32; 3], u32> = [
+            [0, 1, 4],
+            [1, 2, 4],
+            [2, 3, 4],
+            [0, 3, 4],
+            [0, 1, 2],
+            [0, 2, 3],
+        ]
+        .into_iter()
+        .map(|f| (f, NONE))
+        .collect();
+        let fill = [[0, 1, 2, 4], [0, 2, 3, 4]];
+        assert!(closes(&fill, &hole));
+        assert!(!closes(&fill[..1], &hole));
+        assert!(!closes(&[fill[0], fill[1], [0, 1, 3, 4]], &hole));
     }
 
     /// Removing points and adding others makes the tetrahedralization made

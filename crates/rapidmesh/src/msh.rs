@@ -450,7 +450,6 @@ fn build(raw: Raw) -> std::result::Result<Mesh, String> {
         point_class,
         curve_edges: lines,
         periodic_points: Vec::new(),
-        contact_faces: Vec::new(),
     };
     let quality = quality_stats(&inner);
     Ok(Mesh::new(inner, quality, labels, Run::default(), None))

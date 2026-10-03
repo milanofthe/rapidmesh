@@ -161,10 +161,6 @@ pub(crate) fn finish_classified(
 ) -> TetMesh {
     use rapidmesh_exact::log as rmlog;
     let (plc, brep) = (&model.plc, &model.brep);
-    // The classes as meshed: the finish gives volume points on one patch
-    // that patch, which the contact wedges must not see.
-    let classes = c.classes.clone();
-    let classes = &classes;
     let t = rapidmesh_exact::clock::Instant::now();
     let shape = BrepShape::new(brep);
     rmlog::stage("finish.shape", t.elapsed().as_secs_f64());
@@ -198,15 +194,10 @@ pub(crate) fn finish_classified(
     rmlog::stat("finish.improve_moves", im.moves as f64);
     rmlog::stat("finish.improve_bad_before", im.bad_before as f64);
     rmlog::stat("finish.improve_bad_after", im.bad_after as f64);
-    let t = rapidmesh_exact::clock::Instant::now();
-    let (filled, fill_faces) = crate::finish::contact::fill(&mut c, brep, classes);
-    rmlog::stat("finish.contact_tets", filled as f64);
-    rmlog::stage("finish.contact", t.elapsed().as_secs_f64());
     // No verification here: `Mesh::diagnostics` checks conformity on
     // demand.
     let t = rapidmesh_exact::clock::Instant::now();
     let mut mesh = to_tet_mesh(&c, plc, brep);
-    mesh.contact_faces = fill_faces;
     mesh.periodic_points = periodic_points(&mesh, &params.periodic);
     rmlog::stage("finish.output", t.elapsed().as_secs_f64());
     mesh
@@ -253,7 +244,6 @@ fn to_tet_mesh(c: &Complex, plc: &TaggedPlc, brep: &Brep) -> TetMesh {
             })
             .collect(),
         periodic_points: Vec::new(),
-        contact_faces: Vec::new(),
     }
 }
 

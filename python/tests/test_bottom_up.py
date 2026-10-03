@@ -124,3 +124,28 @@ def test_periodic_sides_carry_the_same_triangles():
     left, right = side(0.0, (0, 0, 0)), side(2.0, (2.0, 0, 0))
     assert left and left == right
     assert m.diagnostics["watertight"]
+
+
+def test_touching_bodies_keep_their_material():
+    """Two cylinders touching along a line: no volume between them, so the
+    tets of the wedge around the contact stay in the region around (flat
+    ones are expected there); each cylinder keeps its own volume and the
+    contact line is no leak."""
+    import math
+
+    g = rm.Geometry(maxh=0.25)
+    g.box(3, 3, 2, position=(-1.5, -1.5, 0))
+    g.cylinder(0.5, 2, position=(-0.5, 0, 0), maxh=0.12)
+    g.cylinder(0.5, 2, position=(0.5, 0, 0), maxh=0.12)
+    m = g.mesh()
+    p, t, r = np.asarray(m.points), np.asarray(m.tets, np.int64), np.asarray(m.tet_regions)
+    x = p[t]
+    v = np.abs(np.einsum("ij,ij->i", np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0]), x[:, 3] - x[:, 0])) / 6
+    c = x.mean(1)
+    exact = math.pi * 0.25 * 2
+    for region, cx in ((2, -0.5), (3, 0.5)):
+        k = r == region
+        assert abs(v[k].sum() / exact - 1) < 0.02
+        assert (np.hypot(c[k, 0] - cx, c[k, 1]) < 0.53).all()
+    d = m.diagnostics
+    assert d["watertight"] and d["n_loose_faces"] == 0

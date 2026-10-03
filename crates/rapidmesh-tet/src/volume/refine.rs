@@ -147,8 +147,10 @@ pub fn refine(
         // the size (under a ridge of two faces, or a cap of two triangles,
         // the centroid lies on them), else the centroid.
         let tv = m.t.tets[t as usize];
-        // A flat tet between two other regions (a contact wedge) is left
-        // to the contact fill.
+        // A flat tet between two other regions (where two bodies touch,
+        // the region between them narrows to nothing) stays as it is:
+        // refining a wedge that closes would not end, and its flat tets
+        // keep the material of the region they lie in.
         let mut others: Vec<u32> = FACE
             .iter()
             .filter_map(|f| {
@@ -316,7 +318,8 @@ impl Mesh {
 
     /// Inserts `c` into the cavity grown from `home` through the faces that
     /// are no constraints; none (and nothing changed) when a corner of the
-    /// cavity lies within `gap` of it or the cavity is not star-shaped.
+    /// cavity lies within `gap` of it, the cavity is not star-shaped or it
+    /// holds both sides of a constraint.
     fn insert(&mut self, home: u32, c: P3, gap: f64, least: f64) -> Option<Vec<u32>> {
         let p = self.pts.len() as u32;
         self.pts.push(c);
@@ -356,12 +359,21 @@ impl Mesh {
             }
         }
         // Every boundary face must see the new point strictly from inside,
-        // and no corner may crowd it.
+        // and no corner may crowd it. A constraint between two tets of the
+        // cavity (it grew round the open rim of a sheet inside the region,
+        // onto both sides of a face) would vanish: no point then.
         let mut boundary: Vec<(u32, usize)> = Vec::new();
         for &t in &cavity {
             for i in 0..4 {
                 let nb = self.t.nbr[t as usize][i];
                 if nb != NONE && self.t.mark[(nb >> 2) as usize] == epoch {
+                    if self.is_constraint(self.face(t, i)) {
+                        for &u in &cavity {
+                            self.t.mark[u as usize] = 0;
+                        }
+                        self.pts.pop();
+                        return None;
+                    }
                     continue;
                 }
                 let f = self.face(t, i).map(|v| self.p(v));

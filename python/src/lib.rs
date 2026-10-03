@@ -1001,6 +1001,7 @@ py_mesh!(PyMesh {
         d.set_item("max_radius_edge", mq.max_radius_edge)?;
         d.set_item("watertight", q.watertight)?;
         d.set_item("n_nonmanifold_edges", q.n_nonmanifold_edges)?;
+        d.set_item("n_loose_faces", q.n_loose_faces)?;
         d.set_item("n_straddlers", q.n_straddlers)?;
         d.set_item("n_bridge_faces", q.n_bridge_faces)?;
         d.set_item("max_surface_deviation", q.max_surface_deviation)?;

@@ -45,6 +45,11 @@ pub enum DefectKind {
     /// tagged with the wrong surface. `value` = the centroid distance over
     /// the face's longest edge (infinite if the surface has no facet).
     Mislabeled,
+    /// A face with a region on a side that is no face of a tet of that
+    /// region: an interface or sheet the tets there do not have, so it is
+    /// not embedded in the volume mesh. `value` = the tets of its regions
+    /// that have it (it needs one per side, a sheet two).
+    LooseFace,
 }
 
 impl DefectKind {
@@ -59,6 +64,7 @@ impl DefectKind {
             DefectKind::Excess => "excess",
             DefectKind::FeatureMissed => "feature_missed",
             DefectKind::Mislabeled => "mislabeled",
+            DefectKind::LooseFace => "loose_face",
         }
     }
 }
@@ -84,6 +90,9 @@ pub struct MeshDiagnostics {
     /// Boundary faces bridging far off every analytic surface (see
     /// [`DefectKind::BridgeFace`]).
     pub n_bridge_faces: usize,
+    /// Faces the tets of their regions do not have (see
+    /// [`DefectKind::LooseFace`]).
+    pub n_loose_faces: usize,
     /// Largest distance of a curved boundary face's centroid from its analytic
     /// surface (the chord sagitta -- the realised geometric accuracy vs `tol`).
     pub max_surface_deviation: f64,
@@ -134,9 +143,18 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             }
         }
     }
+    // Where two bodies touch along a curve, the region around them has four
+    // faces at it, two of each body: the geometry pinches there (a contact
+    // has no volume between), no leak. Odd counts are leaks, and four faces
+    // off every curve are a fold.
+    let on_curve: rustc_hash::FxHashSet<(usize, usize)> = mesh
+        .curve_edges
+        .iter()
+        .map(|c| (c.v[0].min(c.v[1]), c.v[0].max(c.v[1])))
+        .collect();
     let mut nm: rustc_hash::FxHashMap<(usize, usize), u32> = rustc_hash::FxHashMap::default();
     for (&(_, a, b), &cnt) in &region_edge {
-        if cnt != 2 {
+        if cnt != 2 && !(cnt == 4 && on_curve.contains(&(a, b))) {
             let e = nm.entry((a, b)).or_insert(0);
             *e = (*e).max(cnt);
         }
@@ -150,6 +168,70 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             pos: centroid(&[pt(a), pt(b)]),
             value: cnt as f64,
         });
+    }
+
+    // ---- conformity: every face is a face of the tets on its sides --------
+    // A face between regions a and b needs a tet of a and one of b on it; a
+    // sheet inside region r two tets of r; a face on the outside (region 0)
+    // one tet of the region on its other side. Only the faces are indexed,
+    // the tets looked up against them.
+    let key = |t: [usize; 3]| {
+        let mut k = t;
+        k.sort_unstable();
+        k
+    };
+    let face_of: rustc_hash::FxHashMap<[usize; 3], usize> = mesh
+        .faces
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (key(f.tri), i))
+        .collect();
+    // A triangle listed twice, with a region on both (a | b and b | c): b has
+    // no thickness there (one body cut down to a face of another), so it
+    // needs no tet on it.
+    let mut listed: rustc_hash::FxHashMap<[usize; 3], Vec<usize>> =
+        rustc_hash::FxHashMap::default();
+    for (i, f) in mesh.faces.iter().enumerate() {
+        listed.entry(key(f.tri)).or_default().push(i);
+    }
+    let flat = |i: usize, r: rapidmesh_geom::RegionTag| {
+        listed[&key(mesh.faces[i].tri)]
+            .iter()
+            .any(|&j| j != i && mesh.faces[j].regions.contains(&r))
+    };
+    // The tets of each side's region on each face (a sheet counts both on
+    // its first side).
+    let mut held: Vec<[u32; 2]> = vec![[0, 0]; mesh.faces.len()];
+    for (t, tv) in mesh.tets.iter().enumerate() {
+        for f in crate::simplex::TET_FACES {
+            if let Some(&i) = face_of.get(&key(f.map(|j| tv[j]))) {
+                let r = mesh.tet_regions[t];
+                let [a, b] = mesh.faces[i].regions;
+                if r == a {
+                    held[i][0] += 1;
+                } else if r == b {
+                    held[i][1] += 1;
+                }
+            }
+        }
+    }
+    let mut n_loose = 0usize;
+    for (i, f) in mesh.faces.iter().enumerate() {
+        let [a, b] = f.regions;
+        let [ha, hb] = held[i];
+        let loose = if a == b {
+            a.0 != 0 && ha < 2
+        } else {
+            (a.0 != 0 && ha == 0 && !flat(i, a)) || (b.0 != 0 && hb == 0 && !flat(i, b))
+        };
+        if loose {
+            n_loose += 1;
+            defects.push(Defect {
+                kind: DefectKind::LooseFace,
+                pos: centroid(&f.tri.map(pt)),
+                value: (ha + hb) as f64,
+            });
+        }
     }
 
     // ---- conformity: straddlers + surface deviation (curved faces) --------
@@ -172,19 +254,14 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
             .map(|s| dist(q, s.closest(q).0))
             .fold(f64::INFINITY, f64::min)
     };
-    // A face closing a filled contact wedge spans the wedge by design.
-    let contact: rustc_hash::FxHashSet<usize> = mesh.contact_faces.iter().copied().collect();
     // Per curved face: its corners, longest edge, the largest distance of a
     // corner and of its centroid from the nearest surface.
     let offs: Vec<Option<([V3; 3], f64, f64, f64)>> = mesh
         .faces
         .par_iter()
-        .enumerate()
-        .map(|(fi, f)| {
+        .map(|f| {
             let kind = &mesh.surfaces[f.surface as usize];
-            if matches!(kind, SurfaceKind::Plane { .. } | SurfaceKind::Facets)
-                || curved.is_empty()
-                || contact.contains(&fi)
+            if matches!(kind, SurfaceKind::Plane { .. } | SurfaceKind::Facets) || curved.is_empty()
             {
                 return None; // planar faces are exact; deviation is 0
             }
@@ -232,6 +309,7 @@ pub fn diagnose(mesh: &TetMesh) -> MeshDiagnostics {
         n_nonmanifold_edges: n_nonmanifold,
         n_straddlers,
         n_bridge_faces,
+        n_loose_faces: n_loose,
         max_surface_deviation: max_dev,
         defects,
     }

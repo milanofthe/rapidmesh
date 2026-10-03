@@ -223,6 +223,166 @@ impl Curve {
     }
 }
 
+/// A swept surface of the file as one the model knows, and whether its
+/// normal runs against the swept one's (the faces on it then turn).
+pub struct Swept {
+    pub surface: Surface,
+    pub flipped: bool,
+}
+
+/// The surface `profile` sweeps turning about the axis through `o` along
+/// `axis` (SURFACE_OF_REVOLUTION, its normal the turn's direction crossed
+/// with the profile's): a line in a plane of the axis sweeps a cylinder, a
+/// cone or a plane, a circle there a torus or a sphere, a B-spline the
+/// rational B-spline surface of the turn. `None` for any other.
+pub fn revolved(profile: &Curve, o: P3, axis: P3) -> Option<Swept> {
+    let a = normalize(axis);
+    let foot = |p: P3| add(o, scale(a, dot(sub(p, o), a)));
+    let surface = match profile {
+        Curve::Line { p, d } => {
+            let e = sub(*p, foot(*p));
+            let (along, across) = (dot(*d, a), len(cross(*d, a)));
+            // A line off the planes of the axis sweeps a hyperboloid.
+            if dot(cross(*d, a), sub(*p, o)).abs() > 1e-9 * len(*d) * (1.0 + len(sub(*p, o))) {
+                return None;
+            }
+            if across <= 1e-12 * len(*d) {
+                Surface::Cylinder(Axes::new(foot(*p), a, Some(e)), len(e))
+            } else if along.abs() <= 1e-12 * len(*d) {
+                Surface::Plane(Axes::new(foot(*p), a, None))
+            } else {
+                let out = if len(e) > 0.0 {
+                    normalize(e)
+                } else {
+                    normalize(sub(*d, scale(a, along)))
+                };
+                let semi = (dot(*d, out) / along).atan();
+                Surface::Cone(Axes::new(foot(*p), a, Some(out)), len(e), semi)
+            }
+        }
+        Curve::Circle { f, r } => {
+            if dot(f.z, a).abs() > 1e-9 || dot(sub(o, f.o), f.z).abs() > 1e-9 * (1.0 + *r) {
+                return None;
+            }
+            let e = sub(f.o, foot(f.o));
+            if len(e) <= 1e-12 * r {
+                Surface::Sphere(Axes::new(foot(f.o), a, None), *r)
+            } else {
+                Surface::Torus(Axes::new(foot(f.o), a, Some(e)), len(e), *r)
+            }
+        }
+        Curve::Spline(c) => {
+            // The turn as a rational quadratic through nine points a
+            // quarter turn apart (Piegl and Tiller, A8.1), per control.
+            let h = std::f64::consts::FRAC_1_SQRT_2;
+            let nv = c.ctrl.len();
+            let (mut ctrl, mut weights) = (vec![[0.0; 3]; 9 * nv], vec![0.0; 9 * nv]);
+            for (j, (&q, &w)) in c.ctrl.iter().zip(&c.weights).enumerate() {
+                let base = foot(q);
+                let x = sub(q, base);
+                let y = cross(a, x);
+                for i in 0..9 {
+                    let t = i as f64 * std::f64::consts::FRAC_PI_4;
+                    let (k, wk) = if i % 2 == 0 { (1.0, 1.0) } else { (1.0 / h, h) };
+                    ctrl[i * nv + j] =
+                        add(base, scale(add(scale(x, t.cos()), scale(y, t.sin())), k));
+                    weights[i * nv + j] = w * wk;
+                }
+            }
+            let turn = [
+                0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+            ]
+            .map(|k| k * TAU)
+            .to_vec();
+            let s = NurbsSurface::try_new(
+                [2, c.degree],
+                [turn, c.knots.clone()],
+                [9, nv],
+                ctrl,
+                weights,
+            )
+            .ok()?;
+            Surface::Spline(Arc::new(s))
+        }
+        _ => return None,
+    };
+    // The normal at a point of the profile off the axis: the turn's
+    // direction there crossed with the profile's.
+    let at = |t: f64| {
+        let (p, q) = (profile.eval(t), profile.eval(t + 1e-6));
+        (p, cross(cross(a, sub(p, foot(p))), sub(q, p)))
+    };
+    Some(oriented(surface, at, profile_probes(profile)))
+}
+
+/// The surface `profile` sweeps moving along `d` (SURFACE_OF_LINEAR_EXTRUSION,
+/// its normal the profile's direction crossed with `d`): a line sweeps a
+/// plane, a circle about `d` a cylinder, a B-spline the B-spline surface of
+/// the sweep. `None` for any other.
+pub fn extruded(profile: &Curve, d: P3) -> Option<Swept> {
+    let surface = match profile {
+        Curve::Line { p, d: along } => {
+            let n = cross(*along, d);
+            if len(n) <= 1e-12 * len(*along) * len(d) {
+                return None;
+            }
+            Surface::Plane(Axes::new(*p, n, Some(*along)))
+        }
+        Curve::Circle { f, r } if len(cross(f.z, normalize(d))) <= 1e-9 => {
+            Surface::Cylinder(Axes::new(f.o, normalize(d), Some(f.x)), *r)
+        }
+        Curve::Spline(c) => {
+            let nu = c.ctrl.len();
+            let mut ctrl = Vec::with_capacity(2 * nu);
+            let mut weights = Vec::with_capacity(2 * nu);
+            for (&q, &w) in c.ctrl.iter().zip(&c.weights) {
+                ctrl.extend([q, add(q, d)]);
+                weights.extend([w, w]);
+            }
+            let s = NurbsSurface::try_new(
+                [c.degree, 1],
+                [c.knots.clone(), vec![0.0, 0.0, 1.0, 1.0]],
+                [nu, 2],
+                ctrl,
+                weights,
+            )
+            .ok()?;
+            Surface::Spline(Arc::new(s))
+        }
+        _ => return None,
+    };
+    let at = |t: f64| {
+        let (p, q) = (profile.eval(t), profile.eval(t + 1e-6));
+        (p, cross(sub(q, p), d))
+    };
+    Some(oriented(surface, at, profile_probes(profile)))
+}
+
+/// Parameters along a profile to compare normals at: within a spline's
+/// domain, a line's vector (from its point on, where a profile starts),
+/// all round a conic.
+fn profile_probes(profile: &Curve) -> Vec<f64> {
+    let (lo, hi) = match profile {
+        Curve::Spline(s) => s.domain(),
+        Curve::Line { .. } => (0.0, 1.0),
+        _ => (0.0, TAU),
+    };
+    (1..8).map(|i| lo + (hi - lo) * i as f64 / 8.0).collect()
+}
+
+/// `surface` with whether its normal runs against the swept one, `at(t)`
+/// a point of the profile and the swept normal there: compared where that
+/// normal is longest.
+fn oriented(surface: Surface, at: impl Fn(f64) -> (P3, P3), probes: Vec<f64>) -> Swept {
+    let (p, n) = probes
+        .into_iter()
+        .map(at)
+        .max_by(|x, y| len(x.1).total_cmp(&len(y.1)))
+        .expect("probes");
+    let flipped = dot(surface.normal(surface.param(p)), n) < 0.0;
+    Swept { surface, flipped }
+}
+
 /// The parameter nearest from `t` of a plane curve whose offset from the
 /// point is `r(t)`, with first and second derivatives `d1`, `d2`: Newton
 /// on half the squared distance.
@@ -441,6 +601,16 @@ impl Surface {
         }
     }
 
+    /// The normal at `uv` (unit, from the parameters' directions by
+    /// differences): the first parameter's direction crossed with the
+    /// second's.
+    pub fn normal(&self, uv: [f64; 2]) -> P3 {
+        let h = 1e-6;
+        let s_u = sub(self.eval([uv[0] + h, uv[1]]), self.eval([uv[0] - h, uv[1]]));
+        let s_v = sub(self.eval([uv[0], uv[1] + h]), self.eval([uv[0], uv[1] - h]));
+        normalize(cross(s_u, s_v))
+    }
+
     /// The carrier for the model.
     pub fn kind(&self) -> SurfaceKind {
         match self {
@@ -517,6 +687,88 @@ mod tests {
                     dist(s.eval(back), s.eval(uv)) < 1e-9,
                     "{s:?} {uv:?} {back:?}"
                 );
+            }
+        }
+    }
+
+    /// Points a profile sweeps turning about an axis lie on the surface it
+    /// reads as, the normals alike once a flipped one turns (but on a
+    /// sphere: a whole circle about its centre covers it twice, facing
+    /// both ways, and the faces on it settle which).
+    #[test]
+    fn swept_profiles_read_as_the_surfaces_they_sweep() {
+        let (o, a) = ([1.0, 0.5, 0.0], normalize([0.0, 0.2, 1.0]));
+        let up = Axes::new(
+            [1.0, 0.5, 0.0],
+            cross(a, [1.0, 0.0, 0.0]),
+            Some([1.0, 0.0, 0.0]),
+        );
+        let profiles = [
+            Curve::Line {
+                p: [2.0, 0.5, 0.0],
+                d: a,
+            },
+            Curve::Line {
+                p: [2.0, 0.5, 0.0],
+                d: add(a, [0.5, 0.0, 0.0]),
+            },
+            Curve::Line {
+                p: [2.0, 0.5, 0.0],
+                d: [-1.0, 0.0, 0.0],
+            },
+            Curve::Circle {
+                f: Axes {
+                    z: scale(up.z, -1.0),
+                    y: scale(up.y, -1.0),
+                    ..up
+                },
+                r: 0.5,
+            },
+            Curve::Circle {
+                f: Axes {
+                    o: [2.5, 0.5, 0.0],
+                    ..up
+                },
+                r: 0.5,
+            },
+            Curve::Spline(NurbsCurve::<3> {
+                degree: 2,
+                knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                ctrl: vec![[2.0, 0.5, 0.0], [3.0, 0.7, 1.0], [2.0, 0.9, 2.0]],
+                weights: vec![1.0, 0.7, 1.0],
+            }),
+        ];
+        for c in &profiles {
+            let swept = revolved(c, o, a).unwrap_or_else(|| panic!("{c:?}"));
+            for t in [0.1, 0.4, 0.8] {
+                for turn in [0.3f64, 2.0, 4.5] {
+                    // Turned about the axis by Rodrigues' formula.
+                    let q = sub(c.eval(t), o);
+                    let (s, k) = turn.sin_cos();
+                    let r = |q: P3| {
+                        add(
+                            add(scale(q, k), scale(cross(a, q), s)),
+                            scale(a, dot(a, q) * (1.0 - k)),
+                        )
+                    };
+                    let p = add(o, r(q));
+                    let back = swept.surface.eval(swept.surface.param(p));
+                    assert!(
+                        dist(back, p) < 1e-6,
+                        "{c:?}: {p:?} off by {}",
+                        dist(back, p)
+                    );
+                    let d = sub(c.eval(t + 1e-6), c.eval(t));
+                    let n = cross(cross(a, sub(p, o)), r(d));
+                    let sphere = matches!(swept.surface, Surface::Sphere(..));
+                    if !sphere && len(cross(a, sub(p, o))) > 1e-6 {
+                        let mut m = swept.surface.normal(swept.surface.param(p));
+                        if swept.flipped {
+                            m = scale(m, -1.0);
+                        }
+                        assert!(dot(m, normalize(n)) > 0.99, "{c:?}: normal {m:?} {n:?}");
+                    }
+                }
             }
         }
     }

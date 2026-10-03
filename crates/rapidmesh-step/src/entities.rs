@@ -3,7 +3,7 @@
 //! structure; whatever reads the model after that sees Rust types, and an
 //! entity that does not decode is named with the reason.
 
-use crate::geometry::{Axes, Curve, Curve2, Surface, P3};
+use crate::geometry::{extruded, revolved, Axes, Curve, Curve2, Surface, P3};
 use crate::part21::{Exchange, Record, Value};
 use rapidmesh_geom::vec3::{bbox, normalize, scale};
 use rapidmesh_geom::NurbsSurface;
@@ -200,6 +200,9 @@ struct Decoder<'a> {
     surface_of: FxHashMap<u32, usize>,
     edge_of: FxHashMap<u32, usize>,
     face_of: FxHashMap<u32, usize>,
+    /// The surfaces whose normal runs against the file's (swept ones read
+    /// as a torus, say): the faces on them turn.
+    flipped: rustc_hash::FxHashSet<usize>,
 }
 
 impl<'a> Decoder<'a> {
@@ -217,6 +220,7 @@ impl<'a> Decoder<'a> {
             surface_of: FxHashMap::default(),
             edge_of: FxHashMap::default(),
             face_of: FxHashMap::default(),
+            flipped: Default::default(),
         }
     }
 
@@ -436,6 +440,33 @@ impl<'a> Decoder<'a> {
             || self.x.kind(id) == Some("B_SPLINE_SURFACE_WITH_KNOTS")
         {
             self.spline_surface(id)?
+        } else if let Some(name @ ("SURFACE_OF_REVOLUTION" | "SURFACE_OF_LINEAR_EXTRUSION")) =
+            self.x.kind(id)
+        {
+            let r = self.any(id)?;
+            let profile = self.curve3(r.refr(1)?)?;
+            let swept = if name == "SURFACE_OF_REVOLUTION" {
+                let a = self.rec(r.refr(2)?, "AXIS1_PLACEMENT")?;
+                let o = self.point(a.refr(1)?)?;
+                let axis = match a.get(2)?.as_ref() {
+                    Some(d) => self.direction(d)?,
+                    None => [0.0, 0.0, 1.0],
+                };
+                revolved(&profile, o, axis)
+            } else {
+                let v = self.rec(r.refr(2)?, "VECTOR")?;
+                extruded(
+                    &profile,
+                    scale(normalize(self.direction(v.refr(1)?)?), v.num(2)?),
+                )
+            };
+            let Some(swept) = swept else {
+                return fail(id, format!("{name} of this profile is not read"));
+            };
+            if swept.flipped {
+                self.flipped.insert(self.m.surfaces.len());
+            }
+            swept.surface
         } else {
             let r = self.any(id)?;
             let frame = self.placement(r.refr(1)?)?;
@@ -584,7 +615,7 @@ impl<'a> Decoder<'a> {
             .rec(id, "ADVANCED_FACE")
             .or_else(|_| self.rec(id, "FACE_SURFACE"))?;
         let surface = self.surface(r.refr(2)?)?;
-        let same_sense = r.flag(3);
+        let same_sense = r.flag(3) != self.flipped.contains(&surface);
         let mut bounds = Vec::new();
         for b in r.refs(1)? {
             let fb = self
@@ -617,6 +648,21 @@ impl<'a> Decoder<'a> {
         Ok(i)
     }
 
+    /// A copy of face `i` facing the other way: its normal against its
+    /// surface's where it was with it, its loops run backwards.
+    fn reversed(&mut self, i: usize) -> usize {
+        let mut f = self.m.faces[i].clone();
+        f.same_sense = !f.same_sense;
+        for b in &mut f.bounds {
+            if let Bound::Edges(edges) = b {
+                edges.reverse();
+                edges.iter_mut().for_each(|e| e.1 = !e.1);
+            }
+        }
+        self.m.faces.push(f);
+        self.m.faces.len() - 1
+    }
+
     /// Every solid: its faces, its name, where the assembly puts it.
     fn solids(&mut self) -> R<()> {
         let names = self.product_names();
@@ -635,11 +681,15 @@ impl<'a> Decoder<'a> {
             }
             let mut faces = Vec::new();
             for s in shells {
-                let shell = self
-                    .rec(s, "CLOSED_SHELL")
-                    .or_else(|_| self.rec(s, "ORIENTED_CLOSED_SHELL"))?;
-                for f in shell.refs(1)? {
-                    faces.push(self.face(f)?);
+                // An oriented shell (the void of a BREP_WITH_VOIDS) names a
+                // closed shell and whether it keeps its orientation.
+                let (s, keep) = match self.rec(s, "ORIENTED_CLOSED_SHELL") {
+                    Ok(o) => (o.refr(2)?, o.flag(3)),
+                    Err(_) => (s, true),
+                };
+                for f in self.rec(s, "CLOSED_SHELL")?.refs(1)? {
+                    let f = self.face(f)?;
+                    faces.push(if keep { f } else { self.reversed(f) });
                 }
             }
             let rep = self.representation_of(id);

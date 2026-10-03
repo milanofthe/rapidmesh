@@ -34,13 +34,15 @@ spends about 1.2 times as many tets.
 
 ![rapidmesh against gmsh: smallest dihedral angle, meshing time and tet count per geometry](docs/figures/vs_gmsh.svg)
 
-**Validation corpus.** 224 geometries, 200 of them volume meshes, from single
-primitives to RF assemblies, CAD parts from STEP files, scans and chip
-layouts. 222 mesh; the other two (a scan and a CAD part with features far
-below the size) stop with a `MeshError` that says where. All 198 volume
-meshes are watertight and 178 free of defects (slivers, gaps, faces off the
-input). The 15 below 10 degrees are stacks of layers far thinner than the
-size, CAD parts with features far below the size, and sharp wedges.
+**Validation corpus.** 235 geometries, 211 of them volume meshes, from single
+primitives to RF assemblies, CAD parts and vendor component models from STEP
+files, scans and chip layouts. 233 mesh; the other two (a scan and a CAD part
+with features far below the size) stop with a `MeshError` that says where.
+208 of the 209 volume meshes are watertight (the one that is not has a wire
+touching a face at a single point) and 183 free of defects (slivers, gaps,
+faces off the input). The 21 below 10 degrees are stacks of layers far
+thinner than the size, CAD parts and vendor models with features far below
+the size, and sharp wedges.
 
 **Geometric error.** On the NIST test parts and four CAD parts read from STEP,
 `geom_error=1e-2, order=2` takes about as many tets as the default chord
@@ -128,8 +130,9 @@ See [python/README.md](python/README.md) for the Python API.
 
 1. **Geometry**: primitives (box, cylinder, sphere, cone, torus, prism,
    sweep, helix, loft), fillets and chamfers, sheets, STEP files (AP203 and
-   AP214: planes, quadrics, tori and B-spline surfaces) and STL/OBJ imports
-   split at creases.
+   AP214: planes, quadrics, tori, surfaces of revolution and extrusion and
+   B-spline surfaces; assemblies of many bodies, solids with voids) and
+   STL/OBJ imports split at creases.
 2. **Exact CSG**: an arrangement of the input surfaces with exact predicates
    and no float snapping yields a non-manifold B-rep with exactly conforming
    material interfaces.

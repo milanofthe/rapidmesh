@@ -1,11 +1,9 @@
 //! The finish of a raw mesh ([`brep::finish_classified`]): a tetrahedral
 //! complex (tets labelled by region, boundary and sheet faces, protected
-//! curve segments) whose boundary [`snap`] moves onto the analytic carriers,
-//! whose worst tets [`improve`] repairs locally and whose contact wedges
-//! [`contact`] fills.
+//! curve segments) whose boundary [`snap`] moves onto the analytic carriers
+//! and whose worst tets [`improve`] repairs locally.
 
 pub(crate) mod brep;
-pub(crate) mod contact;
 pub(crate) mod improve;
 pub(crate) mod periodic;
 pub(crate) mod snap;

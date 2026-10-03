@@ -120,26 +120,11 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
             .collect::<Vec<_>>(),
     );
     let mesh_long: Vec<f64> = mtris.iter().map(|t| longest(corners(&mpt, t))).collect();
-    // The faces closing a filled contact wedge are off the geometry by
-    // design: not measured against it.
-    let sorted = |t: [usize; 3]| {
-        let mut k = t;
-        k.sort_unstable();
-        k
-    };
-    let contact: FxHashSet<[usize; 3]> = mesh
-        .contact_faces
-        .iter()
-        .filter_map(|&i| mesh.faces.get(i).map(|f| sorted(f.tri)))
-        .collect();
     // Per face: its area, its deviation (relative to its size) and where.
     let faces: Vec<Option<(f64, f64, V3)>> = mtris
         .par_iter()
         .zip(&mesh_long)
         .map(|(t, &l)| {
-            if contact.contains(&sorted(*t)) {
-                return None;
-            }
             let v = corners(&mpt, t);
             let c = centroid(&v);
             let d = plc_bvh
@@ -185,9 +170,6 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
         .faces
         .par_iter()
         .map(|sf| {
-            if contact.contains(&sorted(sf.tri)) {
-                return None;
-            }
             let v = corners(&mpt, &sf.tri);
             let (a, l) = (area(v), longest(v));
             let c = centroid(&v);
@@ -218,33 +200,10 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
             .map(|t| tri(corners(&mpt, t)))
             .collect::<Vec<_>>(),
     );
-    // A point of the geometry within a face's size of a face closing a
-    // filled contact wedge lies in or at the fill (the wedge is material
-    // now): not measured.
-    let fill_faces: Vec<[usize; 3]> = mesh
-        .contact_faces
-        .iter()
-        .filter_map(|&i| mesh.faces.get(i).map(|f| f.tri))
-        .collect();
-    let fill_long: Vec<f64> = fill_faces
-        .iter()
-        .map(|t| longest(corners(&mpt, t)))
-        .collect();
-    let fill_bvh = FacetBvh::build(
-        &fill_faces
-            .iter()
-            .map(|t| tri(corners(&mpt, t)))
-            .collect::<Vec<_>>(),
-    );
-    let in_fill = |p: V3| {
-        fill_bvh
-            .nearest(p)
-            .is_some_and(|(fi, d)| d <= fill_long[fi as usize])
-    };
     let local = |p: V3| -> Option<f64> {
         let (fi, d) = mesh_bvh.nearest(p)?;
         let l = mesh_long[fi as usize];
-        (l > 0.0 && !in_fill(p)).then(|| d / l)
+        (l > 0.0).then(|| d / l)
     };
     let step = sample_step(
         &mesh_long,
@@ -372,7 +331,7 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
                     continue;
                 };
                 let size = mesh_long[fi as usize];
-                if size <= 0.0 || in_fill(p) {
+                if size <= 0.0 {
                     continue;
                 }
                 let rel = seg_bvh.nearest_dist(p) / size;

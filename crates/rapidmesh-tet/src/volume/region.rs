@@ -75,7 +75,13 @@ pub fn check_keeping(b: &Boundary, brep: &Brep, r: u32, prev: Option<Kept>) -> (
                 new.len()
             ),
         );
-        let order = k.dt.update(&gone, &new)?;
+        let Some(order) = k.dt.update(&gone, &new) else {
+            rapidmesh_exact::log::debug(
+                "volume.check",
+                format!("region {r}: the kept tetrahedralization does not update, made afresh"),
+            );
+            return None;
+        };
         let mut pts: Vec<[f64; 3]> = order.iter().map(|&i| k.pts[i as usize]).collect();
         pts.extend(new);
         Some(Kept { pts, dt: k.dt })

@@ -4,10 +4,11 @@
 use num_rational::BigRational;
 use num_traits::Zero;
 use rapidmesh_csg::{arrange, boolean, BoolOp, Tri};
+use rapidmesh_exact::vector::Affine;
 use rapidmesh_exact::Point3;
 use rapidmesh_geom::{
-    cylinder, extrude_polygon, extrude_profile, frustum, mesh_solid, revolve, sheet_polygon,
-    sheet_rect, solid_box, sphere, triangulate_polygon, Faceted, ProfileEdge, SurfaceKind,
+    cylinder, extrude_polygon, extrude_profile, frustum, icosphere, mesh_solid, revolve,
+    sheet_polygon, sheet_rect, solid_box, triangulate_polygon, Faceted, ProfileEdge, Surface,
 };
 use rapidmesh_testutil::{assert_watertight, check_invariants, rat, volume6};
 
@@ -147,15 +148,15 @@ fn extruded_polygon_orientation_input_invariant() {
 
 #[test]
 fn frustum_and_cone_are_watertight() {
-    let f = frustum([0.0, 0.0, 0.0], [0.0, 0.5, 2.0], 1.0, 0.4, 12);
+    let f = frustum([0.0, 0.0, 0.0], [0.0, 0.5, 2.0], 1.0, 0.4, 12, 1);
     assert!(solid_volume6(&f) > BigRational::zero());
-    let cone = frustum([1.0, 2.0, 3.0], [1.0, 0.0, 0.0], 0.75, 0.0, 9);
+    let cone = frustum([1.0, 2.0, 3.0], [1.0, 0.0, 0.0], 0.75, 0.0, 9, 1);
     assert!(solid_volume6(&cone) > BigRational::zero());
 }
 
 #[test]
 fn sphere_watertight_with_sane_volume() {
-    let s = sphere([1.0, 2.0, 3.0], 2.0, 24, 12);
+    let s = icosphere([1.0, 2.0, 3.0], 2.0, 3);
     let v6 = solid_volume6(&s);
     let exact = 6.0 * 4.0 / 3.0 * std::f64::consts::PI * 8.0;
     // Inscribed polyhedron: below the smooth volume, but close.
@@ -346,7 +347,7 @@ fn loft_frustum_exact_volume() {
 #[test]
 fn mirrored_preserves_volume_and_orientation() {
     let f = rapidmesh_geom::wedge([1.0, 0.0, 0.0], 4.0, 2.0, 3.0, 1.0);
-    let m = f.mirrored([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let m = f.transformed(&Affine::mirror([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap());
     assert_eq!(solid_volume6(&m), rat(90.0));
 }
 
@@ -355,21 +356,21 @@ fn scaled_volume_and_surface_degradation() {
     let f = cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 12);
     let v0 = solid_volume6(&f);
     // Uniform: volume x 8, cylinder kind keeps a scaled radius.
-    let u = f.scaled([2.0, 2.0, 2.0], [0.0, 0.0, 0.0]);
+    let u = f.transformed(&Affine::stretch([0.0, 0.0, 0.0], [2.0, 2.0, 2.0]));
     assert_eq!(solid_volume6(&u), v0.clone() * rat(8.0));
     assert!(u.surfaces.iter().any(|s| matches!(
         s,
-        rapidmesh_geom::SurfaceKind::Cylinder { radius, .. } if (*radius - 2.0).abs() < 1e-12
+        Some(Surface::Cylinder { radius, .. }) if (*radius - 2.0).abs() < 1e-12
     )));
     // Non-uniform: volume x fx fy fz, curved kinds degrade to their facets.
-    let n = f.scaled([2.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    let n = f.transformed(&Affine::stretch([0.0, 0.0, 0.0], [2.0, 1.0, 1.0]));
     assert_eq!(solid_volume6(&n), v0 * rat(2.0));
-    assert!(n.surfaces.iter().all(|s| matches!(
-        s,
-        rapidmesh_geom::SurfaceKind::Plane { .. } | rapidmesh_geom::SurfaceKind::Facets
-    )));
+    assert!(n
+        .surfaces
+        .iter()
+        .all(|s| matches!(s, None | Some(Surface::Plane(_)))));
     // Negative single factor flips orientation; winding is corrected.
-    let r = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    let r = f.transformed(&Affine::stretch([0.0, 0.0, 0.0], [-1.0, 1.0, 1.0]));
     assert!(solid_volume6(&r) > BigRational::zero());
 }
 
@@ -495,11 +496,11 @@ fn box_flats_tile_six_faces() {
 
 #[test]
 fn frustum_caps_are_flats_barrel_is_not() {
-    let f = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.5, 16);
+    let f = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.5, 16, 1);
     assert_eq!(f.flats.len(), 2, "top and bottom caps");
     assert_flats_consistent(&f, true);
     // A cone has only the bottom cap.
-    let cone = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.0, 16);
+    let cone = frustum([0.0, 0.0, 0.0], [0.0, 0.0, 2.0], 1.0, 0.0, 16, 1);
     assert_eq!(cone.flats.len(), 1);
     assert_flats_consistent(&cone, true);
 }
@@ -555,23 +556,21 @@ fn sheets_and_disk_are_flats() {
 
 #[test]
 fn a_disk_declares_its_rim_circle() {
-    use rapidmesh_geom::CurveKind;
     let d = sheet_disk([1.0, 2.0, 3.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], 12);
     assert_eq!(d.curves.len(), 1);
     let c = &d.curves[0];
-    match c.kind {
-        CurveKind::Circle { center, radius, .. } => {
-            assert_eq!(center, [1.0, 2.0, 3.0]);
-            assert!((radius - 0.5).abs() < 1e-15);
-        }
-        _ => panic!("the rim of a round disk is a circle"),
-    }
+    let (center, r) = c
+        .curve
+        .as_circle()
+        .expect("the rim of a round disk is a circle");
+    assert_eq!(center, [1.0, 2.0, 3.0]);
+    assert!((r - 0.5).abs() < 1e-15);
     // closed on its first point, so the last segment is covered too
     assert_eq!(c.points.len(), 13);
     assert_eq!(c.points[0], c.points[12]);
     // radius vectors of different lengths: an ellipse
     let e = sheet_disk([0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.5, 0.0], 12);
-    assert!(matches!(e.curves[0].kind, CurveKind::Ellipse { .. }));
+    assert_eq!(e.curves[0].curve.name(), "ellipse");
 }
 
 #[test]
@@ -592,11 +591,11 @@ fn wedge_flats_consistent_through_transform() {
     // Transforms keep the flat polygons tiling their helper triangles; an f64
     // rotation rounds points fractionally off-plane, so coplanarity is checked
     // exactly only on the axis-built shape.
-    let t = f.rotated([0.0, 0.0, 0.0], [0.3, 0.4, 0.5], 0.7);
+    let t = f.transformed(&Affine::rotation([0.0, 0.0, 0.0], [0.3, 0.4, 0.5], 0.7).unwrap());
     assert_flats_consistent(&t, false);
-    let m = f.mirrored([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let m = f.transformed(&Affine::mirror([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap());
     assert_flats_consistent(&m, true);
-    let sc = f.scaled([-1.0, 1.0, 1.0], [0.0, 0.0, 0.0]);
+    let sc = f.transformed(&Affine::stretch([0.0, 0.0, 0.0], [-1.0, 1.0, 1.0]));
     assert_flats_consistent(&sc, true);
 }
 
@@ -608,16 +607,7 @@ fn volume(f: &Faceted) -> f64 {
 fn kinds(f: &Faceted) -> Vec<&'static str> {
     f.surfaces
         .iter()
-        .map(|k| match k {
-            SurfaceKind::Plane { .. } => "plane",
-            SurfaceKind::Facets => "facets",
-            SurfaceKind::Cylinder { .. } => "cylinder",
-            SurfaceKind::Cone { .. } => "cone",
-            SurfaceKind::Sphere { .. } => "sphere",
-            SurfaceKind::Torus { .. } => "torus",
-            SurfaceKind::Revolved { .. } => "revolved",
-            _ => "other",
-        })
+        .map(|k| k.as_ref().map_or("facets", Surface::name))
         .collect()
 }
 

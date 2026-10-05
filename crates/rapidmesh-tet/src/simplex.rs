@@ -2,7 +2,7 @@
 //! circumcenters and circumradii, the smallest dihedral of a tet and the
 //! smallest angle of a triangle, and a float ordered for the heaps.
 
-use rapidmesh_geom::vec3::{cross, dist, dot, len, sub, V3};
+use rapidmesh_exact::vector::{cross, dist, dot, len, sub, V3};
 use std::cmp::Ordering;
 
 /// The vertices of face `i` of a positive tet, turned so the tet's vertex
@@ -56,11 +56,38 @@ pub(crate) fn tet_volume(p: [V3; 4]) -> f64 {
     dot(sub(b, a), cross(sub(c, a), sub(d, a))).abs() / 6.0
 }
 
+/// A tet whose six times volume is below this share of its longest edge
+/// cubed is flat (its corners in one plane up to rounding).
+const FLAT_VOLUME: f64 = 1e-12;
+
 /// Smallest dihedral angle of a tet, in degrees (0 for a flat or
 /// degenerate tet): at each edge the angle between the two faces through
 /// it, from their outward normals (four cross products for the six edges),
 /// the arccosine of the largest cosine, so one `acos` per tet.
 pub(crate) fn tet_min_dihedral(p: [V3; 4]) -> f64 {
+    min_dihedral(p, false)
+}
+
+/// [`tet_min_dihedral`] of a tet positive by `orient3d` (its fourth corner
+/// below the plane of the first three), 0 for one that is not: its volume
+/// beyond the rounding of a flat one has the sign (the exact orientation
+/// then has it too).
+pub(crate) fn positive_min_dihedral(p: [V3; 4]) -> f64 {
+    min_dihedral(p, true)
+}
+
+fn min_dihedral(p: [V3; 4], positive: bool) -> f64 {
+    // Flat to rounding: the normals' sides below are the signs of rounding
+    // noise there, and could make a flat tet look a good one.
+    let l2 = (0..4)
+        .flat_map(|i| (i + 1..4).map(move |j| (i, j)))
+        .map(|(i, j)| dot(sub(p[i], p[j]), sub(p[i], p[j])))
+        .fold(0.0f64, f64::max);
+    let l3 = l2 * l2.sqrt();
+    let vol6 = dot(cross(sub(p[1], p[0]), sub(p[2], p[0])), sub(p[3], p[0]));
+    if !(vol6.abs() > FLAT_VOLUME * l3) || (positive && vol6 > 0.0) {
+        return 0.0;
+    }
     // The normal of the face opposite each corner, turned away from it.
     let mut n = [[0.0; 3]; 4];
     let mut len2 = [0.0; 4];
@@ -124,6 +151,26 @@ impl Ord for Ordered {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The corners of a wall's rectangle, flat but for rounding (the tet of
+    /// a chip layout's side wall): a dihedral angle of 0, not a good tet.
+    #[test]
+    fn a_tet_flat_to_rounding_has_no_angle() {
+        let p = [
+            [39.546225, -41.063945, 5.625],
+            [40.305085, -40.305085, 4.365],
+            [40.305085, -40.305085, 5.625],
+            [39.546225, -41.063945, 4.365],
+        ];
+        assert_eq!(tet_min_dihedral(p), 0.0);
+        let good = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        assert!(tet_min_dihedral(good) > 50.0);
+    }
 
     #[test]
     fn dihedral_of_known_tets() {

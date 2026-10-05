@@ -43,7 +43,7 @@ def main() -> None:
     # leading edge and coarsens the gentle aft, with vertices exactly on the
     # profile. Trailing edge is a flat blunt face.
     g = rm.Geometry(maxh=0.25)
-    g.airfoil_naca0012(chord=1.0, span=0.4, n_seg=140)
+    g.airfoil_naca0012(chord=1.0, span=0.4)
     write_obj(g.surface_mesh(), out / "naca0012.obj")
 
     print(f"\nOBJ files written to {out}")

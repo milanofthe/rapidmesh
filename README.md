@@ -20,40 +20,41 @@ it.
 
 ![Cutaways from the validation corpus: boolean difference, two-region via, nested regions, torus, cylinder union, capsule](docs/figures/gallery.png)
 
+![Cutaways of larger models: CAD parts and assemblies read from STEP files, multi-region RF structures and a scan](docs/figures/gallery_cad.png)
+
 More at [mesh.rapidpassives.org](https://mesh.rapidpassives.org).
 
 ## Benchmarks
 
-**Against gmsh.** Both mesh the same 27 geometries (primitives, booleans,
-multi-region assemblies and four CAD parts read from STEP files) at the same
-target size, gmsh with its default 3D algorithm and OpenCASCADE. rapidmesh
-has the larger smallest dihedral angle on all 27 (median 25 against 13.4
-degrees) and a tet below 10 degrees on one of them, gmsh on six. It is
-faster on 22, with a median meshing time of 0.44 times that of gmsh, and
-spends about 1.2 times as many tets.
+The figures are drawn from the saved benchmark runs (`report/bench/plots.py`,
+called by each benchmark when it saves), so they show the current state.
+
+**Against gmsh.** Both mesh the same geometries (primitives, booleans,
+multi-region assemblies, scans and CAD parts) at the same target size, gmsh
+with its default 3D algorithm and OpenCASCADE. Per geometry: the smallest
+dihedral angle, the meshing time and the tet count of each.
 
 ![rapidmesh against gmsh: smallest dihedral angle, meshing time and tet count per geometry](docs/figures/vs_gmsh.svg)
 
-**Validation corpus.** 235 geometries, 211 of them volume meshes, from single
-primitives to RF assemblies, CAD parts and vendor component models from STEP
-files, scans and chip layouts. 233 mesh; the other two (a scan and a CAD part
-with features far below the size) stop with a `MeshError` that says where.
-208 of the 209 volume meshes are watertight (the one that is not has a wire
-touching a face at a single point) and 183 free of defects (slivers, gaps,
-faces off the input). The 21 below 10 degrees are stacks of layers far
-thinner than the size, CAD parts and vendor models with features far below
-the size, and sharp wedges.
+**CAD parts from STEP files.** The NIST test parts, vendor component models
+and assemblies, each at a twenty-fifth of its diagonal, gmsh with curvature
+sizing down to an eighth of that and a minute per file at most.
 
-**Geometric error.** On the NIST test parts and four CAD parts read from STEP,
-`geom_error=1e-2, order=2` takes about as many tets as the default chord
-tolerance or fewer, and its largest volume error measured against
-OpenCASCADE drops from up to 6 % to 0.2 % at most, mostly a few hundredths of
-a percent; meshing takes the same time or less.
+![rapidmesh against gmsh on STEP files: smallest dihedral angle, meshing time and tet count per file](docs/figures/vs_gmsh_step.svg)
+
+**Validation corpus.** From single primitives to RF assemblies, CAD parts and
+vendor component models from STEP files, scans and chip layouts: meshing
+time over size, and the smallest dihedral angle of each volume mesh. The
+meshes below 10 degrees are stacks of layers far thinner than the size, CAD
+parts and vendor models with features far below the size, and sharp
+wedges. A geometry the mesher cannot handle stops with a `MeshError` that
+says where.
 
 ![meshing time over tet count and the smallest dihedral angle per mesh](docs/figures/corpus.svg)
 
-Large models are cut into blocks meshed in parallel: 2.75 million tets of
-tiled passive layouts take about 8 s on an Apple M3.
+Large models are cut into blocks meshed in parallel. A geometric error
+bound (`geom_error`) holds the volume of every region within a share of the
+true one, on flat or quadratic elements.
 
 ## Rust
 
@@ -138,13 +139,15 @@ See [python/README.md](python/README.md) for the Python API.
    material interfaces.
 3. **Surface mesh**: each edge is sampled once under a gradient-limited
    sizing field, and each face is meshed alone on its edges' samples, in a
-   chart of its surface. Planes are charts of their own. Cylinders, cones,
-   extrusions, tubes and slender tori are unrolled. Parts of spheres are
-   projected stereographically. Other faces get a height field, and faces no
-   chart covers (scans, closed B-spline bands) are remeshed on their facets.
-   The faces of a scan smaller than the size join their neighbours. Edges a
-   region's Delaunay tetrahedralization lacks are split until it has them.
-   Periodic faces are moved copies of their partners.
+   chart of its surface: planes in their own frame, surfaces of revolution
+   (cylinders, cones, spheres, tori, revolved profiles) in conformal
+   coordinates, extrusions and tubes unrolled, B-spline faces in their
+   parameters, mapped so the two directions keep in step. Faces no chart
+   takes (scans, B-spline faces whose parameter lines cross at a varying
+   slant) are remeshed on their facets, onto their carrier where they have
+   one. The faces of a scan smaller than the size join their neighbours.
+   Edges a region's Delaunay tetrahedralization lacks are split until it
+   has them. Periodic faces are moved copies of their partners.
 4. **Volume mesh**: each region is filled by its constrained Delaunay
    tetrahedralization and refined by size. Regions are labelled by
    construction, and a layer far thinner than the size takes flat tets

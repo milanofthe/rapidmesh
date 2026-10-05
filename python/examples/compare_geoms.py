@@ -119,13 +119,14 @@ def ensure_bunny_stl() -> Path:
 
 
 def _read_stl_arrays(path: Path):
-    """STL surface as ``(verts (n,3) float64, tris (m,3) int)``."""
-    import pyvista as pv
-
-    surf = pv.read(str(path)).triangulate().clean()
-    verts = np.asarray(surf.points, dtype=np.float64)
-    faces = surf.faces.reshape(-1, 4)[:, 1:]  # drop the leading "3" count
-    return verts, np.asarray(faces, dtype=np.int64)
+    """Binary STL surface as ``(verts (n,3) float64, tris (m,3) int)``, the
+    corners that coincide welded into one vertex."""
+    data = Path(path).read_bytes()
+    n = int.from_bytes(data[80:84], "little")
+    record = np.dtype([("normal", "<f4", 3), ("corners", "<f4", (3, 3)), ("attr", "<u2")])
+    corners = np.frombuffer(data, dtype=record, count=n, offset=84)["corners"]
+    verts, ids = np.unique(corners.reshape(-1, 3).astype(np.float64), axis=0, return_inverse=True)
+    return verts, ids.reshape(-1, 3).astype(np.int64)
 
 
 # ------------------------------------------------------------- gmsh builders
@@ -432,7 +433,7 @@ def _r_naca():
     # fast into the far field (few tets) instead of a wide fine halo.
     g = rm.Geometry(maxh=0.4, grading=1.0)
     g.label(g.box(3, 2, 0.5, position=(-1, -1, 0)), "air")
-    g.airfoil_naca0012(1.0, 0.5, position=(0, 0, 0), n_seg=140, void=True)
+    g.airfoil_naca0012(1.0, 0.5, position=(0, 0, 0), void=True)
     return g
 
 

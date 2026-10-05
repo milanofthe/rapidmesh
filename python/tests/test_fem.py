@@ -77,11 +77,11 @@ def test_gmsh_reads_the_second_order_mesh_with_positive_jacobians(tmp_path):
 
 
 def test_the_viewer_gets_the_curved_edges_of_the_second_order_mesh():
-    """``to_viewer_dict(second_order=True)`` lists every edge whose mid-edge
+    """``to_viewer_dict(order=2)`` lists every edge whose mid-edge
     node lies off its chord, on the sphere; the linear one lists none."""
     m = _ball()
     assert "curved_edges" not in m.to_viewer_dict("ball")
-    edges = m.to_viewer_dict("ball", second_order=True)["curved_edges"]
+    edges = m.to_viewer_dict("ball", order=2)["curved_edges"]
     assert edges
     pts = np.asarray(m.points)
     for a, b, p in edges:
@@ -100,3 +100,17 @@ def test_a_sheet_outside_the_volume_takes_mid_edge_nodes_too():
     so = m.second_order()
     assert so["faces"].shape == (len(m.faces), 6)
     assert so["faces"].max() < len(so["points"])
+
+
+def test_a_mesh_names_the_surface_under_each_face():
+    """``surfaces`` gives, per id of ``face_surfaces``, the kind and the
+    parameters of the surface: the faces of a cylinder's barrel lie on a
+    cylinder of its radius, its caps on planes."""
+    g = rm.Geometry(maxh=0.5)
+    g.cylinder(0.8, 2.0)
+    m = g.mesh()
+    kinds = {m.surfaces[s]["kind"] for s in set(m.face_surfaces.tolist())}
+    assert kinds == {"cylinder", "plane"}
+    barrel = next(s for s in m.surfaces if s["kind"] == "cylinder")
+    assert abs(barrel["radius"] - 0.8) < 1e-12
+    assert np.allclose(np.abs(barrel["axis"]), [0, 0, 1])

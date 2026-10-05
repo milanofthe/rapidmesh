@@ -371,6 +371,8 @@ pub struct Mesh {
     /// curves of the second-order mesh.
     pub(crate) model: Option<Arc<Model>>,
     view: OnceLock<TetView>,
+    /// The second-order mesh, made on first use.
+    pub(crate) second: OnceLock<crate::SecondOrder>,
 }
 
 impl Deref for Mesh {
@@ -395,6 +397,7 @@ impl Mesh {
             run,
             model,
             view: OnceLock::new(),
+            second: OnceLock::new(),
         }
     }
 
@@ -433,16 +436,6 @@ impl Mesh {
             &mut sets,
         );
         sets
-    }
-
-    /// Writes a gmsh MSH 4.1 file: geometric vertices, edges and faces are
-    /// point, curve and surface entities (tag = id + 1), regions volume
-    /// entities; physical groups are the region groups, the named sheet
-    /// tags and the named faces and edges.
-    pub fn write_msh(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let mut w = io::BufWriter::new(std::fs::File::create(path)?);
-        self.write_msh_to(&mut w)?;
-        w.flush()
     }
 
     pub fn write_msh_to(&self, w: &mut impl Write) -> io::Result<()> {
@@ -569,12 +562,21 @@ impl Mesh {
         self.poly_mesh(polyhedral).quality()
     }
 
-    /// Writes a VTK XML unstructured grid: the tets and the geometric
-    /// faces, with cell data `region`, `patch` and `face_tag`.
-    pub fn write_vtu(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let mut w = io::BufWriter::new(std::fs::File::create(path)?);
-        rapidmesh_topo::export::write_vtu(&self.inner, &mut w)?;
-        w.flush()
+    /// Writes a VTK XML unstructured grid of the mesh of `order`: linear,
+    /// the tets and the geometric faces with cell data `region`, `patch`
+    /// and `face_tag`; quadratic, the ten-node tets with `region`.
+    pub fn write_vtu(&self, path: impl AsRef<Path>, order: crate::Order) -> io::Result<()> {
+        match order {
+            crate::Order::Linear => {
+                let mut w = io::BufWriter::new(std::fs::File::create(path)?);
+                rapidmesh_topo::export::write_vtu(&self.inner, &mut w)?;
+                w.flush()
+            }
+            crate::Order::Quadratic => {
+                let regions: Vec<u32> = self.tet_regions.iter().map(|r| r.0).collect();
+                self.second_order().write_vtu(&regions, path)
+            }
+        }
     }
 
     /// Quality, conformity and fidelity to the input, with located defects.
@@ -663,15 +665,14 @@ impl Mesh {
         }
     }
 
-    /// The mesh in the viewer JSON schema, with the located defects.
-    pub fn viewer_json(&self, name: &str) -> String {
-        serde_json::to_string(&self.viewer(name)).expect("serialize")
-    }
-
-    /// [`Mesh::viewer_json`] of the second-order mesh: with the mid-edge
-    /// nodes off their chords, so the viewer draws the curved faces and
-    /// edges of the curved tets (see [`Mesh::second_order`]).
-    pub fn viewer_json_second_order(&self, name: &str) -> String {
+    /// The mesh in the viewer JSON schema, with the located defects; of
+    /// order quadratic with the mid-edge nodes off their chords, so the
+    /// viewer draws the curved faces and edges of the curved tets (see
+    /// [`Mesh::second_order`]).
+    pub fn viewer_json(&self, name: &str, order: crate::Order) -> String {
+        if order == crate::Order::Linear {
+            return serde_json::to_string(&self.viewer(name)).expect("serialize");
+        }
         let so = self.second_order();
         let mut curved = Vec::new();
         let mut seen = std::collections::HashSet::new();

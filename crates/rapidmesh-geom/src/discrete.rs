@@ -11,7 +11,9 @@
 //! importer's dihedral threshold, not here.
 
 use crate::bvh::Bvh;
-use crate::vec3::{bbox, cross, dot, normalize, sub, V3};
+use rapidmesh_exact::vector::{
+    bbox, centroid, closest_on_tri, cross, dist2, dot, normalize, sub, V3,
+};
 
 /// One smooth soup patch with a closest-point accelerator.
 #[derive(Debug)]
@@ -32,48 +34,6 @@ pub struct DiscreteSurface {
     bvh: Bvh,
 }
 
-/// Closest point on triangle `(a, b, c)` to `p`.
-fn closest_on_tri(p: V3, a: V3, b: V3, c: V3) -> V3 {
-    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
-    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = sub(p, b);
-    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        return std::array::from_fn(|k| a[k] + v * ab[k]);
-    }
-    let cp = sub(p, c);
-    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        return std::array::from_fn(|k| a[k] + w * ac[k]);
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return std::array::from_fn(|k| b[k] + w * (c[k] - b[k]));
-    }
-    let denom = 1.0 / (va + vb + vc);
-    let (v, w) = (vb * denom, vc * denom);
-    std::array::from_fn(|k| a[k] + ab[k] * v + ac[k] * w)
-}
-
-fn d2(a: V3, b: V3) -> f64 {
-    let d = sub(a, b);
-    dot(d, d)
-}
-
 impl DiscreteSurface {
     /// Builds the patch accelerator. `tris` must be consistently wound (the
     /// normals give the outward side).
@@ -91,12 +51,7 @@ impl DiscreteSurface {
             .collect();
         let centroids: Vec<V3> = tris
             .iter()
-            .map(|t| {
-                std::array::from_fn(|k| {
-                    (points[t[0] as usize][k] + points[t[1] as usize][k] + points[t[2] as usize][k])
-                        / 3.0
-                })
-            })
+            .map(|t| centroid(t.map(|v| points[v as usize])))
             .collect();
         // Per-facet curvature: for every interior edge (two owners inside
         // this smooth patch) the normals turn by theta over the centroid
@@ -131,7 +86,7 @@ impl DiscreteSurface {
                 if theta <= 1e-9 {
                     continue;
                 }
-                let d = d2(centroids[i], centroids[j]).sqrt();
+                let d = dist2(centroids[i], centroids[j]).sqrt();
                 let r = d / theta;
                 curv_r[i] = curv_r[i].min(r);
                 curv_r[j] = curv_r[j].min(r);
@@ -150,7 +105,10 @@ impl DiscreteSurface {
                 }
                 let mut lmax2 = 0.0f64;
                 for e in 0..3 {
-                    lmax2 = lmax2.max(d2(points[t[e] as usize], points[t[(e + 1) % 3] as usize]));
+                    lmax2 = lmax2.max(dist2(
+                        points[t[e] as usize],
+                        points[t[(e + 1) % 3] as usize],
+                    ));
                 }
                 curv_r[i] = curv_r[i].max(4.0 * lmax2.sqrt());
             }
@@ -176,6 +134,13 @@ impl DiscreteSurface {
 
     /// [`DiscreteSurface::closest`] plus the footpoint's facet index.
     pub fn closest_facet(&self, p: V3) -> (V3, V3, usize) {
+        self.closest_facet_near(p, usize::MAX)
+    }
+
+    /// [`DiscreteSurface::closest_facet`] searched from facet `hint`, one
+    /// near the answer: its distance bounds the search from the start, so
+    /// only the facets nearer than it are looked at.
+    pub fn closest_facet_near(&self, p: V3, hint: usize) -> (V3, V3, usize) {
         let on = |ti: usize| {
             let t = self.tris[ti];
             closest_on_tri(
@@ -185,11 +150,15 @@ impl DiscreteSurface {
                 self.points[t[2] as usize],
             )
         };
+        let start = (hint < self.tris.len()).then(|| (hint, on(hint)));
+        let limit = start.map_or(f64::INFINITY, |(_, q)| dist2(p, q));
         match self
             .bvh
-            .nearest(p, f64::INFINITY, |ti| Some(d2(p, on(ti as usize))))
+            .nearest(p, limit, |ti| Some(dist2(p, on(ti as usize))))
+            .map(|(ti, _)| (ti as usize, on(ti as usize)))
+            .or(start)
         {
-            Some((ti, _)) => (on(ti as usize), self.normals[ti as usize], ti as usize),
+            Some((ti, q)) => (q, self.normals[ti], ti),
             None => (p, [0.0, 0.0, 1.0], 0),
         }
     }

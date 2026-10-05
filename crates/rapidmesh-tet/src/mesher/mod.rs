@@ -10,6 +10,7 @@ pub use crate::surface::{boundary, Boundary, BoundaryError};
 pub use crate::volume::cdt::CdtError;
 
 use crate::finish::Complex;
+use crate::simplex::tet_volume;
 use crate::surface;
 use crate::volume::{cdt, refine, region};
 
@@ -325,13 +326,23 @@ fn mesh_in_blocks(
     );
     // Blocks are a matter of speed: where a block fails at a cut (one
     // through a fine feature), the model is meshed whole; a failure away
-    // from the cuts is the geometry's, and said at once.
+    // from the cuts is the geometry's, and said at once. A boundary that
+    // diverges is the cuts' only where every face it misses most on is a
+    // cut or a piece of a face one splits, near a cut.
+    let at_cut = |e: &MeshError| {
+        let Some((plan, blocks)) = cut.as_ref() else {
+            return false;
+        };
+        let near = |p: [f64; 3]| plan.near(p, AT_CUT * domain.h_at(p));
+        match e {
+            MeshError::Boundary(BoundaryError::Diverged { near: faces, .. }) => {
+                faces.iter().all(|n| near(n.at) && blocks.at_cut(n.face))
+            }
+            _ => e.at().is_none_or(near),
+        }
+    };
     match mesh_cut(source, cut.as_ref().map(|c| &c.1), &domain, params) {
-        Err(e)
-            if cut.as_ref().is_some_and(|(plan, _)| {
-                e.at().is_none_or(|p| plan.near(p, AT_CUT * domain.h_at(p)))
-            }) =>
-        {
+        Err(e) if at_cut(&e) => {
             rapidmesh_exact::log::info(
                 "mesher.blocks",
                 format!("in blocks: {e}; meshed whole instead"),
@@ -433,19 +444,52 @@ fn raw(
     let t = rapidmesh_exact::clock::Instant::now();
     let cap = params.vol_cap();
     let size = |p: [f64; 3]| domain.h_at(p).min(cap);
-    let budget = params.max_points.max(1);
+    // The point budget is the whole mesh's: each region (each block's piece
+    // of one) takes the share of it its volume asks for at the size, so a
+    // model meshes alike whole and in blocks.
+    let need: Vec<f64> = filled_ok
+        .iter()
+        .map(|(_, ts)| {
+            ts.iter()
+                .map(|t| {
+                    let p = t.map(|v| points[v as usize]);
+                    let c: [f64; 3] =
+                        std::array::from_fn(|k| p.iter().map(|q| q[k]).sum::<f64>() / 4.0);
+                    tet_volume(p).abs() / size(c).powi(3)
+                })
+                .sum::<f64>()
+        })
+        .collect();
+    let total: f64 = need.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+    let share = |n: f64| -> usize {
+        if params.max_points == usize::MAX {
+            usize::MAX
+        } else {
+            ((params.max_points as f64 * n / total).ceil() as usize).max(1)
+        }
+    };
     let refined: Vec<(u32, refine::Refined)> = filled_ok
         .into_par_iter()
-        .map(|(r, ts)| {
+        .zip(need)
+        .map(|((r, ts), n)| {
             let (faces, beyond): (Vec<[u32; 3]>, Vec<u32>) =
                 region_faces_beyond(brep, &b, r).into_iter().unzip();
             (
                 r,
-                refine::refine(&points, &ts, &faces, &beyond, &size, NEW, budget),
+                refine::refine(&points, &ts, &faces, &beyond, &size, NEW, share(n)),
             )
         })
         .collect();
     rapidmesh_exact::log::stage("volume.refine", t.elapsed().as_secs_f64());
+    if refined.iter().any(|(_, rf)| rf.capped) {
+        rapidmesh_exact::log::warn(
+            "mesher.budget",
+            format!(
+                "the point budget (max_points = {}) stopped the refinement: the mesh is coarser than its size asks",
+                params.max_points
+            ),
+        );
+    }
     let mut tets: Vec<[u32; 4]> = Vec::new();
     let mut tet_regions: Vec<u32> = Vec::new();
     for (r, rf) in refined {

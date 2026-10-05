@@ -1,10 +1,10 @@
 //! Acceptance tests of the B-rep topology (issue #77): what the arrangement
 //! builds, without welds across gaps, independent of rigid motions.
 
-use rapidmesh_brep::{build::from_plc, Brep, Curve};
+use rapidmesh_brep::{build::from_plc, Brep};
+use rapidmesh_exact::vector::Affine;
 use rapidmesh_geom::{
-    cylinder, cylinder_iso, frustum, icosphere, sheet_polygon, solid_box, sphere, torus, FaceTag,
-    Faceted, Scene,
+    cylinder, frustum, icosphere, sheet_polygon, solid_box, torus, FaceTag, Faceted, Scene,
 };
 
 fn brep(s: &Scene) -> Brep {
@@ -28,11 +28,7 @@ fn split_ring_keeps_both_sides_of_its_gap() {
         s.add_void(solid_box([0.7, -gap / 2.0, -0.1], [1.1, gap / 2.0, 0.3]));
         let b = brep(&s);
         assert_eq!(counts(&b), (8, 12, 6), "gap {gap}");
-        let arcs = b
-            .edges
-            .iter()
-            .filter(|e| matches!(e.curve, Curve::Circle { .. }))
-            .count();
+        let arcs = b.edges.iter().filter(|e| e.curve.is_circle()).count();
         assert_eq!(arcs, 4, "gap {gap}: the four rims are circle arcs");
     }
 }
@@ -56,7 +52,9 @@ fn oblique_box_with_crossing_cuts_has_the_upright_topology() {
         ([0.0, 0.0, 1.0], 0.3),
         ([1.0, 1.0, 1.0], 2.1),
     ] {
-        let rotated = counts(&brep(&slotted_box(&|f| f.rotated([0.5; 3], axis, angle))));
+        let rotated = counts(&brep(&slotted_box(&|f| {
+            f.transformed(&Affine::rotation([0.5; 3], axis, angle).unwrap())
+        })));
         assert_eq!(rotated, upright, "rotation about {axis:?} by {angle}");
     }
 }
@@ -117,7 +115,7 @@ fn ids_follow_the_origin() {
     let quarter = std::f64::consts::FRAC_PI_2;
     for axis in [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]] {
         let turned = origins(&brep(&slotted_box_of(1.0, &|f| {
-            f.rotated([0.5; 3], axis, quarter)
+            f.transformed(&Affine::rotation([0.5; 3], axis, quarter).unwrap())
         })));
         assert_eq!(turned, base, "quarter turn about {axis:?}");
     }
@@ -148,13 +146,11 @@ fn rotations_keep_the_cylinder_topology() {
         ([1.0, 1.0, 0.3], 0.7),
     ] {
         let mut s = Scene::new();
-        s.add_solid(cyl.rotated([0.0; 3], axis, angle));
+        s.add_solid(cyl.transformed(&Affine::rotation([0.0; 3], axis, angle).unwrap()));
         let b = brep(&s);
         assert_eq!(counts(&b), (2, 2, 3), "rotation about {axis:?} by {angle}");
         assert!(
-            b.edges
-                .iter()
-                .all(|e| matches!(e.curve, Curve::Circle { .. })),
+            b.edges.iter().all(|e| e.curve.is_circle()),
             "rotation about {axis:?} by {angle}: rims are circles"
         );
     }
@@ -166,16 +162,13 @@ fn rotations_keep_the_cylinder_topology() {
 fn capsule_is_a_barrel_and_two_caps() {
     let mut s = Scene::new();
     let r = s.add_solid(cylinder([0.0; 3], [0.0, 0.0, 1.0], 0.3, 32));
-    let a = s.add_solid(sphere([0.0; 3], 0.3, 32, 16));
-    let c = s.add_solid(sphere([0.0, 0.0, 1.0], 0.3, 32, 16));
+    let a = s.add_solid(icosphere([0.0; 3], 0.3, 3));
+    let c = s.add_solid(icosphere([0.0, 0.0, 1.0], 0.3, 3));
     s.merge_region(r, a);
     s.merge_region(r, c);
     let b = brep(&s);
     assert_eq!(counts(&b), (2, 2, 3));
-    assert!(b
-        .edges
-        .iter()
-        .all(|e| matches!(e.curve, Curve::Circle { .. })));
+    assert!(b.edges.iter().all(|e| e.curve.is_circle()));
 }
 
 /// The capsule of the corpus: geodesic spheres on a structured barrel of
@@ -185,7 +178,7 @@ fn capsule_is_a_barrel_and_two_caps() {
 #[test]
 fn tangent_capsule_of_different_tessellations_is_a_barrel_and_two_caps() {
     let mut s = Scene::new();
-    let r = s.add_solid(cylinder_iso([0.0, 0.0, -0.6], [0.0, 0.0, 1.2], 0.6, 40, 13));
+    let r = s.add_solid(frustum([0.0, 0.0, -0.6], [0.0, 0.0, 1.2], 0.6, 0.6, 40, 13));
     let a = s.add_solid(icosphere([0.0, 0.0, -0.6], 0.6, 3));
     let c = s.add_solid(icosphere([0.0, 0.0, 0.6], 0.6, 3));
     s.merge_region(r, a);
@@ -193,7 +186,7 @@ fn tangent_capsule_of_different_tessellations_is_a_barrel_and_two_caps() {
     let b = brep(&s);
     assert_eq!(counts(&b), (2, 2, 3));
     for e in &b.edges {
-        let Curve::Circle { center, radius, .. } = e.curve else {
+        let Some((center, radius)) = e.curve.carrier().and_then(|c| c.as_circle()) else {
             panic!("a rim is not a circle: {:?}", e.curve);
         };
         assert!((radius - 0.6).abs() < 1e-12 && (center[2].abs() - 0.6).abs() < 1e-12);
@@ -355,14 +348,14 @@ fn coaxial_sphere_and_cylinder_meet_in_exact_circles() {
     let (rc, rs, zc) = (1.0, 1.081, 0.531);
     let mut s = Scene::new();
     s.add_solid(cylinder([0.0; 3], [0.0, 0.0, 2.4], rc, 28));
-    s.add_solid(sphere([0.0, 0.0, zc], rs, 28, 14));
+    s.add_solid(icosphere([0.0, 0.0, zc], rs, 3));
     let b = brep(&s);
     let h = (rs * rs - rc * rc).sqrt();
     let mut heights: Vec<f64> = b
         .edges
         .iter()
-        .filter_map(|e| match e.curve {
-            Curve::Circle { center, radius, .. } if (radius - rc).abs() < 1e-12 => Some(center[2]),
+        .filter_map(|e| match e.curve.carrier().and_then(|c| c.as_circle()) {
+            Some((center, radius)) if (radius - rc).abs() < 1e-12 => Some(center[2]),
             _ => None,
         })
         // Not the rims of the cylinder's ends.
@@ -385,9 +378,9 @@ fn circles(b: &Brep) -> Vec<(f64, f64)> {
     let mut c: Vec<(f64, f64)> = b
         .edges
         .iter()
-        .filter_map(|e| match e.curve {
-            Curve::Circle { center, radius, .. } => Some((center[2], radius)),
-            _ => None,
+        .filter_map(|e| {
+            let (center, radius) = e.curve.carrier()?.as_circle()?;
+            Some((center[2], radius))
         })
         .collect();
     c.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
@@ -404,8 +397,8 @@ fn has(c: &[(f64, f64)], z: f64, r: f64) -> bool {
 #[test]
 fn coaxial_cones_meet_in_an_exact_circle() {
     let mut s = Scene::new();
-    s.add_solid(frustum([0.0; 3], [0.0, 0.0, 1.2], 1.0, 0.64, 32));
-    s.add_solid(frustum([0.0, 0.0, 0.4], [0.0, 0.0, 1.2], 1.0, 0.2, 32));
+    s.add_solid(frustum([0.0; 3], [0.0, 0.0, 1.2], 1.0, 0.64, 32, 1));
+    s.add_solid(frustum([0.0, 0.0, 0.4], [0.0, 0.0, 1.2], 1.0, 0.2, 32, 1));
     let c = circles(&brep(&s));
     let z = 8.0 / 11.0;
     assert!(has(&c, z, 1.0 - 0.3 * z), "{c:?}");

@@ -69,7 +69,9 @@ fn sets_and_msh_groups_follow_the_labels() {
         assert!(msh.contains(name), "no group {name}");
     }
     assert!(m.report().starts_with("Mesh("));
-    assert!(m.viewer_json("cell").contains("\"mesher\":\"rapidmesh\""));
+    assert!(m
+        .viewer_json("cell", rapidmesh::Order::Linear)
+        .contains("\"mesher\":\"rapidmesh\""));
 }
 
 #[test]
@@ -339,7 +341,7 @@ fn a_nurbs_sheet_meshes_onto_its_surface() {
 #[test]
 fn a_revolved_spline_meshes_onto_its_surface() {
     use rapidmesh::shapes::{ProfileEdge, Revolve};
-    use rapidmesh_geom::SurfaceKind;
+    use rapidmesh_geom::Surface;
     let vase = Revolve {
         edges: vec![
             ProfileEdge::Line,
@@ -357,7 +359,7 @@ fn a_revolved_spline_meshes_onto_its_surface() {
     assert_eq!(d.defects().count(), 0);
     let mut on = 0;
     for f in &m.faces {
-        let SurfaceKind::Revolved { profile, .. } = &m.surfaces[f.surface as usize] else {
+        let Some(Surface::Revolved { profile, .. }) = &m.surfaces[f.surface as usize] else {
             continue;
         };
         for v in f.tri {
@@ -419,6 +421,9 @@ fn roles_are_named_in_rust() {
         _ => unreachable!(),
     };
     assert_eq!(g.roles(copy), g.roles(cube));
+    // A cone up to its apex has a side and a bottom, no top.
+    let cone = g.add(rapidmesh::shapes::Cone::new(0.5, 0.0, 1.0)).unwrap();
+    assert_eq!(g.roles(cone), ["side", "bottom"]);
 }
 
 #[test]
@@ -535,7 +540,7 @@ fn a_concave_edge_takes_no_chamfer() {
 #[test]
 fn a_filleted_cube_edge_is_an_exact_quarter_cylinder() {
     use rapidmesh::EdgePick;
-    use rapidmesh_geom::SurfaceKind;
+    use rapidmesh_geom::Surface;
     use std::f64::consts::PI;
     let r = 0.3;
     let cube = |fillet: bool| {
@@ -561,7 +566,7 @@ fn a_filleted_cube_edge_is_an_exact_quarter_cylinder() {
     for f in &round.faces {
         if !matches!(
             round.surfaces[f.surface as usize],
-            SurfaceKind::Cylinder { .. }
+            Some(Surface::Cylinder { .. })
         ) {
             continue;
         }
@@ -743,7 +748,7 @@ fn arrays_copy_and_intersect_cuts_exactly() {
 #[test]
 fn sheets_extrude_into_solids_on_them() {
     use rapidmesh::Transform;
-    use rapidmesh_geom::SurfaceKind;
+    use rapidmesh_geom::Surface;
     use std::f64::consts::PI;
     // A rectangle swept obliquely: area times the height.
     let mut g = Geometry::new(Some(0.3));
@@ -784,7 +789,12 @@ fn sheets_extrude_into_solids_on_them() {
     let barrel: Vec<_> = m
         .faces
         .iter()
-        .filter(|f| matches!(m.surfaces[f.surface as usize], SurfaceKind::Cylinder { .. }))
+        .filter(|f| {
+            matches!(
+                m.surfaces[f.surface as usize],
+                Some(Surface::Cylinder { .. })
+            )
+        })
         .flat_map(|f| f.tri)
         .collect();
     assert!(!barrel.is_empty());

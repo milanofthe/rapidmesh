@@ -156,13 +156,8 @@ impl Rng {
 
 /// Signed rational area (times 2) of a triangle in the facet projection.
 /// The cyclic pairing matches `Point3::hom2`: drop X -> (y, z), etc.
-#[allow(dead_code)]
 pub fn area2(tri: [&Rv; 3], axis: Axis) -> BigRational {
-    let (u, v) = match axis {
-        Axis::X => (1, 2),
-        Axis::Y => (2, 0),
-        Axis::Z => (0, 1),
-    };
+    let [u, v] = axis.kept();
     let [a, b, c] = tri;
     (&b[u] - &a[u]) * (&c[v] - &a[v]) - (&b[v] - &a[v]) * (&c[u] - &a[u])
 }
@@ -170,7 +165,6 @@ pub fn area2(tri: [&Rv; 3], axis: Axis) -> BigRational {
 /// Full exact invariant suite for one triangulated facet:
 /// orientation/non-degeneracy, area conservation, Euler count, and exact
 /// coverage of every constraint by triangulation edges.
-#[allow(dead_code)]
 pub fn check_invariants(facet: &Tri, ft: &FacetTriangulation, constraints: &[Constraint]) {
     // 1. Every sub-triangle oriented like the facet, exactly.
     for t in &ft.triangles {
@@ -261,7 +255,6 @@ pub fn check_invariants(facet: &Tri, ft: &FacetTriangulation, constraints: &[Con
 
 /// Exact 6x the signed volume enclosed by an outward-oriented closed
 /// triangle surface (divergence theorem over origin tetrahedra).
-#[allow(dead_code)]
 pub fn volume6(vertices: &[Point3], triangles: &[[usize; 3]]) -> BigRational {
     let verts_rat: Vec<Rv> = vertices.iter().map(affine).collect();
     triangles.iter().fold(BigRational::zero(), |acc, t| {
@@ -274,7 +267,6 @@ pub fn volume6(vertices: &[Point3], triangles: &[[usize; 3]]) -> BigRational {
 
 /// Asserts the surface is a closed orientable manifold: every directed edge
 /// appears exactly once and its reverse exists.
-#[allow(dead_code)]
 pub fn assert_watertight(triangles: &[[usize; 3]]) {
     let mut directed: std::collections::HashMap<(usize, usize), usize> =
         std::collections::HashMap::new();
@@ -297,8 +289,6 @@ pub fn assert_watertight(triangles: &[[usize; 3]]) {
 }
 
 /// The 12 triangles of an axis-aligned box (outward orientation).
-// Compiled once per test binary; not every binary uses every fixture.
-#[allow(dead_code)]
 pub fn box_tris(min: [f64; 3], max: [f64; 3]) -> Vec<Tri> {
     // Corner index bits: bit0 = x, bit1 = y, bit2 = z.
     let c: [[f64; 3]; 8] = std::array::from_fn(|i| {

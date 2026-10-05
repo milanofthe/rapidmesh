@@ -48,8 +48,8 @@ fn main() -> rapidmesh::Result<()> {
     );
 
     let dir = std::path::Path::new(&out);
-    mesh.write_msh(dir.join("unit_cell.msh"))?;
-    mesh.write_vtu(dir.join("unit_cell.vtu"))?;
+    mesh.write_msh(dir.join("unit_cell.msh"), rapidmesh::Order::Linear)?;
+    mesh.write_vtu(dir.join("unit_cell.vtu"), rapidmesh::Order::Linear)?;
     println!("wrote {}", dir.join("unit_cell.msh").display());
     Ok(())
 }

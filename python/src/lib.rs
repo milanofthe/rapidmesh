@@ -25,12 +25,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rapidmesh::shapes::{Shape, Sheet};
 use rapidmesh::{
-    EdgeCut, EdgeFilter, EdgePick, FaceFilter, Level, MeshOptions, Object, PointClass, Scope,
-    SheetRef, Solid, SurfaceFace, SurfaceOptions, Transform, TriTopology, NONE,
+    EdgeCut, EdgePick, MeshOptions, Object, PointClass, Scope, SheetRef, Solid, SurfaceFace,
+    SurfaceOptions, TriTopology, NONE,
 };
+use rapidmesh_exact::vector::V3;
 use std::collections::BTreeMap;
-
-type P3 = [f64; 3];
 
 /// Edge endpoints, the triangles beside each edge and their tags.
 type Adjacency<'py> = (
@@ -241,6 +240,63 @@ fn face_surfaces<'py>(py: Python<'py>, faces: &[SurfaceFace]) -> Bound<'py, PyAr
     v.into_pyarray_bound(py)
 }
 
+/// Each surface (the ids of `face_surfaces`) as a dict: its kind and the
+/// parameters of its geometry, directions as unit vectors ("facets" for a
+/// face without a carrier).
+fn surfaces<'py>(
+    py: Python<'py>,
+    kinds: &[Option<rapidmesh::Surface>],
+) -> PyResult<Bound<'py, PyList>> {
+    use rapidmesh::Surface as K;
+    let out = PyList::empty_bound(py);
+    for k in kinds {
+        let d = PyDict::new_bound(py);
+        d.set_item("kind", k.as_ref().map_or("facets", K::name))?;
+        let frame = k.as_ref().and_then(K::frame);
+        match k {
+            Some(K::Plane(f)) => {
+                d.set_item("point", f.o.to_vec())?;
+                d.set_item("normal", f.z.to_vec())?;
+            }
+            Some(K::Cylinder { radius, .. }) | Some(K::Sphere { radius, .. }) => {
+                d.set_item("center", frame.map(|f| f.o.to_vec()))?;
+                d.set_item("radius", *radius)?;
+            }
+            Some(K::Cone {
+                frame: f,
+                half_angle,
+            }) => {
+                d.set_item("apex", f.o.to_vec())?;
+                d.set_item("half_angle_deg", half_angle.to_degrees())?;
+            }
+            Some(K::Torus {
+                frame: f,
+                major,
+                minor,
+            }) => {
+                d.set_item("center", f.o.to_vec())?;
+                d.set_item("major_radius", *major)?;
+                d.set_item("minor_radius", *minor)?;
+            }
+            Some(K::Revolved { frame: f, .. }) => d.set_item("origin", f.o.to_vec())?,
+            Some(K::Tube { radius, .. }) => d.set_item("radius", *radius)?,
+            Some(K::Nurbs(n)) => {
+                d.set_item("degree", n.degree.to_vec())?;
+                d.set_item("controls", n.n.to_vec())?;
+            }
+            Some(K::Extruded { .. }) | Some(K::Discrete(_)) | None => {}
+        }
+        // A surface about an axis (and an extrusion along one) names it.
+        if let (Some(f), false) = (frame, matches!(k, Some(K::Plane(_)))) {
+            if !matches!(k, Some(K::Sphere { .. })) {
+                d.set_item("axis", f.z.to_vec())?;
+            }
+        }
+        out.append(d)?;
+    }
+    Ok(out)
+}
+
 fn face_patches<'py>(py: Python<'py>, faces: &[SurfaceFace]) -> Bound<'py, PyArray1<u32>> {
     let v: Vec<u32> = faces.iter().map(|f| f.patch).collect();
     v.into_pyarray_bound(py)
@@ -278,67 +334,17 @@ struct PyScope {
 /// A value by name from Python (a dict of fields or options), the ones
 /// not given at their Rust defaults.
 fn options<T: serde::de::DeserializeOwned>(d: &Bound<'_, PyDict>) -> PyResult<T> {
-    pythonize::depythonize(d.as_any()).map_err(|e| PyValueError::new_err(e.to_string()))
+    value(d.as_any())
 }
 
-fn get<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, k: &str) -> PyResult<Option<T>> {
-    match d.get_item(k)? {
-        Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
-        _ => Ok(None),
-    }
+/// The element order 1 or 2.
+fn order_of(order: u8) -> PyResult<rapidmesh::Order> {
+    rapidmesh::Order::try_from(order).map_err(PyValueError::new_err)
 }
 
-fn only(d: &Bound<'_, PyDict>, keys: &[&str], what: &str) -> PyResult<()> {
-    for k in d.keys() {
-        let k: String = k.extract()?;
-        if !keys.contains(&k.as_str()) {
-            return Err(PyValueError::new_err(format!(
-                "unknown {what} filter {k:?} (expected one of {keys:?})"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn face_filter(d: &Bound<'_, PyDict>) -> PyResult<FaceFilter> {
-    only(
-        d,
-        &["id", "tag", "solid", "role", "normal", "normal_tol", "near"],
-        "surf",
-    )?;
-    let mut f = FaceFilter {
-        id: get(d, "id")?,
-        tag: get(d, "tag")?,
-        solid: get(d, "solid")?,
-        role: get(d, "role")?,
-        normal: get(d, "normal")?,
-        near: get(d, "near")?,
-        ..Default::default()
-    };
-    if let Some(t) = get(d, "normal_tol")? {
-        f.normal_tol = t;
-    }
-    Ok(f)
-}
-
-fn edge_filter(d: &Bound<'_, PyDict>) -> PyResult<EdgeFilter> {
-    only(d, &["id", "kind", "between", "near"], "edge")?;
-    Ok(EdgeFilter {
-        id: get(d, "id")?,
-        kind: get::<String>(d, "kind")?
-            .map(|k| {
-                rapidmesh::EdgeKind::parse(&k).ok_or_else(|| {
-                    let names: Vec<&str> =
-                        rapidmesh::EdgeKind::ALL.iter().map(|k| k.name()).collect();
-                    PyValueError::new_err(format!(
-                        "unknown edge kind {k:?} (expected one of {names:?})"
-                    ))
-                })
-            })
-            .transpose()?,
-        between: get(d, "between")?,
-        near: get(d, "near")?,
-    })
+/// A value from any Python object (a name, a list, a dict).
+fn value<T: serde::de::DeserializeOwned>(v: &Bound<'_, PyAny>) -> PyResult<T> {
+    pythonize::depythonize(v).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 #[pymethods]
@@ -348,30 +354,25 @@ impl PyScope {
     #[new]
     #[pyo3(signature = (level, region=None, face=None, edge=None))]
     fn new(
-        level: &str,
+        level: &Bound<'_, PyAny>,
         region: Option<&Bound<'_, PyDict>>,
         face: Option<&Bound<'_, PyDict>>,
         edge: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyScope> {
-        let level = match level {
-            "region" => Level::Region,
-            "surf" => Level::Surf,
-            "edge" => Level::Edge,
-            other => return Err(PyValueError::new_err(format!("unknown level {other:?}"))),
-        };
-        let region = match region {
-            Some(d) => {
-                only(d, &["id", "tag"], "region")?;
-                get(d, "id")?.or(get(d, "tag")?)
-            }
-            None => None,
-        };
+        /// A region by its tag (`id` and `tag` are one here).
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Region {
+            id: Option<u32>,
+            tag: Option<u32>,
+        }
+        let region = region.map(options::<Region>).transpose()?;
         Ok(PyScope {
             scope: Scope {
-                level,
-                region,
-                face: face.map(face_filter).transpose()?,
-                edge: edge.map(edge_filter).transpose()?,
+                level: value(level)?,
+                region: region.and_then(|r| r.id.or(r.tag)),
+                face: face.map(options).transpose()?,
+                edge: edge.map(options).transpose()?,
             },
         })
     }
@@ -420,30 +421,6 @@ fn object_to(o: Object) -> (bool, u32, u32) {
         Object::Solid(s) => (false, s.region, s.index),
         Object::Sheet(s) => (true, s.index, s.tag),
     }
-}
-
-fn transform_of(kind: &str, a: P3, b: P3, angle: f64) -> PyResult<Transform> {
-    Ok(match kind {
-        "translate" => Transform::Translate(a),
-        "rotate" => Transform::Rotate {
-            angle,
-            axis: a,
-            center: b,
-        },
-        "mirror" => Transform::Mirror {
-            normal: a,
-            point: b,
-        },
-        "stretch" => Transform::Stretch {
-            factors: a,
-            center: b,
-        },
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "unknown transform {other:?}"
-            )))
-        }
-    })
 }
 
 #[pymethods]
@@ -517,38 +494,21 @@ impl PyGeometry {
             .map_err(py_err)
     }
 
-    /// Chamfers or fillets (`kind`) edges of the solid (region, index) by
-    /// `size`. `edges` holds picks:
-    /// `("all", 0, 0, 0)`, `("of", role, 0, 0)`, `("between", a, b, 0)` or
-    /// `("with", role, other solid, its role)`. Returns the origin
+    /// Chamfers or fillets edges of the solid (region, index): `cut` is
+    /// `{"chamfer": distance}` or `{"fillet": radius}`, `edges` a list of
+    /// picks: `"all"`, `{"of": role}`, `{"between": [a, b]}` or
+    /// `{"with": [role, other solid, its role]}`. Returns the origin
     /// (region, index, role) of every new face.
-    #[pyo3(signature = (region, index, edges, kind, size, void=false))]
+    #[pyo3(signature = (region, index, edges, cut, void=false))]
     fn cut_edges(
         &mut self,
         region: u32,
         index: u32,
-        edges: Vec<(String, u32, u32, u32)>,
-        kind: &str,
-        size: f64,
+        edges: &Bound<'_, PyAny>,
+        cut: &Bound<'_, PyAny>,
         void: bool,
     ) -> PyResult<Vec<(u32, u32, u32)>> {
-        let cut = match kind {
-            "chamfer" => EdgeCut::Chamfer(size),
-            "fillet" => EdgeCut::Fillet(size),
-            other => return Err(PyValueError::new_err(format!("unknown edge cut {other:?}"))),
-        };
-        let picks = edges
-            .into_iter()
-            .map(|(kind, a, b, c)| match kind.as_str() {
-                "all" => Ok(EdgePick::All),
-                "of" => Ok(EdgePick::Of(a)),
-                "between" => Ok(EdgePick::Between(a, b)),
-                "with" => Ok(EdgePick::With(a, b, c)),
-                other => Err(PyValueError::new_err(format!(
-                    "unknown edge pick {other:?}"
-                ))),
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let (picks, cut): (Vec<EdgePick>, EdgeCut) = (value(edges)?, value(cut)?);
         let faces = self
             .g
             .cut_edges(Solid { region, index }, &picks, cut, void)
@@ -559,21 +519,13 @@ impl PyGeometry {
             .collect())
     }
 
-    /// Moves (`"translate"`, `a` the offset), turns (`"rotate"`, `angle`
-    /// radians about axis `a` through `b`), mirrors (`"mirror"`, normal `a`
-    /// through `b`) or stretches (`"stretch"`, factors `a` about `b`) the
+    /// Moves (`{"translate": offset}`), turns (`{"rotate": {"angle":
+    /// radians, "axis", "center"}}`), mirrors (`{"mirror": {"normal",
+    /// "point"}}`) or stretches (`{"stretch": {"factors", "center"}}`) the
     /// object `(is_sheet, first, second)`: a solid `(false, region, index)`
     /// or a sheet `(true, index, tag)`.
-    fn transform(
-        &mut self,
-        obj: (bool, u32, u32),
-        kind: &str,
-        a: P3,
-        b: P3,
-        angle: f64,
-    ) -> PyResult<()> {
-        let t = transform_of(kind, a, b, angle)?;
-        self.g.transform(object_of(obj), t).map_err(py_err)
+    fn transform(&mut self, obj: (bool, u32, u32), t: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.g.transform(object_of(obj), value(t)?).map_err(py_err)
     }
 
     /// A copy of the object, as `(is_sheet, first, second)`.
@@ -581,21 +533,16 @@ impl PyGeometry {
         self.g.copy(object_of(obj)).map(object_to).map_err(py_err)
     }
 
-    /// `count` objects: the object and copies moved by the step taken once,
-    /// twice, ... from it.
-    #[pyo3(signature = (obj, count, kind, a, b, angle))]
+    /// `count` objects: the object and copies moved by the step `t` (a
+    /// transform as for `transform`) taken once, twice, ... from it.
     fn array(
         &mut self,
         obj: (bool, u32, u32),
         count: u32,
-        kind: &str,
-        a: P3,
-        b: P3,
-        angle: f64,
+        t: &Bound<'_, PyAny>,
     ) -> PyResult<Vec<(bool, u32, u32)>> {
-        let t = transform_of(kind, a, b, angle)?;
         self.g
-            .array(object_of(obj), count, t)
+            .array(object_of(obj), count, value(t)?)
             .map(|os| os.into_iter().map(object_to).collect())
             .map_err(py_err)
     }
@@ -624,7 +571,7 @@ impl PyGeometry {
     fn extrude(
         &mut self,
         sheet: (u32, u32),
-        vector: P3,
+        vector: V3,
         maxh: Option<f64>,
     ) -> PyResult<(u32, u32)> {
         self.g
@@ -671,7 +618,7 @@ impl PyGeometry {
         self.g.refine_surface(Solid { region, index }, h);
     }
 
-    fn add_size_points(&mut self, points: Vec<P3>, hs: Vec<f64>) -> PyResult<()> {
+    fn add_size_points(&mut self, points: Vec<V3>, hs: Vec<f64>) -> PyResult<()> {
         self.g.add_size_points(&points, &hs).map_err(py_err)
     }
 
@@ -717,7 +664,7 @@ impl PyGeometry {
         &mut self,
         master: &PyScope,
         slave: &PyScope,
-        shift: Option<P3>,
+        shift: Option<V3>,
     ) -> PyResult<(f64, f64, f64)> {
         let t = self
             .g
@@ -767,7 +714,7 @@ impl PyTopology {
     }
 
     /// Per region, parallel to `regions()`: its bounding box `(min, max)`.
-    fn region_bbox(&self) -> Vec<(P3, P3)> {
+    fn region_bbox(&self) -> Vec<(V3, V3)> {
         self.topo.region_bbox.iter().map(|b| (b[0], b[1])).collect()
     }
 
@@ -777,8 +724,8 @@ impl PyTopology {
     fn faces(
         &self,
     ) -> Vec<(
-        P3,
-        P3,
+        V3,
+        V3,
         f64,
         u32,
         u32,
@@ -787,7 +734,7 @@ impl PyTopology {
         u32,
         Vec<u32>,
         u32,
-        (P3, P3),
+        (V3, V3),
     )> {
         self.topo
             .faces
@@ -813,7 +760,7 @@ impl PyTopology {
     /// Per edge: (p0, p1, midpoint, length, kind name, face_ids,
     /// (bbox_min, bbox_max)).
     #[allow(clippy::type_complexity)]
-    fn edges(&self) -> Vec<(P3, P3, P3, f64, &'static str, Vec<u32>, (P3, P3))> {
+    fn edges(&self) -> Vec<(V3, V3, V3, f64, &'static str, Vec<u32>, (V3, V3))> {
         self.topo
             .edges
             .iter()
@@ -870,6 +817,10 @@ macro_rules! py_mesh {
                 point_class(py, &self.m.point_class)
             }
 
+            fn surfaces<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+                surfaces(py, &self.m.surfaces)
+            }
+
             fn surface_owners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u32>> {
                 self.m.surface_owners.clone().into_pyarray_bound(py)
             }
@@ -888,10 +839,6 @@ macro_rules! py_mesh {
 
             fn __repr__(&self) -> String {
                 self.m.to_string()
-            }
-
-            fn write_vtu(&self, path: &str) -> PyResult<()> {
-                write_to(path, |p| self.m.write_vtu(p))
             }
 
             $($methods)*
@@ -1069,13 +1016,14 @@ py_mesh!(PyMesh {
 
     #[pyo3(signature = (path, order=1))]
     fn write_msh(&self, path: &str, order: u8) -> PyResult<()> {
-        match order {
-            1 => write_to(path, |p| self.m.write_msh(p)),
-            2 => write_to(path, |p| {
-                self.m.write_msh_second_order(&self.m.second_order(), p)
-            }),
-            o => Err(PyValueError::new_err(format!("order {o}, expected 1 or 2"))),
-        }
+        let order = order_of(order)?;
+        write_to(path, |p| self.m.write_msh(p, order))
+    }
+
+    #[pyo3(signature = (path, order=1))]
+    fn write_vtu(&self, path: &str, order: u8) -> PyResult<()> {
+        let order = order_of(order)?;
+        write_to(path, |p| self.m.write_vtu(p, order))
     }
 
     /// The second-order mesh as arrays, and its writers.
@@ -1088,7 +1036,7 @@ py_mesh!(PyMesh {
         d.set_item("tets", arr(py, &tets))?;
         d.set_item("faces", arr(py, &faces))?;
         d.set_item("volumes", so.volumes().into_pyarray_bound(py))?;
-        d.set_item("curved_tets", so.curved_tets.into_pyarray_bound(py))?;
+        d.set_item("curved_tets", so.curved_tets.clone().into_pyarray_bound(py))?;
         d.set_item("curved", so.curved)?;
         d.set_item("straightened", so.straightened)?;
         Ok(d)
@@ -1096,20 +1044,8 @@ py_mesh!(PyMesh {
 
     #[pyo3(signature = (path, order=1))]
     fn write_inp(&self, path: &str, order: u8) -> PyResult<()> {
-        let r = match order {
-            1 => self.m.write_inp(path),
-            2 => self.m.write_inp_second_order(&self.m.second_order(), path),
-            o => return Err(PyValueError::new_err(format!("order {o}, expected 1 or 2"))),
-        };
-        r.map_err(|e| PyIOError::new_err(e.to_string()))
-    }
-
-    fn write_vtu_second_order(&self, path: &str) -> PyResult<()> {
-        let regions: Vec<u32> = self.m.tet_regions.iter().map(|r| r.0).collect();
-        self.m
-            .second_order()
-            .write_vtu(&regions, path)
-            .map_err(|e| PyIOError::new_err(e.to_string()))
+        let order = order_of(order)?;
+        write_to(path, |p| self.m.write_inp(p, order))
     }
 
     #[pyo3(signature = (dir, polyhedral=false))]
@@ -1141,15 +1077,10 @@ py_mesh!(PyMesh {
         Ok(d)
     }
 
-    #[pyo3(signature = (name, second_order=false))]
-    fn viewer_json(&self, py: Python<'_>, name: &str, second_order: bool) -> String {
-        py.allow_threads(|| {
-            if second_order {
-                self.m.viewer_json_second_order(name)
-            } else {
-                self.m.viewer_json(name)
-            }
-        })
+    #[pyo3(signature = (name, order=1))]
+    fn viewer_json(&self, py: Python<'_>, name: &str, order: u8) -> PyResult<String> {
+        let order = order_of(order)?;
+        Ok(py.allow_threads(|| self.m.viewer_json(name, order)))
     }
 });
 
@@ -1207,6 +1138,10 @@ py_mesh!(PySurfaceMesh {
 
     fn write_msh(&self, path: &str) -> PyResult<()> {
         write_to(path, |p| self.m.write_msh(p))
+    }
+
+    fn write_vtu(&self, path: &str) -> PyResult<()> {
+        write_to(path, |p| self.m.write_vtu(p))
     }
 
     fn boundary_edges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {

@@ -104,7 +104,7 @@ so = mesh.second_order()       # tet10: points, tets (n, 10), faces (m, 6), volu
 so["curved_tets"]              # per tet: a mid-edge node off its chord
 mesh.write_msh("part.msh", order=2)
 mesh.write_inp("part.inp", order=2)
-mesh.show(second_order=True)   # curved faces drawn curved
+mesh.show(order=2)   # curved faces drawn curved
 ```
 
 Every edge takes a node in its middle, on the true geometry where the edge

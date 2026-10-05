@@ -354,36 +354,31 @@ def test_the_rim_of_a_disc_sheet_is_curved_in_the_second_order_mesh():
     assert rim
 
 
-def test_geom_error_meets_the_volume_with_far_fewer_quadratic_tets():
-    """``geom_error`` bounds the volume error of a sphere on the elements of
-    ``order``: met by flat and by quadratic tets, the quadratic ones with a
-    tenth of the tets or fewer (a large ``maxh``: the curvature sets the
-    size)."""
-
-    def run(order):
-        g = rm.Geometry(maxh=2.0)
-        g.sphere(1.0)
-        m = g.mesh(geom_error=1e-2, order=order)
-        if order == 1:
-            p, t = np.asarray(m.points), np.asarray(m.tets, np.int64)
-            a, b, c, d = (p[t[:, k]] for k in range(4))
-            v = np.abs(np.einsum("ij,ij->i", b - a, np.cross(c - a, d - a))).sum() / 6
-        else:
-            v = m.second_order()["volumes"].sum()
-        return abs(v / (4 / 3 * math.pi) - 1), len(m.tets)
-
-    (e1, n1), (e2, n2) = run(1), run(2)
-    assert e1 < 1e-2 and e2 < 1e-2
-    assert n2 * 10 < n1
+def test_an_edge_with_a_fine_tolerance_grades_the_volume_down_to_it():
+    """The volume next to an edge given a tolerance of its own is graded
+    down to the edge's samples, not left at the bulk size (#314)."""
+    g = rm.Geometry(maxh=0.5)
+    g.cylinder(1.0, 2.0)
+    g.edge(near=(1.0, 0.0, 2.0)).tol = 1e-4
+    m = g.mesh()
+    P, T = np.asarray(m.points), np.asarray(m.tets)
+    rim = np.where((np.abs(P[:, 2] - 2.0) < 1e-9) & (np.abs(np.hypot(P[:, 0], P[:, 1]) - 1.0) < 1e-6))[0]
+    spacing = 2 * np.pi / len(rim)
+    touching = T[np.isin(T, rim).any(axis=1)]
+    longest = max(np.linalg.norm(P[touching[:, a]] - P[touching[:, b]], axis=1).max()
+                  for a in range(4) for b in range(a + 1, 4))
+    assert longest < 8 * spacing, (longest, spacing)
 
 
-def test_the_rim_of_a_disc_sheet_is_curved_in_the_second_order_mesh():
-    """A rim between flat faces only takes its mid-edge nodes on its circle."""
-    g = rm.Geometry(maxh=2.0)
-    g.box(4, 4, 2, position=(-2, -2, -1))
-    g.disc(0.5, tag=2)
-    m = g.mesh(geom_error=1e-2, order=2)
-    so = m.second_order()
-    pts, faces = so["points"], so["faces"][np.asarray(m.face_tags) == 2]
-    rim = [v for v in faces[:, 3:].ravel() if abs(np.hypot(*pts[v][:2]) - 0.5) < 1e-9]
-    assert rim
+def test_a_rim_far_finer_than_its_faces_meshes_clean():
+    """An edge tolerance far below the surface's samples the rim on its
+    circle, not on the chords of its facets, and the faces and the volume
+    grade from it: the cylinder meshes, without slivers or defects (#324)."""
+    g = rm.Geometry(maxh=0.5)
+    g.cylinder(1, 2)
+    m = g.mesh(tol_edge=1e-6)
+    d = m.diagnostics
+    assert d["n_slivers"] == 0 and not d["defects"]
+    rim = m.points[m.point_class[:, 0] == 1]
+    assert len(rim) > 2000
+    assert np.abs(np.hypot(rim[:, 0], rim[:, 1]) - 1.0).max() < 1e-9

@@ -1,7 +1,8 @@
 //! Builder tests: TaggedPlc -> Brep on the canonical shapes.
 
-use rapidmesh_brep::{build::from_plc, Curve, Surface};
-use rapidmesh_geom::{extrude_spline_profile, icosphere, naca0012_profile, solid_box, Scene};
+use rapidmesh_brep::{build::from_plc, Curve};
+use rapidmesh_geom::Surface;
+use rapidmesh_geom::{extrude_profile, icosphere, naca0012_points, solid_box, ProfileEdge, Scene};
 
 #[test]
 fn hemisphere_recovers_circle_edge() {
@@ -13,10 +14,7 @@ fn hemisphere_recovers_circle_edge() {
     let r = b
         .edges
         .iter()
-        .find_map(|e| match e.curve {
-            Curve::Circle { radius, .. } => Some(radius),
-            _ => None,
-        })
+        .find_map(|e| Some(e.curve.carrier()?.as_circle()?.1))
         .expect("equator recovered as a Circle");
     assert!((r - 1.0).abs() < 0.06, "circle radius {r} ~ 1.0");
 }
@@ -55,7 +53,7 @@ fn box_has_6_faces_12_edges_8_corners() {
         for &cid in &f.loops[0].coedges {
             let chain = &b.edge(b.coedge(cid).edge).chain;
             assert!(chain.len() >= 2, "co-edge chain has >= 2 points");
-            for p in chain.iter().map(|&p| surf.project_uv(p)) {
+            for p in chain.iter().map(|&p| surf.param(p)) {
                 for k in 0..2 {
                     lo[k] = lo[k].min(p[k]);
                     hi[k] = hi[k].max(p[k]);
@@ -69,7 +67,10 @@ fn box_has_6_faces_12_edges_8_corners() {
     }
     // every edge is a straight line, shared by exactly two co-edges (two faces)
     for e in &b.edges {
-        assert!(matches!(e.curve, Curve::Line { .. }), "box edge is a Line");
+        assert!(
+            matches!(e.curve.carrier(), Some(rapidmesh_geom::Curve::Line { .. })),
+            "box edge is a Line"
+        );
         assert_eq!(e.coedges.len(), 2, "box edge is used by two faces");
     }
 }
@@ -93,15 +94,19 @@ fn sphere_is_one_closed_face_no_edges() {
 
 #[test]
 fn airfoil_recovers_extruded_face_and_profile_edges() {
-    let profile = naca0012_profile(1.0, 40);
-    let solid = extrude_spline_profile(
-        profile,
-        80,
+    let pts = naca0012_points(1.0, 40);
+    let n = pts.len() - 1;
+    let solid = extrude_profile(
+        &[pts[0], pts[n]],
+        &[ProfileEdge::Spline(pts[1..n].to_vec()), ProfileEdge::Line],
         [0.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
         [0.0, 0.0, 0.5],
-    );
+        None,
+        1e-2,
+    )
+    .unwrap();
     let mut scene = Scene::new();
     scene.add_solid(solid);
     let plc = scene.assemble();
@@ -116,11 +121,11 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
     assert_eq!(n_ext, 1, "one extruded mantle face");
     assert!(b.faces.len() >= 3, "mantle + caps, got {}", b.faces.len());
 
-    // the mantle's rim edges are recovered as analytic profile curves
+    // the mantle's rim edges are recovered as the profile set in space
     let n_profile = b
         .edges
         .iter()
-        .filter(|e| matches!(e.curve, Curve::Profile { .. }))
+        .filter(|e| matches!(e.curve.carrier(), Some(rapidmesh_geom::Curve::Nurbs(_))))
         .count();
     assert!(n_profile >= 1, "at least one profile edge, got {n_profile}");
     assert!(!b.edges.is_empty(), "airfoil has feature edges");
@@ -138,7 +143,7 @@ fn airfoil_recovers_extruded_face_and_profile_edges() {
         .iter()
         .flat_map(|lp| lp.coedges.iter())
         .flat_map(|&cid| b.edge(b.coedge(cid).edge).chain.iter())
-        .map(|&p| surf.project_uv(p))
+        .map(|&p| surf.param(p))
         .collect();
     assert!(uv.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
     let n_uv = uv.iter().filter(|p| **p != uv[0]).count();
@@ -162,8 +167,13 @@ fn oblique_cylinder_cut_recovers_ellipse() {
     let (a, mi) = b
         .edges
         .iter()
-        .find_map(|e| match e.curve {
-            Curve::Ellipse { a, b, .. } => Some((a, b)),
+        .find_map(|e| match e.curve.carrier() {
+            Some(c @ &rapidmesh_geom::Curve::Ellipse { p, q, .. }) if c.name() == "ellipse" => {
+                Some((
+                    rapidmesh_exact::vector::len(p),
+                    rapidmesh_exact::vector::len(q),
+                ))
+            }
             _ => None,
         })
         .expect("oblique rim recovered as an Ellipse");

@@ -97,6 +97,9 @@ class _MeshBase:
         self.face_tags: np.ndarray = native.face_tags()
         self.face_regions: np.ndarray = native.face_regions()
         self.face_surfaces: np.ndarray = native.face_surfaces()
+        #: per surface id (as in ``face_surfaces``): its kind ("plane",
+        #: "cylinder", "sphere", "cone", "torus", "nurbs", ...) and parameters
+        self.surfaces: list[dict] = native.surfaces()
         self.face_patches: np.ndarray = native.face_patches()
         self.point_class: np.ndarray = native.point_class()
         self.surface_owners: np.ndarray = native.surface_owners()
@@ -139,6 +142,11 @@ class Mesh(_MeshBase):
     face_surfaces : (n_faces,) uint32
         analytic-surface id per face: faces of one input surface (a box
         side, a cylinder barrel) share one id
+    surfaces : list of dict
+        per surface id (as in ``face_surfaces``) its kind (``"plane"``,
+        ``"cylinder"``, ``"sphere"``, ``"cone"``, ``"torus"``, ``"nurbs"``,
+        ...) and the parameters of its geometry (center, axis, radius...),
+        directions (axis, normal) as unit vectors
     face_patches : (n_faces,) uint32
         geometric (B-rep) face id per face
     point_class : (n_points, 2) uint32
@@ -235,11 +243,12 @@ class Mesh(_MeshBase):
         self._native.write_msh(str(path), order)
         return Path(path)
 
-    def write_vtu(self, path: str | Path) -> Path:
+    def write_vtu(self, path: str | Path, order: int = 1) -> Path:
         """Writes the mesh as a VTK XML unstructured grid (``.vtu``): the
         tets and the geometric faces, with cell data ``region``, ``patch``
-        and ``face_tag``."""
-        self._native.write_vtu(str(path))
+        and ``face_tag``; ``order=2`` the second-order mesh (quadratic
+        tetra, see :meth:`second_order`) with cell data ``region``."""
+        self._native.write_vtu(str(path), order)
         return Path(path)
 
     def second_order(self) -> dict:
@@ -266,12 +275,6 @@ class Mesh(_MeshBase):
         region groups as element sets, every named face and sheet tag as a
         node set and, on the boundary, an element-face surface."""
         self._native.write_inp(str(path), order)
-        return Path(path)
-
-    def write_vtu_second_order(self, path: str | Path) -> Path:
-        """Writes the second-order mesh as a VTK XML unstructured grid
-        (quadratic tetra) with cell data ``region``."""
-        self._native.write_vtu_second_order(str(path))
         return Path(path)
 
     def write_foam(self, case: str | Path, polyhedral: bool = False) -> Path:
@@ -323,24 +326,24 @@ class Mesh(_MeshBase):
         worst-quality location and per-region quality, and any warnings."""
         return self._native.report()
 
-    def to_viewer_dict(self, name: str, *, second_order: bool = False) -> dict:
+    def to_viewer_dict(self, name: str, *, order: int = 1) -> dict:
         """The mesh in the viewer JSON schema (shared by the comparison
-        viewer and the showcase site), with the located defects; with
-        ``second_order`` the mid-edge nodes off their chords too, so the
-        viewer draws the curved tets curved (see :meth:`second_order`)."""
-        return json.loads(self._native.viewer_json(name, second_order))
+        viewer and the showcase site), with the located defects; of
+        ``order=2`` the mid-edge nodes off their chords too, so the viewer
+        draws the curved tets curved (see :meth:`second_order`)."""
+        return json.loads(self._native.viewer_json(name, order))
 
     def show(self, name: str = "mesh", *, clip: float | None = 0.6,
-             clip_axis: int = 1, second_order: bool = False, **kw) -> None:
+             clip_axis: int = 1, order: int = 1, **kw) -> None:
         """Open this mesh in the interactive viewer and block until the window is
         closed: orbit / zoom / pan, the region legend, the crinkle clip (``clip``
         is the fraction along ``clip_axis``; ``None`` disables it), the
         located-defect overlay, and figure export. Uses a native window
         (``pywebview``) if installed, else a Chromium window. The viewer ships in
         the wheel; a window backend does not -- ``pip install pywebview`` (or
-        ``playwright``). With ``second_order`` the curved tets of the
+        ``playwright``). With ``order=2`` the curved tets of the
         second-order mesh are drawn curved, their faces shaded smoothly."""
-        _show(self.to_viewer_dict(name, second_order=second_order), name, clip=clip,
+        _show(self.to_viewer_dict(name, order=order), name, clip=clip,
               clip_axis=clip_axis, **kw)
 
 
@@ -497,7 +500,7 @@ def _filt(sel, kw):
     """A selector descriptor: ``None`` (unfiltered) or a dict of criteria."""
     if sel is None and not kw:
         return None
-    f = dict(kw)
+    f = {k: v for k, v in kw.items() if v is not None}
     if sel is not None:
         f["id"] = sel
     return f
@@ -711,8 +714,8 @@ class Geometry:
     def edge(self, sel=None, **kw) -> _Scope:
         """Scope on edges by ``id=``/``near=``/``between=``/``kind=``, or all.
         ``kind`` names the edge's curve: "line", "circle", "ellipse",
-        "spline", "profile" (a swept profile's edge), "intersection" (of two
-        curved surfaces) or "polyline" (no analytic curve)."""
+        "spline" (a B-spline, a swept profile's edge too), "intersection" (of
+        two curved surfaces) or "polyline" (no analytic curve)."""
         return _Scope(self, "edge", None, None, _filt(sel, kw))
 
     def _topology(self):
@@ -800,15 +803,13 @@ class Geometry:
 
     def airfoil_naca0012(self, chord: float, span: float, position=None,
                          span_axis=None, *, n_per_side: int | None = None,
-                         n_seg: int | None = None, maxh: float | None = None,
-                         void: bool = False) -> Solid:
+                         maxh: float | None = None, void: bool = False) -> Solid:
         """A NACA 0012 airfoil (chord along +x, leading edge at ``position``)
         extruded along ``span_axis`` by ``span``. The curved skin is one
-        analytic extruded-spline surface; the trailing edge is a flat blunt
-        face. ``n_per_side`` (40) controls profile control points, ``n_seg``
-        (120) the facet count along the chord."""
+        analytic extruded-spline surface through ``n_per_side`` (40) points
+        a side; the trailing edge is a flat blunt face."""
         return self._add("naca0012", maxh, void, chord=chord, span=span, position=position,
-                         span_axis=span_axis, n_per_side=n_per_side, n_seg=n_seg)
+                         span_axis=span_axis, n_per_side=n_per_side)
 
     def cone(self, r1: float, r2: float, height: float, position=None, axis=None, *,
              segments: int | None = None, uniform: bool | None = None, rows: int | None = None,
@@ -912,26 +913,26 @@ class Geometry:
     def translate(self, obj, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0):
         """Moves a solid or sheet by ``(dx, dy, dz)`` in place; its faces
         keep their roles. Returns ``obj``."""
-        self._native.transform(_obj(obj), "translate", [dx, dy, dz], [0, 0, 0], 0.0)
+        self._native.transform(_obj(obj), {"translate": [dx, dy, dz]})
         return obj
 
     def rotate(self, obj, angle: float, axis=(0, 0, 1), center=(0, 0, 0)):
         """Turns a solid or sheet by ``angle`` radians (right-handed) about
         the axis along ``axis`` through ``center``, in place."""
-        self._native.transform(_obj(obj), "rotate", list(axis), list(center), float(angle))
+        self._native.transform(_obj(obj), {"rotate": {"angle": float(angle), "axis": list(axis), "center": list(center)}})
         return obj
 
     def mirror(self, obj, normal=(1, 0, 0), point=(0, 0, 0)):
         """Mirrors a solid or sheet across the plane through ``point`` with
         normal ``normal``, in place."""
-        self._native.transform(_obj(obj), "mirror", list(normal), list(point), 0.0)
+        self._native.transform(_obj(obj), {"mirror": {"normal": list(normal), "point": list(point)}})
         return obj
 
     def stretch(self, obj, fx: float = 1.0, fy: float = 1.0, fz: float = 1.0, center=(0, 0, 0)):
         """Scales a solid or sheet by ``fx``, ``fy``, ``fz`` about
         ``center``, in place. Unequal factors keep planes, discrete patches
         and NURBS exact; the other curved faces become faceted."""
-        self._native.transform(_obj(obj), "stretch", [fx, fy, fz], list(center), 0.0)
+        self._native.transform(_obj(obj), {"stretch": {"factors": [fx, fy, fz], "center": list(center)}})
         return obj
 
     def copy(self, obj):
@@ -947,10 +948,10 @@ class Geometry:
         if (spacing is None) == (rotation is None):
             raise ValueError("give exactly one of spacing and rotation")
         if spacing is not None:
-            step = ("translate", list(spacing), [0, 0, 0], 0.0)
+            step = {"translate": list(spacing)}
         else:
-            step = ("rotate", list(axis), list(center), float(rotation))
-        return [_unobj(self._native, t) for t in self._native.array(_obj(obj), int(count), *step)]
+            step = {"rotate": {"angle": float(rotation), "axis": list(axis), "center": list(center)}}
+        return [_unobj(self._native, t) for t in self._native.array(_obj(obj), int(count), step)]
 
     def intersect(self, target: Solid, *tools: Solid) -> Solid:
         """Cuts ``target`` down to what it has in common with every tool (the
@@ -1005,21 +1006,21 @@ class Geometry:
 
         def pick(e):
             if isinstance(e, (str, int)):
-                return ("of", role(e), 0, 0)
+                return {"of": role(e)}
             if len(e) == 2:
-                return ("between", role(e[0]), role(e[1]), 0)
+                return {"between": [role(e[0]), role(e[1])]}
             if len(e) == 3 and isinstance(e[1], Solid):
-                return ("with", role(e[0]), e[1].index, role(e[2], e[1]))
+                return {"with": [role(e[0]), e[1].index, role(e[2], e[1])]}
             raise ValueError(f"cannot read the edge pick {e!r}")
 
         if edges is None:
-            picks = [("all", 0, 0, 0)]
+            picks = ["all"]
         elif isinstance(edges, list):
             picks = [pick(e) for e in edges]
         else:
             picks = [pick(edges)]
         faces = self._native.cut_edges(
-            solid.region, solid.index, picks, kind, float(size), void)
+            solid.region, solid.index, picks, {kind: float(size)}, void)
         if void:
             return [_solid(self._native, (g, i)) for g, i, _ in faces]
         return _solid(self._native, (solid.region, solid.index))
@@ -1158,7 +1159,9 @@ class Geometry:
             global target edge length (defaults to the geometry's;
             unbounded if neither is given)
         max_points : int, optional
-            best-effort refinement point budget
+            the most points the volume refinement adds over the whole mesh
+            (none by default); where it stops the refinement short of the
+            size, a warning says so
         grading : float
             size-grading Lipschitz constant: the edge-length target may grow
             by at most this factor per unit distance from finer features

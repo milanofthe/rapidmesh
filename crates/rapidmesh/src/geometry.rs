@@ -16,14 +16,13 @@ use crate::shapes::{Shape, Sheet};
 use crate::{Error, Result};
 use rapidmesh_brep::{EdgeFilter, FaceFilter, Model, Topology};
 use rapidmesh_exact::clock::Instant;
-use rapidmesh_geom::vec3::len;
+use rapidmesh_exact::vector::len;
+use rapidmesh_exact::vector::V3;
 use rapidmesh_geom::{FaceTag, RegionTag, Scene};
 use rapidmesh_tet::PeriodicPair;
 use rapidmesh_tet::{quality_stats, MeshParams};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
-
-type P3 = [f64; 3];
 
 /// A solid added to a [`Geometry`]: `region` tags its tets, `index` (the
 /// insertion order, voids included) its surfaces. Voids share region 0 but
@@ -35,7 +34,8 @@ pub struct Solid {
 }
 
 /// The dimension a [`Scope`] selects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Level {
     Region,
     Surf,
@@ -161,7 +161,9 @@ impl Default for Sizing {
 pub struct MeshOptions {
     /// Target edge length (the geometry's if `None`, unbounded if neither).
     pub maxh: Option<f64>,
-    /// Refinement point budget.
+    /// The most points the volume refinement adds, over the whole mesh
+    /// (each region and block its share): none by default. A warning says
+    /// where it stopped the refinement short of the size.
     pub max_points: usize,
     /// Size grading: the target grows by at most this much per unit
     /// distance from finer features.
@@ -204,7 +206,7 @@ impl Default for MeshOptions {
     fn default() -> MeshOptions {
         MeshOptions {
             maxh: None,
-            max_points: 500_000,
+            max_points: usize::MAX,
             grading: None,
             cells_across: None,
             tol_edge: None,
@@ -251,7 +253,7 @@ pub struct SurfaceOptions {
 /// g.label_solid(diel, "substrate");
 /// g.add_sheet(&Sheet::xy(1.0, 1.0, [1.5, 1.5, 2.0]), 7, None)?;
 /// let mesh = g.mesh(&MeshOptions::default())?;
-/// mesh.write_msh("cell.msh")?;
+/// mesh.write_msh("cell.msh", rapidmesh::Order::Linear)?;
 /// # Ok::<(), rapidmesh::Error>(())
 /// ```
 pub struct Geometry {
@@ -268,11 +270,11 @@ pub struct Geometry {
     face_maxh: BTreeMap<u32, f64>,
     /// Target size on the surfaces of a solid, per solid index.
     surface_maxh: BTreeMap<u32, f64>,
-    size_points: Vec<(P3, f64)>,
+    size_points: Vec<(V3, f64)>,
     sizing: Sizing,
     /// Periodic face pairs as given: master and slave selections and the
     /// shift, paired on the model when a mesh is made.
-    periodic: Vec<(Scope, Scope, P3)>,
+    periodic: Vec<(Scope, Scope, V3)>,
     /// Named faces and edges as given, resolved when a mesh is made.
     named: Vec<(String, Scope)>,
     labels: Labels,
@@ -640,12 +642,12 @@ impl Geometry {
     }
 
     /// Target size `h` at point `p`, recovering along the grading.
-    pub fn add_size_point(&mut self, p: P3, h: f64) {
+    pub fn add_size_point(&mut self, p: V3, h: f64) {
         self.size_points.push((p, h));
     }
 
     /// [`Geometry::add_size_point`] for each point with its own size.
-    pub fn add_size_points(&mut self, points: &[P3], hs: &[f64]) -> Result<()> {
+    pub fn add_size_points(&mut self, points: &[V3], hs: &[f64]) -> Result<()> {
         if points.len() != hs.len() {
             return Err(Error::Invalid(format!(
                 "{} points but {} sizes",
@@ -760,7 +762,7 @@ impl Geometry {
     /// `shift` (default: the difference of the area-weighted centroids).
     /// Once per direction of a unit cell, on a complete geometry. Returns
     /// the shift.
-    pub fn periodic(&mut self, master: &Scope, slave: &Scope, shift: Option<P3>) -> Result<P3> {
+    pub fn periodic(&mut self, master: &Scope, slave: &Scope, shift: Option<V3>) -> Result<V3> {
         let (_, t) = self.pair_faces(master, slave, shift)?;
         self.periodic.push((master.clone(), slave.clone(), t));
         Ok(t)
@@ -773,8 +775,8 @@ impl Geometry {
         &self,
         master: &Scope,
         slave: &Scope,
-        shift: Option<P3>,
-    ) -> Result<(Vec<PeriodicPair>, P3)> {
+        shift: Option<V3>,
+    ) -> Result<(Vec<PeriodicPair>, V3)> {
         if master.level != Level::Surf || slave.level != Level::Surf {
             return Err(Error::Invalid(
                 "periodic takes two face selections (surf scopes)".into(),

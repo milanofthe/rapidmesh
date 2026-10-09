@@ -130,6 +130,44 @@ impl TaggedPlc {
     }
 }
 
+/// A triangle mesh in an order of its own: the points by where they lie,
+/// the triangles by their points, each turned to start at its first (its
+/// winding kept). Returns the points, the triangles, the new index of each
+/// old point and the old index of each new triangle (to carry what goes
+/// with them).
+pub fn canonical_mesh(
+    points: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, Vec<u32>, Vec<usize>) {
+    let mut by_place: Vec<usize> = (0..points.len()).collect();
+    by_place.sort_by(|&a, &b| {
+        let (p, q) = (points[a], points[b]);
+        p[0].total_cmp(&q[0])
+            .then(p[1].total_cmp(&q[1]))
+            .then(p[2].total_cmp(&q[2]))
+    });
+    let mut new = vec![0u32; points.len()];
+    for (i, &v) in by_place.iter().enumerate() {
+        new[v] = i as u32;
+    }
+    let turned: Vec<[u32; 3]> = tris
+        .iter()
+        .map(|t| {
+            let t = t.map(|v| new[v as usize]);
+            let k = (0..3).min_by_key(|&k| t[k]).unwrap_or(0);
+            [t[k], t[(k + 1) % 3], t[(k + 2) % 3]]
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..tris.len()).collect();
+    order.sort_by_key(|&t| turned[t]);
+    (
+        by_place.iter().map(|&v| points[v]).collect(),
+        order.iter().map(|&t| turned[t]).collect(),
+        new,
+        order,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{solid_box, Scene};

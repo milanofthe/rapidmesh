@@ -1,7 +1,7 @@
 //! The Rust API end to end: building, sizing, naming, periodic pairs,
 //! meshing and what a solver reads off the result.
 
-use rapidmesh::shapes::{Cuboid, Cylinder, Sheet, Sphere};
+use rapidmesh::shapes::{Cuboid, Cylinder, Prism, Sheet, Sphere};
 use rapidmesh::{EdgeFilter, FaceFilter, Geometry, MeshOptions, Scope, SurfaceOptions};
 
 fn side(n: [f64; 3]) -> Scope {
@@ -116,6 +116,64 @@ fn unions_and_voids() {
         .all(|r| r.0 != b.region || b.region == u.region));
 }
 
+/// Conductors meshed as regions of their own to place their walls, then
+/// left out: a via on a strip, touching it, in air. The air keeps its tets
+/// and points; the walls stay as boundary faces, region 0 on the conductor
+/// side; the face between via and strip goes; the sets and the fidelity
+/// check know the conductors are gone.
+#[test]
+fn regions_left_out_leave_their_walls() {
+    let mut g = Geometry::new(Some(0.5));
+    let air = g.add(Cuboid::new([4.0, 4.0, 3.0])).unwrap();
+    let strip = g
+        .add(Cuboid::new([3.0, 1.0, 0.5]).at([0.5, 1.5, 1.0]))
+        .unwrap();
+    let via = g.add(Cylinder::new(0.3, 1.0).at([2.0, 2.0, 1.5])).unwrap();
+    g.label_solid(air, "air");
+    g.label_solid(strip, "strip");
+    g.label_solid(via, "via");
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    clean(&m);
+    let w = m.without_regions(&[strip.region, via.region]);
+    clean(&w);
+    assert!(w.tet_regions.iter().all(|r| r.0 == air.region));
+    assert_eq!(
+        w.tets.len(),
+        m.tet_regions.iter().filter(|r| r.0 == air.region).count()
+    );
+    let mut used = vec![false; w.points.len()];
+    for t in &w.tets {
+        for &v in t {
+            used[v] = true;
+        }
+    }
+    assert!(used.iter().all(|&u| u));
+    assert!(w.plc_points <= w.points.len());
+    assert!(w
+        .faces
+        .iter()
+        .all(|f| f.regions.iter().any(|r| r.0 == air.region)));
+    let walls = w
+        .faces
+        .iter()
+        .filter(|f| f.regions.iter().any(|r| r.0 == 0))
+        .count();
+    assert!(walls > 0);
+    let names: Vec<String> = w
+        .labels
+        .region_groups()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["air"]);
+    // One at a time comes to the same.
+    let one = m
+        .without_regions(&[via.region])
+        .without_regions(&[strip.region]);
+    assert_eq!(one.tets, w.tets);
+    clean(&one);
+}
+
 #[test]
 fn surface_mesh_carries_the_names() {
     let mut g = cell();
@@ -221,6 +279,40 @@ fn polygon_winding_does_not_matter() {
             })
             .sum();
         assert!((area - 144.0).abs() < 1e-9, "plane area {area}, want 144");
+    }
+}
+
+/// A conductor where a port arm joins a ring (a rapidfem RFIC layout,
+/// #366): two sharp notches in a prism, one ending in an edge of 0.1, its
+/// walls tilted planes whose samples lie off their plane by their
+/// rounding. It meshes watertight at sizes far above the notches and down
+/// to a fraction of them (#369; their angle of 1.5 degrees leaves flat tets
+/// in them at the coarse sizes).
+#[test]
+fn tilted_walls_by_a_sharp_notch_mesh() {
+    let points = vec![
+        [-57.669178, 109.886431],
+        [-61.95484492300267, 107.41210027857939],
+        [-57.0, 110.10240174572485],
+        [-57.0, 102.4],
+        [-67.0, 102.4],
+        [-67.0, 104.32363451093639],
+        [-62.044197836073565, 107.3605123549652],
+        [-66.329852, 104.886189],
+        [-67.0, 106.04691937652714],
+        [-67.0, 112.4],
+        [-59.12038774885818, 112.4],
+    ];
+    for h in [3.0, 2.0, 1.5, 1.0, 0.7, 0.3] {
+        let mut g = Geometry::new(Some(40.0));
+        g.add_solid(
+            Prism::new(points.clone(), 1.26).at([0.0, 0.0, 4.365]),
+            Some(h),
+            false,
+        )
+        .unwrap();
+        let m = g.mesh(&MeshOptions::default()).unwrap();
+        assert!(m.diagnostics().mesh.watertight);
     }
 }
 
@@ -745,6 +837,181 @@ fn arrays_copy_and_intersect_cuts_exactly() {
     assert_eq!(region_volume(&m, t.region), 0.0, "the tool is used up");
 }
 
+/// Sheet booleans in one plane: a plate with a round hole extrudes into a
+/// block with an exact bore; a ground with a tapered slot and a disc cut
+/// out (a Vivaldi antenna's) meshes with the area it should have.
+#[test]
+fn sheet_booleans_keep_round_rims() {
+    use rapidmesh::BoolOp;
+    use rapidmesh_geom::Surface;
+    use std::f64::consts::PI;
+    let mut g = Geometry::new(Some(0.25));
+    let plate = g
+        .add_sheet(&Sheet::xy(4.0, 4.0, [0.0; 3]), 1, None)
+        .unwrap();
+    let hole = g
+        .add_sheet(&Sheet::disc(1.0, [2.0, 2.0, 0.0], [0.0, 0.0, 1.0]), 2, None)
+        .unwrap();
+    let plate = g.sheet_boolean(BoolOp::Difference, plate, &[hole]).unwrap();
+    let block = g.extrude(plate, [0.0, 0.0, 1.0], None).unwrap();
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    clean(&m);
+    let bore: Vec<usize> = m
+        .faces
+        .iter()
+        .filter(|f| {
+            matches!(
+                m.surfaces[f.surface as usize],
+                Some(Surface::Cylinder { .. })
+            )
+        })
+        .flat_map(|f| f.tri)
+        .collect();
+    assert!(!bore.is_empty());
+    for v in bore {
+        let q = m.points[v];
+        assert!(
+            ((q[0] - 2.0).hypot(q[1] - 2.0) - 1.0).abs() < 1e-9,
+            "{q:?} is off the bore"
+        );
+    }
+    let vol = region_volume(&m, block.region);
+    assert!((vol - (16.0 - PI)).abs() < 0.01 * PI, "{vol}");
+    assert!(
+        m.faces.iter().all(|f| f.face_tag.0 != 2),
+        "the tool is used up"
+    );
+
+    let mut g = Geometry::new(Some(0.5));
+    let ground = g
+        .add_sheet(&Sheet::xy(10.0, 6.0, [0.0; 3]), 1, None)
+        .unwrap();
+    let taper = g
+        .add_sheet(
+            &Sheet::polygon(vec![[3.0, 3.0], [10.5, 1.0], [10.5, 5.0]], [0.0; 3]),
+            1,
+            None,
+        )
+        .unwrap();
+    let disc = g
+        .add_sheet(&Sheet::disc(1.0, [1.5, 3.0, 0.0], [0.0, 0.0, 1.0]), 1, None)
+        .unwrap();
+    g.sheet_boolean(BoolOp::Difference, ground, &[taper, disc])
+        .unwrap();
+    let sm = g.surface_mesh(&SurfaceOptions::default()).unwrap();
+    let area: f64 = sm
+        .faces
+        .iter()
+        .map(|f| {
+            let [a, b, c] = f.tri.map(|v| sm.points[v]);
+            let (u, w) = ([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]);
+            0.5 * (u[0] * w[1] - u[1] * w[0]).abs()
+        })
+        .sum();
+    // The taper's part on the ground (to x = 10) and the disc, whose rim
+    // the mesh follows by chords at the default angle tolerance.
+    let taper_area = 0.5 * 7.0 * (4.0 * 7.0 / 7.5);
+    let want = 60.0 - taper_area - PI;
+    assert!((area - want).abs() < 0.07 * PI, "{area} against {want}");
+}
+
+/// A disc cut out across a plate's edge leaves an arc. Its ends are where
+/// the outline leaves the plate's edge for the disc's, so corners; at x = 4
+/// they are samples of the disc's rim, at 4.3 crossings between them, which
+/// the B-rep edge passes by nearness to the rim (#376). Either way the arc
+/// keeps its circle.
+#[test]
+fn a_rim_cut_across_an_edge_keeps_its_circle() {
+    use rapidmesh::BoolOp;
+    for x in [4.0, 4.3] {
+        let mut g = Geometry::new(Some(0.5));
+        let plate = g
+            .add_sheet(&Sheet::xy(4.0, 4.0, [0.0; 3]), 1, None)
+            .unwrap();
+        let disc = g
+            .add_sheet(&Sheet::disc(1.0, [x, 2.0, 0.0], [0.0, 0.0, 1.0]), 2, None)
+            .unwrap();
+        g.sheet_boolean(BoolOp::Difference, plate, &[disc]).unwrap();
+        let m = g.model().unwrap();
+        let arcs = m
+            .brep
+            .edges
+            .iter()
+            .filter(|e| {
+                matches!(&e.curve, rapidmesh_brep::Curve::Piece { curve, .. } if curve.as_circle().is_some())
+            })
+            .count();
+        assert_eq!(arcs, 1, "x {x}: the arc the cut leaves");
+    }
+}
+
+/// A polygon in any plane: given by its plane's axes, it lies where they
+/// say, and its booleans with a disc in that plane keep the points exact
+/// where the plane is square to an axis.
+#[test]
+fn polygons_lie_in_any_plane() {
+    use rapidmesh::BoolOp;
+    let l = vec![
+        [0.0, 0.0],
+        [3.0, 0.0],
+        [3.0, 1.0],
+        [1.0, 1.0],
+        [1.0, 2.0],
+        [0.0, 2.0],
+    ];
+    let mut g = Geometry::new(Some(0.5));
+    let s = g
+        .add_sheet(
+            &Sheet::polygon_on(l.clone(), [1.0, 2.0, 3.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            1,
+            None,
+        )
+        .unwrap();
+    let d = g
+        .add_sheet(&Sheet::disc(0.3, [1.5, 2.0, 3.5], [0.0, 1.0, 0.0]), 1, None)
+        .unwrap();
+    g.sheet_boolean(BoolOp::Difference, s, &[d]).unwrap();
+    let sm = g.surface_mesh(&SurfaceOptions::default()).unwrap();
+    assert!(
+        sm.points.iter().all(|p| p[1] == 2.0),
+        "all in the plane y = 2"
+    );
+    for c in [
+        [1.0, 2.0, 3.0],
+        [4.0, 2.0, 3.0],
+        [2.0, 2.0, 4.0],
+        [1.0, 2.0, 5.0],
+    ] {
+        assert!(sm.points.contains(&c), "{c:?} is a corner");
+    }
+    // Tilted: the L's area, wherever its axes put it.
+    let (u, v) = ([0.6, 0.8, 0.0], [0.0, 0.0, 1.0]);
+    let mut g = Geometry::new(Some(0.5));
+    g.add_sheet(&Sheet::polygon_on(l, [0.0; 3], u, v), 1, None)
+        .unwrap();
+    let sm = g.surface_mesh(&SurfaceOptions::default()).unwrap();
+    let area: f64 = sm
+        .faces
+        .iter()
+        .map(|f| {
+            let [a, b, c] = f.tri.map(|i| sm.points[i]);
+            let (p, q) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let n = [
+                p[1] * q[2] - p[2] * q[1],
+                p[2] * q[0] - p[0] * q[2],
+                p[0] * q[1] - p[1] * q[0],
+            ];
+            0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
+        })
+        .sum();
+    assert!((area - 4.0).abs() < 1e-9, "{area}");
+    let flat = Sheet::polygon_on(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [0.0; 3], u, u);
+    assert!(Geometry::new(None).add_sheet(&flat, 1, None).is_err());
+}
+
 #[test]
 fn sheets_extrude_into_solids_on_them() {
     use rapidmesh::Transform;
@@ -765,6 +1032,8 @@ fn sheets_extrude_into_solids_on_them() {
         points: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
         holes: vec![vec![[0.5, 0.5], [0.5, 1.5], [1.5, 1.5], [1.5, 0.5]]],
         position: [0.0; 3],
+        u: [1.0, 0.0, 0.0],
+        v: [0.0, 1.0, 0.0],
     };
     let s = g.add_sheet(&sq, 1, None).unwrap();
     g.transform(
@@ -932,6 +1201,56 @@ fn step_bodies_take_their_names() {
     }
 }
 
+/// Every edge of the STEP parts takes its curve from the file, found by
+/// its samples, closed B-splines too (#374): no edge falls back to the
+/// meeting of its faces or to its chain.
+#[test]
+fn step_edges_take_their_file_curves() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rapidmesh-step/fixtures");
+    for name in ["loft", "bracket", "flange", "turned_part"] {
+        let mut g = Geometry::new(None);
+        g.import_step(dir.join(format!("{name}.step")), None)
+            .unwrap();
+        let m = g.model().unwrap();
+        for (i, e) in m.brep.edges.iter().enumerate() {
+            assert!(
+                matches!(e.curve, rapidmesh_brep::Curve::Piece { .. }),
+                "{name}: edge {i} is {:?}",
+                e.curve
+            );
+        }
+    }
+}
+
+/// A STEP file read once gives its unit and its bodies, which go in one
+/// by one like any shape: in another order, some left out, moved.
+#[test]
+fn step_bodies_go_in_one_by_one() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rapidmesh-step/fixtures");
+    let step = rapidmesh::read_step(dir.join("assembly.step")).unwrap();
+    assert_eq!(step.metres_per_unit, 1e-3);
+    let at = |name: &str| step.bodies.iter().position(|b| b.name == name).expect(name);
+    let mut g = Geometry::new(Some(1.5));
+    g.add_body(&step.bodies[at("base")], None, false);
+    let plate = g.add_body(&step.bodies[at("plate")], None, false);
+    g.transform(plate, rapidmesh::Transform::Translate([100.0, 0.0, 0.0]))
+        .unwrap();
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    assert!(m.diagnostics().mesh.watertight);
+    let groups = m.labels.region_groups();
+    let mut names: Vec<&str> = groups.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["base", "plate"]);
+    let x = m
+        .tets
+        .iter()
+        .zip(&m.tet_regions)
+        .filter(|(_, r)| r.0 == plate.region)
+        .map(|(t, _)| m.points[t[0]][0])
+        .fold(f64::INFINITY, f64::min);
+    assert!(x > 50.0, "the plate moved, its tets from x {x}");
+}
+
 #[test]
 fn only_tets_on_a_curved_surface_are_curved() {
     // A cylinder: tets with an edge on its mantle are curved, every other
@@ -979,5 +1298,53 @@ fn only_tets_on_a_curved_surface_are_curved() {
                     .all(|&e| so.points[t[4 + e] as usize] == mid(t, e)));
             }
         }
+    }
+}
+
+/// A cube as a mesh boolean writes it (manifold, issue #1 of the public
+/// repo): a corner on the front top edge, with the flat cap over it that
+/// keeps the edge matched. It imports closed and meshes.
+#[test]
+fn a_mesh_boolean_cube_with_a_cap_meshes() {
+    let obj = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\nv 0.5 0 1\n\
+               f 1 4 3\nf 1 3 2\nf 5 6 7\nf 5 7 8\nf 1 2 6\nf 1 6 9\nf 1 9 5\nf 6 5 9\n\
+               f 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
+    let path = std::env::temp_dir().join("rapidmesh_facade_cap_cube.obj");
+    std::fs::write(&path, obj).unwrap();
+    let mut g = Geometry::new(Some(0.3));
+    g.add(rapidmesh::shapes::Import::new(&path)).unwrap();
+    let m = g.mesh(&MeshOptions::default()).unwrap();
+    clean(&m);
+    assert!((meshed_volume(&m) - 1.0).abs() < 1e-9);
+}
+
+/// Triangles that make no solid are an error, not a panic.
+#[test]
+fn triangles_that_make_no_solid_are_refused() {
+    use rapidmesh::shapes::Triangles;
+    let tet = vec![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    for (verts, tris) in [
+        (tet.clone(), vec![]),
+        (
+            tet.clone(),
+            vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 9]],
+        ),
+        (tet.clone(), vec![[0, 2, 1], [0, 1, 3], [0, 3, 2]]),
+        (
+            vec![[0.0; 3]; 4],
+            vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+        ),
+    ] {
+        let mut g = Geometry::new(Some(0.3));
+        let added = g.add(Triangles { verts, tris });
+        assert!(
+            matches!(added, Err(rapidmesh::Error::Invalid(_))),
+            "{added:?}"
+        );
     }
 }

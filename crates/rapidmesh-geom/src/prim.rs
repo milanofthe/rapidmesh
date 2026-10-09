@@ -129,7 +129,7 @@ pub fn extrude_polygon(
     v: [f64; 3],
     h: [f64; 3],
 ) -> Faceted {
-    extrude_sheet(&sheet_polygon(outer, holes, base, u, v), h, None)
+    extrude_sheet(&sheet_polygon(outer, holes, base, u, v), h)
         .expect("a polygon extrudes out of its plane")
 }
 
@@ -253,8 +253,25 @@ fn signed_volume(f: &Faceted) -> f64 {
 /// triangles are grouped as an import is, at creases of
 /// [`crate::import::CREASE_DEG`]: a flat group gets a plane carrier, a curved
 /// one its own facets as a discrete carrier, and the creases become edges.
-pub fn mesh_solid(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Faceted {
-    assert!(!tris.is_empty(), "mesh_solid needs at least one triangle");
+/// No triangles, a corner index past `verts` or no volume is an error.
+pub fn mesh_solid(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> Result<Faceted, crate::import::ImportError> {
+    use crate::import::ImportError::Parse;
+    if tris.is_empty() {
+        return Err(Parse("no triangles".into()));
+    }
+    if let Some(i) = tris
+        .iter()
+        .position(|t| t.iter().any(|&v| v as usize >= verts.len()))
+    {
+        return Err(Parse(format!(
+            "triangle {i} {:?} has a corner past the {} points",
+            tris[i],
+            verts.len()
+        )));
+    }
     // Outward first, so the carriers see the right side.
     let vol: f64 = tris
         .iter()
@@ -263,7 +280,9 @@ pub fn mesh_solid(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Faceted {
             dot(a, cross(b, c))
         })
         .sum();
-    assert!(vol.abs() > 0.0, "degenerate mesh_solid (zero volume)");
+    if vol == 0.0 || !vol.is_finite() {
+        return Err(Parse("the triangles enclose no volume".into()));
+    }
     let soup: Vec<Tri> = tris
         .iter()
         .map(|t| {
@@ -275,7 +294,10 @@ pub fn mesh_solid(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Faceted {
             }
         })
         .collect();
-    crate::import::faceted_from_tris(soup, crate::import::CREASE_DEG)
+    Ok(crate::import::faceted_from_tris(
+        soup,
+        crate::import::CREASE_DEG,
+    ))
 }
 
 /// Circular frustum from `base_center` along the full height vector `axis`,
@@ -777,6 +799,9 @@ pub fn sheet_disk(center: [f64; 3], e1: [f64; 3], e2: [f64; 3], segments: usize)
             q: e2,
         },
         points,
+        params: (0..=segments)
+            .map(|i| 2.0 * std::f64::consts::PI * i as f64 / segments as f64)
+            .collect(),
     });
     f.push_flat(PlanarFacet::new(ring), &tris, s);
     f
@@ -830,16 +855,12 @@ pub fn sheet_nurbs(surface: &NurbsSurface, segments: [usize; 2]) -> Faceted {
 
 /// The solid a flat sheet sweeps along `w` (not parallel to it): the sheet's
 /// own faces as the bottom (its vertices kept exactly), the same moved by
-/// `w` as the top, and a wall along every boundary edge. The walls of a
-/// loop get one carrier each, a plane per edge, unless `rim` gives the
-/// carrier all outer walls share (the cylinder under a disc). Surfaces:
-/// bottom, top, then the walls; the sheet's corners are corners at both
-/// ends.
-pub fn extrude_sheet(
-    sheet: &Faceted,
-    w: [f64; 3],
-    rim: Option<Surface>,
-) -> Result<Faceted, String> {
+/// `w` as the top, and a wall along every boundary edge. A wall along a
+/// circle the sheet declares (a disc's rim, a round hole cut by one) is on
+/// the cylinder the circle sweeps, which needs `w` along its axis; every
+/// other wall is a plane of its own. Surfaces: bottom, top, then the walls;
+/// the sheet's corners are corners at both ends.
+pub fn extrude_sheet(sheet: &Faceted, w: [f64; 3]) -> Result<Faceted, String> {
     if sheet.flats.is_empty()
         || sheet.tris.len() != sheet.flats.iter().map(|f| f.tris.len()).sum::<usize>()
     {
@@ -865,8 +886,28 @@ pub fn extrude_sheet(
     let p0 = sheet.tris[0].v[0];
     let bottom = f.add_surface(Surface::plane(p0, scale(n0, -sign)));
     let top = f.add_surface(Surface::plane(add(p0, w), scale(n0, sign)));
-    let rim_surface = rim.map(|k| f.add_surface(k));
     let up = |p: [f64; 3]| add(p, w);
+    // The declared curve a wall runs along: its ends and its middle on the
+    // curve's points (a crossing a boolean cut into a rim lies on a chord).
+    let (lo, hi) = rapidmesh_exact::vector::bbox(sheet.tris.iter().flat_map(|t| t.v.iter()));
+    let tol = 1e-9
+        * dot(
+            rapidmesh_exact::vector::sub(hi, lo),
+            rapidmesh_exact::vector::sub(hi, lo),
+        )
+        .sqrt();
+    let curve_of = |a: [f64; 3], b: [f64; 3]| {
+        let mid = scale(add(a, b), 0.5);
+        sheet.curves.iter().position(|c| {
+            [a, b, mid].iter().all(|&q| {
+                c.points
+                    .windows(2)
+                    .any(|s| rapidmesh_exact::vector::segment_dist2(q, s[0], s[1]) <= tol * tol)
+            })
+        })
+    };
+    // The cylinder each declared circle sweeps, made at its first wall.
+    let mut swept: Vec<Option<u32>> = vec![None; sheet.curves.len()];
     for fl in &sheet.flats {
         let tris = &sheet.tris[fl.tris.clone()];
         let n = tris.iter().fold([0.0; 3], |acc, t| {
@@ -911,29 +952,45 @@ pub fn extrude_sheet(
         );
         f.push_flat(lower, &down, bottom);
         f.push_flat(upper, &raised, top);
-        let loops = std::iter::once((&fl.facet.outer, true))
-            .chain(fl.facet.holes.iter().map(|h| (h, false)));
-        for (lp, outer) in loops {
+        for lp in std::iter::once(&fl.facet.outer).chain(&fl.facet.holes) {
             for k in 0..lp.len() {
                 let (a, b) = (lp[k], lp[(k + 1) % lp.len()]);
                 let (ah, bh) = (up(a), up(b));
-                let s = match (rim_surface, outer) {
-                    (Some(s), true) => s,
-                    _ => f.add_surface(Surface::plane(
+                let rim = match curve_of(a, b) {
+                    Some(ci) => Some(match swept[ci] {
+                        Some(s) => s,
+                        None => {
+                            let c = &sheet.curves[ci].curve;
+                            let (Some((center, r)), Some(axis)) = (c.as_circle(), c.axis()) else {
+                                return Err(format!("a {} rim does not extrude", c.name()));
+                            };
+                            let sin = len(cross(axis, w)) / wl;
+                            if sin > 1e-9 {
+                                return Err("a circular rim extrudes along its axis only (an oblique sweep is an elliptic cylinder)".into());
+                            }
+                            let s = f.add_surface(Surface::cylinder(center, axis, r));
+                            swept[ci] = Some(s);
+                            s
+                        }
+                    }),
+                    None => None,
+                };
+                let s = rim.unwrap_or_else(|| {
+                    f.add_surface(Surface::plane(
                         a,
                         scale(
                             cross(rapidmesh_exact::vector::sub(b, a), w),
                             if with { 1.0 } else { -1.0 },
                         ),
-                    )),
-                };
+                    ))
+                });
                 let tris = [[a, b, bh], [a, bh, ah]].map(|t| {
                     let t = flip(t, with);
                     Tri::new(t[0], t[1], t[2])
                 });
                 // A wall of its own plane is a flat facet; one on the rim's
                 // curved carrier is its two triangles.
-                if rim_surface == Some(s) && outer {
+                if rim.is_some() {
                     tris.into_iter().for_each(|t| f.push_tri(t, s));
                 } else {
                     let quad = if with { [a, b, bh, ah] } else { [a, ah, bh, b] };

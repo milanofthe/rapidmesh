@@ -251,6 +251,16 @@ class Mesh(_MeshBase):
         self._native.write_vtu(str(path), order)
         return Path(path)
 
+    def without_regions(self, regions) -> "Mesh":
+        """The mesh without the tets of ``regions`` (a conductor meshed as a
+        region to place its walls, then a hole): the points no tet keeps go,
+        the rest numbered on in their order. A face between a region left
+        out and a kept one stays, region 0 on the side left out; a face with
+        no kept region beside it goes. The solids of those regions become
+        voids, so :meth:`sets`, :meth:`write_msh` and :meth:`write_vtu`
+        leave them out; the faces keep their geometric ids and names."""
+        return Mesh(self._native.without_regions([int(r) for r in regions]))
+
     def second_order(self) -> dict:
         """The second-order mesh: a node in the middle of every edge, on the
         true geometry where the edge lies on a curved surface or on a curve
@@ -476,6 +486,30 @@ def load_msh(path) -> Mesh:
     group, the first physical group of a surface entity its face tag, any
     further surface and curve groups named face and edge sets."""
     return Mesh(_native.load_msh(str(path)))
+
+
+class Step:
+    """A STEP file read once (:func:`read_step`): ``names`` of its bodies
+    in the file's order and ``metres_per_unit``, the length of its unit in
+    metres. :meth:`Geometry.add_body` adds a body."""
+
+    def __init__(self, native):
+        self._native = native
+        self.names: list[str] = list(native.names)
+        self.metres_per_unit: float = native.metres_per_unit
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+    def __repr__(self) -> str:
+        return f"Step({len(self)} bodies, {self.metres_per_unit} m per unit)"
+
+
+def read_step(path) -> Step:
+    """The bodies of the STEP file (AP203/AP214) at ``path`` and its unit,
+    each body a solid with its faces on their true surfaces, for
+    :meth:`Geometry.add_body`."""
+    return Step(_native.read_step(str(path)))
 
 
 def polygon_union(polygons):
@@ -960,12 +994,25 @@ class Geometry:
                                [(t.region, t.index) for t in tools])
         return target
 
+    def sheet_boolean(self, op: str, target: "Sheet", *tools: "Sheet") -> "Sheet":
+        """Makes the flat sheet ``target`` its exact boolean ``op``
+        (``"union"``, ``"difference"`` or ``"intersection"``) with every
+        tool in turn, in place; all lie in one plane, and the tools are used
+        up. Points stay as given where the plane is square to an axis (no
+        snapping to a grid), and a round rim that is left (a disc's, a hole
+        one cut) stays a circle: it is meshed by its curvature and extrudes
+        into a cylinder."""
+        self._native.sheet_boolean(op, (target.index, target.tag),
+                                   [(t.index, t.tag) for t in tools])
+        return target
+
     def extrude(self, face: "Sheet", height: float, axis=(0, 0, 1), *,
                 maxh: float | None = None) -> Solid:
         """The solid ``face`` (a flat sheet) sweeps along ``axis * height``,
-        in a region of its own; the sheet stays as its bottom face. A disc
-        extrudes along its axis only. Roles ``bottom`` and ``top``; the
-        walls follow (one cylinder under a disc, a plane per edge else)."""
+        in a region of its own; the sheet stays as its bottom face. Roles
+        ``bottom`` and ``top``; the walls follow: along a circle (a disc's
+        rim, a round hole cut by one) the cylinder, which needs ``axis``
+        along the circle's, else a plane per edge."""
         if not isinstance(face, Sheet):
             raise TypeError("extrude takes a sheet (a plate, disc or polygon)")
         vector = [float(a) * float(height) for a in axis]
@@ -1050,8 +1097,17 @@ class Geometry:
         against those, not against a tessellation. Each solid is labelled
         with the name the file gives its part, so the mesh's sets and
         physical groups carry those names. Coordinates stay in the file's
-        unit."""
+        unit; to learn it, or to add the bodies one by one, see
+        :func:`read_step` and :meth:`add_body`."""
         return [_solid(self._native, p) for p in self._native.import_step(str(path), maxh)]
+
+    def add_body(self, step: "Step", index: int, *, maxh: float | None = None,
+                 void: bool = False) -> Solid:
+        """Body ``index`` of a STEP file read by :func:`read_step` as a
+        solid like any shape, labelled with the name the file gives its
+        part; ``void`` cuts it out of the solids added before it. The bodies
+        go in in any order, each as often as wanted, some left out."""
+        return _solid(self._native, self._native.add_body(step._native, index, maxh, void))
 
     # ------------------------------------------------------------ sheets
 
@@ -1085,11 +1141,15 @@ class Geometry:
         return self._sheet("disc", tag, maxh, radius=radius, center=position, axis=axis,
                            segments=segments)
 
-    def polygon_plate(self, points, position=None, *, holes=None, tag: int = 1,
+    def polygon_plate(self, points, position=None, *, holes=None, axes=None, tag: int = 1,
                       maxh: float | None = None) -> "Sheet":
         """Polygonal sheet in an xy plane at ``position`` (2D coordinates
-        are offset by ``position``'s x, y)."""
-        return self._sheet("polygon", tag, maxh, points=points, position=position, holes=holes)
+        are offset by ``position``'s x, y), or with ``axes=(u, v)`` in the
+        plane through ``position`` they span: a point ``(a, b)`` lies at
+        ``position + a u + b v``."""
+        u, v = axes if axes is not None else (None, None)
+        return self._sheet("polygon", tag, maxh, points=points, position=position, holes=holes,
+                           u=u, v=v)
 
     def nurbs_plate(self, ctrl, *, degree=(3, 3), weights=None, knots=None, tag: int = 1,
                     maxh: float | None = None) -> "Sheet":

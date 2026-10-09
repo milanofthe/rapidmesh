@@ -35,7 +35,8 @@ const SNAP_PLANE_POINTS: usize = 3;
 
 /// T-junction repair rounds (each round splits every edge that currently has
 /// an off-corner vertex on it) before the pass declares divergence. A handful
-/// suffices for real geometry; this is a loud backstop, not a silent abandon.
+/// suffices for real geometry; this is a loud backstop (an assembly error
+/// that names the spot), not a silent abandon.
 const MAX_REPAIR_ROUNDS: usize = 64;
 
 /// True if every vertex of the facet's loops and helper triangles lies exactly
@@ -134,6 +135,11 @@ impl Scene {
     /// priority.
     pub fn replace_solid(&mut self, i: usize, f: Faceted) {
         self.solids[i] = f;
+    }
+
+    /// How many sheets were added.
+    pub fn sheet_count(&self) -> usize {
+        self.sheets.len()
     }
 
     /// The shape of sheet `i`, in the order they were added.
@@ -500,7 +506,11 @@ impl Scene {
                 // Coincident facet already emitted: merge tags. Solid
                 // interfaces win the region pair (they are equal up to
                 // orientation anyway); sheets contribute their face tag.
+                // The carrier first by geometry stays.
                 face_tags[e] = face_tags[e].max(s.tag);
+                if first_carrier(&surfaces, s.surface, surface_refs[e].0) {
+                    surface_refs[e] = SurfaceRef(s.surface);
+                }
                 continue;
             }
             emitted.insert(key, triangles.len());
@@ -600,6 +610,9 @@ impl Scene {
                 // Coincident after welding: merge tags like the exact
                 // coincident-survivor merge above.
                 out_face_tags[e] = out_face_tags[e].max(face_tags[i]);
+                if first_carrier(&surfaces, surface_refs[i].0, out_surface_refs[e].0) {
+                    out_surface_refs[e] = surface_refs[i];
+                }
                 continue;
             }
             emitted_snapped.insert(key, out_triangles.len());
@@ -628,7 +641,25 @@ impl Scene {
             &mut out_surface_refs,
             &mut out_region_tags,
             tol,
-        );
+        )
+        .map_err(|stuck| {
+            // Named by a triangle on the edge: its solid, or its sheet.
+            let (a, b) = stuck.edge;
+            let t = out_triangles
+                .iter()
+                .position(|t| t.contains(&a) && t.contains(&b))
+                .unwrap_or(0);
+            let owner = surface_owners[out_surface_refs[t].0 as usize];
+            AssembleError {
+                solid: (owner != SHEET_OWNER).then_some(owner as usize),
+                tag: out_face_tags[t].0,
+                message: format!(
+                    "its triangles meet in a T-junction at {:?} that does not resolve \
+                     in {MAX_REPAIR_ROUNDS} rounds of splits",
+                    stuck.at
+                ),
+            }
+        })?;
         let segments: Vec<[[f64; 3]; 2]> = self
             .solids
             .iter()
@@ -667,6 +698,16 @@ impl Scene {
             corners,
             curves,
         })
+    }
+}
+
+/// Whether surface `a` of `surfaces` comes before surface `b` by geometry
+/// (see [`Surface::geometry_order`]); a carrier before none.
+fn first_carrier(surfaces: &[Option<Surface>], a: u32, b: u32) -> bool {
+    match (&surfaces[a as usize], &surfaces[b as usize]) {
+        (Some(x), Some(y)) => x.geometry_order(y).is_lt(),
+        (Some(_), None) => true,
+        _ => false,
     }
 }
 
@@ -814,16 +855,8 @@ fn repair_t_junctions(
     surface_refs: &mut Vec<SurfaceRef>,
     region_tags: &mut Vec<[RegionTag; 2]>,
     tol: f64,
-) {
-    // A vertex the last round put on an edge, for the message.
-    let mut last: Option<[f64; 3]> = None;
+) -> Result<(), StuckJunction> {
     for round in 0.. {
-        assert!(
-            round < MAX_REPAIR_ROUNDS,
-            "T-junction repair did not converge in {MAX_REPAIR_ROUNDS} rounds, still at {:?}",
-            last.unwrap_or_default(),
-        );
-
         // Unique undirected edges of the current soup, in a spatial grid for
         // the vertex-near-edge search (so it is not O(V*E) on big scenes).
         let mut edge_set: HashSet<(u32, u32)> = HashSet::default();
@@ -866,11 +899,17 @@ fn repair_t_junctions(
         if edge_verts.is_empty() {
             break;
         }
-        last = edge_verts
-            .values()
-            .flatten()
-            .min()
-            .map(|&v| vertices[v as usize]);
+        if round == MAX_REPAIR_ROUNDS {
+            let (v, edge) = edge_verts
+                .iter()
+                .flat_map(|(&e, vs)| vs.iter().map(move |&v| (v, e)))
+                .min()
+                .unwrap_or_default();
+            return Err(StuckJunction {
+                edge,
+                at: vertices[v as usize],
+            });
+        }
         // Order each edge's vertices along a -> b (parameter, then index for
         // determinism) so the subdivided chain is monotone.
         for (&(a, b), vs) in edge_verts.iter_mut() {
@@ -1027,6 +1066,15 @@ fn repair_t_junctions(
         *surface_refs = ns;
         *region_tags = nr;
     }
+    Ok(())
+}
+
+/// A T-junction the repair could not resolve: a vertex `at` still on the
+/// interior of `edge` after [`MAX_REPAIR_ROUNDS`] rounds.
+#[derive(Debug)]
+struct StuckJunction {
+    edge: (u32, u32),
+    at: [f64; 3],
 }
 
 /// Subdivides triangle `tri` along its edge `{a, b}` by the vertices `vs`

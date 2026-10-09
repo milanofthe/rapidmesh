@@ -203,3 +203,18 @@ def test_named_faces_and_edges(tmp_path):
         assert n == len(sets["faces"]["port2"])
     finally:
         gmsh.finalize()
+
+
+def test_a_region_left_out_leaves_its_walls(mesh, tmp_path):
+    sub = mesh.sets()["cells"]["substrate"]
+    region = int(mesh.tet_regions[sub[0]])
+    m = mesh.without_regions([region])
+    assert set(m.tet_regions.tolist()) == set(mesh.tet_regions.tolist()) - {region}
+    assert len(m.tets) == len(mesh.tets) - len(sub)
+    assert len(np.unique(m.tets)) == len(m.points)
+    assert "substrate" not in m.sets()["cells"]
+    assert (m.face_regions == 0).any(axis=1).any()
+    assert m.diagnostics["watertight"]
+    back = rm.load_msh(m.write_msh(tmp_path / "holes.msh"))
+    assert len(back.tets) == len(m.tets)
+    assert set(back.sets()["cells"]) == {"air"}

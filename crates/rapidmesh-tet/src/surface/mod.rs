@@ -927,6 +927,13 @@ impl<'m> Rounds<'m> {
             .collect();
         inside.sort_unstable();
         inside.dedup();
+        // Edited in the order of where the edges lie, not of the faces' and
+        // points' numbers: the edits of one face meet each other.
+        let at = |g: u32| b.points[g as usize].map(f64::to_bits);
+        inside.sort_by_cached_key(|&(_, [x, y], _)| {
+            let (p, q) = (at(x), at(y));
+            (p.min(q), p.max(q))
+        });
         self.region_missing.extend(
             checked
                 .iter()
@@ -1040,13 +1047,16 @@ impl<'m> Rounds<'m> {
                 .collect();
         }
         self.refresh_edges(changed.iter().copied());
-        let outline = outline
+        let mut outline: Vec<(usize, [u32; 2], u32)> = outline
             .into_iter()
             .filter_map(|(ei, ends, at)| {
                 let g = self.sample.get(&(ei as u32, at.to_bits()))?;
                 Some((ei, ends, *g))
             })
             .collect();
+        // Put in by where the new samples lie (the splits come out of a
+        // map): one face's take each other's in turn.
+        outline.sort_by_key(|o| self.b.points[o.2 as usize].map(f64::to_bits));
         (changed, outline)
     }
 

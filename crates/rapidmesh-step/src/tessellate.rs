@@ -1621,6 +1621,7 @@ pub fn bodies(m: &Model, tol: Tolerance) -> Result<Vec<Body>, StepError> {
             .map(|e| EdgeCurve {
                 curve: m.curves[m.edges[e].curve].clone(),
                 points: t.samples[e].pts.clone(),
+                params: t.samples[e].ts.clone(),
             })
             .collect();
         if solid.placement != rapidmesh_exact::vector::Affine::IDENTITY {

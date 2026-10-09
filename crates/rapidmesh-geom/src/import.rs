@@ -5,7 +5,9 @@
 //! [`Surface::Discrete`](crate::Surface::Discrete) carrier, so the mesher REMESHES the import against
 //! its own envelope -- creases survive as B-rep feature edges, smooth areas are
 //! free to resample.
-//! Exactly degenerate (collinear) facets are dropped on import; duplicated
+//! The numerical slivers mesh booleans leave (a corner a hair off the
+//! opposite edge, two corners a hair apart) are resolved on import without
+//! opening the surface, and a stray flat facet is dropped; duplicated
 //! facets are rejected. [`validate_closed`] checks the watertight,
 //! consistently-oriented 2-manifold invariant that [`crate::Scene`] solids
 //! require.
@@ -24,7 +26,8 @@ use std::path::Path;
 pub enum ImportError {
     /// I/O failure.
     Io(std::io::Error),
-    /// Malformed file content (message describes the location).
+    /// Malformed content of a file or of triangle data (the message says
+    /// where).
     Parse(String),
     /// Structural defect found by [`validate_closed`].
     NotClosed(String),
@@ -53,23 +56,17 @@ impl From<std::io::Error> for ImportError {
 /// discrete region.
 pub const CREASE_DEG: f64 = 40.0;
 
-/// Builds a [`Faceted`] from raw triangles: drops exactly degenerate facets,
-/// groups the rest into smooth regions at crease edges (`crease_deg`), and
-/// gives every region ONE carrier: a plane where its facets lie in one (to
-/// the tolerance the B-rep checks planes with), else a
-/// [`Surface::Discrete`](crate::Surface::Discrete) patch.
+/// Builds a [`Faceted`] from raw triangles: resolves its slivers
+/// ([`resolve_slivers`]), groups the facets into smooth regions at crease
+/// edges (`crease_deg`), and gives every region ONE carrier: a plane where
+/// its facets lie in one (to the tolerance the B-rep checks planes with),
+/// else a [`Surface::Discrete`](crate::Surface::Discrete) patch.
 pub(crate) fn faceted_from_tris(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
-    let tris: Vec<Tri> = tris
-        .into_iter()
-        .filter(|t| collinear(&t.point(0), &t.point(1), &t.point(2)) != Some(true))
-        .collect();
-    let n = tris.len();
-
     // Shared vertex indexing (exact bit match -- STL repeats vertices per facet).
     let mut vid: HashMap<[u64; 3], u32> = HashMap::new();
     let mut points: Vec<[f64; 3]> = Vec::new();
     let key = |p: [f64; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
-    let mut conn: Vec<[u32; 3]> = Vec::with_capacity(n);
+    let mut conn: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
     for t in &tris {
         let idx: [u32; 3] = std::array::from_fn(|k| {
             let p = t.v[k];
@@ -80,6 +77,24 @@ pub(crate) fn faceted_from_tris(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
         });
         conn.push(idx);
     }
+    // The tolerance of the import: as the B-rep's, relative to the extent.
+    // Below it lie the slivers, and a region whose corners all lie within
+    // it of one plane is that plane.
+    let (lo, hi) = bbox(&points);
+    let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
+    let tol = 1e-9 * diag.max(1.0);
+    resolve_slivers(&points, &mut conn, tol);
+    // What is still exactly flat has no neighbour to flip with: a stray.
+    let at = |c: &[u32; 3]| c.map(|v| points[v as usize]);
+    conn.retain(|c| {
+        let t = Tri::new(at(c)[0], at(c)[1], at(c)[2]);
+        collinear(&t.point(0), &t.point(1), &t.point(2)) != Some(true)
+    });
+    let tris: Vec<Tri> = conn
+        .iter()
+        .map(|c| Tri::new(at(c)[0], at(c)[1], at(c)[2]))
+        .collect();
+    let n = tris.len();
 
     // Facet normals + edge adjacency.
     let normal = |c: &[u32; 3]| -> [f64; 3] {
@@ -226,20 +241,29 @@ pub(crate) fn faceted_from_tris(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
             f.features.push([points[a as usize], points[b as usize]]);
         }
     }
-    // The tolerance of a plane: as the B-rep's, relative to the extent.
-    let (lo, hi) = bbox(&points);
-    let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
-    let flat_tol = 1e-9 * diag.max(1.0);
+    // A facet by its corners' places, and turned to start at its first:
+    // the region's plane is the same however the soup is ordered.
+    let place = |v: u32| points[v as usize].map(f64::to_bits);
+    let facet_key = |fi: u32| {
+        let mut k = conn[fi as usize].map(place);
+        k.sort_unstable();
+        k
+    };
     for members in regions {
-        // Flat: every vertex on the plane of the region's first facet.
-        let first = conn[members[0] as usize];
+        // Flat: every vertex on the plane of the region's first facet (in
+        // the order of places).
+        let Some(&lead) = members.iter().min_by_key(|&&fi| facet_key(fi)) else {
+            continue;
+        };
+        let c = conn[lead as usize];
+        let k = (0..3).min_by_key(|&k| place(c[k])).unwrap_or(0);
+        let first = [c[k], c[(k + 1) % 3], c[(k + 2) % 3]];
         let o = points[first[0] as usize];
-        let n = normals[members[0] as usize];
+        let n = normal(&first);
         let flat = members.iter().all(|&fi| {
             conn[fi as usize].iter().all(|&v| {
                 let p = points[v as usize];
-                ((p[0] - o[0]) * n[0] + (p[1] - o[1]) * n[1] + (p[2] - o[2]) * n[2]).abs()
-                    <= flat_tol
+                ((p[0] - o[0]) * n[0] + (p[1] - o[1]) * n[1] + (p[2] - o[2]) * n[2]).abs() <= tol
             })
         });
         if flat {
@@ -270,6 +294,100 @@ pub(crate) fn faceted_from_tris(tris: Vec<Tri>, crease_deg: f64) -> Faceted {
         }
     }
     f
+}
+
+/// Resolves the slivers of a closed soup at `tol` and keeps it closed. Mesh
+/// booleans (manifold) leave two kinds, valid to them, noise to the mesher:
+/// an edge shorter than `tol`, which collapses onto its lower corner and
+/// takes its two triangles along; and a cap, a triangle with a corner within
+/// `tol` of the opposite edge's interior, whose edge flips with the
+/// neighbour across it, splitting the neighbour at the corner. Every other
+/// edge keeps its two triangles either way; dropping a cap instead leaves
+/// its corner a hole in the neighbour's edge. A flip that cannot be made (an
+/// open edge, a diagonal that is an edge already) leaves its cap to
+/// [`validate_closed`] and the mesher, as does a soup that keeps making new
+/// caps past a budget of flips.
+fn resolve_slivers(points: &[[f64; 3]], conn: &mut Vec<[u32; 3]>, tol: f64) {
+    let gap = |a: u32, b: u32| {
+        let (p, q) = (points[a as usize], points[b as usize]);
+        (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>()
+    };
+    let mut rep: Vec<u32> = (0..points.len() as u32).collect();
+    fn find(rep: &mut [u32], mut x: u32) -> u32 {
+        while rep[x as usize] != x {
+            rep[x as usize] = rep[rep[x as usize] as usize];
+            x = rep[x as usize];
+        }
+        x
+    }
+    for c in conn.iter() {
+        for k in 0..3 {
+            let (a, b) = (c[k], c[(k + 1) % 3]);
+            if gap(a, b) <= tol * tol {
+                let (ra, rb) = (find(&mut rep, a), find(&mut rep, b));
+                rep[ra.max(rb) as usize] = ra.min(rb);
+            }
+        }
+    }
+    for c in conn.iter_mut() {
+        *c = c.map(|v| find(&mut rep, v));
+    }
+    conn.retain(|c| c[0] != c[1] && c[1] != c[2] && c[2] != c[0]);
+
+    // The corner of `t` within `tol` of the opposite edge's interior, as
+    // the turn of `t` that starts at it.
+    let cap = |t: [u32; 3]| {
+        (0..3).find_map(|k| {
+            let [c, a, b] = [t[k], t[(k + 1) % 3], t[(k + 2) % 3]];
+            let (pa, pb, pc) = (points[a as usize], points[b as usize], points[c as usize]);
+            let d: [f64; 3] = std::array::from_fn(|i| pb[i] - pa[i]);
+            let s = (0..3).map(|i| (pc[i] - pa[i]) * d[i]).sum::<f64>()
+                / (0..3).map(|i| d[i] * d[i]).sum::<f64>();
+            let off = (0..3)
+                .map(|i| (pc[i] - pa[i] - s * d[i]).powi(2))
+                .sum::<f64>();
+            (s > 0.0 && s < 1.0 && off <= tol * tol).then_some([c, a, b])
+        })
+    };
+    let mut edge: HashMap<(u32, u32), usize> = HashMap::new();
+    for (i, c) in conn.iter().enumerate() {
+        for k in 0..3 {
+            edge.insert((c[k], c[(k + 1) % 3]), i);
+        }
+    }
+    let mut queue: std::collections::VecDeque<usize> = (0..conn.len()).collect();
+    let mut budget = 4 * conn.len();
+    while let Some(t) = queue.pop_front() {
+        let Some([c, a, b]) = cap(conn[t]) else {
+            continue;
+        };
+        let Some(&u) = edge.get(&(b, a)) else {
+            continue;
+        };
+        let Some(&d) = conn[u].iter().find(|&&v| v != a && v != b) else {
+            continue;
+        };
+        if d == c || edge.contains_key(&(c, d)) || edge.contains_key(&(d, c)) || budget == 0 {
+            continue;
+        }
+        budget -= 1;
+        for i in [t, u] {
+            let x = conn[i];
+            for k in 0..3 {
+                edge.remove(&(x[k], x[(k + 1) % 3]));
+            }
+        }
+        // The quad c -> a -> d -> b around the diagonal c-d.
+        conn[t] = [c, a, d];
+        conn[u] = [c, d, b];
+        for i in [t, u] {
+            let x = conn[i];
+            for k in 0..3 {
+                edge.insert((x[k], x[(k + 1) % 3]), i);
+            }
+            queue.push_back(i);
+        }
+    }
 }
 
 // ----------------------------------------------------------------- STL

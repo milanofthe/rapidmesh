@@ -10,8 +10,8 @@
     mesh = g.mesh()
 """
 
-from .geometry import (Geometry, Mesh, SurfaceMesh, Solid, Sheet, Spline, load_msh,
-                       polygon_union)
+from .geometry import (Geometry, Mesh, SurfaceMesh, Solid, Sheet, Spline, Step, load_msh,
+                       polygon_union, read_step)
 from . import adapt
 from .adapt import dorfler_mark, refine_dorfler
 from ._native import MeshError, set_log_level
@@ -28,6 +28,8 @@ __all__ = [
     "Solid",
     "Sheet",
     "load_msh",
+    "read_step",
+    "Step",
     "Spline",
     "polygon_union",
     "adapt",

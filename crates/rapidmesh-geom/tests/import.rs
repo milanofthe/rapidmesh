@@ -1,4 +1,4 @@
-//! STL/OBJ import: parsing, degenerate-facet dropping, closedness validation,
+//! STL/OBJ import: parsing, slivers resolved, closedness validation,
 //! and meshing an imported solid end to end at the geom level (Scene
 //! assembly).
 
@@ -78,13 +78,84 @@ fn binary_stl_with_solid_header_detected() {
 }
 
 #[test]
-fn degenerate_facets_dropped() {
+fn a_stray_flat_facet_is_dropped() {
     let mut tris: Vec<[[f64; 3]; 3]> = TET_TRIS.to_vec();
     // Exactly collinear facet.
     tris.push([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]);
     let path = temp_file("tet_degen.stl", &ascii_stl(&tris));
     let f = import_stl(&path, CREASE_DEG).expect("import");
     assert_eq!(f.tris.len(), 4);
+}
+
+/// A unit cube as a mesh boolean writes it (manifold, issue #1 of the
+/// public repo): a corner `m` on the front top edge, `dz` off it, with the
+/// flat cap that keeps the edge matched, and a corner a hair (1e-13) from
+/// the back top corner, with the needle triangles on either side.
+fn sliver_cube(dz: f64) -> String {
+    let v = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+        [0.5, 0.0, 1.0 + dz],
+        [1.0 - 1e-13, 1.0, 1.0],
+    ];
+    let f = [
+        [1, 4, 3],
+        [1, 3, 2],
+        // Top, around the needle 7-10.
+        [5, 6, 7],
+        [5, 7, 10],
+        [5, 10, 8],
+        // Front, split at 9, and the cap over 9.
+        [1, 2, 6],
+        [1, 6, 9],
+        [1, 9, 5],
+        [6, 5, 9],
+        [2, 3, 7],
+        [2, 7, 6],
+        // Back, split at 10.
+        [3, 4, 8],
+        [3, 8, 10],
+        [3, 10, 7],
+        [4, 1, 5],
+        [4, 5, 8],
+    ];
+    let mut obj = String::new();
+    for p in v {
+        obj += &format!("v {:?} {:?} {:?}\n", p[0], p[1], p[2]);
+    }
+    for t in f {
+        obj += &format!("f {} {} {}\n", t[0], t[1], t[2]);
+    }
+    obj
+}
+
+#[test]
+fn slivers_resolve_and_the_surface_stays_closed() {
+    for dz in [0.0, 1e-14, -1e-14] {
+        let path = temp_file("sliver_cube.obj", sliver_cube(dz).as_bytes());
+        let f = import_obj(&path, CREASE_DEG).expect("import");
+        validate_closed(&f).unwrap_or_else(|e| panic!("dz {dz}: {e}"));
+        let mut volume = 0.0;
+        for t in &f.tris {
+            let [a, b, c] = t.v;
+            let n = [
+                (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+                (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+            ];
+            let area = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0;
+            assert!(area > 1e-3, "dz {dz}: a sliver is left: {t:?}");
+            volume += (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]) / 6.0;
+        }
+        assert!((volume - 1.0).abs() < 1e-12, "dz {dz}: volume {volume}");
+        assert_eq!(f.surfaces.len(), 6, "dz {dz}: one plane a side");
+    }
 }
 
 #[test]

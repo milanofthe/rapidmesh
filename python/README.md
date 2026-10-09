@@ -53,6 +53,7 @@ mesh.topology               # edges, faces, incidence with signs, classification
 mesh.sets()                 # {"cells": ..., "faces": ..., "edges": ...} by name
 mesh.periodic_points        # (n, 2) point on a master face and its image
 mesh.write_msh("cell.msh")  # physical groups from the labels and names
+mesh.without_regions([2])   # region 2 left out, its walls kept as boundary
 ```
 
 ### CAD files
@@ -66,7 +67,9 @@ mesh = g.mesh()                           # faces meshed on their true surfaces
 STEP files (AP203 and AP214) bring planes, cylinders, cones, spheres, tori
 and B-spline surfaces; coordinates stay in the file's unit. Each solid takes
 the name the file gives its part, so an assembly's mesh has its parts as
-named sets and physical groups.
+named sets and physical groups. `rm.read_step(path)` reads a file once and
+gives its unit (`metres_per_unit`) and body names; `g.add_body(step, i)`
+then adds the bodies one by one, in any order, some left out.
 
 ### Sizing
 
@@ -117,7 +120,12 @@ false).
 `g.surface_mesh()` meshes only the surfaces (interfaces, outer boundary,
 sheets) and gives its edge topology and the same sets and file output.
 `rm.polygon_union` merges overlapping layout polygons into outlines for
-sheets and prisms.
+sheets and prisms. Sheets in one plane take exact booleans,
+`g.sheet_boolean("difference", ground, slot, disc)` (or `"union"`,
+`"intersection"`): points stay as given, and a round rim that is left stays
+a circle, so a plate with a round hole extrudes into a block with an exact
+bore. `g.polygon_plate(points, position, axes=(u, v))` puts a polygon in
+any plane.
 
 ### What happened, how long, and where the quality is worst
 

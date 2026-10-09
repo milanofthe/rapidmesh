@@ -612,9 +612,51 @@ impl PipRows {
 /// the contours, so re-splitting them would only chase the seed points off the
 /// boundary into thin spikes. `step` seeds the CVT grid; `max_passes` and
 /// `cvt_iters` bound the work. The boundary comes back exactly as given. Returns `(points, triangles)`, the boundary first (in
-/// its order), then the interior.
+/// its order), then the interior. The mesh is the same whatever order the
+/// boundary comes in: it is meshed in the order of its points' places.
 #[allow(clippy::too_many_arguments)]
 pub fn mesh_constrained(
+    boundary: Vec<V2>,
+    segments: Vec<(usize, usize)>,
+    target: impl Fn(V2) -> f64,
+    inside: impl Fn(V2) -> bool,
+    step: f64,
+    min_angle_deg: f64,
+    cvt_iters: usize,
+    max_passes: usize,
+) -> (Vec<V2>, Vec<[usize; 3]>) {
+    let nb = boundary.len();
+    let mut order: Vec<usize> = (0..nb).collect();
+    order.sort_by(|&a, &b| {
+        let (p, q) = (boundary[a], boundary[b]);
+        p[0].total_cmp(&q[0]).then(p[1].total_cmp(&q[1]))
+    });
+    let mut new = vec![0usize; nb];
+    for (i, &v) in order.iter().enumerate() {
+        new[v] = i;
+    }
+    let placed: Vec<V2> = order.iter().map(|&v| boundary[v]).collect();
+    let mut segs: Vec<(usize, usize)> = segments.iter().map(|&(a, b)| (new[a], new[b])).collect();
+    segs.sort_unstable();
+    let (pts, tris) = mesh_in_order(
+        placed,
+        segs,
+        target,
+        inside,
+        step,
+        min_angle_deg,
+        cvt_iters,
+        max_passes,
+    );
+    let back = |i: usize| if i < nb { order[i] } else { i };
+    let mut out = boundary;
+    out.extend_from_slice(&pts[nb..]);
+    (out, tris.into_iter().map(|t| t.map(back)).collect())
+}
+
+/// [`mesh_constrained`] on the boundary in the order given.
+#[allow(clippy::too_many_arguments)]
+fn mesh_in_order(
     boundary: Vec<V2>,
     segments: Vec<(usize, usize)>,
     target: impl Fn(V2) -> f64,

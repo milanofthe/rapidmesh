@@ -272,3 +272,25 @@ fn crossing_sheets_share_their_crossing_as_an_edge() {
         assert_eq!(tags, [1, 2], "edge {i} lies on both sheets");
     }
 }
+
+#[test]
+fn a_face_a_hair_off_its_given_plane_keeps_it() {
+    // A CAD file's edges can leave the planes of its faces by a hair (NIST
+    // ctc_02 by 2.5e-7 of its size, #375): one corner of the top a little
+    // above it, far below anything the mesh resolves. Every face stays its
+    // plane; none is carried by its facets.
+    let lifted = solid_box([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]).with_points(|p| {
+        if p == [2.0, 3.0, 4.0] {
+            [2.0, 3.0, 4.0 + 1e-7]
+        } else {
+            p
+        }
+    });
+    let mut scene = Scene::new();
+    scene.add_solid(lifted);
+    let b = from_plc(&scene.assemble());
+    assert_eq!(b.faces.len(), 6);
+    for f in &b.faces {
+        assert!(matches!(b.surface(f.surface), Surface::Plane { .. }));
+    }
+}

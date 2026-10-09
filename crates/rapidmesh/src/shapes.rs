@@ -40,6 +40,12 @@ mod default {
     pub fn origin() -> V3 {
         [0.0; 3]
     }
+    pub fn x() -> V3 {
+        [1.0, 0.0, 0.0]
+    }
+    pub fn y() -> V3 {
+        [0.0, 1.0, 0.0]
+    }
     pub fn z() -> V3 {
         [0.0, 0.0, 1.0]
     }
@@ -762,7 +768,9 @@ impl Shape {
                 r.segments,
             )
             .map_err(|e| Error::Invalid(format!("revolve: {e}")))?,
-            Shape::Triangles(t) => mesh_solid(&t.verts, &t.tris),
+            Shape::Triangles(t) => mesh_solid(&t.verts, &t.tris)
+                .and_then(|f| validate_closed(&f).map(|()| f))
+                .map_err(|e| Error::Invalid(format!("triangles: {e}")))?,
             Shape::Import(i) => {
                 let p = &i.path;
                 let name = p.display();
@@ -803,11 +811,15 @@ pub enum Sheet {
         axis: V3,
         segments: usize,
     },
-    /// The polygon `points` with `holes` in the xy plane at `position`.
+    /// The polygon `points` with `holes` in the plane through `position`
+    /// spanned by `u` and `v` (x and y for the xy plane): a point `[a, b]`
+    /// lies at `position + a u + b v`.
     Polygon {
         points: Vec<V2>,
         holes: Vec<Vec<V2>>,
         position: V3,
+        u: V3,
+        v: V3,
     },
     /// A NURBS patch, tessellated `segments` per parameter direction and
     /// carried by the exact surface.
@@ -855,6 +867,10 @@ impl Sheet {
             position: V3,
             #[serde(default)]
             holes: Vec<Vec<V2>>,
+            #[serde(default = "default::x")]
+            u: V3,
+            #[serde(default = "default::y")]
+            v: V3,
         }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -884,6 +900,8 @@ impl Sheet {
                     points: p.points,
                     holes: p.holes,
                     position: p.position,
+                    u: p.u,
+                    v: p.v,
                 }
             }
             "nurbs" => {
@@ -926,10 +944,18 @@ impl Sheet {
 
     /// A polygon in the xy plane at `position`.
     pub fn polygon(points: Vec<V2>, position: V3) -> Sheet {
+        Sheet::polygon_on(points, position, default::x(), default::y())
+    }
+
+    /// A polygon in the plane through `origin` spanned by `u` and `v`: a
+    /// point `[a, b]` lies at `origin + a u + b v`.
+    pub fn polygon_on(points: Vec<V2>, origin: V3, u: V3, v: V3) -> Sheet {
         Sheet::Polygon {
             points,
             holes: Vec::new(),
-            position,
+            position: origin,
+            u,
+            v,
         }
     }
 
@@ -1008,7 +1034,14 @@ impl Sheet {
                 points,
                 holes,
                 position,
-            } => sheet_polygon(points, holes, *position, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+                u,
+                v,
+            } => {
+                unit(cross(*u, *v)).map_err(|_| {
+                    Error::Invalid("a polygon's axes u and v must span a plane".into())
+                })?;
+                sheet_polygon(points, holes, *position, *u, *v)
+            }
             Sheet::Nurbs { surface, segments } => sheet_nurbs(surface, *segments),
         })
     }

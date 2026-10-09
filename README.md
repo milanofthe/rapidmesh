@@ -91,7 +91,8 @@ cargo run --release -p rapidmesh --example unit_cell
 
 A CAD part comes in with `g.import_step("part.step", None)?`, one solid per
 body of the file, each face on its true surface and each solid named as the
-file names its part.
+file names its part. `rapidmesh::read_step` reads a file once with its unit,
+and `g.add_body` adds its bodies one by one.
 
 Sizing is hierarchical. A scope selects regions, geometric faces or
 geometric edges (by id, tag, normal, position or the regions they separate),

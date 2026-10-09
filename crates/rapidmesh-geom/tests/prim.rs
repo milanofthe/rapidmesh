@@ -796,7 +796,7 @@ fn a_turned_triangle_cube_gets_six_planes() {
         [1, 3, 5],
         [3, 7, 5],
     ];
-    let f = mesh_solid(&verts, &tris);
+    let f = mesh_solid(&verts, &tris).unwrap();
     assert_eq!(kinds(&f), ["plane"; 6]);
     assert!((volume(&f) - 1.0).abs() < 1e-12);
 }

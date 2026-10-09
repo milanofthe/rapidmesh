@@ -55,12 +55,15 @@ pub struct Faceted {
     pub curves: Vec<EdgeCurve>,
 }
 
-/// An exact edge curve of a shape: its carrier and the points of it, in
-/// order, that the shape's triangles have along the edge.
+/// An exact edge curve of a shape: its carrier, the points of it, in
+/// order, that the shape's triangles have along the edge, and the
+/// parameter of each on the carrier (a closed curve's last point is its
+/// first, a period on).
 #[derive(Debug, Clone)]
 pub struct EdgeCurve {
     pub curve: Curve<3>,
     pub points: Vec<[f64; 3]>,
+    pub params: Vec<f64>,
 }
 
 impl Faceted {
@@ -218,6 +221,7 @@ impl Faceted {
                 .map(|c| EdgeCurve {
                     curve: c.curve.clone(),
                     points: c.points.iter().map(|&p| map(p)).collect(),
+                    params: c.params.clone(),
                 })
                 .collect(),
         };
@@ -299,6 +303,7 @@ impl Faceted {
                 .map(|c| EdgeCurve {
                     curve: c.curve.mapped(m),
                     points: c.points.iter().map(|&p| map(p)).collect(),
+                    params: c.params.clone(),
                 })
                 .collect(),
             flats: self

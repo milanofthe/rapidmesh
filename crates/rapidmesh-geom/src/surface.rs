@@ -103,6 +103,39 @@ impl Surface {
         Surface::plane(centroid(pts), newell(pts))
     }
 
+    /// An order of surfaces by their geometry alone: the kind, then the
+    /// frame and the sizes, bit by bit (kinds with a profile or a net by
+    /// their kind). Where the facets of several solids lie on one face, the
+    /// face takes the carrier first in it, whichever solid came first.
+    pub fn geometry_order(&self, other: &Surface) -> std::cmp::Ordering {
+        fn key(s: &Surface) -> (u8, Vec<u64>) {
+            let framed = |f: &Frame, sizes: &[f64]| -> Vec<u64> {
+                [f.o, f.x, f.y, f.z]
+                    .iter()
+                    .flat_map(|v| v.map(f64::to_bits))
+                    .chain(sizes.iter().map(|x| x.to_bits()))
+                    .collect()
+            };
+            match s {
+                Surface::Plane(f) => (0, framed(f, &[])),
+                Surface::Cylinder { frame, radius } => (1, framed(frame, &[*radius])),
+                Surface::Cone { frame, half_angle } => (2, framed(frame, &[*half_angle])),
+                Surface::Sphere { frame, radius } => (3, framed(frame, &[*radius])),
+                Surface::Torus {
+                    frame,
+                    major,
+                    minor,
+                } => (4, framed(frame, &[*major, *minor])),
+                Surface::Extruded { .. } => (5, Vec::new()),
+                Surface::Revolved { .. } => (6, Vec::new()),
+                Surface::Nurbs(_) => (7, Vec::new()),
+                Surface::Discrete(_) => (8, Vec::new()),
+                Surface::Tube { .. } => (9, Vec::new()),
+            }
+        }
+        key(self).cmp(&key(other))
+    }
+
     /// [`Surface::plane_of`] where the points lie in one plane to a
     /// billionth of their extent; none where they are bent.
     pub fn plane_through(pts: &[V3]) -> Option<Surface> {

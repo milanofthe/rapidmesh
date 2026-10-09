@@ -278,9 +278,6 @@ pub struct Geometry {
     /// Named faces and edges as given, resolved when a mesh is made.
     named: Vec<(String, Scope)>,
     labels: Labels,
-    /// Per sheet, parallel to the scene's: how it was given and the
-    /// transforms applied to it since, in order.
-    sheets: Vec<(Sheet, Vec<Transform>)>,
 }
 
 impl Default for Geometry {
@@ -305,7 +302,6 @@ impl Geometry {
             periodic: Vec::new(),
             named: Vec::new(),
             labels: Labels::default(),
-            sheets: Vec::new(),
         }
     }
 
@@ -319,10 +315,9 @@ impl Geometry {
     /// or the input the scene cannot be assembled from.
     pub fn model(&self) -> Result<Arc<Model>> {
         self.model
-            .get_or_init(|| {
-                Model::try_of_scene(&self.scene)
-                    .map(Arc::new)
-                    .map_err(|e| e.to_string())
+            .get_or_init(|| match catch(|| Model::try_of_scene(&self.scene)) {
+                Ok(model) => model.map(Arc::new).map_err(|e| e.to_string()),
+                Err(panic) => Err(internal("assemble the geometry", &panic)),
             })
             .clone()
             .map_err(Error::Invalid)
@@ -412,31 +407,38 @@ impl Geometry {
     /// The solids of the STEP file at `path` (AP203/AP214), each with its
     /// faces on their true surfaces (planes, quadrics, tori, B-splines), with
     /// target size `maxh` in their regions, and labelled with the names the
-    /// file gives its parts. Coordinates stay in the file's unit.
+    /// file gives its parts. Coordinates stay in the file's unit; to learn
+    /// it, or to add the bodies one by one, [`read_step`] and
+    /// [`Geometry::add_body`].
     pub fn import_step(
         &mut self,
         path: impl AsRef<std::path::Path>,
         maxh: Option<f64>,
     ) -> Result<Vec<Solid>> {
-        let p = path.as_ref();
-        let text = std::fs::read_to_string(p)
-            .map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))?;
-        let step = rapidmesh_step::read(&text, rapidmesh_step::Tolerance::default())
-            .map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))?;
-        // Each body named as the file names it (its product), so the mesh
-        // sets and physical groups carry the names of the parts.
+        let step = read_step(path)?;
         Ok(step
             .bodies
-            .into_iter()
-            .map(|b| {
-                let s = self.add_faceted(b.solid, Vec::new(), maxh, false);
-                let name = b.name.trim();
-                if !name.is_empty() {
-                    self.label_solid(s, name);
-                }
-                s
-            })
+            .iter()
+            .map(|b| self.add_body(b, maxh, false))
             .collect())
+    }
+
+    /// Adds `body` of a STEP file read by [`read_step`] as a solid like any
+    /// shape, with target size `maxh` in its region, as material or
+    /// (`void`) cut out, labelled with the name the file gives its part (so
+    /// the mesh sets and physical groups carry it).
+    pub fn add_body(
+        &mut self,
+        body: &rapidmesh_step::Body,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> Solid {
+        let s = self.add_faceted(body.solid.clone(), Vec::new(), maxh, void);
+        let name = body.name.trim();
+        if !name.is_empty() {
+            self.label_solid(s, name);
+        }
+        s
     }
 
     /// Adds the solid `f` with the names of its face roles.
@@ -588,9 +590,8 @@ impl Geometry {
             *e = e.min(h);
         }
         self.scene_mut().add_sheet(f, FaceTag(tag));
-        self.sheets.push((sheet.clone(), Vec::new()));
         Ok(SheetRef {
-            index: self.sheets.len() as u32 - 1,
+            index: self.scene.sheet_count() as u32 - 1,
             tag,
         })
     }
@@ -978,12 +979,7 @@ impl Geometry {
         let mesh = match meshed {
             Ok(Ok((m, _))) => m,
             Ok(Err(e)) => return Err(Error::Mesh(e.explain(&model))),
-            Err(panic) => {
-                return Err(Error::Mesh(format!(
-                    "cannot mesh: the mesher failed inside ({panic}), an internal error; \
-                     please report it with the input"
-                )))
-            }
+            Err(panic) => return Err(Error::Mesh(internal("mesh", &panic))),
         };
         let t_mesh = tm.elapsed();
         rapidmesh_exact::log::stage("mesh.total", t_mesh.as_secs_f64());
@@ -1016,7 +1012,8 @@ impl Geometry {
                 [opts.maxh_edge, opts.maxh_surf, opts.maxh_vol],
             )?
         };
-        let mesh = rapidmesh_tet::surface_mesh(&model, &params)
+        let mesh = catch(|| rapidmesh_tet::surface_mesh(&model, &params))
+            .map_err(|panic| Error::Mesh(internal("mesh", &panic)))?
             .map_err(|e| Error::Mesh(rapidmesh_tet::MeshError::from(e).explain(&model)))?;
         rapidmesh_tet::log_surface_metrics(&mesh);
         Ok(SurfaceMesh::new(mesh, self.labels()?, Run::finish(t0)))
@@ -1033,6 +1030,15 @@ fn catch<T>(f: impl FnOnce() -> T) -> std::result::Result<T, String> {
     })
 }
 
+/// The message of a panic inside a step (`what`: "mesh"), an internal
+/// error the caller gets as one rather than as an abort.
+fn internal(what: &str, panic: &str) -> String {
+    format!(
+        "cannot {what}: rapidmesh failed inside ({panic}), an internal error; \
+         please report it with the input"
+    )
+}
+
 /// Names role `at` in `roles`, with empty names for the roles before it
 /// that had none.
 fn name_role(roles: &mut Vec<String>, at: u32, name: &str) {
@@ -1041,4 +1047,15 @@ fn name_role(roles: &mut Vec<String>, at: u32, name: &str) {
         roles.resize(at + 1, String::new());
     }
     roles[at] = name.to_string();
+}
+
+/// Reads the STEP file at `path` (AP203/AP214): its bodies, each a solid
+/// with its faces on their true surfaces, in the order of the file, and the
+/// length of the file's unit in metres. [`Geometry::add_body`] adds them.
+pub fn read_step(path: impl AsRef<std::path::Path>) -> Result<rapidmesh_step::Step> {
+    let p = path.as_ref();
+    let text =
+        std::fs::read_to_string(p).map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))?;
+    rapidmesh_step::read(&text, rapidmesh_step::Tolerance::default())
+        .map_err(|e| Error::Invalid(format!("{}: {e}", p.display())))
 }

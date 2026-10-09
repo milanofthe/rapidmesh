@@ -26,6 +26,19 @@ pub(crate) fn circumradius(a: V3, b: V3, c: V3) -> f64 {
 /// The center of the sphere through the four corners of a tet (none when
 /// they are flat).
 pub(crate) fn tet_circumcenter(p: [V3; 4]) -> Option<V3> {
+    tet_circumsphere(p).map(|s| s.0)
+}
+
+/// The center and radius of the sphere through the four corners of a tet
+/// (none when they are flat), from the corners in the order of their
+/// places: a tet numbered any way gets them to the bit.
+pub(crate) fn tet_circumsphere(p: [V3; 4]) -> Option<(V3, f64)> {
+    let mut p = p;
+    p.sort_by(|x, y| {
+        x[0].total_cmp(&y[0])
+            .then(x[1].total_cmp(&y[1]))
+            .then(x[2].total_cmp(&y[2]))
+    });
     let [a, b, c, d] = p;
     let (u, v, w) = (sub(b, a), sub(c, a), sub(d, a));
     let det = 2.0 * dot(u, cross(v, w));
@@ -35,7 +48,7 @@ pub(crate) fn tet_circumcenter(p: [V3; 4]) -> Option<V3> {
     let (uu, vv, ww) = (dot(u, u), dot(v, v), dot(w, w));
     let (vw, wu, uv) = (cross(v, w), cross(w, u), cross(u, v));
     let o: V3 = std::array::from_fn(|k| a[k] + (uu * vw[k] + vv * wu[k] + ww * uv[k]) / det);
-    o.iter().all(|x| x.is_finite()).then_some(o)
+    o.iter().all(|x| x.is_finite()).then_some((o, dist(o, a)))
 }
 
 /// Circumradius over shortest edge of a tet (none when it is flat).

@@ -50,3 +50,25 @@ def test_intersect_and_extrude():
     assert abs(volume(g.mesh(), c.region) - math.pi * 0.16) < 0.03
     with pytest.raises(ValueError, match="along its axis"):
         g.extrude(g.copy(d), 1.0, axis=(1, 0, 1))
+
+
+def test_sheet_booleans_cut_and_extrude():
+    g = rm.Geometry(maxh=0.3)
+    plate = g.xy_plate(4, 4)
+    hole = g.disc(1.0, (2, 2, 0), tag=2)
+    g.sheet_boolean("difference", plate, hole)
+    block = g.extrude(plate, 1.0)
+    m = g.mesh()
+    assert m.diagnostics["watertight"]
+    assert abs(volume(m, block.region) - (16 - math.pi)) < 0.02 * math.pi
+    assert 2 not in set(m.face_tags.tolist())
+    with pytest.raises(ValueError):
+        g.sheet_boolean("xor", plate, hole)
+
+
+def test_polygon_plate_in_any_plane():
+    g = rm.Geometry(maxh=0.5)
+    g.polygon_plate([(0, 0), (2, 0), (2, 1), (0, 1)], (0, 3, 0), axes=((1, 0, 0), (0, 0, 1)))
+    sm = g.surface_mesh()
+    assert np.all(sm.points[:, 1] == 3.0)
+    assert sm.points[:, 2].max() == 1.0

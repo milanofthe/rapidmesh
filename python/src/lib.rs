@@ -482,6 +482,25 @@ impl PyGeometry {
             .map_err(py_err)
     }
 
+    /// Adds body `index` of `step` (see `read_step`) as a solid, as
+    /// material or (`void`) cut out; returns its (region, index).
+    #[pyo3(signature = (step, index, maxh=None, void=false))]
+    fn add_body(
+        &mut self,
+        step: PyRef<'_, PyStep>,
+        index: usize,
+        maxh: Option<f64>,
+        void: bool,
+    ) -> PyResult<(u32, u32)> {
+        let body = step.step.bodies.get(index).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "no body {index}: the file has {}",
+                step.step.bodies.len()
+            ))
+        })?;
+        Ok(solid(self.g.add_body(body, maxh, void)))
+    }
+
     #[pyo3(signature = (path, maxh=None))]
     fn import_step(
         &mut self,
@@ -563,6 +582,27 @@ impl PyGeometry {
                 &tools,
             )
             .map(solid)
+            .map_err(py_err)
+    }
+
+    /// The sheet `target` (index, tag) as its exact boolean `op` ("union",
+    /// "difference" or "intersection") with every tool, in one plane.
+    fn sheet_boolean(&mut self, op: &str, target: (u32, u32), tools: Vec<(u32, u32)>) -> PyResult<()> {
+        let op = match op {
+            "union" => rapidmesh::BoolOp::Union,
+            "difference" => rapidmesh::BoolOp::Difference,
+            "intersection" => rapidmesh::BoolOp::Intersection,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "op must be 'union', 'difference' or 'intersection', not {op:?}"
+                )))
+            }
+        };
+        let sheet = |(index, tag): (u32, u32)| SheetRef { index, tag };
+        let tools: Vec<SheetRef> = tools.into_iter().map(sheet).collect();
+        self.g
+            .sheet_boolean(op, sheet(target), &tools)
+            .map(|_| ())
             .map_err(py_err)
     }
 
@@ -1027,6 +1067,12 @@ py_mesh!(PyMesh {
     }
 
     /// The second-order mesh as arrays, and its writers.
+    fn without_regions(&self, regions: Vec<u32>) -> PyMesh {
+        PyMesh {
+            m: self.m.without_regions(&regions),
+        }
+    }
+
     fn second_order<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let so = self.m.second_order();
         let d = PyDict::new_bound(py);
@@ -1199,6 +1245,34 @@ fn load_msh(path: &str) -> PyResult<PyMesh> {
         .map_err(py_err)
 }
 
+/// A STEP file read: its bodies and the length of its unit in metres.
+#[pyclass(name = "Step")]
+struct PyStep {
+    step: rapidmesh::Step,
+}
+
+#[pymethods]
+impl PyStep {
+    #[getter]
+    fn metres_per_unit(&self) -> f64 {
+        self.step.metres_per_unit
+    }
+
+    /// The names the file gives its bodies' parts, in the file's order.
+    #[getter]
+    fn names(&self) -> Vec<String> {
+        self.step.bodies.iter().map(|b| b.name.clone()).collect()
+    }
+}
+
+/// The bodies of the STEP file at `path` and its unit, read once.
+#[pyfunction]
+fn read_step(path: &str) -> PyResult<PyStep> {
+    rapidmesh::read_step(path)
+        .map(|step| PyStep { step })
+        .map_err(py_err)
+}
+
 /// The level from which the meshing log prints live: "debug", "info",
 /// "warn" or "error"; anything else (or `None`) silences it.
 #[pyfunction]
@@ -1224,7 +1298,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTopology>()?;
     m.add_class::<PyMesh>()?;
     m.add_class::<PySurfaceMesh>()?;
+    m.add_class::<PyStep>()?;
     m.add_function(wrap_pyfunction!(load_msh, m)?)?;
+    m.add_function(wrap_pyfunction!(read_step, m)?)?;
     m.add_function(wrap_pyfunction!(polygon_union, m)?)?;
     m.add_function(wrap_pyfunction!(dorfler_mark, m)?)?;
     m.add_function(wrap_pyfunction!(set_log_level, m)?)?;

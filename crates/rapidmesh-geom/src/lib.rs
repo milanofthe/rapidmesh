@@ -22,6 +22,7 @@ pub mod plc;
 pub mod polygon;
 pub mod prim;
 pub mod scene;
+pub mod sheet;
 pub mod surface;
 pub mod tube;
 
@@ -38,6 +39,8 @@ pub use prim::{
     icosphere, loft, mesh_solid, naca0012_points, pipe, revolve, revolve_at, sheet_disk,
     sheet_nurbs, sheet_polygon, sheet_rect, solid_box, torus, wedge, ProfileEdge,
 };
+pub use rapidmesh_csg::BoolOp;
 pub use scene::{AssembleError, Scene};
+pub use sheet::sheet_boolean;
 pub use surface::{Bend, Surface};
 pub use tube::TubePath;

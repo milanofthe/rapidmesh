@@ -36,8 +36,11 @@ pub struct DiscreteSurface {
 
 impl DiscreteSurface {
     /// Builds the patch accelerator. `tris` must be consistently wound (the
-    /// normals give the outward side).
+    /// normals give the outward side). The facets are kept in an order of
+    /// their own (see [`crate::plc::canonical_mesh`]): a scan read with its
+    /// triangles in another order is the same patch.
     pub fn new(points: Vec<V3>, tris: Vec<[u32; 3]>) -> DiscreteSurface {
+        let (points, tris, _, _) = crate::plc::canonical_mesh(&points, &tris);
         let normals: Vec<V3> = tris
             .iter()
             .map(|t| {

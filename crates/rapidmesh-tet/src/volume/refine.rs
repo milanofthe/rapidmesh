@@ -13,7 +13,7 @@
 
 use crate::predicates::{inside, orient};
 use crate::simplex::TET_FACES;
-use crate::simplex::{tet_circumcenter, tet_min_dihedral, Ordered};
+use crate::simplex::{tet_circumsphere, tet_min_dihedral, Ordered};
 use crate::volume::tets::{Tets, NONE};
 use rapidmesh_exact::vector::V3;
 use rapidmesh_exact::vector::{cross, dist, dot, sub};
@@ -141,13 +141,21 @@ pub fn refine(
     // at its centroid, unless a new tet would be as flat (across a thin
     // layer, where the tets are flat by design). The new tets all hold that
     // point, so this ends.
-    let flat: Vec<u32> = (0..m.t.tets.len() as u32)
+    // A tet's corners in the order of their places, so what it takes is
+    // the same however the mesh is numbered; the flat tets in that order.
+    let placed = |m: &Mesh, t: u32| -> [u32; 4] {
+        let mut tv = m.t.tets[t as usize];
+        tv.sort_by_key(|&v| m.p(v).map(f64::to_bits));
+        tv
+    };
+    let mut flat: Vec<u32> = (0..m.t.tets.len() as u32)
         .filter(|&t| {
             m.t.alive[t as usize]
                 && m.t.tets[t as usize].iter().all(|&v| (v as usize) < n0)
                 && tet_min_dihedral(m.t.tets[t as usize].map(|v| m.p(v))) < FLAT_DEG
         })
         .collect();
+    flat.sort_by_cached_key(|&t| placed(&m, t).map(|v| m.p(v).map(f64::to_bits)));
     for t in flat {
         if added >= budget {
             break;
@@ -155,7 +163,8 @@ pub fn refine(
         if !m.t.alive[t as usize] {
             continue;
         }
-        let p = m.t.tets[t as usize].map(|v| m.p(v));
+        let tv = placed(&m, t);
+        let p = tv.map(|v| m.p(v));
         let g: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k] + p[3][k]) / 4.0);
         let shortest = (0..4)
             .flat_map(|i| (i + 1..4).map(move |j| (i, j)))
@@ -164,7 +173,6 @@ pub fn refine(
         // A point off the tet's boundary faces into the region by part of
         // the size (under a ridge of two faces, or a cap of two triangles,
         // the centroid lies on them), else the centroid.
-        let tv = m.t.tets[t as usize];
         // A flat tet between two other regions (where two bodies touch,
         // the region between them narrows to nothing) stays as it is:
         // refining a wedge that closes would not end, and its flat tets
@@ -259,7 +267,7 @@ struct Bad {
 
 impl PartialEq for Bad {
     fn eq(&self, other: &Bad) -> bool {
-        (self.ratio, self.t) == (other.ratio, other.t)
+        self.cmp(other).is_eq()
     }
 }
 
@@ -271,10 +279,13 @@ impl PartialOrd for Bad {
     }
 }
 
-/// The worst first, ties by tet.
+/// The worst first, ties by where the circumcenter lies (not by the tet's
+/// number: the order of the insertions is the geometry's). Tets with one
+/// circumsphere insert one point.
 impl Ord for Bad {
     fn cmp(&self, other: &Bad) -> std::cmp::Ordering {
-        (self.ratio, self.t).cmp(&(other.ratio, other.t))
+        let at = |b: &Bad| b.c.map(Ordered);
+        (self.ratio, at(self)).cmp(&(other.ratio, at(other)))
     }
 }
 
@@ -307,12 +318,12 @@ impl Mesh {
     fn badness(&self, t: u32, size: &(dyn Fn(V3) -> f64 + Sync)) -> Option<Bad> {
         let corners = self.t.tets[t as usize];
         let p = corners.map(|v| self.p(v));
-        let c = tet_circumcenter(p)?;
+        let (c, radius) = tet_circumsphere(p)?;
         // The size where the circumcentre would go: the same the spacing of
         // the insertion reads, so a tet too large is one whose circumcentre
         // clears every corner (the sphere is empty) and goes in.
         let h = size(c);
-        let ratio = dist(c, p[0]) / h.max(1e-300);
+        let ratio = radius / h.max(1e-300);
         (ratio > RADIUS_OVER_SIZE).then_some(Bad {
             ratio: Ordered(ratio),
             t,

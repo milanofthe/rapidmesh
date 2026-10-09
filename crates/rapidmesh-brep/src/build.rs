@@ -198,18 +198,6 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
     }
     let fset = |a: usize, b: usize| -> &Vec<usize> { &bedge_faces[&key2(a, b)] };
     let carriers: Vec<Option<Surface>> = faces.iter().map(|f| face_carrier(f, plc, tol)).collect();
-    // Two carriers touching tangentially at `p`: the direction of their
-    // intersection is not defined there, and a turn of the chain is the
-    // faceting crossing itself (the zigzag along a capsule seam).
-    let tangent_at = |fs: &[usize], p: V3| -> bool {
-        let [a, b] = fs else {
-            return false;
-        };
-        match (&carriers[*a], &carriers[*b]) {
-            (Some(sa), Some(sb)) => dot(sa.closest(p).1, sb.closest(p).1).abs() > TANGENT_COS,
-            _ => false,
-        }
-    };
     // A corner is where the chain branches or ends, where the faces along
     // it change, or where an input shape declares one. Along faces with
     // exact carriers nothing else is: a turn of a cut between two carriers
@@ -225,7 +213,7 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         if fs != fset(v, ns[1]) || declared.contains(&v) {
             return true;
         }
-        if fs.iter().all(|&f| carriers[f].is_some()) || tangent_at(fs, pos[v]) {
+        if fs.iter().all(|&f| carriers[f].is_some()) {
             return false;
         }
         let d0 = norm(sub(pos[v], pos[ns[0]]));
@@ -301,6 +289,8 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
         })
     };
 
+    // The samples of the curves the shapes declare, by their points.
+    let samples = Samples::of(&plc.curves);
     // The curves the shapes declare, each with the box of its points.
     let declared: Vec<(&rapidmesh_geom::EdgeCurve, V3, V3)> = plc
         .curves
@@ -329,7 +319,9 @@ pub fn from_plc(plc: &TaggedPlc) -> Brep {
             .map(|&f| FaceId(f as u32))
             .collect();
         rad.sort_unstable();
-        let curve = declared_curve(&chain_pts, &declared, tol)
+        let curve = samples
+            .piece(&chain_pts, &plc.curves)
+            .or_else(|| declared_curve(&chain_pts, &declared, tol))
             .unwrap_or_else(|| recover_curve(&chain_pts, &rad, &faces, plc, tol));
         edges.push(Edge {
             ends: [va, vb],
@@ -761,6 +753,73 @@ fn arc_len(chain: &[V3]) -> f64 {
     chain.windows(2).map(|w| dist(w[0], w[1])).sum()
 }
 
+/// The samples of the declared curves by their points: each point with the
+/// curves it is a sample of and its index there. The samples pass through
+/// the arrangement as they are, so a chain of them names its curve.
+struct Samples(HashMap<[u64; 3], Vec<(u32, u32)>>);
+
+impl Samples {
+    fn of(curves: &[rapidmesh_geom::EdgeCurve]) -> Samples {
+        let mut at: HashMap<[u64; 3], Vec<(u32, u32)>> = HashMap::default();
+        for (k, c) in curves.iter().enumerate() {
+            debug_assert_eq!(c.points.len(), c.params.len());
+            for (i, p) in c.points.iter().enumerate() {
+                at.entry(bits(*p)).or_default().push((k as u32, i as u32));
+            }
+        }
+        Samples(at)
+    }
+
+    /// The piece of the declared curve whose samples the chain runs
+    /// through one after another, either way along it and round the end of
+    /// a closed one (where its carrier goes on past its period: an
+    /// ellipse); none where a point of the chain is no sample (a crossing
+    /// a cut made on the curve).
+    fn piece(&self, chain: &[V3], curves: &[rapidmesh_geom::EdgeCurve]) -> Option<Curve> {
+        let starts = self.0.get(&bits(*chain.first()?))?;
+        for &(k, i0) in starts {
+            let c = &curves[k as usize];
+            let n = c.points.len() as i64;
+            let closed = n > 2 && c.points[0] == c.points[n as usize - 1];
+            let period = c.params[n as usize - 1] - c.params[0];
+            let periodic = matches!(c.curve, rapidmesh_geom::Curve::Ellipse { .. });
+            'step: for step in [1i64, -1] {
+                let (mut i, mut shift) = (i64::from(i0), 0.0);
+                for q in &chain[1..] {
+                    let mut j = i + step;
+                    if closed && (j == n || j < 0) {
+                        if !periodic {
+                            continue 'step;
+                        }
+                        (j, shift) = if j == n {
+                            (1, shift + period)
+                        } else {
+                            (n - 2, shift - period)
+                        };
+                    }
+                    if j < 0 || j >= n || c.points[j as usize] != *q {
+                        continue 'step;
+                    }
+                    i = j;
+                }
+                let t = [c.params[i0 as usize], c.params[i as usize] + shift];
+                if t[0] != t[1] {
+                    return Some(Curve::Piece {
+                        curve: c.curve.clone(),
+                        t,
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The bits of a point, `-0.0` as `0.0`.
+fn bits(p: V3) -> [u64; 3] {
+    p.map(|x| (x + 0.0).to_bits())
+}
+
 /// The piece of the declared curve the chain lies on (every point within
 /// `tol` of the curve's points' polyline); `None` where none holds it or the
 /// chain does not run along it monotonically (a piece across the seam of a
@@ -918,10 +977,6 @@ fn face_carrier(f: &Face, plc: &TaggedPlc, tol: f64) -> Option<Surface> {
         Some(k) => Some(k.fitted(&frame)),
     }
 }
-
-/// Carriers whose normals are this close to parallel (cos 10 deg) touch
-/// tangentially.
-const TANGENT_COS: f64 = 0.985;
 
 /// A face at most this factor of the faceting errors of its neighbours wide
 /// (mean width, twice its area over its perimeter) is an artifact of them.
@@ -1148,17 +1203,28 @@ fn absorb_thin_faces(
     *faces = out;
 }
 
-/// The plane `(point, unit normal)` all facets of a face lie on (within
-/// `tol`): a plane's own, or for faceted kind the plane of its first proper
-/// facet. None where they leave it.
+/// How many times the tolerance a face given its plane may leave it and
+/// keep it: 1e-6 of the model's size, the precision CAD models are made to.
+/// A file's edges can leave the planes of its faces by about that much
+/// (NIST ctc_02 by 2.5e-7, past the 7.9e-7 absolute it states), and such a
+/// face is still its plane; one only fitted to its facets is held to the
+/// tolerance itself.
+const GIVEN_PLANE_SLACK: f64 = 1e3;
+
+/// The plane `(point, unit normal)` all facets of a face lie on: a plane's
+/// own (within [`GIVEN_PLANE_SLACK`] times `tol`), or for faceted kind the
+/// plane of its first proper facet (within `tol`). None where they leave it.
 fn facets_plane(face: &Face, kind: Option<&Surface>, plc: &TaggedPlc, tol: f64) -> Option<Surface> {
     let corners = |tfi: &u32| plc.triangles[*tfi as usize].map(|v| plc.vertices[v as usize]);
-    let plane = match kind {
-        Some(p @ Surface::Plane(_)) => p.clone(),
-        _ => face.facets.iter().map(corners).find_map(|[a, b, c]| {
-            let n = tri_normal(a, b, c);
-            (dot(n, n) >= 1e-24).then(|| Surface::plane(a, n)).flatten()
-        })?,
+    let (plane, tol) = match kind {
+        Some(p @ Surface::Plane(_)) => (p.clone(), GIVEN_PLANE_SLACK * tol),
+        _ => (
+            face.facets.iter().map(corners).find_map(|[a, b, c]| {
+                let n = tri_normal(a, b, c);
+                (dot(n, n) >= 1e-24).then(|| Surface::plane(a, n)).flatten()
+            })?,
+            tol,
+        ),
     };
     let f = *plane.frame()?;
     face.facets

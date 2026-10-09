@@ -1,12 +1,11 @@
 //! Operations on what a geometry holds: moving, copying and arraying solids
-//! and sheets, and intersecting solids.
+//! and sheets, intersecting solids and the booleans of sheets.
 
 use super::{Geometry, Solid};
 use crate::mesh::SolidInfo;
-use crate::shapes::Sheet;
 use crate::{Error, Result};
-use rapidmesh_exact::vector::{cross, normalize, Affine, V3};
-use rapidmesh_geom::{extrude_sheet, FaceTag, Faceted, Surface};
+use rapidmesh_exact::vector::{Affine, V3};
+use rapidmesh_geom::{extrude_sheet, FaceTag, Faceted};
 
 /// A sheet added to a [`Geometry`]: its index among the sheets (insertion
 /// order) and its face tag.
@@ -144,7 +143,6 @@ impl Geometry {
                     .ok_or_else(|| Error::Invalid(format!("no sheet {i}")))?;
                 let moved = t.apply(f)?;
                 self.scene_mut().replace_sheet(i, moved);
-                self.sheets[i].1.push(t);
             }
         }
         Ok(())
@@ -194,9 +192,8 @@ impl Geometry {
                     .ok_or_else(|| Error::Invalid(format!("no sheet {i}")))?
                     .clone();
                 self.scene_mut().add_sheet(f, FaceTag(s.tag));
-                self.sheets.push(self.sheets[i].clone());
                 Ok(Object::Sheet(SheetRef {
-                    index: self.sheets.len() as u32 - 1,
+                    index: self.scene.sheet_count() as u32 - 1,
                     tag: s.tag,
                 }))
             }
@@ -253,10 +250,45 @@ impl Geometry {
         Ok(target)
     }
 
+    /// `target` becomes its exact boolean `op` with every tool in turn
+    /// (`Union`, `Difference` or `Intersection`); all lie in one plane. The
+    /// target keeps its tag and its input points bit for bit where the plane
+    /// is square to an axis; a round rim that is left (a disc's, a hole one
+    /// cut) stays a circle, and extrudes into a cylinder. The tools are used
+    /// up (they hold nothing after).
+    pub fn sheet_boolean(
+        &mut self,
+        op: rapidmesh_geom::BoolOp,
+        target: SheetRef,
+        tools: &[SheetRef],
+    ) -> Result<SheetRef> {
+        let sheet = |g: &Geometry, i: u32| {
+            g.scene
+                .sheet(i as usize)
+                .cloned()
+                .ok_or_else(|| Error::Invalid(format!("no sheet {i}")))
+        };
+        let mut f = sheet(self, target.index)?;
+        for t in tools {
+            if t.index == target.index {
+                return Err(Error::Invalid("a sheet cannot be its own tool".into()));
+            }
+            f = rapidmesh_geom::sheet_boolean(&f, &sheet(self, t.index)?, op)
+                .map_err(|e| Error::Invalid(format!("sheet boolean: {e}")))?;
+        }
+        self.scene_mut().replace_sheet(target.index as usize, f);
+        for t in tools {
+            self.scene_mut()
+                .replace_sheet(t.index as usize, Faceted::new());
+        }
+        Ok(target)
+    }
+
     /// The solid `sheet` sweeps along `vector` (not in its plane), in a
     /// region of its own with target size `maxh`. The sheet stays as it is,
     /// the solid's bottom face on it. Surfaces: bottom, top, then the walls
-    /// (for a disc one cylinder, which needs the vector along its axis); the
+    /// (along a circle the sheet declares, a disc's rim or a round hole cut
+    /// by one, the cylinder, which needs the vector along its axis); the
     /// first two named `bottom` and `top`.
     pub fn extrude(&mut self, sheet: SheetRef, vector: V3, maxh: Option<f64>) -> Result<Solid> {
         let i = sheet.index as usize;
@@ -265,22 +297,7 @@ impl Geometry {
             .sheet(i)
             .ok_or_else(|| Error::Invalid(format!("no sheet {i}")))?
             .clone();
-        let (desc, ops) = self.sheets[i].clone();
-        let rim = match desc {
-            Sheet::Disc {
-                radius,
-                center,
-                axis,
-                ..
-            } => Some(disc_rim(radius, center, axis, &ops, vector)?),
-            Sheet::Nurbs { .. } => {
-                return Err(Error::Invalid(
-                    "a NURBS sheet does not extrude (it is not flat)".into(),
-                ))
-            }
-            _ => None,
-        };
-        let solid = extrude_sheet(&f, vector, rim).map_err(Error::Invalid)?;
+        let solid = extrude_sheet(&f, vector).map_err(Error::Invalid)?;
         let region = self.scene_mut().add_solid(solid).0;
         if let Some(h) = maxh {
             self.solid_maxh.push((region, h));
@@ -293,25 +310,4 @@ impl Geometry {
         });
         Ok(Solid { region, index })
     }
-}
-
-/// The cylinder under a disc of `radius` about `center` square to `axis`,
-/// taken where `ops` moved it and swept along `vector`.
-fn disc_rim(radius: f64, center: V3, axis: V3, ops: &[Transform], vector: V3) -> Result<Surface> {
-    let mut m = Affine::IDENTITY;
-    for t in ops {
-        m = m.then(&t.affine()?);
-    }
-    let s = m.uniform_factor().ok_or_else(|| {
-        Error::Invalid("a disc stretched unevenly is an ellipse; it does not extrude".into())
-    })?;
-    let (c, a, r) = (m.point(center), normalize(m.vector(axis)), radius * s);
-    let v = normalize(vector);
-    let cross = cross(a, v);
-    if cross.iter().map(|x| x * x).sum::<f64>().sqrt() > 1e-9 {
-        return Err(Error::Invalid(
-            "a disc extrudes along its axis only (an oblique sweep is an elliptic cylinder)".into(),
-        ));
-    }
-    Ok(Surface::cylinder(c, a, r))
 }

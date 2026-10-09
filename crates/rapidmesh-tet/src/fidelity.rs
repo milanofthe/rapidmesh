@@ -62,8 +62,16 @@ pub struct Fidelity {
 /// facet carries the surface of its B-rep face, the geometry the mesher is
 /// given: a strip the B-rep absorbed into a neighbour (the faceting of a
 /// tangent contact) is that neighbour's surface, with no seam of its own.
-pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
+/// The regions `left_out` of the mesh (see `rapidmesh::Mesh::without_regions`)
+/// take their facets with them: one with no region beside it that is still
+/// meshed, and an edge of such facets alone, is not looked for.
+pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model, left_out: &[u32]) -> Fidelity {
     let plc = &model.plc;
+    let out = |r: &rapidmesh_geom::RegionTag| left_out.contains(&r.0);
+    let gone = |rs: &[rapidmesh_geom::RegionTag; 2]| {
+        rs.iter().any(out) && rs.iter().all(|r| r.0 == 0 || out(r))
+    };
+    let live: Vec<bool> = plc.region_tags.iter().map(|rs| !gone(rs)).collect();
     let mut label: Vec<u32> = plc.surface_refs.iter().map(|s| s.0).collect();
     for f in &model.brep.faces {
         for &t in &f.facets {
@@ -210,6 +218,9 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
         .par_iter()
         .enumerate()
         .map_init(Vec::new, |samples, (ti, t)| {
+            if !live[ti] {
+                return Measured::default();
+            }
             let v = corners(&ppt, t);
             let k = splits(longest(v), step);
             samples.clear();
@@ -260,11 +271,17 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
     };
     // Each crease a piece of a straight segment, or of the curve of a B-rep
     // edge between two arc lengths (sampled on the curve, not its chord).
+    let kept: Vec<u32> = (0..ptris.len() as u32)
+        .filter(|&t| live[t as usize])
+        .collect();
+    let kept_tris: Vec<[usize; 3]> = kept.iter().map(|&t| ptris[t as usize]).collect();
     let mut creases: Vec<(V3, V3, Option<(usize, f64, f64)>)> =
-        sharp_edges(&ppt, &ptris, FIDELITY_SHARP_DEG, &within)
-            .into_iter()
-            .map(|e| (ppt(e[0]), ppt(e[1]), None))
-            .collect();
+        sharp_edges(&ppt, &kept_tris, FIDELITY_SHARP_DEG, &|a, b, cos_bend| {
+            within(kept[a as usize], kept[b as usize], cos_bend)
+        })
+        .into_iter()
+        .map(|e| (ppt(e[0]), ppt(e[1]), None))
+        .collect();
     let mut curves: Vec<Box<dyn crate::curve::Curve>> = Vec::new();
     let surface_of = |c: &rapidmesh_brep::CoEdgeId| {
         model.brep.faces[model.brep.coedge(*c).face.0 as usize].plc_surface
@@ -274,6 +291,11 @@ pub fn measure(mesh: &TetMesh, model: &rapidmesh_brep::Model) -> Fidelity {
         // of face tags or regions within one surface is not measured).
         let first = e.coedges.first().map(surface_of);
         if e.coedges.iter().all(|c| Some(surface_of(c)) == first) {
+            continue;
+        }
+        let face =
+            |c: &rapidmesh_brep::CoEdgeId| &model.brep.faces[model.brep.coedge(*c).face.0 as usize];
+        if e.coedges.iter().all(|c| gone(&face(c).regions)) {
             continue;
         }
         match crate::curve::kinds::edge_curve(&model.brep, e) {

@@ -365,7 +365,7 @@ impl Mesh {
         )?;
         writeln!(w, "*NODE")?;
         for (i, p) in points.iter().enumerate() {
-            writeln!(w, "{}, {:?}, {:?}, {:?}", i + 1, p[0], p[1], p[2])?;
+            writeln!(w, "{}, {:.9}, {:.9}, {:.9}", i + 1, p[0], p[1], p[2])?;
         }
         let groups = self.labels.region_groups();
         let mut done = vec![false; tets.len()];
